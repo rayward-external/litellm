@@ -14,6 +14,7 @@ The expected secret is read from ``CF_ORIGIN_SECRET`` at startup. The gateway
 refuses to start if the env var is unset, instead of silently treating any
 request as authorized.
 """
+
 import os
 from typing import Iterable
 

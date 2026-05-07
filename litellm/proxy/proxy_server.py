@@ -1585,6 +1585,7 @@ if os.environ.get("CF_ORIGIN_SECRET"):
     from litellm.proxy.middleware.cf_origin_secret import (
         CloudflareOriginSecretMiddleware,
     )
+
     app.add_middleware(CloudflareOriginSecretMiddleware)
 
 
@@ -2695,11 +2696,9 @@ def run_ollama_serve():
         with open(os.devnull, "w") as devnull:
             subprocess.Popen(command, stdout=devnull, stderr=devnull)
     except Exception as e:
-        verbose_proxy_logger.debug(
-            f"""
+        verbose_proxy_logger.debug(f"""
             LiteLLM Warning: proxy started with `ollama` model\n`ollama serve` failed with Exception{e}. \nEnsure you run `ollama serve`
-        """
-        )
+        """)
 
 
 def _get_process_rss_mb() -> Optional[float]:
