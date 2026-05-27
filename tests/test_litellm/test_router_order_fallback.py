@@ -156,6 +156,50 @@ def test_router_order_no_fallback_when_healthy():
         assert response._hidden_params["model_id"] == "1"
 
 
+def test_router_geo_order_override():
+    """Geo bucket overrides should not require duplicate visible model entries."""
+    router = Router(
+        model_list=[
+            {
+                "model_name": "test-model",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_key": "key",
+                    "mock_response": "from east",
+                    "order": 1,
+                    "geo_routing_orders": {"geo-us-south": 2},
+                },
+                "model_info": {"id": "east"},
+            },
+            {
+                "model_name": "test-model",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_key": "key",
+                    "mock_response": "from scus",
+                    "order": 2,
+                    "geo_routing_orders": {"geo-us-south": 1},
+                },
+                "model_info": {"id": "scus"},
+            },
+        ],
+        num_retries=0,
+    )
+
+    default_response = router.completion(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert default_response._hidden_params["model_id"] == "east"
+
+    geo_response = router.completion(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        metadata={"geo_bucket": "geo-us-south"},
+    )
+    assert geo_response._hidden_params["model_id"] == "scus"
+
+
 @pytest.mark.asyncio
 async def test_router_order_fallback_on_failure():
     """When order=1 fails, order=2 should be tried as fallback."""
