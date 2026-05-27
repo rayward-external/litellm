@@ -4979,7 +4979,9 @@ def _get_geo_routing_order(
     if not geo_bucket:
         return None
 
-    geo_orders = deployment.get("litellm_params", {}).get("geo_routing_orders")
+    geo_orders = deployment.get("model_info", {}).get("geo_routing_orders")
+    if not isinstance(geo_orders, dict):
+        geo_orders = deployment.get("litellm_params", {}).get("geo_routing_orders")
     if not isinstance(geo_orders, dict):
         return None
 

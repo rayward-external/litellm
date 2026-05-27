@@ -77,6 +77,24 @@ class TestGetOrderFilteredDeployments:
         result = _get_order_filtered_deployments(deps)
         assert len(result) == 2
 
+    def test_geo_order_can_live_in_model_info(self):
+        deps = [
+            {
+                "model_name": "test-model",
+                "litellm_params": {"model": "gpt-4o", "api_key": "key", "order": 1},
+                "model_info": {"id": "east", "geo_routing_orders": {"geo-us-south": 2}},
+            },
+            {
+                "model_name": "test-model",
+                "litellm_params": {"model": "gpt-4o", "api_key": "key", "order": 2},
+                "model_info": {"id": "scus", "geo_routing_orders": {"geo-us-south": 1}},
+            },
+        ]
+
+        result = _get_order_filtered_deployments(deps, geo_bucket="geo-us-south")
+        assert len(result) == 1
+        assert result[0]["model_info"]["id"] == "scus"
+
 
 # ---------------------------------------------------------------------------
 # Integration tests for order-based fallback in Router
