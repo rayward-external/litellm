@@ -1833,7 +1833,7 @@ class Router:
             )
             # Check for silent model experiment
             # Make a local copy of litellm_params to avoid mutating the Router's state
-            litellm_params = deployment["litellm_params"].copy()
+            litellm_params = self._copy_request_litellm_params(deployment)
             silent_model = litellm_params.pop("silent_model", None)
 
             if silent_model is not None:
@@ -2850,7 +2850,7 @@ class Router:
 
             # Check for silent model experiment
             # Make a local copy of litellm_params to avoid mutating the Router's state
-            litellm_params = deployment["litellm_params"].copy()
+            litellm_params = self._copy_request_litellm_params(deployment)
             silent_model = litellm_params.pop("silent_model", None)
 
             if silent_model is not None:
@@ -3058,6 +3058,19 @@ class Router:
         # 3) merge in metadata, this handles inserting this as either "metadata" or "litellm_metadata"
         kwargs.setdefault(metadata_variable_name, {}).update(metadata_defaults)
 
+    @staticmethod
+    def _copy_request_litellm_params(deployment: dict) -> dict:
+        """
+        Copy provider request params while stripping router-only metadata fields.
+
+        These fields influence deployment selection inside the router, but they
+        are not provider request params and must never be forwarded upstream.
+        """
+        litellm_params = deployment["litellm_params"].copy()
+        litellm_params.pop("order", None)
+        litellm_params.pop("geo_routing_orders", None)
+        return litellm_params
+
     def _handle_clientside_credential(
         self, deployment: dict, kwargs: dict, function_name: Optional[str] = None
     ) -> Deployment:
@@ -3065,7 +3078,7 @@ class Router:
         Handle clientside credential
         """
         model_info = deployment.get("model_info", {}).copy()
-        litellm_params = deployment["litellm_params"].copy()
+        litellm_params = self._copy_request_litellm_params(deployment)
         dynamic_litellm_params = get_dynamic_litellm_params(
             litellm_params=litellm_params, request_kwargs=kwargs
         )
@@ -3669,7 +3682,9 @@ class Router:
         self._update_kwargs_with_deployment(
             deployment=prompt_management_deployment, kwargs=kwargs
         )
-        data = prompt_management_deployment["litellm_params"].copy()
+        data = prompt_management_self._copy_request_litellm_params(
+            prompt_management_deployment
+        )
 
         litellm_model = data.get("model", None)
 
@@ -3767,7 +3782,7 @@ class Router:
                 specific_deployment=kwargs.pop("specific_deployment", None),
             )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
 
             model_client = self._get_async_openai_model_client(
                 deployment=deployment,
@@ -3837,7 +3852,7 @@ class Router:
             )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
 
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
             model_name = data["model"]
 
             model_client = self._get_async_openai_model_client(
@@ -3951,7 +3966,7 @@ class Router:
             )
 
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
             model_client = self._get_async_openai_model_client(
                 deployment=deployment,
                 kwargs=kwargs,
@@ -4049,7 +4064,7 @@ class Router:
                 request_kwargs=kwargs,
             )
             self._update_kwargs_before_fallbacks(model=model, kwargs=kwargs)
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
             data["model"]
             for k, v in self.default_litellm_params.items():
                 if (
@@ -4125,7 +4140,7 @@ class Router:
                 request_kwargs=kwargs,
             )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
             model_name = data["model"]
 
             model_client = self._get_async_openai_model_client(
@@ -4179,7 +4194,7 @@ class Router:
                 specific_deployment=kwargs.pop("specific_deployment", None),
             )
 
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
             for k, v in self.default_litellm_params.items():
                 if (
                     k not in kwargs
@@ -4244,7 +4259,7 @@ class Router:
             )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
 
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
             model_name = data["model"]
 
             model_client = self._get_async_openai_model_client(
@@ -4343,7 +4358,7 @@ class Router:
             )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
 
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
             model_name = data["model"]
 
             model_client = self._get_async_openai_model_client(
@@ -4612,7 +4627,7 @@ class Router:
                 deployment=deployment, kwargs=kwargs, function_name=function_name
             )
 
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
             model_name = data["model"]
             self.total_calls[model_name] += 1
 
@@ -4773,7 +4788,7 @@ class Router:
                 deployment=deployment, kwargs=kwargs, function_name="generic_api_call"
             )
 
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
             model_name = data["model"]
 
             self.total_calls[model_name] += 1
@@ -4850,7 +4865,7 @@ class Router:
                 specific_deployment=kwargs.pop("specific_deployment", None),
             )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
             model_name = data["model"]
 
             potential_model_client = self._get_client(
@@ -4933,7 +4948,7 @@ class Router:
                 request_kwargs=kwargs,
             )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
             model_name = data["model"]
             model_client = self._get_async_openai_model_client(
                 deployment=deployment,
@@ -5043,7 +5058,7 @@ class Router:
                     kwargs=kwargs_copy,
                     function_name="acreate_file",
                 )
-                data = deployment["litellm_params"].copy()
+                data = self._copy_request_litellm_params(deployment)
                 model_name = data["model"]
 
                 model_client = self._get_async_openai_model_client(
@@ -5194,7 +5209,7 @@ class Router:
                 specific_deployment=kwargs.pop("specific_deployment", None),
                 request_kwargs=kwargs,
             )
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
             model_name = data["model"]
             self._update_kwargs_with_deployment(
                 deployment=deployment,
@@ -5319,7 +5334,7 @@ class Router:
                 request_kwargs=kwargs,
             )
 
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
             model_name = data["model"]
             self._update_kwargs_with_deployment(
                 deployment=deployment, kwargs=kwargs, function_name="_acreate_batch"
@@ -5558,7 +5573,7 @@ class Router:
                 request_kwargs=kwargs,
             )
 
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
             model_name = data["model"]
             self._update_kwargs_with_deployment(
                 deployment=deployment, kwargs=kwargs, function_name="_acancel_batch"
@@ -5694,7 +5709,7 @@ class Router:
                 request_kwargs=kwargs,
             )
             kwargs["model"] = deployment["litellm_params"]["model"]
-            data = deployment["litellm_params"].copy()
+            data = self._copy_request_litellm_params(deployment)
             self._update_kwargs_with_deployment(
                 deployment=deployment,
                 kwargs=kwargs,
