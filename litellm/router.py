@@ -10850,9 +10850,10 @@ class Router:
         _target_order = (request_kwargs or {}).pop("_target_order", None)
         _safe_request_kwargs = request_kwargs or {}
         _request_metadata = (
-            (_safe_request_kwargs.get(self._get_metadata_variable_name_from_kwargs(_safe_request_kwargs)))
-            or {}
-        )
+            _safe_request_kwargs.get(
+                self._get_metadata_variable_name_from_kwargs(_safe_request_kwargs)
+            )
+        ) or {}
         _geo_bucket = _request_metadata.get("geo_bucket", None)
         healthy_deployments = litellm.utils._get_order_filtered_deployments(
             cast(List[Dict], healthy_deployments),
@@ -11274,9 +11275,10 @@ class Router:
         _target_order = (request_kwargs or {}).pop("_target_order", None)
         _safe_request_kwargs = request_kwargs or {}
         _request_metadata = (
-            (_safe_request_kwargs.get(self._get_metadata_variable_name_from_kwargs(_safe_request_kwargs)))
-            or {}
-        )
+            _safe_request_kwargs.get(
+                self._get_metadata_variable_name_from_kwargs(_safe_request_kwargs)
+            )
+        ) or {}
         _geo_bucket = _request_metadata.get("geo_bucket", None)
         healthy_deployments = litellm.utils._get_order_filtered_deployments(
             healthy_deployments,
