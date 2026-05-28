@@ -3682,9 +3682,7 @@ class Router:
         self._update_kwargs_with_deployment(
             deployment=prompt_management_deployment, kwargs=kwargs
         )
-        data = prompt_management_self._copy_request_litellm_params(
-            prompt_management_deployment
-        )
+        data = self._copy_request_litellm_params(prompt_management_deployment)
 
         litellm_model = data.get("model", None)
 
