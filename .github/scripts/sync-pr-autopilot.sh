@@ -30,6 +30,7 @@ HEAD_PREFIX="${HEAD_PREFIX:-chore/sync-upstream-}"
 MERGE_METHOD="${MERGE_METHOD:-merge}"
 MAX_RERUNS="${MAX_RERUNS:-2}"
 DRY_RUN="${DRY_RUN:-false}"
+HAS_AUTOMERGE_TOKEN="${HAS_AUTOMERGE_TOKEN:-true}"
 SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
 REPO="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${BASE_BRANCH:?BASE_BRANCH is required}"
@@ -55,6 +56,19 @@ notify_slack() {
 ensure_label() {
   gh label create "$1" --repo "$REPO" --color "$2" --description "$3" >/dev/null 2>&1 || true
 }
+
+# ---------------------------------------------------------------------------
+# 0. Stay dormant until the merge PAT is configured. Without it the bot would
+#    merge with GITHUB_TOKEN, whose push does NOT fire dispatch-infra-build,
+#    leaving prod silently behind. Require the PAT before acting.
+# ---------------------------------------------------------------------------
+if [ "$HAS_AUTOMERGE_TOKEN" != "true" ]; then
+  log "SYNC_AUTOMERGE_TOKEN not set — autopilot dormant (merging without it would skip the infra build). Add the PAT to activate."
+  summary "### 🛩️ Sync PR Autopilot — _$REPO_"
+  summary "**Dormant** — \`SYNC_AUTOMERGE_TOKEN\` is not configured. Add the PAT to activate."
+  emit outcome "dormant"
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Locate the open sync PR (highest-numbered match on prefix + base).

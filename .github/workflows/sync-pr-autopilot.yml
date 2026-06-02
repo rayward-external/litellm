@@ -48,6 +48,8 @@ jobs:
           # PAT preferred: merging with GITHUB_TOKEN would suppress the
           # downstream pull_request:closed event that dispatch-infra-build needs.
           GH_TOKEN: ${{ secrets.SYNC_AUTOMERGE_TOKEN || secrets.GITHUB_TOKEN }}
+          # Dormant until the PAT exists: a GITHUB_TOKEN merge would skip the infra build.
+          HAS_AUTOMERGE_TOKEN: ${{ secrets.SYNC_AUTOMERGE_TOKEN != '' }}
           BASE_BRANCH: litellm_internal_staging
           HEAD_PREFIX: chore/sync-upstream-
           MERGE_METHOD: merge
