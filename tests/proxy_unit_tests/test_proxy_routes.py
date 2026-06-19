@@ -58,9 +58,11 @@ def test_routes_on_litellm_proxy():
 
     _all_routes = []
     for route in app.routes:
-        _path_as_str = str(route.path)
+        _path_as_str = getattr(route, "path", None)
+        if _path_as_str is None:
+            continue
+        _path_as_str = str(_path_as_str)
         if ":path" in _path_as_str:
-            # remove the :path
             _path_as_str = _path_as_str.replace(":path", "")
         _all_routes.append(_path_as_str)
 
