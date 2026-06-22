@@ -515,6 +515,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/plugins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Plugins
+         * @description Return registered plugins for authenticated UI callers.
+         *
+         *     plugin_key is never returned — the browser never needs it (the proxy injects
+         *     it server-side from the registry), and exposing it here would leak the
+         *     credential into React state and DevTools.  Admin key management goes through
+         *     the redacted /config/field/info path instead.
+         */
+        get: operations["list_plugins_api_plugins_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugins/auth-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Plugin Auth Token
+         * @description Issue a short-lived, audience-scoped plugin session claim.
+         *
+         *     The claim contains {user_id, user_role, plugin, exp}.  It does NOT
+         *     contain the caller's litellm bearer token — a compromised plugin can
+         *     only learn the caller's identity, not impersonate them against the proxy.
+         *
+         *     Encrypted with a key derived from HMAC(LITELLM_SALT_KEY, plugin_name),
+         *     so each plugin holds only its own key and cannot forge claims for others.
+         *
+         *     Requires LITELLM_SALT_KEY to be set; returns 503 otherwise.
+         */
+        get: operations["plugin_auth_token_api_plugins_auth_token_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/apply_guardrail": {
         parameters: {
             query?: never;
@@ -5935,26 +5989,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/in_product_nudges": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get In Product Nudges
-         * @description Get in-product nudges configuration.
-         */
-        get: operations["get_in_product_nudges_in_product_nudges_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/interactions": {
         parameters: {
             query?: never;
@@ -7250,6 +7284,29 @@ export interface paths {
         patch: operations["mistral_proxy_route_mistral__endpoint__patch"];
         trace?: never;
     };
+    "/model/block": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Block Model
+         * @description Block a DB-stored model deployment from serving requests.
+         *
+         *     Parameters:
+         *     - model_id: str - The model deployment id to block.
+         */
+        post: operations["block_model_model_block_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/model/cost_map/source": {
         parameters: {
             query?: never;
@@ -7315,6 +7372,11 @@ export interface paths {
          *
          *         - When litellm_model_id is passed, it will return the info for that specific model
          *         - When litellm_model_id is not passed, it will return the info for all models
+         *         - include_team_models: When true, filter to deployments the caller can use (same as /v2/model/info).
+         *         - teamId: Filter to models accessible by the given team.
+         *
+         *     Each model in the list response includes `model_info.access_via_team_ids` and
+         *     `model_info.direct_access` when the proxy database is connected.
          *
          *     Returns:
          *         Returns a dictionary containing information about each model.
@@ -7462,6 +7524,29 @@ export interface paths {
         get: operations["model_streaming_metrics_model_streaming_metrics_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/model/unblock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Unblock Model
+         * @description Unblock a DB-stored model deployment so it can serve requests again.
+         *
+         *     Parameters:
+         *     - model_id: str - The model deployment id to unblock.
+         */
+        post: operations["unblock_model_model_unblock_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7741,6 +7826,15 @@ export interface paths {
          *     - scope: Optional scope parameter. Currently only accepts "expand".
          *              When scope=expand is passed, proxy admins, team admins, and org admins
          *              will receive all proxy models as if they are a proxy admin.
+         *     - healthy_only: When true, hide models whose backing deployments are all marked
+         *                     unhealthy by background health checks. Requires
+         *                     `background_health_checks: true` in general_settings; without
+         *                     health state the listing is returned unfiltered (fail open).
+         *                     Models expanded from wildcard routes (e.g. `openai/*`) are not
+         *                     filtered, and nothing is hidden when `allowed_fails_policy` is
+         *                     configured (cooldown remains the sole exclusion mechanism).
+         *                     Hiding is presentation-only: a hidden model can still be
+         *                     called directly.
          */
         get: operations["model_list_models_get"];
         put?: never;
@@ -7767,6 +7861,10 @@ export interface paths {
          *
          *     Follows OpenAI API specification for individual model retrieval.
          *     https://platform.openai.com/docs/api-reference/models/retrieve
+         *
+         *     Query parameters mirror `/v1/models` so the same caller context (team
+         *     scoping, health filtering, paused deployments) drives both endpoints; the
+         *     listing's public id must resolve to the same internal deployment here.
          */
         get: operations["model_info_models__model_id__get"];
         put?: never;
@@ -8899,6 +8997,106 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/plugin-proxy/{plugin_name}/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Plugin Proxy
+         * @description Authenticated reverse-proxy to a registered plugin backend.
+         *
+         *     Restricted to proxy_admin callers — the shared plugin_key must not be
+         *     usable as a confused-deputy credential by regular users.  Plugin UIs
+         *     talk to the plugin service directly via the iframe; this route is for
+         *     administrative and server-to-server access only.
+         *
+         *     The caller's litellm credential is stripped and replaced with the
+         *     plugin's own plugin_key so plugins never receive a live litellm API key.
+         */
+        get: operations["plugin_proxy_plugin_proxy__plugin_name___path__get"];
+        /**
+         * Plugin Proxy
+         * @description Authenticated reverse-proxy to a registered plugin backend.
+         *
+         *     Restricted to proxy_admin callers — the shared plugin_key must not be
+         *     usable as a confused-deputy credential by regular users.  Plugin UIs
+         *     talk to the plugin service directly via the iframe; this route is for
+         *     administrative and server-to-server access only.
+         *
+         *     The caller's litellm credential is stripped and replaced with the
+         *     plugin's own plugin_key so plugins never receive a live litellm API key.
+         */
+        put: operations["plugin_proxy_plugin_proxy__plugin_name___path__put"];
+        /**
+         * Plugin Proxy
+         * @description Authenticated reverse-proxy to a registered plugin backend.
+         *
+         *     Restricted to proxy_admin callers — the shared plugin_key must not be
+         *     usable as a confused-deputy credential by regular users.  Plugin UIs
+         *     talk to the plugin service directly via the iframe; this route is for
+         *     administrative and server-to-server access only.
+         *
+         *     The caller's litellm credential is stripped and replaced with the
+         *     plugin's own plugin_key so plugins never receive a live litellm API key.
+         */
+        post: operations["plugin_proxy_plugin_proxy__plugin_name___path__post"];
+        /**
+         * Plugin Proxy
+         * @description Authenticated reverse-proxy to a registered plugin backend.
+         *
+         *     Restricted to proxy_admin callers — the shared plugin_key must not be
+         *     usable as a confused-deputy credential by regular users.  Plugin UIs
+         *     talk to the plugin service directly via the iframe; this route is for
+         *     administrative and server-to-server access only.
+         *
+         *     The caller's litellm credential is stripped and replaced with the
+         *     plugin's own plugin_key so plugins never receive a live litellm API key.
+         */
+        delete: operations["plugin_proxy_plugin_proxy__plugin_name___path__delete"];
+        /**
+         * Plugin Proxy
+         * @description Authenticated reverse-proxy to a registered plugin backend.
+         *
+         *     Restricted to proxy_admin callers — the shared plugin_key must not be
+         *     usable as a confused-deputy credential by regular users.  Plugin UIs
+         *     talk to the plugin service directly via the iframe; this route is for
+         *     administrative and server-to-server access only.
+         *
+         *     The caller's litellm credential is stripped and replaced with the
+         *     plugin's own plugin_key so plugins never receive a live litellm API key.
+         */
+        options: operations["plugin_proxy_plugin_proxy__plugin_name___path__options"];
+        /**
+         * Plugin Proxy
+         * @description Authenticated reverse-proxy to a registered plugin backend.
+         *
+         *     Restricted to proxy_admin callers — the shared plugin_key must not be
+         *     usable as a confused-deputy credential by regular users.  Plugin UIs
+         *     talk to the plugin service directly via the iframe; this route is for
+         *     administrative and server-to-server access only.
+         *
+         *     The caller's litellm credential is stripped and replaced with the
+         *     plugin's own plugin_key so plugins never receive a live litellm API key.
+         */
+        head: operations["plugin_proxy_plugin_proxy__plugin_name___path__head"];
+        /**
+         * Plugin Proxy
+         * @description Authenticated reverse-proxy to a registered plugin backend.
+         *
+         *     Restricted to proxy_admin callers — the shared plugin_key must not be
+         *     usable as a confused-deputy credential by regular users.  Plugin UIs
+         *     talk to the plugin service directly via the iframe; this route is for
+         *     administrative and server-to-server access only.
+         *
+         *     The caller's litellm credential is stripped and replaced with the
+         *     plugin's own plugin_key so plugins never receive a live litellm API key.
+         */
+        patch: operations["plugin_proxy_plugin_proxy__plugin_name___path__patch"];
         trace?: never;
     };
     "/policies": {
@@ -16510,6 +16708,11 @@ export interface paths {
          *
          *         - When litellm_model_id is passed, it will return the info for that specific model
          *         - When litellm_model_id is not passed, it will return the info for all models
+         *         - include_team_models: When true, filter to deployments the caller can use (same as /v2/model/info).
+         *         - teamId: Filter to models accessible by the given team.
+         *
+         *     Each model in the list response includes `model_info.access_via_team_ids` and
+         *     `model_info.direct_access` when the proxy database is connected.
          *
          *     Returns:
          *         Returns a dictionary containing information about each model.
@@ -16563,6 +16766,15 @@ export interface paths {
          *     - scope: Optional scope parameter. Currently only accepts "expand".
          *              When scope=expand is passed, proxy admins, team admins, and org admins
          *              will receive all proxy models as if they are a proxy admin.
+         *     - healthy_only: When true, hide models whose backing deployments are all marked
+         *                     unhealthy by background health checks. Requires
+         *                     `background_health_checks: true` in general_settings; without
+         *                     health state the listing is returned unfiltered (fail open).
+         *                     Models expanded from wildcard routes (e.g. `openai/*`) are not
+         *                     filtered, and nothing is hidden when `allowed_fails_policy` is
+         *                     configured (cooldown remains the sole exclusion mechanism).
+         *                     Hiding is presentation-only: a hidden model can still be
+         *                     called directly.
          */
         get: operations["model_list_v1_models_get"];
         put?: never;
@@ -16589,6 +16801,10 @@ export interface paths {
          *
          *     Follows OpenAI API specification for individual model retrieval.
          *     https://platform.openai.com/docs/api-reference/models/retrieve
+         *
+         *     Query parameters mirror `/v1/models` so the same caller context (team
+         *     scoping, health filtering, paused deployments) drives both endpoints; the
+         *     listing's public id must resolve to the same internal deployment here.
          */
         get: operations["model_info_v1_models__model_id__get"];
         put?: never;
@@ -18441,7 +18657,49 @@ export interface paths {
         };
         /**
          * Model Info V2
-         * @description v2 - returns models available to the user based on their API key permissions. Shows model info from config.yaml (except api key and api base). Filter to just user-added models with ?user_models_only=true
+         * @description Paginated model metadata for proxy deployments (pricing, provider, team access).
+         *
+         *     Returns configured router deployments with enriched `model_info` (costs, provider,
+         *     context window, etc.). Sensitive fields such as API keys and api_base are omitted.
+         *
+         *     Query parameters:
+         *         model: Filter to a single public `model_name`.
+         *         user_models_only: When true, only return models created by the calling user.
+         *         include_team_models: When true, populate `access_via_team_ids` and `direct_access`
+         *             on each model and filter to deployments the caller can use.
+         *         page / size: Pagination controls (defaults: page=1, size=50).
+         *         search: Case-insensitive partial match on model name or team public name.
+         *         modelId: Return a single deployment by LiteLLM model id.
+         *         teamId: Filter to models with direct access or team membership for this team id.
+         *         sortBy / sortOrder: Sort by model_name, created_at, updated_at, costs, or status.
+         *
+         *     Example request:
+         *     ```
+         *     curl -X GET 'http://localhost:4000/v2/model/info?include_team_models=true&page=1&size=50' \
+         *     --header 'Authorization: Bearer sk-1234'
+         *     ```
+         *
+         *     Example response:
+         *     ```json
+         *     {
+         *         "data": [
+         *             {
+         *                 "model_name": "gpt-4",
+         *                 "litellm_params": {"model": "openai/gpt-4.1"},
+         *                 "model_info": {
+         *                     "id": "abc123",
+         *                     "litellm_provider": "openai",
+         *                     "access_via_team_ids": ["team-1"],
+         *                     "direct_access": true
+         *                 }
+         *             }
+         *         ],
+         *         "total_count": 1,
+         *         "current_page": 1,
+         *         "total_pages": 1,
+         *         "size": 50
+         *     }
+         *     ```
          */
         get: operations["model_info_v2_v2_model_info_get"];
         put?: never;
@@ -20661,6 +20919,11 @@ export interface components {
             /** Key */
             key: string;
         };
+        /** BlockModelRequest */
+        BlockModelRequest: {
+            /** Model Id */
+            model_id: string;
+        };
         /** BlockTeamRequest */
         BlockTeamRequest: {
             /** Team Id */
@@ -21243,7 +21506,7 @@ export interface components {
          * CallTypes
          * @enum {string}
          */
-        CallTypes: "embedding" | "aembedding" | "completion" | "acompletion" | "atext_completion" | "text_completion" | "image_generation" | "aimage_generation" | "image_edit" | "aimage_edit" | "moderation" | "amoderation" | "atranscription" | "transcription" | "aspeech" | "speech" | "rerank" | "arerank" | "search" | "asearch" | "_arealtime" | "_aresponses_websocket" | "create_batch" | "acreate_batch" | "aretrieve_batch" | "retrieve_batch" | "acancel_batch" | "cancel_batch" | "pass_through_endpoint" | "anthropic_messages" | "get_assistants" | "aget_assistants" | "create_assistants" | "acreate_assistants" | "delete_assistant" | "adelete_assistant" | "acreate_thread" | "create_thread" | "aget_thread" | "get_thread" | "a_add_message" | "add_message" | "aget_messages" | "get_messages" | "arun_thread" | "run_thread" | "arun_thread_stream" | "run_thread_stream" | "afile_retrieve" | "file_retrieve" | "afile_delete" | "file_delete" | "afile_list" | "file_list" | "acreate_file" | "create_file" | "afile_content" | "file_content" | "create_fine_tuning_job" | "acreate_fine_tuning_job" | "create_video" | "acreate_video" | "avideo_retrieve" | "video_retrieve" | "avideo_content" | "video_content" | "video_remix" | "avideo_remix" | "video_list" | "avideo_list" | "video_retrieve_job" | "avideo_retrieve_job" | "video_delete" | "avideo_delete" | "video_create_character" | "avideo_create_character" | "video_get_character" | "avideo_get_character" | "video_edit" | "avideo_edit" | "video_extension" | "avideo_extension" | "vector_store_file_create" | "avector_store_file_create" | "vector_store_file_list" | "avector_store_file_list" | "vector_store_file_retrieve" | "avector_store_file_retrieve" | "vector_store_file_content" | "avector_store_file_content" | "vector_store_file_update" | "avector_store_file_update" | "vector_store_file_delete" | "avector_store_file_delete" | "vector_store_create" | "avector_store_create" | "vector_store_search" | "avector_store_search" | "create_container" | "acreate_container" | "list_containers" | "alist_containers" | "retrieve_container" | "aretrieve_container" | "delete_container" | "adelete_container" | "list_container_files" | "alist_container_files" | "upload_container_file" | "aupload_container_file" | "acancel_fine_tuning_job" | "cancel_fine_tuning_job" | "alist_fine_tuning_jobs" | "list_fine_tuning_jobs" | "aretrieve_fine_tuning_job" | "retrieve_fine_tuning_job" | "responses" | "aresponses" | "alist_input_items" | "llm_passthrough_route" | "allm_passthrough_route" | "generate_content" | "agenerate_content" | "generate_content_stream" | "agenerate_content_stream" | "ocr" | "aocr" | "call_mcp_tool" | "list_mcp_tools" | "asend_message" | "send_message" | "acreate_skill";
+        CallTypes: "embedding" | "aembedding" | "completion" | "acompletion" | "atext_completion" | "text_completion" | "image_generation" | "aimage_generation" | "image_edit" | "aimage_edit" | "moderation" | "amoderation" | "atranscription" | "transcription" | "aspeech" | "speech" | "rerank" | "arerank" | "search" | "asearch" | "_arealtime" | "_aresponses_websocket" | "create_batch" | "acreate_batch" | "aretrieve_batch" | "retrieve_batch" | "acancel_batch" | "cancel_batch" | "pass_through_endpoint" | "anthropic_messages" | "get_assistants" | "aget_assistants" | "create_assistants" | "acreate_assistants" | "delete_assistant" | "adelete_assistant" | "acreate_thread" | "create_thread" | "aget_thread" | "get_thread" | "a_add_message" | "add_message" | "aget_messages" | "get_messages" | "arun_thread" | "run_thread" | "arun_thread_stream" | "run_thread_stream" | "afile_retrieve" | "file_retrieve" | "afile_delete" | "file_delete" | "afile_list" | "file_list" | "acreate_file" | "create_file" | "afile_content" | "file_content" | "create_fine_tuning_job" | "acreate_fine_tuning_job" | "create_video" | "acreate_video" | "avideo_retrieve" | "video_retrieve" | "avideo_content" | "video_content" | "video_remix" | "avideo_remix" | "video_list" | "avideo_list" | "video_retrieve_job" | "avideo_retrieve_job" | "video_delete" | "avideo_delete" | "video_create_character" | "avideo_create_character" | "video_get_character" | "avideo_get_character" | "video_edit" | "avideo_edit" | "video_extension" | "avideo_extension" | "vector_store_file_create" | "avector_store_file_create" | "vector_store_file_list" | "avector_store_file_list" | "vector_store_file_retrieve" | "avector_store_file_retrieve" | "vector_store_file_content" | "avector_store_file_content" | "vector_store_file_update" | "avector_store_file_update" | "vector_store_file_delete" | "avector_store_file_delete" | "vector_store_create" | "avector_store_create" | "vector_store_search" | "avector_store_search" | "create_container" | "acreate_container" | "list_containers" | "alist_containers" | "retrieve_container" | "aretrieve_container" | "delete_container" | "adelete_container" | "list_container_files" | "alist_container_files" | "upload_container_file" | "aupload_container_file" | "create_sandbox" | "acreate_sandbox" | "delete_sandbox" | "adelete_sandbox" | "run_code" | "arun_code" | "code_interpreter_tool" | "acode_interpreter_tool" | "acancel_fine_tuning_job" | "cancel_fine_tuning_job" | "alist_fine_tuning_jobs" | "list_fine_tuning_jobs" | "aretrieve_fine_tuning_job" | "retrieve_fine_tuning_job" | "responses" | "aresponses" | "alist_input_items" | "llm_passthrough_route" | "allm_passthrough_route" | "generate_content" | "agenerate_content" | "generate_content_stream" | "agenerate_content_stream" | "ocr" | "aocr" | "call_mcp_tool" | "list_mcp_tools" | "asend_message" | "send_message" | "acreate_skill";
         /** CallbackDelete */
         CallbackDelete: {
             /** Callback Name */
@@ -21932,6 +22195,11 @@ export interface components {
              */
             alerting_threshold?: number | null;
             /**
+             * Allow Cli Sso Verification Uri Complete
+             * @description opt-in to RFC 8628 verification_uri_complete for the CLI SSO device flow, pre-filling the user_code in the browser. Off by default; intended for same-host clients where the device that starts the flow and the browser run on the same machine
+             */
+            allow_cli_sso_verification_uri_complete?: boolean | null;
+            /**
              * Allowed Routes
              * @description Proxy API Endpoints you want users to be able to access
              */
@@ -21941,6 +22209,11 @@ export interface components {
              * @description run health checks in background
              */
             background_health_checks?: boolean | null;
+            /**
+             * Cancel On Disconnect
+             * @description cancel the in-flight upstream LLM request (non-streaming) when the client disconnects, freeing backend capacity (e.g. a vLLM GPU slot); the request is logged as a 499 failure
+             */
+            cancel_on_disconnect?: boolean | null;
             /**
              * Completion Model
              * @description proxy level default model for all chat completion calls
@@ -21971,6 +22244,11 @@ export interface components {
              */
             database_connection_timeout: number | null;
             /**
+             * Database Disable Prepared Statements
+             * @description Disable server-side prepared statements by setting Prisma's `pgbouncer=true` URL param. Use this for pgbouncer transaction-pooling deployments, or to prevent the 'cached plan must not change result type' error that pooled connections hit during rolling schema migrations. An explicit `pgbouncer` in `database_extra_connection_params` takes precedence.
+             */
+            database_disable_prepared_statements?: boolean | null;
+            /**
              * Database Extra Connection Params
              * @description Escape hatch: extra key/value pairs appended verbatim to the Prisma DATABASE_URL / DIRECT_URL query string (e.g. `sslmode`, `pgbouncer`, `statement_cache_size`). Keys here override any default LiteLLM sets.
              */
@@ -21992,6 +22270,11 @@ export interface components {
              * @description connect to a postgres db - needed for generating temporary keys + tracking spend / key
              */
             database_url?: string | null;
+            /**
+             * Disable Budget Reservation
+             * @description If True, disables the optimistic per-request budget reservation introduced in v1.84.0. WARNING: This weakens hard budget enforcement. Without the reservation, a burst of concurrent requests from a single key can each pass the read-time spend check before any of them is charged, allowing a configured budget to be exceeded under high concurrency. Budgets are still evaluated on every request at read time, so an already-exhausted budget is still rejected. Enable only if your deployment is experiencing phantom BudgetExceededError responses caused by leaked reservations (see GitHub issue #27639). A proxy-level WARNING is logged on every request while this flag is active as a reminder that hard enforcement is relaxed.
+             */
+            disable_budget_reservation?: boolean | null;
             /**
              * Enable Public Model Hub
              * @description Public model hub for users to see what models they have access to, supported openai params, etc.
@@ -22083,6 +22366,16 @@ export interface components {
              */
             pass_through_endpoints?: components["schemas"]["PassThroughGenericEndpoint"][] | null;
             /**
+             * Pass Through Request Timeout
+             * @description Default upstream request timeout in seconds for native and custom pass-through endpoints that use pass_through_request. Defaults to 600 when unset.
+             */
+            pass_through_request_timeout?: number | null;
+            /**
+             * Plugins
+             * @description external services registered as embeddable UI plugins
+             */
+            plugins?: components["schemas"]["PluginConfig"][] | null;
+            /**
              * Reject Clientside Metadata Tags
              * @description When set to True, rejects requests that contain client-side 'metadata.tags' to prevent users from influencing budgets by sending different tags. Tags can only be inherited from the API key metadata.
              */
@@ -22123,6 +22416,11 @@ export interface components {
              * @description decrypt keys with google kms
              */
             use_google_kms?: boolean | null;
+            /**
+             * Use Spend Logs Partitioning
+             * @description If True and LiteLLM_SpendLogs has been converted to a range-partitioned table (db_scripts/partition_spend_logs.sql), retention cleanup drops expired partitions instead of deleting rows, and pre-creates upcoming partitions. Default is False.
+             */
+            use_spend_logs_partitioning?: boolean | null;
             /** User Header Mappings */
             user_header_mappings?: components["schemas"]["UserHeaderMapping"][] | null;
             /**
@@ -23671,15 +23969,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** InProductNudgeResponse */
-        InProductNudgeResponse: {
-            /**
-             * Is Claude Code Enabled
-             * @description Whether the Claude Code nudge should be shown.
-             * @default false
-             */
-            is_claude_code_enabled: boolean;
-        };
         /** IndexCreateLiteLLMParams */
         IndexCreateLiteLLMParams: {
             /** Vector Store Index */
@@ -24839,12 +25128,16 @@ export interface components {
             auto_router_embedding_model?: string | null;
             /** Aws Access Key Id */
             aws_access_key_id?: string | null;
+            /** Aws Bedrock Project Id */
+            aws_bedrock_project_id?: string | null;
             /** Aws Bedrock Runtime Endpoint */
             aws_bedrock_runtime_endpoint?: string | null;
             /** Aws Region Name */
             aws_region_name?: string | null;
             /** Aws Secret Access Key */
             aws_secret_access_key?: string | null;
+            /** Azure Ad Token */
+            azure_ad_token?: string | null;
             /** Budget Duration */
             budget_duration?: string | null;
             /** Cache Creation Input Audio Token Cost */
@@ -24861,6 +25154,10 @@ export interface components {
             cache_read_input_token_cost?: number | null;
             /** Cache Read Input Token Cost Above 200K Tokens */
             cache_read_input_token_cost_above_200k_tokens?: number | null;
+            /** Cache Read Input Token Cost Above 200K Tokens Priority */
+            cache_read_input_token_cost_above_200k_tokens_priority?: number | null;
+            /** Cache Read Input Token Cost Above 272K Tokens Priority */
+            cache_read_input_token_cost_above_272k_tokens_priority?: number | null;
             /** Cache Read Input Token Cost Flex */
             cache_read_input_token_cost_flex?: number | null;
             /** Cache Read Input Token Cost Priority */
@@ -24909,6 +25206,10 @@ export interface components {
             input_cost_per_token_above_128k_tokens?: number | null;
             /** Input Cost Per Token Above 200K Tokens */
             input_cost_per_token_above_200k_tokens?: number | null;
+            /** Input Cost Per Token Above 200K Tokens Priority */
+            input_cost_per_token_above_200k_tokens_priority?: number | null;
+            /** Input Cost Per Token Above 272K Tokens Priority */
+            input_cost_per_token_above_272k_tokens_priority?: number | null;
             /** Input Cost Per Token Batches */
             input_cost_per_token_batches?: number | null;
             /** Input Cost Per Token Cache Hit */
@@ -24982,6 +25283,10 @@ export interface components {
             output_cost_per_token_above_128k_tokens?: number | null;
             /** Output Cost Per Token Above 200K Tokens */
             output_cost_per_token_above_200k_tokens?: number | null;
+            /** Output Cost Per Token Above 200K Tokens Priority */
+            output_cost_per_token_above_200k_tokens_priority?: number | null;
+            /** Output Cost Per Token Above 272K Tokens Priority */
+            output_cost_per_token_above_272k_tokens_priority?: number | null;
             /** Output Cost Per Token Batches */
             output_cost_per_token_batches?: number | null;
             /** Output Cost Per Token Flex */
@@ -25034,6 +25339,12 @@ export interface components {
              * @default false
              */
             use_litellm_proxy: boolean | null;
+            /**
+             * Use Xai Oauth
+             * @description Use stored xAI OAuth credentials when no xAI API key is configured.
+             * @default false
+             */
+            use_xai_oauth: boolean | null;
             /** Vector Store Id */
             vector_store_id?: string | null;
             /** Vertex Credentials */
@@ -25103,6 +25414,34 @@ export interface components {
             spend: number;
             /** Team Id */
             team_id?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Updated By */
+            updated_by?: string | null;
+        };
+        /** LiteLLM_ProxyModelTable */
+        LiteLLM_ProxyModelTable: {
+            /**
+             * Blocked
+             * @default false
+             */
+            blocked: boolean;
+            /** Created At */
+            created_at?: string | null;
+            /** Created By */
+            created_by?: string | null;
+            /** Litellm Params */
+            litellm_params: {
+                [key: string]: unknown;
+            };
+            /** Model Id */
+            model_id: string;
+            /** Model Info */
+            model_info?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Name */
+            model_name: string;
             /** Updated At */
             updated_at?: string | null;
             /** Updated By */
@@ -27831,6 +28170,11 @@ export interface components {
              * @description The URL to which requests for this path should be forwarded.
              */
             target: string;
+            /**
+             * Timeout
+             * @description Upstream request timeout in seconds for this pass-through endpoint. If unset, uses general_settings.pass_through_request_timeout (default 600).
+             */
+            timeout?: number | null;
         };
         /**
          * PassThroughGuardrailSettings
@@ -27999,6 +28343,32 @@ export interface components {
              * @description Author name
              */
             name: string;
+        };
+        /**
+         * PluginConfig
+         * @description A single external service registered as an embeddable UI plugin.
+         */
+        PluginConfig: {
+            /**
+             * Display Name
+             * @description human-readable label shown in the UI view switcher
+             */
+            display_name?: string | null;
+            /**
+             * Name
+             * @description unique plugin identifier (kebab-case)
+             */
+            name: string;
+            /**
+             * Plugin Key
+             * @description plugin's own credential, injected as Bearer auth only on /plugin-proxy/<name>/* reverse-proxy calls
+             */
+            plugin_key?: string | null;
+            /**
+             * Url
+             * @description base URL of the plugin service
+             */
+            url: string;
         };
         /**
          * PluginListItem
@@ -30915,6 +31285,11 @@ export interface components {
             /** Auto Redirect To Sso */
             auto_redirect_to_sso: boolean;
             /**
+             * Hide Default Credentials Hint
+             * @default false
+             */
+            hide_default_credentials_hint: boolean;
+            /**
              * Is Control Plane
              * @default false
              */
@@ -32437,12 +32812,16 @@ export interface components {
             auto_router_embedding_model?: string | null;
             /** Aws Access Key Id */
             aws_access_key_id?: string | null;
+            /** Aws Bedrock Project Id */
+            aws_bedrock_project_id?: string | null;
             /** Aws Bedrock Runtime Endpoint */
             aws_bedrock_runtime_endpoint?: string | null;
             /** Aws Region Name */
             aws_region_name?: string | null;
             /** Aws Secret Access Key */
             aws_secret_access_key?: string | null;
+            /** Azure Ad Token */
+            azure_ad_token?: string | null;
             /** Budget Duration */
             budget_duration?: string | null;
             /** Cache Creation Input Audio Token Cost */
@@ -32459,6 +32838,10 @@ export interface components {
             cache_read_input_token_cost?: number | null;
             /** Cache Read Input Token Cost Above 200K Tokens */
             cache_read_input_token_cost_above_200k_tokens?: number | null;
+            /** Cache Read Input Token Cost Above 200K Tokens Priority */
+            cache_read_input_token_cost_above_200k_tokens_priority?: number | null;
+            /** Cache Read Input Token Cost Above 272K Tokens Priority */
+            cache_read_input_token_cost_above_272k_tokens_priority?: number | null;
             /** Cache Read Input Token Cost Flex */
             cache_read_input_token_cost_flex?: number | null;
             /** Cache Read Input Token Cost Priority */
@@ -32507,6 +32890,10 @@ export interface components {
             input_cost_per_token_above_128k_tokens?: number | null;
             /** Input Cost Per Token Above 200K Tokens */
             input_cost_per_token_above_200k_tokens?: number | null;
+            /** Input Cost Per Token Above 200K Tokens Priority */
+            input_cost_per_token_above_200k_tokens_priority?: number | null;
+            /** Input Cost Per Token Above 272K Tokens Priority */
+            input_cost_per_token_above_272k_tokens_priority?: number | null;
             /** Input Cost Per Token Batches */
             input_cost_per_token_batches?: number | null;
             /** Input Cost Per Token Cache Hit */
@@ -32580,6 +32967,10 @@ export interface components {
             output_cost_per_token_above_128k_tokens?: number | null;
             /** Output Cost Per Token Above 200K Tokens */
             output_cost_per_token_above_200k_tokens?: number | null;
+            /** Output Cost Per Token Above 200K Tokens Priority */
+            output_cost_per_token_above_200k_tokens_priority?: number | null;
+            /** Output Cost Per Token Above 272K Tokens Priority */
+            output_cost_per_token_above_272k_tokens_priority?: number | null;
             /** Output Cost Per Token Batches */
             output_cost_per_token_batches?: number | null;
             /** Output Cost Per Token Flex */
@@ -32632,6 +33023,12 @@ export interface components {
              * @default false
              */
             use_litellm_proxy: boolean | null;
+            /**
+             * Use Xai Oauth
+             * @description Use stored xAI OAuth credentials when no xAI API key is configured.
+             * @default false
+             */
+            use_xai_oauth: boolean | null;
             /** Vector Store Id */
             vector_store_id?: string | null;
             /** Vertex Credentials */
@@ -33272,6 +33669,61 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    list_plugins_api_plugins_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    }[];
+                };
+            };
+        };
+    };
+    plugin_auth_token_api_plugins_auth_token_get: {
+        parameters: {
+            query?: {
+                plugin_name?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -40375,7 +40827,7 @@ export interface operations {
         parameters: {
             query: {
                 /** @description Specify the service being hit. */
-                service: ("slack_budget_alerts" | "langfuse" | "langfuse_otel" | "slack" | "openmeter" | "webhook" | "email" | "braintrust" | "datadog" | "datadog_llm_observability" | "generic_api" | "arize" | "sqs") | string;
+                service: ("slack_budget_alerts" | "langfuse" | "langfuse_otel" | "slack" | "openmeter" | "webhook" | "email" | "braintrust" | "datadog" | "datadog_llm_observability" | "generic_api" | "arize" | "galileo" | "newrelic" | "sqs") | string;
             };
             header?: never;
             path?: never;
@@ -40518,26 +40970,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_in_product_nudges_in_product_nudges_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["InProductNudgeResponse"];
                 };
             };
         };
@@ -41192,7 +41624,7 @@ export interface operations {
                 page?: number;
                 /** @description Page size */
                 size?: number;
-                /** @description Filter keys by user ID. Supports partial matching (substring, case-insensitive). */
+                /** @description Filter keys by user ID. Exact match by default; set substring_matching=true (admin only) for case-insensitive substring matching. */
                 user_id?: string | null;
                 /** @description Filter keys by team ID */
                 team_id?: string | null;
@@ -41200,7 +41632,7 @@ export interface operations {
                 organization_id?: string | null;
                 /** @description Filter keys by key hash */
                 key_hash?: string | null;
-                /** @description Filter keys by key alias. Supports partial matching (substring, case-insensitive). */
+                /** @description Filter keys by key alias. Exact match by default; set substring_matching=true (admin only) for case-insensitive substring matching. */
                 key_alias?: string | null;
                 /** @description Return full key object */
                 return_full_object?: boolean;
@@ -41220,6 +41652,8 @@ export interface operations {
                 project_id?: string | null;
                 /** @description Filter keys by access group ID */
                 access_group_id?: string | null;
+                /** @description If true (proxy admins only), match user_id/key_alias as case-insensitive substrings instead of exact values. Defaults to false: /key/list matched these exactly before substring search was added, and an exact user_id/key_alias filter must never return another user's keys. */
+                substring_matching?: boolean;
             };
             header?: never;
             path?: never;
@@ -42167,6 +42601,42 @@ export interface operations {
             };
         };
     };
+    block_model_model_block_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The litellm-changed-by header enables tracking of actions performed by authorized users on behalf of other users, providing an audit trail for accountability */
+                "litellm-changed-by"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BlockModelRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiteLLM_ProxyModelTable"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_model_cost_map_source_model_cost_map_source_get: {
         parameters: {
             query?: never;
@@ -42224,6 +42694,10 @@ export interface operations {
         parameters: {
             query?: {
                 litellm_model_id?: string | null;
+                /** @description When true, filter to deployments the caller can use via direct access or team membership. */
+                include_team_models?: boolean | null;
+                /** @description Filter models by team ID. Returns models with direct_access=True or teamId in access_via_team_ids */
+                teamId?: string | null;
             };
             header?: never;
             path?: never;
@@ -42442,6 +42916,42 @@ export interface operations {
             };
         };
     };
+    unblock_model_model_unblock_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The litellm-changed-by header enables tracking of actions performed by authorized users on behalf of other users, providing an audit trail for accountability */
+                "litellm-changed-by"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BlockModelRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiteLLM_ProxyModelTable"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     update_model_model_update_post: {
         parameters: {
             query?: never;
@@ -42617,6 +43127,7 @@ export interface operations {
                 include_metadata?: boolean | null;
                 fallback_type?: string | null;
                 scope?: string | null;
+                healthy_only?: boolean | null;
             };
             header?: never;
             path?: never;
@@ -42646,7 +43157,10 @@ export interface operations {
     };
     model_info_models__model_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                team_id?: string | null;
+                healthy_only?: boolean | null;
+            };
             header?: never;
             path: {
                 model_id: string;
@@ -44223,6 +44737,230 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    plugin_proxy_plugin_proxy__plugin_name___path__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                plugin_name: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    plugin_proxy_plugin_proxy__plugin_name___path__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                plugin_name: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    plugin_proxy_plugin_proxy__plugin_name___path__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                plugin_name: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    plugin_proxy_plugin_proxy__plugin_name___path__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                plugin_name: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    plugin_proxy_plugin_proxy__plugin_name___path__options: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                plugin_name: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    plugin_proxy_plugin_proxy__plugin_name___path__head: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                plugin_name: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    plugin_proxy_plugin_proxy__plugin_name___path__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                plugin_name: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -47865,6 +48603,7 @@ export interface operations {
                 key?: string | null;
                 existing_key?: string | null;
                 return_to?: string | null;
+                user_code?: string | null;
             };
             header?: never;
             path?: never;
@@ -48527,6 +49266,8 @@ export interface operations {
             query?: {
                 /** @description Team ID in the request parameters */
                 team_id?: string;
+                /** @description Limit the number of keys returned */
+                key_limit?: number | null;
             };
             header?: never;
             path?: never;
@@ -53452,6 +54193,10 @@ export interface operations {
         parameters: {
             query?: {
                 litellm_model_id?: string | null;
+                /** @description When true, filter to deployments the caller can use via direct access or team membership. */
+                include_team_models?: boolean | null;
+                /** @description Filter models by team ID. Returns models with direct_access=True or teamId in access_via_team_ids */
+                teamId?: string | null;
             };
             header?: never;
             path?: never;
@@ -53489,6 +54234,7 @@ export interface operations {
                 include_metadata?: boolean | null;
                 fallback_type?: string | null;
                 scope?: string | null;
+                healthy_only?: boolean | null;
             };
             header?: never;
             path?: never;
@@ -53518,7 +54264,10 @@ export interface operations {
     };
     model_info_v1_models__model_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                team_id?: string | null;
+                healthy_only?: boolean | null;
+            };
             header?: never;
             path: {
                 model_id: string;
