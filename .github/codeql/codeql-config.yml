@@ -21,6 +21,8 @@ query-filters:
   - exclude:
       id: py/clear-text-logging-sensitive-data  # CWE-312
   - exclude:
+      id: py/log-injection                      # CWE-117: taint explosion through pervasive logging; same scaling class as py/clear-text-logging-sensitive-data
+  - exclude:
       id: py/polynomial-redos                   # CWE-730
   # py/weak-sensitive-data-hashing: litellm's SHA256 calls derive stable lookup
   # keys / rate-limit-bucket ids from API keys and tokens (e.g.
@@ -44,3 +46,8 @@ paths-ignore:
   # CodeQL cannot express "accepted, scoped client-side token cache", and a
   # query-filter exclude cannot be scoped to one file, so the file is ignored.
   - "ui/litellm-dashboard/src/utils/mcpTokenStore.ts"
+  # cookbook/ and scripts/benchmark_* are standalone example/benchmark scripts not
+  # shipped in the product; source of py/reflective-xss #953, py/regex-injection #952,
+  # py/clear-text-storage #979 #980.
+  - "cookbook"
+  - "scripts/benchmark_*"
