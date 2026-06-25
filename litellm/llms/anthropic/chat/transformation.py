@@ -1261,18 +1261,13 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         ):
             return "max"
         if (
-            budget_tokens >= DEFAULT_REASONING_EFFORT_MAX_THINKING_BUDGET
-            and AnthropicConfig._validate_effort_for_model(model, "max") is None
-        ):
-            return "max"
-        if (
-            budget_tokens >= DEFAULT_REASONING_EFFORT_XHIGH_THINKING_BUDGET
+            budget_tokens >= 24000
             and AnthropicConfig._validate_effort_for_model(model, "xhigh") is None
         ):
             return "xhigh"
-        if budget_tokens >= DEFAULT_REASONING_EFFORT_HIGH_THINKING_BUDGET:
+        if budget_tokens >= 10000:
             return "high"
-        if budget_tokens >= DEFAULT_REASONING_EFFORT_MEDIUM_THINKING_BUDGET:
+        if budget_tokens >= 5000:
             return "medium"
         return "low"
 

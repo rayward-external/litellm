@@ -2444,6 +2444,24 @@ def test_legacy_thinking_enabled_preserves_explicit_effort_for_adaptive_chat():
     assert result["output_config"]["effort"] == "high"
 
 
+def test_legacy_thinking_enabled_uses_messages_budget_buckets_for_adaptive_chat():
+    config = AnthropicConfig()
+
+    result = config.transform_request(
+        model="claude-opus-4-8",
+        messages=[{"role": "user", "content": "hello"}],
+        optional_params={
+            "max_tokens": 32000,
+            "thinking": {"type": "enabled", "budget_tokens": 5000},
+        },
+        litellm_params={},
+        headers={},
+    )
+
+    assert result["thinking"] == {"type": "adaptive"}
+    assert result["output_config"]["effort"] == "medium"
+
+
 def test_reasoning_effort_maps_to_budget_thinking_for_non_opus_4_6():
     """
     Test that reasoning_effort maps to budget-based thinking config for non-Opus 4.6 models.
