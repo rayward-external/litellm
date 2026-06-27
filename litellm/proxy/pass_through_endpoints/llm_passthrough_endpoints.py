@@ -168,9 +168,7 @@ def _has_cache_control(value: Any) -> bool:
                 if isinstance(child, (dict, list)):
                     stack.append(child)
         elif isinstance(current, list):
-            stack.extend(
-                child for child in current if isinstance(child, (dict, list))
-            )
+            stack.extend(child for child in current if isinstance(child, (dict, list)))
     return False
 
 
