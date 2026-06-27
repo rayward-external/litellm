@@ -59,8 +59,36 @@ def test_apply_anthropic_prompt_cache_control_preserves_client_control(monkeypat
     assert body == original
 
 
-def test_apply_anthropic_prompt_cache_control_header_can_disable_env_default(
+def test_apply_anthropic_prompt_cache_control_preserves_nested_client_control(
     monkeypatch,
+):
+    monkeypatch.setenv(ANTHROPIC_PROMPT_CACHE_TTL_ENV, "1h")
+    body = {
+        "model": "claude-sonnet-4-20250514",
+        "max_tokens": 1024,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "hello",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            }
+        ],
+    }
+    original = copy.deepcopy(body)
+
+    changed = apply_anthropic_prompt_cache_control(body, headers={})
+
+    assert changed is False
+    assert body == original
+
+
+def test_apply_anthropic_prompt_cache_control_header_can_disable_env_default(
+	monkeypatch,
 ):
     monkeypatch.setenv(ANTHROPIC_PROMPT_CACHE_TTL_ENV, "1h")
     body = {
