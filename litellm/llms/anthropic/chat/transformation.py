@@ -229,10 +229,7 @@ DROP_UNSUPPORTED_OUTPUT_CONFIG_WARNING = (
     "Sonnet 4.6+, and Mythos Preview."
 )
 
-DROP_UNSUPPORTED_SPEED_WARNING = (
-    "Dropping unsupported `speed` for model=%s "
-    "(drop_params=True). Fast mode is only supported on select Opus models."
-)
+DROP_UNSUPPORTED_SPEED_WARNING = "Dropping unsupported `speed` for model=%s (drop_params=True). Fast mode is only supported on select Opus models."
 
 
 class AnthropicConfig(AnthropicModelInfo, BaseConfig):
@@ -1302,8 +1299,12 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         if not isinstance(thinking, dict) or thinking.get("type") != "enabled":
             return
 
-        budget_tokens = AnthropicConfig._get_int_param(thinking, "budget_tokens") or 0
-        max_tokens = AnthropicConfig._get_int_param(optional_params, "max_tokens")
+        budget_tokens = (
+            AnthropicConfig._coerce_optional_int(thinking.get("budget_tokens")) or 0
+        )
+        max_tokens = AnthropicConfig._coerce_optional_int(
+            optional_params.get("max_tokens")
+        )
         inferred_effort = AnthropicConfig._legacy_thinking_budget_to_effort(
             model=model,
             budget_tokens=budget_tokens,
@@ -1318,6 +1319,39 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             output_config = dict(output_config)
         output_config.setdefault("effort", inferred_effort)
         optional_params["output_config"] = output_config
+
+    @staticmethod
+    def _legacy_thinking_budget_to_effort(
+        model: str, budget_tokens: int, max_tokens: Optional[int]
+    ) -> str:
+        if (
+            max_tokens is not None
+            and max_tokens > 0
+            and budget_tokens >= max_tokens
+            and AnthropicConfig._validate_effort_for_model(model, "max") is None
+        ):
+            return "max"
+        if (
+            budget_tokens >= 24000
+            and AnthropicConfig._validate_effort_for_model(model, "xhigh") is None
+        ):
+            return "xhigh"
+        if budget_tokens >= 10000:
+            return "high"
+        if budget_tokens >= 5000:
+            return "medium"
+        return "low"
+
+    @staticmethod
+    def _coerce_optional_int(value: Any) -> Optional[int]:
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _extract_json_schema_from_response_format(
         self, value: Optional[dict]
@@ -2126,8 +2160,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         if effort is not None and effort not in valid_efforts:
             raise litellm.exceptions.BadRequestError(
                 message=(
-                    f"Invalid effort value: {effort!r}. Must be one of: "
-                    f"'high', 'medium', 'low', 'xhigh', 'max'"
+                    f"Invalid effort value: {effort!r}. Must be one of: 'high', 'medium', 'low', 'xhigh', 'max'"
                 ),
                 model=model,
                 llm_provider=self.custom_llm_provider or "anthropic",

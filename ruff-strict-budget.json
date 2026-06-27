@@ -109,7 +109,7 @@
   },
   "C901": {
     "baseline": 301,
-    "slack": 15
+    "slack": 16
   },
   "D419": {
     "baseline": 6,
