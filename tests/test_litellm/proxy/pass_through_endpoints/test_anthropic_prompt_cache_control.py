@@ -88,7 +88,7 @@ def test_apply_anthropic_prompt_cache_control_preserves_nested_client_control(
 
 
 def test_apply_anthropic_prompt_cache_control_header_can_disable_env_default(
-	monkeypatch,
+    monkeypatch,
 ):
     monkeypatch.setenv(ANTHROPIC_PROMPT_CACHE_TTL_ENV, "1h")
     body = {
