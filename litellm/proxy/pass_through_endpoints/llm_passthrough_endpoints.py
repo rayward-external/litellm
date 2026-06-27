@@ -158,14 +158,19 @@ def _is_long_running_anthropic_workload(workload: Any) -> bool:
 
 
 def _has_cache_control(value: Any) -> bool:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if key == "cache_control" and child is not None:
-                return True
-            if _has_cache_control(child):
-                return True
-    elif isinstance(value, list):
-        return any(_has_cache_control(child) for child in value)
+    stack = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            for key, child in current.items():
+                if key == "cache_control" and child is not None:
+                    return True
+                if isinstance(child, (dict, list)):
+                    stack.append(child)
+        elif isinstance(current, list):
+            stack.extend(
+                child for child in current if isinstance(child, (dict, list))
+            )
     return False
 
 
