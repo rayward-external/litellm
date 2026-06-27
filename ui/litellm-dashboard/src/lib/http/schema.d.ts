@@ -11025,7 +11025,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * WebSocket: responses_websocket_endpoint
+         * @description WebSocket connection endpoint
+         */
+        get: operations["websocket_responses_websocket_endpoint_get"];
         put?: never;
         /**
          * Responses Api
@@ -17063,7 +17067,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * WebSocket: responses_websocket_endpoint
+         * @description WebSocket connection endpoint
+         */
+        get: operations["websocket_responses_websocket_endpoint_get_2"];
         put?: never;
         /**
          * Responses Api
@@ -46852,6 +46860,24 @@ export interface operations {
             };
         };
     };
+    websocket_responses_websocket_endpoint_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description WebSocket Protocol Switched */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     responses_api_responses_post: {
         parameters: {
             query?: never;
@@ -54560,6 +54586,24 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                 };
+            };
+        };
+    };
+    websocket_responses_websocket_endpoint_get_2: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description WebSocket Protocol Switched */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
