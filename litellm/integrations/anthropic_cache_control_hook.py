@@ -191,7 +191,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         return str(value).strip().lower()
 
     @staticmethod
-    def _extract_request_headers(non_default_params: Dict) -> Dict[str, Any]:
+    def _extract_request_headers(non_default_params: dict) -> dict[str, Any]:
         proxy_server_request = non_default_params.get("proxy_server_request")
         if isinstance(proxy_server_request, dict):
             headers = proxy_server_request.get("headers")
@@ -208,7 +208,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         return {}
 
     @staticmethod
-    def _strip_prompt_cache_policy_headers(non_default_params: Dict) -> None:
+    def _strip_prompt_cache_policy_headers(non_default_params: dict) -> None:
         """Remove gateway-only prompt-cache policy headers before provider calls."""
         for (
             header_container
@@ -221,9 +221,9 @@ class AnthropicCacheControlHook(CustomPromptManagement):
 
     @staticmethod
     def _iter_prompt_cache_policy_header_containers(
-        non_default_params: Dict,
-    ) -> List[Dict[str, Any]]:
-        header_containers: List[Dict[str, Any]] = []
+        non_default_params: dict,
+    ) -> list[dict[str, Any]]:
+        header_containers: list[dict[str, Any]] = []
 
         # `headers` and `extra_headers` can be provider-facing in LiteLLM proxy
         # flows when client header forwarding is enabled.
@@ -242,7 +242,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
 
     @staticmethod
     def _resolve_default_cache_control(
-        headers: Dict[str, Any],
+        headers: dict[str, Any],
     ) -> Optional[ChatCompletionCachedContent]:
         lower_headers = {str(k).lower(): v for k, v in headers.items()}
         raw_policy = lower_headers.get(ANTHROPIC_PROMPT_CACHE_TTL_HEADER)
