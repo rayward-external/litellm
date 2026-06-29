@@ -2406,6 +2406,41 @@ def test_add_litellm_metadata_from_request_headers_explicit_header_beats_generic
     assert data["litellm_trace_id"] == "explicit-trace-id-value"
 
 
+def test_add_litellm_metadata_from_request_headers_cloudflare_geo_route():
+    headers = {"x-geo-route": "us-south"}
+    data = {"metadata": {}}
+    LiteLLMProxyRequestSetup.add_litellm_metadata_from_request_headers(
+        headers=headers, data=data, _metadata_variable_name="metadata"
+    )
+    assert data["metadata"]["geo_bucket"] == "us-south"
+
+
+def test_add_litellm_metadata_from_request_headers_legacy_geo_route_alias():
+    headers = {"x-geo-route": "geo-us-south"}
+    data = {"metadata": {}}
+    LiteLLMProxyRequestSetup.add_litellm_metadata_from_request_headers(
+        headers=headers, data=data, _metadata_variable_name="metadata"
+    )
+    assert data["metadata"]["geo_bucket"] == "us-south"
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({"cf-ipcountry": "US", "x-geo-state": "USTX"}, "us-south"),
+        ({"cf-ipcountry": "US", "x-geo-state": "US-OH"}, "us-east"),
+        ({"cf-ipcountry": "CA", "x-geo-state": "CA-QC"}, "ca"),
+        ({"cf-ipcountry": "DE"}, "default"),
+    ],
+)
+def test_add_litellm_metadata_from_request_headers_gcp_lb_geo_fallback(headers, expected):
+    data = {"metadata": {}}
+    LiteLLMProxyRequestSetup.add_litellm_metadata_from_request_headers(
+        headers=headers, data=data, _metadata_variable_name="metadata"
+    )
+    assert data["metadata"]["geo_bucket"] == expected
+
+
 def test_get_chain_id_from_headers_generic_vendor_session_id():
     """get_chain_id_from_headers picks up any x-<vendor>-session-id with a valid value."""
     from litellm.proxy.litellm_pre_call_utils import get_chain_id_from_headers
