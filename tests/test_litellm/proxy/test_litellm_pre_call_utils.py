@@ -2416,12 +2416,35 @@ def test_add_litellm_metadata_from_request_headers_cloudflare_geo_route():
 
 
 def test_add_litellm_metadata_from_request_headers_legacy_geo_route_alias():
-    headers = {"x-geo-route": "geo-us-south"}
+    headers = {"x-geo-route": "Geo-US-South"}
     data = {"metadata": {}}
     LiteLLMProxyRequestSetup.add_litellm_metadata_from_request_headers(
         headers=headers, data=data, _metadata_variable_name="metadata"
     )
     assert data["metadata"]["geo_bucket"] == "us-south"
+
+
+def test_add_litellm_metadata_from_request_headers_ignores_unknown_geo_route():
+    headers = {
+        "x-geo-route": "not-a-route",
+        "cf-ipcountry": "US",
+        "x-geo-state": "USTX",
+    }
+    data = {"metadata": {}}
+    LiteLLMProxyRequestSetup.add_litellm_metadata_from_request_headers(
+        headers=headers, data=data, _metadata_variable_name="metadata"
+    )
+    assert data["metadata"]["geo_bucket"] == "us-south"
+
+
+def test_add_litellm_metadata_from_request_headers_strips_untrusted_body_geo_bucket():
+    headers = {}
+    data = {"metadata": {"geo_bucket": "us-south", "caller": "kept"}}
+    LiteLLMProxyRequestSetup.add_litellm_metadata_from_request_headers(
+        headers=headers, data=data, _metadata_variable_name="metadata"
+    )
+    assert "geo_bucket" not in data["metadata"]
+    assert data["metadata"]["caller"] == "kept"
 
 
 @pytest.mark.parametrize(

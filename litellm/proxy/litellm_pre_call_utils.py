@@ -52,6 +52,7 @@ _LEGACY_GEO_ALIAS = {
     "geo-ca": "ca",
     "geo-default": "default",
 }
+_KNOWN_GEO_BUCKETS = frozenset({"us-south", "us-east", "ca", "default"})
 _US_SOUTH_REGION_CODES = frozenset({"CA", "TX", "OK", "AR", "LA", "NM", "KS", "MO"})
 
 
@@ -438,6 +439,16 @@ def _normalize_region_subdivision(value: Optional[str]) -> Optional[str]:
     return None
 
 
+def _canonicalize_geo_route(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    normalized = value.strip().lower()
+    normalized = _LEGACY_GEO_ALIAS.get(normalized, normalized)
+    if normalized in _KNOWN_GEO_BUCKETS:
+        return normalized
+    return None
+
+
 def get_geo_bucket_from_headers(headers: Optional[Dict[str, str]]) -> Optional[str]:
     if not headers:
         return None
@@ -448,9 +459,9 @@ def get_geo_bucket_from_headers(headers: Optional[Dict[str, str]]) -> Optional[s
         if isinstance(key, str) and isinstance(value, str)
     }
 
-    explicit_route = normalized.get("x-geo-route")
+    explicit_route = _canonicalize_geo_route(normalized.get("x-geo-route"))
     if explicit_route:
-        return _LEGACY_GEO_ALIAS.get(explicit_route, explicit_route)
+        return explicit_route
 
     country = normalized.get("cf-ipcountry", "").upper()
     if country == "CA":
@@ -1027,6 +1038,9 @@ class LiteLLMProxyRequestSetup:
         )
         if spend_logs_metadata is not None:
             metadata_from_headers["spend_logs_metadata"] = spend_logs_metadata
+
+        if isinstance(data.get(_metadata_variable_name), dict):
+            data[_metadata_variable_name].pop("geo_bucket", None)
 
         geo_bucket = get_geo_bucket_from_headers(headers)
         if geo_bucket is not None:
