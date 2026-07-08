@@ -89,8 +89,12 @@ export const modelHubColumns = (
       accessorKey: "providers",
       enableSorting: true,
       sortingFn: (rowA, rowB) => {
-        const providersA = rowA.original.providers.join(", ");
-        const providersB = rowB.original.providers.join(", ");
+        // Sort by the rendered display name, not the raw provider slug — the
+        // cell below shows "Amazon Bedrock"/"Google AI Studio", not
+        // "bedrock"/"gemini", so sorting by slug would order rows
+        // inconsistently with what the column visibly displays.
+        const providersA = rowA.original.providers.map((p) => getProviderLogoAndName(p).displayName).join(", ");
+        const providersB = rowB.original.providers.map((p) => getProviderLogoAndName(p).displayName).join(", ");
         return providersA.localeCompare(providersB);
       },
       cell: ({ row }) => {

@@ -1062,6 +1062,11 @@ const PublicModelHub: React.FC<PublicModelHubProps> = ({ accessToken, isEmbedded
                       className="w-full"
                       size="large"
                       allowClear
+                      // antd's default optionFilterProp is "value" (the raw
+                      // provider slug, e.g. "gemini"); search the rendered
+                      // display name ("Google AI Studio") instead, since
+                      // that's what the option shows.
+                      optionFilterProp="children"
                       optionRender={(option) => {
                         const { logo, displayName } = getProviderLogoAndName(option.value as string);
                         return (
