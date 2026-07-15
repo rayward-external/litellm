@@ -253,6 +253,36 @@ class RoutingArgs(enum.Enum):
     ttl = 60  # 1min (RPM/TPM expire key)
 
 
+def _completion_matches_refusal_patterns(response) -> bool:
+    """Return True if a successful (non-content_filter) completion is a model-level
+    refusal that should be treated like a content-policy violation, so the router's
+    content_policy_fallbacks can route it to an alternate deployment.
+
+    OFF by default: only active when LITELLM_REFUSAL_FALLBACK_PATTERNS is set (a
+    comma-separated list of case-insensitive regex patterns). This lets a benign
+    prompt that a model *declines* (HTTP 200, finish_reason=stop, e.g. "I'm sorry,
+    but I cannot assist with that request.") fail over to a different provider,
+    which a content-filter finish_reason cannot express. Empty/unset env => inert
+    (vanilla behavior).
+    """
+    import os
+
+    raw = os.environ.get("LITELLM_REFUSAL_FALLBACK_PATTERNS", "").strip()
+    if not raw:
+        return False
+    try:
+        content = response.choices[0].message.content  # type: ignore[union-attr]
+    except (AttributeError, IndexError, TypeError):
+        return False
+    if not content or not isinstance(content, str):
+        return False
+    for pattern in raw.split(","):
+        pattern = pattern.strip()
+        if pattern and re.search(pattern, content, re.IGNORECASE):
+            return True
+    return False
+
+
 class Router:
     model_names: set = set()
     cache_responses: Optional[bool] = False
@@ -7096,7 +7126,10 @@ class Router:
         Else, original response is returned.
         """
         if response.choices and len(response.choices) > 0:
-            if response.choices[0].finish_reason != "content_filter":
+            if (
+                response.choices[0].finish_reason != "content_filter"
+                and not _completion_matches_refusal_patterns(response)
+            ):
                 return False
 
         content_policy_fallbacks = kwargs.get("content_policy_fallbacks", self.content_policy_fallbacks)
