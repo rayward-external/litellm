@@ -77,6 +77,20 @@ class TestGetOrderFilteredDeployments:
         result = _get_order_filtered_deployments(deps)
         assert len(result) == 2
 
+    def test_request_litellm_params_strip_router_only_keys(self):
+        deployment = {
+            "litellm_params": {
+                "model": "azure/gpt-5.4",
+                "api_key": "key",
+                "api_base": "https://example.openai.azure.com/",
+                "order": 1,
+            }
+        }
+
+        params = Router._copy_request_litellm_params(deployment)
+        assert params["model"] == "azure/gpt-5.4"
+        assert "order" not in params
+
 
 # ---------------------------------------------------------------------------
 # Integration tests for order-based fallback in Router
