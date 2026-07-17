@@ -122,3 +122,22 @@ def test_custom_id_pattern():
 
 def test_prefix_constant():
     assert BEDROCK_MSGBATCH_PREFIX == "msgbatch_bedrock_"
+
+
+def test_pre_end_counts_hide_live_counters():
+    """Anthropic contract: terminal counters stay 0 until the batch ends."""
+    from litellm.proxy.anthropic_endpoints.messages_batches import _map_job_to_message_batch as m
+
+    for status in ("Submitted", "Validating", "Scheduled", "InProgress", "Stopping"):
+        mapped = m(_job(status, processed=50, success=40, error=10), "msgbatch_bedrock_x", BASE)
+        assert mapped["request_counts"]["processing"] == 100, status
+        assert mapped["request_counts"]["succeeded"] == 0, status
+        assert mapped["request_counts"]["errored"] == 0, status
+
+
+def test_bedrock_batch_id_owner_split():
+    from litellm.proxy.anthropic_endpoints.messages_batches import _split_bedrock_batch_id
+
+    assert _split_bedrock_batch_id("msgbatch_bedrock_abc123_deadbeef") == ("abc123", "deadbeef")
+    # Legacy ids (pre-ownership) have no tag and stay readable.
+    assert _split_bedrock_batch_id("msgbatch_bedrock_abc123") == ("abc123", None)

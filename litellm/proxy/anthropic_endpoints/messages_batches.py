@@ -25,9 +25,22 @@ Records missing from the output JSONL are emitted as result type "expired"
 (PartiallyCompleted), "canceled" (Stopped) or "errored" (Failed) — the input
 JSONL still in S3 supplies the full custom_id set, keeping this stateless.
 
+Authorization model (beyond user_api_key_auth on every route):
+  * CREATE checks every distinct requests[].params.model against the key's
+    model permissions (can_key_call_model; the "<model>-batch" alias also
+    satisfies the check for the Bedrock leg).
+  * Bedrock batch ids embed an OWNER TAG (msgbatch_bedrock_<jobid>_<owner8>,
+    owner8 = sha256 of team_id|user_id|api_key)[:8]) — retrieve/results/
+    cancel/delete 404 unless the caller's tag matches or the caller is a
+    proxy admin. Stateless, so ids stay self-contained.
+  * Upstream batches share the proxy's single Anthropic workspace — the same
+    visibility semantics Anthropic gives keys within one workspace, and the
+    same posture as the existing /anthropic passthrough. LIST is therefore
+    restricted to proxy-admin keys (it is the enumeration vector).
+
 Known MVP gaps (documented in the fork PR): no per-request spend logging on
 this route (Bedrock spend reconciles via the provider-level cost feed), and
-list/delete are upstream-only (Bedrock jobs don't surface there).
+list is upstream-only (Bedrock jobs don't surface there).
 """
 
 import datetime
@@ -197,6 +210,79 @@ def _upstream_base() -> str:
     return os.getenv("ANTHROPIC_API_BASE") or os.getenv("ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
 
 
+def _owner_tag(user_api_key_dict: UserAPIKeyAuth) -> str:
+    """Stable 8-hex owner fingerprint embedded in Bedrock batch ids.
+
+    Prefers team_id (survives key rotation within a team), then user_id, then
+    the key hash itself as a last resort.
+    """
+    basis = (
+        user_api_key_dict.team_id
+        or user_api_key_dict.user_id
+        or user_api_key_dict.api_key  # already a hash in UserAPIKeyAuth
+        or ""
+    )
+    return hashlib.sha256(str(basis).encode()).hexdigest()[:8]
+
+
+def _is_proxy_admin(user_api_key_dict: UserAPIKeyAuth) -> bool:
+    role = getattr(user_api_key_dict, "user_role", None)
+    return str(getattr(role, "value", role) or "").startswith("proxy_admin")
+
+
+def _split_bedrock_batch_id(batch_id: str) -> Tuple[str, Optional[str]]:
+    """msgbatch_bedrock_<jobid>[_<owner8>] -> (jobid, owner8|None).
+
+    Ids minted before owner tags existed have no suffix (jobid itself is
+    alphanumeric, so the last "_" separates the tag unambiguously).
+    """
+    token = batch_id.removeprefix(BEDROCK_MSGBATCH_PREFIX)
+    if "_" in token:
+        job_id, owner8 = token.rsplit("_", 1)
+        return job_id, owner8
+    return token, None
+
+
+def _check_bedrock_batch_owner(batch_id: str, user_api_key_dict: UserAPIKeyAuth) -> None:
+    _job_id, owner8 = _split_bedrock_batch_id(batch_id)
+    if owner8 is None or _is_proxy_admin(user_api_key_dict):
+        return
+    if owner8 != _owner_tag(user_api_key_dict):
+        # 404 (not 403) so foreign ids don't leak existence.
+        raise HTTPException(
+            status_code=404,
+            detail={"type": "error", "error": {"type": "not_found_error", "message": f"batch {batch_id} not found"}},
+        )
+
+
+async def _check_model_access(models: List[str], user_api_key_dict: UserAPIKeyAuth) -> Optional[JSONResponse]:
+    """Enforce the key's model permissions on batch creation (the request
+    carries models only in requests[].params.model, which the generic proxy
+    auth never inspects). The "<model>-batch" alias also satisfies the check
+    so keys provisioned against the OpenAI-shape batch name work here too."""
+    from litellm.proxy.auth.auth_checks import can_key_call_model
+    from litellm.proxy.proxy_server import llm_model_list
+
+    llm_router = _get_llm_router()
+    for model in sorted(set(models)):
+        allowed = False
+        for candidate in (model, f"{model}-batch"):
+            try:
+                await can_key_call_model(
+                    model=candidate,
+                    llm_model_list=llm_model_list,
+                    valid_token=user_api_key_dict,
+                    llm_router=llm_router,
+                )
+                allowed = True
+                break
+            except Exception:
+                continue
+        if not allowed:
+            return _anthropic_error(403, "permission_error", f"key is not allowed to call model {model!r}")
+    return None
+
+
 def _upstream_headers(request: Request) -> Dict[str, str]:
     from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
         passthrough_endpoint_router,
@@ -213,11 +299,17 @@ def _upstream_headers(request: Request) -> Dict[str, str]:
                 "error": {"type": "api_error", "message": "No Anthropic credential configured on the proxy."},
             },
         )
-    return {
+    headers = {
         "x-api-key": api_key,
         "anthropic-version": request.headers.get("anthropic-version", _ANTHROPIC_VERSION_DEFAULT),
         "content-type": "application/json",
     }
+    # Contract-relevant client headers survive the forward.
+    for passthrough_header in ("anthropic-beta", "anthropic-user-profile-id"):
+        value = request.headers.get(passthrough_header)
+        if value:
+            headers[passthrough_header] = value
+    return headers
 
 
 async def _forward_upstream(
@@ -256,7 +348,17 @@ async def _forward_upstream(
                 content = json.dumps(payload).encode()
         except (ValueError, TypeError):
             pass
-    return Response(content=content, status_code=upstream.status_code, media_type=media_type)
+    response_headers = {
+        name: value
+        for name in ("request-id", "retry-after")
+        if (value := upstream.headers.get(name))
+    }
+    response_headers.update(
+        {name: value for name, value in upstream.headers.items() if name.lower().startswith("anthropic-ratelimit-")}
+    )
+    return Response(
+        content=content, status_code=upstream.status_code, media_type=media_type, headers=response_headers
+    )
 
 
 # ── Bedrock <-> MessageBatch mapping ─────────────────────────────────────────
@@ -289,8 +391,10 @@ def _map_job_to_message_batch(job: Dict[str, Any], batch_id: str, results_base_u
 
     counts = {"processing": 0, "succeeded": 0, "errored": 0, "canceled": 0, "expired": 0}
     if status == "Stopping":
+        # Anthropic contract: terminal counters stay 0 until the WHOLE batch
+        # ends — everything still reads as processing while canceling.
         processing_status = "canceling"
-        counts.update(processing=remainder, succeeded=succeeded, errored=errored)
+        counts.update(processing=total)
     elif status in _ENDED_STATUSES:
         processing_status = "ended"
         counts.update(succeeded=succeeded, errored=errored)
@@ -311,8 +415,11 @@ def _map_job_to_message_batch(job: Dict[str, Any], batch_id: str, results_base_u
             # same records as errored ("result missing from batch output").
             counts["errored"] = errored + remainder
     else:  # Submitted / Validating / Scheduled / InProgress
+        # Same contract note as Stopping: all requests remain "processing"
+        # until the batch ends (Bedrock's live counters are NOT exposed —
+        # Anthropic keeps terminal counters at 0 pre-end).
         processing_status = "in_progress"
-        counts.update(processing=remainder if processed else total, succeeded=succeeded, errored=errored)
+        counts.update(processing=total)
 
     submit_time = job.get("submitTime")
     end_time = job.get("endTime")
@@ -367,7 +474,10 @@ async def create_message_batch(
         return _anthropic_error(400, "invalid_request_error", "requests: must be a non-empty array")
 
     models = {str((r.get("params") or {}).get("model", "")) for r in requests_list}
-    single_model = models.pop() if len(models) == 1 else None
+    denied = await _check_model_access(sorted(models), user_api_key_dict)
+    if denied is not None:
+        return denied
+    single_model = next(iter(models)) if len(models) == 1 else None
     # Bedrock enforces a fixed 100-record minimum per invocation job, so small
     # batches take the Anthropic-native leg even for Bedrock-batch-backed
     # models (same models, same 50% batch rate — just a different backend).
@@ -433,7 +543,7 @@ async def create_message_batch(
     return JSONResponse(
         status_code=200,
         content={
-            "id": f"{BEDROCK_MSGBATCH_PREFIX}{job_id}",
+            "id": f"{BEDROCK_MSGBATCH_PREFIX}{job_id}_{_owner_tag(user_api_key_dict)}",
             "type": "message_batch",
             "processing_status": "in_progress",
             "request_counts": {
@@ -454,10 +564,16 @@ async def create_message_batch(
 
 
 def _results_base_url(request: Request) -> str:
-    # Honor the LB-forwarded host so results_url points back at the gateway.
-    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-    host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
-    return f"{proto}://{host}"
+    # Prefer the operator-configured public URL: X-Forwarded-* / Host are
+    # caller-controlled, and results_url is followed by SDK clients WITH their
+    # gateway key attached — trusting those headers would let a caller point
+    # other users' keys at an attacker origin. PROXY_BASE_URL is LiteLLM's
+    # existing public-URL convention; request.url is the untrusted fallback
+    # for bare deployments (no forwarded headers consulted).
+    configured = os.getenv("PROXY_BASE_URL")
+    if configured:
+        return configured.rstrip("/")
+    return f"{request.url.scheme}://{request.url.netloc}"
 
 
 async def _get_bedrock_job(batch_id: str) -> Tuple[Dict[str, Any], Dict[str, str]]:
@@ -468,7 +584,7 @@ async def _get_bedrock_job(batch_id: str) -> Tuple[Dict[str, Any], Dict[str, str
             detail={"type": "error", "error": {"type": "not_found_error", "message": f"batch {batch_id} not found"}},
         )
     ctx = _bedrock_context(deployment)
-    job_id = batch_id.removeprefix(BEDROCK_MSGBATCH_PREFIX)
+    job_id, _owner8 = _split_bedrock_batch_id(batch_id)
     response = await _aws_call("GET", _job_url(job_id, ctx), None, "bedrock", ctx["params"], ctx["region"])
     if response.status_code == 404 or response.status_code == 400:
         raise HTTPException(
@@ -496,6 +612,7 @@ async def retrieve_message_batch(
 ):
     if not batch_id.startswith(BEDROCK_MSGBATCH_PREFIX):
         return await _forward_upstream(request, "GET", f"/v1/messages/batches/{batch_id}")
+    _check_bedrock_batch_owner(batch_id, user_api_key_dict)
     job, _ctx = await _get_bedrock_job(batch_id)
     return JSONResponse(status_code=200, content=_map_job_to_message_batch(job, batch_id, _results_base_url(request)))
 
@@ -514,6 +631,7 @@ async def message_batch_results(
     if not batch_id.startswith(BEDROCK_MSGBATCH_PREFIX):
         return await _forward_upstream(request, "GET", f"/v1/messages/batches/{batch_id}/results")
 
+    _check_bedrock_batch_owner(batch_id, user_api_key_dict)
     job, ctx = await _get_bedrock_job(batch_id)
     status = job.get("status")
     if status not in _ENDED_STATUSES:
@@ -521,7 +639,7 @@ async def message_batch_results(
             404, "not_found_error", f"batch {batch_id} has not finished processing (status: {status})"
         )
 
-    job_id = batch_id.removeprefix(BEDROCK_MSGBATCH_PREFIX)
+    job_id, _owner8 = _split_bedrock_batch_id(batch_id)
     input_uri = job["inputDataConfig"]["s3InputDataConfig"]["s3Uri"]
     output_prefix = job["outputDataConfig"]["s3OutputDataConfig"]["s3Uri"].removeprefix(f"s3://{ctx['bucket']}/")
     input_key = input_uri.removeprefix(f"s3://{ctx['bucket']}/")
@@ -536,12 +654,25 @@ async def message_batch_results(
     output_text = await _s3_get(output_key)
     input_text = await _s3_get(input_key)
 
+    # Fail loudly instead of streaming an empty/partial "success": if the job
+    # processed records but the output object is unreadable, or the input
+    # object (needed to reconstruct never-processed custom_ids) is gone while
+    # records are missing, a 200 here would silently drop results.
+    processed_any = int(job.get("successRecordCount") or 0) + int(job.get("errorRecordCount") or 0) > 0
+    if output_text is None and processed_any:
+        return _anthropic_error(502, "api_error", "batch output is not readable from S3")
+    if input_text is None and status != "Completed":
+        return _anthropic_error(502, "api_error", "batch input is not readable from S3")
+
     seen: Dict[str, Dict[str, Any]] = {}
     if output_text:
         for line in output_text.splitlines():
             if not line.strip():
                 continue
-            record = json.loads(line)
+            try:
+                record = json.loads(line)
+            except ValueError:
+                return _anthropic_error(502, "api_error", "batch output contains malformed JSONL")
             record_id = record.get("recordId", "")
             if "modelOutput" in record:
                 seen[record_id] = {"type": "succeeded", "message": record["modelOutput"]}
@@ -605,15 +736,19 @@ async def cancel_message_batch(
 ):
     if not batch_id.startswith(BEDROCK_MSGBATCH_PREFIX):
         return await _forward_upstream(request, "POST", f"/v1/messages/batches/{batch_id}/cancel")
+    _check_bedrock_batch_owner(batch_id, user_api_key_dict)
     job, ctx = await _get_bedrock_job(batch_id)
-    job_id = batch_id.removeprefix(BEDROCK_MSGBATCH_PREFIX)
+    job_id, _owner8 = _split_bedrock_batch_id(batch_id)
     if job.get("status") not in _ENDED_STATUSES:
         stop = await _aws_call(
             "POST", _job_url(job_id, ctx, "/stop"), None, "bedrock", ctx["params"], ctx["region"]
         )
-        if stop.status_code not in (200, 202):
-            verbose_proxy_logger.error("bedrock msgbatch stop failed: %s %s", stop.status_code, stop.text[:300])
         job, ctx = await _get_bedrock_job(batch_id)
+        if stop.status_code not in (200, 202) and job.get("status") not in {"Stopping", *_ENDED_STATUSES}:
+            # Stop failed AND the refetched job doesn't independently confirm
+            # a stop — surface the failure instead of fabricating "canceling".
+            verbose_proxy_logger.error("bedrock msgbatch stop failed: %s %s", stop.status_code, stop.text[:300])
+            return _anthropic_error(502, "api_error", "failed to cancel the Bedrock batch job")
     mapped = _map_job_to_message_batch(job, batch_id, _results_base_url(request))
     if mapped["processing_status"] != "ended":
         mapped["processing_status"] = "canceling"
@@ -633,5 +768,44 @@ async def list_message_batches(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     # Upstream-only: Bedrock jobs are not merged into the listing (documented).
+    # Admin-gated: the listing enumerates the shared Anthropic workspace's
+    # batch ids, which would let any key discover (and then read) other
+    # users' upstream batches.
+    if not _is_proxy_admin(user_api_key_dict):
+        return _anthropic_error(403, "permission_error", "listing batches requires a proxy admin key")
     query = f"?{request.url.query}" if request.url.query else ""
     return await _forward_upstream(request, "GET", f"/v1/messages/batches{query}")
+
+
+@router.delete(
+    "/v1/messages/batches/{batch_id}",
+    tags=["[beta] Anthropic `/v1/messages/batches`"],
+    dependencies=[Depends(user_api_key_auth)],
+)
+async def delete_message_batch(
+    batch_id: str,
+    request: Request,
+    fastapi_response: Response,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    if not batch_id.startswith(BEDROCK_MSGBATCH_PREFIX):
+        return await _forward_upstream(request, "DELETE", f"/v1/messages/batches/{batch_id}")
+    _check_bedrock_batch_owner(batch_id, user_api_key_dict)
+    job, ctx = await _get_bedrock_job(batch_id)
+    if job.get("status") not in _ENDED_STATUSES:
+        # Same precondition as Anthropic: an in-progress batch must be
+        # canceled before it can be deleted.
+        return _anthropic_error(400, "invalid_request_error", "batch must finish processing before it can be deleted")
+    # Best-effort removal of the S3 artifacts (Bedrock has no job-delete API;
+    # the job record itself ages out server-side).
+    job_id, _owner8 = _split_bedrock_batch_id(batch_id)
+    input_uri = job["inputDataConfig"]["s3InputDataConfig"]["s3Uri"]
+    input_key = input_uri.removeprefix(f"s3://{ctx['bucket']}/")
+    output_prefix = job["outputDataConfig"]["s3OutputDataConfig"]["s3Uri"].removeprefix(f"s3://{ctx['bucket']}/")
+    output_key = f"{output_prefix}{job_id}/{input_key.rsplit('/', 1)[-1]}.out"
+    for key in (input_key, output_key, f"{output_prefix}{job_id}/manifest.json.out"):
+        url = f"https://{ctx['bucket']}.s3.{ctx['region']}.amazonaws.com/{key}"
+        response = await _aws_call("DELETE", url, None, "s3", ctx["params"], ctx["region"])
+        if response.status_code not in (200, 204):
+            verbose_proxy_logger.warning("bedrock msgbatch artifact delete failed: %s %s", key, response.status_code)
+    return JSONResponse(status_code=200, content={"id": batch_id, "type": "message_batch_deleted"})
