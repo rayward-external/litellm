@@ -230,7 +230,33 @@ async def _forward_upstream(
     async with httpx.AsyncClient(timeout=600.0) as client:
         upstream = await client.request(method, url, headers=_upstream_headers(request), content=body)
     media_type = upstream.headers.get("content-type", "application/json")
-    return Response(content=upstream.content, status_code=upstream.status_code, media_type=media_type)
+    content = upstream.content
+    # Rewrite results_url (and any data[].results_url on list responses) to
+    # point back at THIS gateway: the Anthropic SDKs follow results_url as an
+    # ABSOLUTE URL (no base_url re-substitution — verified live), so a verbatim
+    # upstream value would send the client's GATEWAY key to api.anthropic.com
+    # (401 invalid x-api-key). Our /results route forwards with the proxy's
+    # upstream credential instead.
+    if upstream.status_code == 200 and "json" in media_type:
+        try:
+            payload = json.loads(content)
+            base = _results_base_url(request)
+
+            def _rewrite(obj: Dict[str, Any]) -> None:
+                results_url = obj.get("results_url")
+                batch_id = obj.get("id")
+                if results_url and batch_id:
+                    obj["results_url"] = f"{base}/v1/messages/batches/{batch_id}/results"
+
+            if isinstance(payload, dict):
+                _rewrite(payload)
+                for item in payload.get("data") or []:
+                    if isinstance(item, dict):
+                        _rewrite(item)
+                content = json.dumps(payload).encode()
+        except (ValueError, TypeError):
+            pass
+    return Response(content=content, status_code=upstream.status_code, media_type=media_type)
 
 
 # ── Bedrock <-> MessageBatch mapping ─────────────────────────────────────────
