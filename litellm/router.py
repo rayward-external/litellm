@@ -30,6 +30,7 @@ from typing import (
     Generator,
     List,
     Literal,
+    NoReturn,
     Optional,
     Set,
     Tuple,
@@ -251,6 +252,15 @@ else:
     PreRoutingHookResponse = Any
 
 
+def _cost_value_as_float(value: Union[str, int, float, None]) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class RoutingArgs(enum.Enum):
     ttl = 60  # 1min (RPM/TPM expire key)
 
@@ -270,11 +280,8 @@ def _completion_matches_refusal_patterns(response: ModelResponse) -> bool:
     Empty/unset env => inert (vanilla behavior). A malformed regex is skipped, never
     raised, so it can't turn a successful completion into a request failure.
     """
-    import json
-    import os
-
-    raw = os.environ.get("LITELLM_REFUSAL_FALLBACK_PATTERNS", "").strip()
-    if not raw:
+    patterns = _get_refusal_fallback_patterns()
+    if not patterns:
         return False
 
     # StreamingChoices has no `.message`; getattr keeps this total for either choice
@@ -286,22 +293,152 @@ def _completion_matches_refusal_patterns(response: ModelResponse) -> bool:
     if not content or not isinstance(content, str):
         return False
 
+    return _text_matches_refusal_patterns(content, patterns)
+
+
+def _get_refusal_fallback_patterns() -> List[str]:
+    """Parse LITELLM_REFUSAL_FALLBACK_PATTERNS into a list of regex strings.
+    Empty/unset env => [] (feature inert). A non-JSON value is tolerated as a
+    single pattern rather than raising."""
+    import json
+    import os
+
+    raw = os.environ.get("LITELLM_REFUSAL_FALLBACK_PATTERNS", "").strip()
+    if not raw:
+        return []
+
     try:
         patterns = json.loads(raw)
     except (ValueError, TypeError):
         patterns = [raw]
     if not isinstance(patterns, list):
         patterns = [raw]
+    return [p for p in patterns if isinstance(p, str) and p.strip()]
 
+
+def _text_matches_refusal_patterns(text: str, patterns: List[str]) -> bool:
+    """A malformed regex is skipped, never raised, so it can't turn a successful
+    completion into a request failure."""
     for pattern in patterns:
-        if not isinstance(pattern, str) or not pattern.strip():
-            continue
         try:
-            if re.search(pattern, content, re.IGNORECASE):
+            if re.search(pattern, text, re.IGNORECASE):
                 return True
         except re.error:
             continue
     return False
+
+
+_REFUSAL_STREAM_HOLD_CHARS_DEFAULT = 400
+
+
+def _refusal_stream_hold_chars() -> int:
+    """Max chars of streamed text held back while a refusal is ruled out.
+    Overridable via LITELLM_REFUSAL_FALLBACK_STREAM_HOLD_CHARS; 0 disables the
+    stream hold (streamed refusals then pass through unrescued)."""
+    import os
+
+    raw = os.environ.get("LITELLM_REFUSAL_FALLBACK_STREAM_HOLD_CHARS", "").strip()
+    if not raw:
+        return _REFUSAL_STREAM_HOLD_CHARS_DEFAULT
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _REFUSAL_STREAM_HOLD_CHARS_DEFAULT
+
+
+class _RefusalStreamHold:
+    """Holds back the head of a streaming response until a model-level refusal
+    can be ruled out, so content_policy_fallbacks can replace the stream before
+    the client has seen any refusal text (same idea as Bedrock Guardrails'
+    synchronous stream-processing mode).
+
+    Once `hold_chars` of text accumulate with no pattern match — or a tool-call
+    delta arrives (refusals are plain text) — all buffered chunks are flushed
+    and the rest of the stream passes through unchecked, so long responses only
+    pay the hold cost on their head. On a match, raises MidStreamFallbackError
+    wrapping a ContentPolicyViolationError with is_pre_first_chunk=True:
+    nothing has been yielded yet, so the router reruns the original messages
+    against the content-policy fallback group and streams a clean answer.
+
+    Async-only: wired into _acompletion_streaming_iterator (the proxy path). The
+    sync handler re-invokes the primary without exception-type dispatch, so a
+    deterministic refusal there would retry the primary in an unbounded loop."""
+
+    def __init__(self, patterns: List[str], hold_chars: int, model: str):
+        self.patterns = patterns
+        self.hold_chars = hold_chars
+        self.model = model
+        self.active = bool(patterns) and hold_chars > 0
+        self._held: List[Any] = []
+        self._text = ""
+        # Reasoning deltas can't contain the client-visible refusal text but must
+        # still advance the hold window, otherwise a reasoning model's whole
+        # thinking phase (and thus its entire response) would be buffered.
+        self._reasoning_len = 0
+
+    def process(self, item: Any) -> List[Any]:
+        """Return the chunks safe to emit for this stream item (possibly []).
+        Raises MidStreamFallbackError when the held text matches a pattern."""
+        if not self.active:
+            return [item]
+        self._held.append(item)
+        delta_text, reasoning_len, saw_tool_call = self._delta_state(item)
+        self._reasoning_len += reasoning_len
+        if delta_text:
+            self._text += delta_text
+            if _text_matches_refusal_patterns(self._text, self.patterns):
+                self._raise_refusal()
+        if saw_tool_call or len(self._text) + self._reasoning_len >= self.hold_chars:
+            return self._release()
+        return []
+
+    def flush(self) -> List[Any]:
+        """End of stream: a short completion held to the end never matched."""
+        if not self.active:
+            return []
+        return self._release()
+
+    def _release(self) -> List[Any]:
+        self.active = False
+        held, self._held = self._held, []
+        return held
+
+    @staticmethod
+    def _delta_state(item: Any) -> Tuple[str, int, bool]:
+        """(matchable text, reasoning char count, saw tool/function call) for one
+        stream item. delta.refusal (OpenAI structured-output refusals) counts as
+        matchable text alongside delta.content."""
+        choices = getattr(item, "choices", None) or []
+        if not choices:
+            return "", 0, False
+        delta = getattr(choices[0], "delta", None)
+        content = getattr(delta, "content", None)
+        refusal = getattr(delta, "refusal", None)
+        reasoning = getattr(delta, "reasoning_content", None)
+        text = (content if isinstance(content, str) else "") + (
+            refusal if isinstance(refusal, str) else ""
+        )
+        saw_tool_call = bool(getattr(delta, "tool_calls", None)) or bool(
+            getattr(delta, "function_call", None)
+        )
+        return text, len(reasoning) if isinstance(reasoning, str) else 0, saw_tool_call
+
+    def _raise_refusal(self) -> "NoReturn":
+        from litellm.exceptions import MidStreamFallbackError
+
+        message = "Streamed response matched a refusal fallback pattern."
+        raise MidStreamFallbackError(
+            message=message,
+            model=self.model,
+            llm_provider="",
+            original_exception=litellm.ContentPolicyViolationError(
+                message=message,
+                model=self.model,
+                llm_provider="",
+            ),
+            generated_content="",
+            is_pre_first_chunk=True,
+        )
 
 
 class Router:
@@ -671,6 +808,8 @@ class Router:
                 routing_strategy_args=routing_strategy_args,
             )
         self._init_routing_groups(self._routing_groups_input)
+        self._override_selectors: dict[str, Any] = {}
+        self._override_selectors_lock = threading.Lock()
         self.access_groups = None
         ## USAGE TRACKING ##
         if isinstance(litellm._async_success_callback, list):
@@ -942,7 +1081,9 @@ class Router:
 
         self._unregister_router_selectors(
             [getattr(self, attr, None) for attr in self._DEFAULT_SELECTOR_ATTR_BY_STRATEGY.values()]
+            + list(getattr(self, "_override_selectors", {}).values())
         )
+        self._override_selectors = {}
 
         self.leastbusy_logger: Optional[LeastBusyLoggingHandler] = None
         self.lowesttpm_logger: Optional[LowestTPMLoggingHandler] = None
@@ -1032,12 +1173,67 @@ class Router:
                 {strategy_value: group_selector} if group_selector is not None else {}
             )
 
-    def _get_routing_context(self, model: str) -> Tuple[Optional[str], Optional[Any]]:
+    _OVERRIDABLE_ROUTING_STRATEGIES: frozenset[str] = frozenset({"simple-shuffle", *_DEFAULT_SELECTOR_ATTR_BY_STRATEGY})
+
+    def _get_request_routing_strategy_override(self, request_kwargs: dict | None) -> str | None:
+        """
+        Reads a per-request `routing_strategy` override (forwarded by the proxy
+        from key/team `router_settings`) out of the request kwargs.
+
+        Only strategies with a per-request-capable selector are honored;
+        anything else (unknown strings, `lar1`, `provider-budget-routing`) is
+        ignored with a warning so a bad value stored on a key or team can
+        never take down that caller's traffic.
+        """
+        if not request_kwargs:
+            return None
+        raw_strategy = request_kwargs.get("routing_strategy")
+        if raw_strategy is None:
+            return None
+        strategy = self._normalize_strategy(raw_strategy) if isinstance(raw_strategy, (str, RoutingStrategy)) else None
+        if not isinstance(strategy, str) or strategy not in self._OVERRIDABLE_ROUTING_STRATEGIES:
+            verbose_router_logger.warning(
+                "Ignoring per-request routing_strategy override '%s'; supported overrides: %s.",
+                raw_strategy,
+                sorted(self._OVERRIDABLE_ROUTING_STRATEGIES),
+            )
+            return None
+        return strategy
+
+    def _get_override_strategy_selector(self, strategy: str) -> Any | None:
+        """
+        Returns the selector for a per-request strategy override.
+
+        Reuses the default group's selector when the override matches the
+        router's configured strategy (so shared state keeps accumulating in
+        one place); otherwise lazily builds one selector per strategy and
+        caches it for the router's lifetime so its usage/latency state
+        persists across requests.
+        """
+        if strategy == self._normalize_strategy(self.routing_strategy):
+            attr = self._DEFAULT_SELECTOR_ATTR_BY_STRATEGY.get(strategy)
+            return getattr(self, attr, None) if attr is not None else None
+        with self._override_selectors_lock:
+            if strategy not in self._override_selectors:
+                self._override_selectors[strategy] = self._build_strategy_selector(
+                    strategy=strategy,
+                    routing_strategy_args={},
+                )
+            return self._override_selectors[strategy]
+
+    def _get_routing_context(
+        self, model: str, request_kwargs: dict | None = None
+    ) -> tuple[str | None, Any | None]:
         """
         Resolves the routing strategy and selector to use for the given model.
 
-        Every model belongs to exactly one group: an explicit entry from
-        `routing_groups`, or the implicit `"default"` group driven by the
+        A per-request `routing_strategy` in `request_kwargs` (forwarded by the
+        proxy from key/team `router_settings`) takes precedence over both the
+        model's routing group and the router's top-level strategy, since it is
+        the most specific expression of caller intent.
+
+        Otherwise every model belongs to exactly one group: an explicit entry
+        from `routing_groups`, or the implicit `"default"` group driven by the
         router's top-level `routing_strategy` / `routing_strategy_args`.
 
         `self.routing_strategy` may be either a string or a `RoutingStrategy`
@@ -1045,6 +1241,11 @@ class Router:
         string here. Downstream call sites and `_select_deployment_*` arms
         compare against string literals.
         """
+        override = self._get_request_routing_strategy_override(request_kwargs)
+        if override is not None:
+            verbose_router_logger.debug("routing_group=request-override model=%s strategy=%s", model, override)
+            return override, self._get_override_strategy_selector(override)
+
         group_name = self._model_to_group.get(model)
         if group_name is None:
             strategy = self._normalize_strategy(self.routing_strategy)
@@ -2025,11 +2226,30 @@ class Router:
 
         async def stream_with_fallbacks():
             fallback_response = None  # Track for cleanup in finally
+            refusal_hold = self._refusal_stream_hold_for_call(initial_kwargs)
             try:
                 async for item in model_response:
-                    yield item
+                    for released_item in refusal_hold.process(item):
+                        yield released_item
+                for released_item in refusal_hold.flush():
+                    yield released_item
             except MidStreamFallbackError as e:
                 from litellm.main import stream_chunk_builder
+
+                if isinstance(e.original_exception, litellm.ContentPolicyViolationError) and hasattr(
+                    model_response, "aclose"
+                ):
+                    # A refusal hold abandons the primary stream by design; release
+                    # its HTTP connection now instead of holding it through the
+                    # (possibly long) fallback stream. The finally re-close is a no-op.
+                    with anyio.CancelScope(shield=True):
+                        try:
+                            await model_response.aclose()
+                        except BaseException as close_err:
+                            verbose_router_logger.debug(
+                                "stream_with_fallbacks: error closing refused model_response: %s",
+                                close_err,
+                            )
 
                 complete_response_object = stream_chunk_builder(chunks=model_response.chunks)
                 complete_response_object_usage = cast(
@@ -2047,11 +2267,15 @@ class Router:
                         "content_policy_fallbacks", self.content_policy_fallbacks
                     )
                     initial_kwargs["original_function"] = self._acompletion
-                    if e.is_pre_first_chunk or not e.generated_content:
+                    if e.is_pre_first_chunk or not e.generated_content or refusal_hold.active:
                         # No content was generated before the error (e.g. a
                         # rate-limit 429 on the very first chunk).  Retry with
                         # the original messages — adding a continuation prompt
                         # would waste tokens and confuse the model.
+                        # refusal_hold.active covers a provider error arriving while
+                        # the refusal hold still buffers the stream head: e.generated_content
+                        # is wrapper-relative, but the CLIENT has seen nothing, so a
+                        # continuation would silently skip the held (never-delivered) text.
                         initial_kwargs["messages"] = messages
                     else:
                         initial_kwargs["messages"] = messages + [
@@ -2066,8 +2290,14 @@ class Router:
                             },
                         ]
                     self._update_kwargs_before_fallbacks(model=model_group, kwargs=initial_kwargs)
+                    # Fallback selection dispatches on isinstance(e, ...): unwrap a
+                    # content-policy violation (e.g. the refusal stream hold) so it
+                    # reaches content_policy_fallbacks instead of generic fallbacks.
+                    dispatch_exception: Exception = e
+                    if isinstance(e.original_exception, litellm.ContentPolicyViolationError):
+                        dispatch_exception = e.original_exception
                     fallback_response = await self.async_function_with_fallbacks_common_utils(
-                        e=e,
+                        e=dispatch_exception,
                         disable_fallbacks=False,
                         fallbacks=fallbacks,
                         context_window_fallbacks=context_window_fallbacks,
@@ -2579,6 +2809,11 @@ class Router:
         router_self = self
 
         def stream_with_fallbacks():
+            # NOTE: no refusal stream hold here (async-only). This sync handler has
+            # no exception-type dispatch: it re-invokes the primary via
+            # function_with_fallbacks, which on a deterministic HTTP-200 refusal
+            # would re-refuse and re-raise forever (an unbounded retry loop of paid
+            # calls). Sync streaming keeps vanilla passthrough behavior.
             fallback_response = None
             try:
                 for item in model_response:
@@ -5997,7 +6232,7 @@ class Router:
         input_kwargs: dict,
     ) -> Optional[Any]:
         """Same-model-group retry after a failed deployment; returns None if not applicable."""
-        strategy, _ = self._get_routing_context(original_model_group)
+        strategy, _ = self._get_routing_context(original_model_group, kwargs)
         if strategy != "simple-shuffle":
             return None
 
@@ -7137,6 +7372,37 @@ class Router:
                 if "*" in fallback:
                     return True
         return False
+
+    def _refusal_stream_hold_for_call(self, initial_kwargs: dict) -> _RefusalStreamHold:
+        """Build the refusal stream hold for one streaming call. Armed only when
+        refusal patterns are configured AND the model group has a
+        content_policy_fallbacks entry — holding delays time-to-first-chunk, so
+        groups with no rescue route must stream untouched."""
+        patterns = _get_refusal_fallback_patterns()
+        model_group = initial_kwargs.get("model")
+        hold_chars = 0
+        try:
+            n_choices = int(initial_kwargs.get("n") or 1)
+        except (TypeError, ValueError):
+            n_choices = 1
+        if n_choices > 1:
+            # Multi-choice deltas interleave by StreamingChoices.index; a single
+            # accumulated buffer can't match reliably, so stream vanilla instead
+            # of half-working detection.
+            patterns = []
+        if patterns and isinstance(model_group, str):
+            content_policy_fallbacks = initial_kwargs.get(
+                "content_policy_fallbacks", self.content_policy_fallbacks
+            )
+            if content_policy_fallbacks and self._get_fallback_model_group_from_fallbacks(
+                fallbacks=content_policy_fallbacks, model_group=model_group
+            ):
+                hold_chars = _refusal_stream_hold_chars()
+        return _RefusalStreamHold(
+            patterns=patterns,
+            hold_chars=hold_chars,
+            model=model_group if isinstance(model_group, str) else "",
+        )
 
     def _should_raise_content_policy_error(self, model: str, response: ModelResponse, kwargs: dict) -> bool:
         """
@@ -8827,8 +9093,8 @@ class Router:
                 # Get mode from database model_info if available, otherwise default to "chat"
                 db_model_info = model.get("model_info", {})
                 mode = db_model_info.get("mode", "chat")
-                input_cost_per_token = db_model_info.get("input_cost_per_token")
-                output_cost_per_token = db_model_info.get("output_cost_per_token")
+                input_cost_per_token = _cost_value_as_float(db_model_info.get("input_cost_per_token"))
+                output_cost_per_token = _cost_value_as_float(db_model_info.get("output_cost_per_token"))
 
                 model_info = ModelMapInfo(
                     key=model_group,
@@ -8879,16 +9145,18 @@ class Router:
                     )
                 ):
                     model_group_info.max_output_tokens = model_info["max_output_tokens"]
-                if model_info.get("input_cost_per_token", None) is not None and (
+                _input_cost_per_token = _cost_value_as_float(model_info.get("input_cost_per_token"))
+                if _input_cost_per_token is not None and (
                     model_group_info.input_cost_per_token is None
-                    or (model_info["input_cost_per_token"] or 0.0) > (model_group_info.input_cost_per_token or 0.0)
+                    or _input_cost_per_token > (model_group_info.input_cost_per_token or 0.0)
                 ):
-                    model_group_info.input_cost_per_token = model_info["input_cost_per_token"]
-                if model_info.get("output_cost_per_token", None) is not None and (
+                    model_group_info.input_cost_per_token = _input_cost_per_token
+                _output_cost_per_token = _cost_value_as_float(model_info.get("output_cost_per_token"))
+                if _output_cost_per_token is not None and (
                     model_group_info.output_cost_per_token is None
-                    or (model_info["output_cost_per_token"] or 0.0) > (model_group_info.output_cost_per_token or 0.0)
+                    or _output_cost_per_token > (model_group_info.output_cost_per_token or 0.0)
                 ):
-                    model_group_info.output_cost_per_token = model_info["output_cost_per_token"]
+                    model_group_info.output_cost_per_token = _output_cost_per_token
                 if (
                     model_info.get("supports_parallel_function_calling", None) is not None
                     and model_info["supports_parallel_function_calling"] is True  # type: ignore
@@ -9780,6 +10048,7 @@ class Router:
             "retry_policy",
             "model_group_alias",
             "enable_weighted_failover",
+            "enable_tag_filtering",
         ]
 
         for var in vars_to_include:
@@ -9816,6 +10085,7 @@ class Router:
             "model_group_retry_policy",
             "model_group_alias",
             "enable_weighted_failover",
+            "enable_tag_filtering",
         ]
 
         _int_settings = [
@@ -10539,7 +10809,7 @@ class Router:
             # Resolve the strategy and logger AFTER the pre-routing hook, since
             # the hook can replace `model` and routing-group lookup must key
             # off the final model name.
-            strategy, strategy_selector = self._get_routing_context(model)
+            strategy, strategy_selector = self._get_routing_context(model, request_kwargs)
 
             healthy_deployments = await self.async_get_healthy_deployments(
                 model=model,
@@ -10683,7 +10953,7 @@ class Router:
 
             # 5. Apply load balancing strategy
             start_time = time.perf_counter()
-            strategy, strategy_selector = self._get_routing_context(model)
+            strategy, strategy_selector = self._get_routing_context(model, request_kwargs)
             if strategy == "simple-shuffle":
                 return simple_shuffle(
                     llm_router_instance=self,
@@ -10970,7 +11240,7 @@ class Router:
                 cooldown_list=_cooldown_list,
             )
 
-        strategy, strategy_selector = self._get_routing_context(model)
+        strategy, strategy_selector = self._get_routing_context(model, request_kwargs)
         if strategy == "simple-shuffle":
             # if users pass rpm or tpm, we do a random weighted pick - based on rpm/tpm
             ############## Check 'weight' param set for weighted pick #################
@@ -11110,7 +11380,7 @@ class Router:
             )
 
         # 6. Apply load balancing strategy
-        strategy, strategy_selector = self._get_routing_context(model)
+        strategy, strategy_selector = self._get_routing_context(model, request_kwargs)
         if strategy == "simple-shuffle":
             return simple_shuffle(
                 llm_router_instance=self,
