@@ -342,10 +342,18 @@ async def create_message_batch(
 
     models = {str((r.get("params") or {}).get("model", "")) for r in requests_list}
     single_model = models.pop() if len(models) == 1 else None
-    deployment = _find_bedrock_batch_deployment(single_model) if single_model else None
+    # Bedrock enforces a fixed 100-record minimum per invocation job, so small
+    # batches take the Anthropic-native leg even for Bedrock-batch-backed
+    # models (same models, same 50% batch rate — just a different backend).
+    deployment = (
+        _find_bedrock_batch_deployment(single_model)
+        if single_model and len(requests_list) >= 100
+        else None
+    )
     if deployment is None:
-        # Mixed-model batches and models without a Bedrock batch backend run on
-        # the Anthropic API upstream (which supports every claude model).
+        # Mixed-model batches, sub-100-record batches, and models without a
+        # Bedrock batch backend run on the Anthropic API upstream (which
+        # supports every claude model).
         return await _forward_upstream(request, "POST", "/v1/messages/batches", json.dumps(body).encode())
 
     # ── Bedrock leg ──
