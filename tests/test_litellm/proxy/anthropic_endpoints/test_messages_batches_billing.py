@@ -92,6 +92,22 @@ def test_get_job_attribution_double_encoded():
     assert CheckBatchCost._get_job_attribution(job) == {"user_api_key": "c" * 64}
 
 
+def test_get_job_file_object_model_stash():
+    from litellm_enterprise.proxy.common_utils.check_batch_cost import CheckBatchCost
+
+    job = SimpleNamespace(
+        file_object=json.dumps(
+            {"model": "claude-opus-4-6", "litellm_attribution": {"user_api_key": "d" * 64}}
+        )
+    )
+    file_object = CheckBatchCost._get_job_file_object(job)
+    # the tracker prefers the stashed model over the (possibly borrowed)
+    # deployment's model_name only when the attribution stash is present
+    assert file_object.get("model") == "claude-opus-4-6"
+    assert file_object.get("litellm_attribution")
+    assert CheckBatchCost._get_job_file_object(SimpleNamespace(file_object="nope")) == {}
+
+
 # ── _record_batch_for_billing ────────────────────────────────────────────────
 
 

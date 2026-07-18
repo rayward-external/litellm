@@ -44,13 +44,10 @@ class CheckBatchCost:
         self._has_batch_processed_column: bool = True
 
     @staticmethod
-    def _get_job_attribution(job: Any) -> Dict[str, Any]:
-        """Attribution stashed in file_object.litellm_attribution by routes
-        that register batches directly (the /v1/messages/batches route) —
-        user_api_key (hash), user_api_key_team_id, user_api_key_end_user_id,
-        user_api_key_alias. The hook write-path stores file_object as a JSON
-        string, so tolerate one level of string encoding. Rows without the
-        stash return {} and keep the pre-existing behavior."""
+    def _get_job_file_object(job: Any) -> Dict[str, Any]:
+        """The job row's file_object as a dict. The hook write-path stores it
+        as a JSON string, so tolerate one level of string encoding; anything
+        unparseable returns {}."""
         file_object = getattr(job, "file_object", None)
         for _ in range(2):
             if not isinstance(file_object, str):
@@ -59,11 +56,17 @@ class CheckBatchCost:
                 file_object = json.loads(file_object)
             except ValueError:
                 return {}
-        if isinstance(file_object, dict):
-            attribution = file_object.get("litellm_attribution")
-            if isinstance(attribution, dict):
-                return attribution
-        return {}
+        return file_object if isinstance(file_object, dict) else {}
+
+    @classmethod
+    def _get_job_attribution(cls, job: Any) -> Dict[str, Any]:
+        """Attribution stashed in file_object.litellm_attribution by routes
+        that register batches directly (the /v1/messages/batches route) —
+        user_api_key (hash), user_api_key_team_id, user_api_key_end_user_id,
+        user_api_key_alias. Rows without the stash return {} and keep the
+        pre-existing behavior."""
+        attribution = cls._get_job_file_object(job).get("litellm_attribution")
+        return attribution if isinstance(attribution, dict) else {}
 
     async def _get_user_info(self, batch_id, user_id) -> dict:
         """
@@ -436,6 +439,15 @@ class CheckBatchCost:
             model=litellm_model_name,
             custom_llm_provider=custom_llm_provider,
         )
+
+        # Rows registered by /v1/messages/batches stash the batch's actual
+        # client-facing model. The routing deployment may be a borrowed
+        # same-provider one (shared workspace credentials), so prefer the
+        # stashed model for the spend log's model attribution — pricing for
+        # anthropic rows already uses each result row's own model field.
+        stashed_file_object = self._get_job_file_object(job)
+        if stashed_file_object.get("litellm_attribution") and stashed_file_object.get("model"):
+            model_name = str(stashed_file_object["model"])
 
         # CheckBatchCost bypasses async_post_call_success_hook, so convert raw
         # output/error file IDs to managed base64 IDs before the DB write here.

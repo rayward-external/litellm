@@ -737,7 +737,10 @@ async def create_message_batch(
         provider_batch_id=job_arn,
         router_model_id=(deployment.get("model_info") or {}).get("id"),
         client_batch_id=client_batch_id,
-        model_name=str(deployment.get("model_name") or single_model),
+        # The client-facing name (not the internal "-batch" alias): the stash
+        # drives the spend log's model attribution; Bedrock pricing itself
+        # comes from the deployment's explicit *_cost_per_token_batches keys.
+        model_name=str(single_model),
         total_records=len(custom_ids),
         user_api_key_dict=user_api_key_dict,
     )
