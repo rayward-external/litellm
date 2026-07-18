@@ -2,8 +2,9 @@
 Polls LiteLLM_ManagedObjectTable to check if the batch job is complete, and if the cost has been tracked.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from litellm._logging import verbose_proxy_logger
 from litellm._uuid import uuid
@@ -41,6 +42,28 @@ class CheckBatchCost:
         # Cached after the first poll cycle. Once we know the column is absent we skip
         # the guaranteed-failing primary query on every subsequent cycle.
         self._has_batch_processed_column: bool = True
+
+    @staticmethod
+    def _get_job_attribution(job: Any) -> Dict[str, Any]:
+        """Attribution stashed in file_object.litellm_attribution by routes
+        that register batches directly (the /v1/messages/batches route) —
+        user_api_key (hash), user_api_key_team_id, user_api_key_end_user_id,
+        user_api_key_alias. The hook write-path stores file_object as a JSON
+        string, so tolerate one level of string encoding. Rows without the
+        stash return {} and keep the pre-existing behavior."""
+        file_object = getattr(job, "file_object", None)
+        for _ in range(2):
+            if not isinstance(file_object, str):
+                break
+            try:
+                file_object = json.loads(file_object)
+            except ValueError:
+                return {}
+        if isinstance(file_object, dict):
+            attribution = file_object.get("litellm_attribution")
+            if isinstance(attribution, dict):
+                return attribution
+        return {}
 
     async def _get_user_info(self, batch_id, user_id) -> dict:
         """
@@ -474,6 +497,25 @@ class CheckBatchCost:
         creator_user_id = job.created_by
         user_info = await self._get_user_info(batch_id, job.created_by)
 
+        # The table only carries created_by/team_id, so key-level (and
+        # end-user) spend attribution needs the submitting key's identity.
+        # Routes that create batches out-of-band (/v1/messages/batches) stash
+        # it in file_object.litellm_attribution; rows without the stash keep
+        # the previous user-only attribution. team_id threads through in
+        # either case (it was silently dropped before, so batch spend never
+        # reached team running/daily totals).
+        attribution = self._get_job_attribution(job)
+        metadata: Dict[str, Any] = {
+            "user_api_key_user_id": creator_user_id,
+            **user_info,
+        }
+        job_team_id = getattr(job, "team_id", None) or attribution.get("user_api_key_team_id")
+        if job_team_id:
+            metadata["user_api_key_team_id"] = job_team_id
+        for attribution_key in ("user_api_key", "user_api_key_alias", "user_api_key_end_user_id"):
+            if attribution.get(attribution_key):
+                metadata[attribution_key] = attribution[attribution_key]
+
         logging_obj.update_environment_variables(
             litellm_params={
                 # set the user-agent header so that S3 callback consumers can easily identify CheckBatchCost callbacks
@@ -482,10 +524,7 @@ class CheckBatchCost:
                         "user-agent": CHECK_BATCH_COST_USER_AGENT,
                     }
                 },
-                "metadata": {
-                    "user_api_key_user_id": creator_user_id,
-                    **user_info,
-                },
+                "metadata": metadata,
             },
             optional_params={},
         )

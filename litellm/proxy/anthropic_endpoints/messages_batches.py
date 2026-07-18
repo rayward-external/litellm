@@ -38,9 +38,18 @@ Authorization model (beyond user_api_key_auth on every route):
     same posture as the existing /anthropic passthrough. LIST is therefore
     restricted to proxy-admin keys (it is the enumeration vector).
 
-Known MVP gaps (documented in the fork PR): no per-request spend logging on
-this route (Bedrock spend reconciles via the provider-level cost feed), and
-list is upstream-only (Bedrock jobs don't surface there).
+Spend tracking: every batch this route creates (both legs) is registered in
+LiteLLM_ManagedObjectTable with a unified batch id, so the stock CheckBatchCost
+poller retrieves the job at completion, prices it from the deployment's
+model_info batch-rate fields (input/output_cost_per_token_batches), and writes
+spend attributed to the submitting key/user/team (attribution rides
+file_object.litellm_attribution; see CheckBatchCost._get_job_attribution).
+With ANTHROPIC_BATCHES_REQUIRE_BILLING=true the create is refused (and the
+just-created job stopped/canceled) if the billing row cannot be stored — an
+unbillable batch never runs.
+
+Known MVP gap (documented in the fork PR): list is upstream-only (Bedrock jobs
+don't surface there).
 """
 
 import datetime
@@ -361,6 +370,122 @@ async def _forward_upstream(
     )
 
 
+# ── Billing: managed-object registration (CheckBatchCost pickup) ─────────────
+
+_REQUIRE_BILLING_ENV = "ANTHROPIC_BATCHES_REQUIRE_BILLING"
+
+
+def _billing_required() -> bool:
+    return os.getenv(_REQUIRE_BILLING_ENV, "").strip().lower() in ("1", "true", "yes")
+
+
+def _unified_batch_object_id(router_model_id: str, provider_batch_id: str) -> str:
+    """The base64 unified id CheckBatchCost decodes back into
+    (deployment model_info.id, raw provider batch id)."""
+    import base64
+
+    from litellm.types.utils import SpecialEnums
+
+    raw = SpecialEnums.LITELLM_MANAGED_BATCH_COMPLETE_STR.value.format(router_model_id, provider_batch_id)
+    return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+
+def _find_anthropic_deployment_model_id(model: str) -> Optional[str]:
+    """Deployment id (model_info.id) of the Anthropic-provider deployment for
+    `model` — CheckBatchCost routes its retrieve/pricing through this
+    deployment's credentials. Falls back to the provider-string convention the
+    upstream passthrough handler uses when the router carries no Anthropic
+    deployment for the model (litellm then resolves credentials from env)."""
+    llm_router = _get_llm_router()
+    for deployment in (llm_router.get_model_list() or []) if llm_router is not None else []:
+        if deployment.get("model_name") != model:
+            continue
+        litellm_params = deployment.get("litellm_params") or {}
+        if str(litellm_params.get("model", "")).startswith("anthropic/"):
+            model_id = (deployment.get("model_info") or {}).get("id")
+            if model_id:
+                return str(model_id)
+    return f"anthropic/{model}" if model else None
+
+
+async def _record_batch_for_billing(
+    *,
+    provider_batch_id: str,
+    router_model_id: Optional[str],
+    client_batch_id: str,
+    model_name: str,
+    total_records: int,
+    user_api_key_dict: UserAPIKeyAuth,
+) -> bool:
+    """Register the batch in LiteLLM_ManagedObjectTable so CheckBatchCost
+    prices it at completion and writes key/user/team-attributed spend.
+
+    Returns False when the row could not be stored (no DB, no resolvable
+    deployment id, or the write failed) — the caller decides whether that is
+    fatal via ANTHROPIC_BATCHES_REQUIRE_BILLING."""
+    from litellm.proxy.proxy_server import prisma_client
+
+    if prisma_client is None:
+        verbose_proxy_logger.error(
+            "messages/batches billing: no database configured; batch %s will not be cost-tracked",
+            client_batch_id,
+        )
+        return False
+    if not router_model_id:
+        verbose_proxy_logger.error(
+            "messages/batches billing: no router deployment id for model %r; batch %s will not be cost-tracked",
+            model_name,
+            client_batch_id,
+        )
+        return False
+
+    unified_object_id = _unified_batch_object_id(router_model_id, provider_batch_id)
+    file_object = {
+        "id": client_batch_id,
+        "object": "batch",
+        "status": "validating",
+        "model": model_name,
+        "total_records": total_records,
+        # Read by CheckBatchCost._get_job_attribution — the table itself only
+        # carries created_by/team_id, not the submitting key.
+        "litellm_attribution": {
+            "user_api_key": user_api_key_dict.api_key,  # already the hash in UserAPIKeyAuth
+            "user_api_key_user_id": user_api_key_dict.user_id,
+            "user_api_key_team_id": user_api_key_dict.team_id,
+            "user_api_key_end_user_id": user_api_key_dict.end_user_id,
+            "user_api_key_alias": user_api_key_dict.key_alias,
+        },
+        "created_at": _rfc3339(datetime.datetime.now(datetime.timezone.utc)),
+    }
+    try:
+        await prisma_client.db.litellm_managedobjecttable.upsert(
+            where={"unified_object_id": unified_object_id},
+            data={
+                "create": {
+                    "unified_object_id": unified_object_id,
+                    "file_object": json.dumps(file_object),
+                    "model_object_id": provider_batch_id,
+                    "file_purpose": "batch",
+                    "created_by": user_api_key_dict.user_id,
+                    "team_id": user_api_key_dict.team_id,
+                    "updated_by": user_api_key_dict.user_id,
+                    "status": "validating",
+                },
+                "update": {
+                    "file_object": json.dumps(file_object),
+                    "status": "validating",
+                    "updated_by": user_api_key_dict.user_id,
+                },
+            },
+        )
+        return True
+    except Exception:
+        verbose_proxy_logger.exception(
+            "messages/batches billing: failed to record batch %s for cost tracking", client_batch_id
+        )
+        return False
+
+
 # ── Bedrock <-> MessageBatch mapping ─────────────────────────────────────────
 
 
@@ -490,7 +615,43 @@ async def create_message_batch(
         # Mixed-model batches, sub-100-record batches, and models without a
         # Bedrock batch backend run on the Anthropic API upstream (which
         # supports every claude model).
-        return await _forward_upstream(request, "POST", "/v1/messages/batches", json.dumps(body).encode())
+        response = await _forward_upstream(request, "POST", "/v1/messages/batches", json.dumps(body).encode())
+        upstream_batch_id: Optional[str] = None
+        upstream_total = len(requests_list)
+        if response.status_code == 200:
+            try:
+                payload = json.loads(response.body)
+                if isinstance(payload.get("id"), str) and payload["id"].startswith("msgbatch_"):
+                    upstream_batch_id = payload["id"]
+            except (ValueError, TypeError):
+                pass
+        if upstream_batch_id is not None:
+            # Mixed-model batches register under the first model's Anthropic
+            # deployment — the deployment only supplies retrieve credentials
+            # (one shared workspace) and the headline pricing model name.
+            billing_model = sorted(models)[0]
+            recorded = await _record_batch_for_billing(
+                provider_batch_id=upstream_batch_id,
+                router_model_id=_find_anthropic_deployment_model_id(billing_model),
+                client_batch_id=upstream_batch_id,
+                model_name=billing_model,
+                total_records=upstream_total,
+                user_api_key_dict=user_api_key_dict,
+            )
+            if not recorded and _billing_required():
+                # Refuse + best-effort cancel of the just-created upstream batch.
+                try:
+                    async with httpx.AsyncClient(timeout=60.0) as client:
+                        await client.post(
+                            f"{_upstream_base()}/v1/messages/batches/{upstream_batch_id}/cancel",
+                            headers=_upstream_headers(request),
+                        )
+                except Exception:
+                    verbose_proxy_logger.exception(
+                        "messages/batches billing: cancel of unbillable upstream batch %s failed", upstream_batch_id
+                    )
+                return _anthropic_error(503, "api_error", "batch accounting is unavailable; the batch was not accepted")
+        return response
 
     # ── Bedrock leg ──
     custom_ids: List[str] = []
@@ -537,13 +698,33 @@ async def create_message_batch(
     if create.status_code != 200:
         verbose_proxy_logger.error("bedrock msgbatch create failed: %s %s", create.status_code, create.text[:500])
         return _anthropic_error(502, "api_error", "failed to create Bedrock batch job")
-    job_id = create.json()["jobArn"].rsplit("/", 1)[1]
+    job_arn = create.json()["jobArn"]
+    job_id = job_arn.rsplit("/", 1)[1]
+    client_batch_id = f"{BEDROCK_MSGBATCH_PREFIX}{job_id}_{_owner_tag(user_api_key_dict)}"
+
+    recorded = await _record_batch_for_billing(
+        provider_batch_id=job_arn,
+        router_model_id=(deployment.get("model_info") or {}).get("id"),
+        client_batch_id=client_batch_id,
+        model_name=str(deployment.get("model_name") or single_model),
+        total_records=len(custom_ids),
+        user_api_key_dict=user_api_key_dict,
+    )
+    if not recorded and _billing_required():
+        # Never run an unbillable job: stop it (best effort) and refuse.
+        stop = await _aws_call("POST", _job_url(job_id, ctx, "/stop"), None, "bedrock", ctx["params"], ctx["region"])
+        verbose_proxy_logger.error(
+            "messages/batches billing: refused Bedrock batch %s (billing row not stored; stop status %s)",
+            client_batch_id,
+            stop.status_code,
+        )
+        return _anthropic_error(503, "api_error", "batch accounting is unavailable; the batch was not accepted")
 
     now = datetime.datetime.now(datetime.timezone.utc)
     return JSONResponse(
         status_code=200,
         content={
-            "id": f"{BEDROCK_MSGBATCH_PREFIX}{job_id}_{_owner_tag(user_api_key_dict)}",
+            "id": client_batch_id,
             "type": "message_batch",
             "processing_status": "in_progress",
             "request_counts": {
