@@ -72,11 +72,22 @@ from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
 
 router = APIRouter()
 
+from litellm.litellm_core_utils.cloud_storage_security import (
+    BEDROCK_MANAGED_S3_OUTPUT_PREFIX,
+    BEDROCK_MANAGED_S3_UPLOAD_PREFIX,
+)
+
 BEDROCK_MSGBATCH_PREFIX = "msgbatch_bedrock_"
 _ANTHROPIC_VERSION_DEFAULT = "2023-06-01"
 _CUSTOM_ID_PATTERN = re.compile(r"\A[a-zA-Z0-9_-]{1,64}\Z")
-_S3_INPUT_PREFIX = "anthropic-messages-batches/input/"
-_S3_OUTPUT_PREFIX = "anthropic-messages-batches/output/"
+# Staged under LiteLLM's managed S3 namespaces so the CheckBatchCost poller's
+# output download passes validate_managed_cloud_file_id (reads outside the
+# managed prefixes are rejected: "file_id must reference a LiteLLM-managed
+# storage object" — hit live 2026-07-18). The route's own results/delete
+# handlers reconstruct keys from the job's stored data config, so pre-existing
+# jobs under other prefixes still serve results — they just can't be priced.
+_S3_INPUT_PREFIX = f"{BEDROCK_MANAGED_S3_UPLOAD_PREFIX}anthropic-messages-batches/"
+_S3_OUTPUT_PREFIX = f"{BEDROCK_MANAGED_S3_OUTPUT_PREFIX}anthropic-messages-batches/"
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
 
@@ -391,25 +402,40 @@ def _unified_batch_object_id(router_model_id: str, provider_batch_id: str) -> st
 
 
 def _find_anthropic_deployment_model_id(model: str) -> Optional[str]:
-    """Deployment id (model_info.id) of the Anthropic-provider deployment for
-    `model` — CheckBatchCost routes its retrieve/pricing through this
-    deployment's credentials. Falls back to the provider-string convention the
-    upstream passthrough handler uses when the router carries no Anthropic
-    deployment for the model (litellm then resolves credentials from env)."""
+    """Deployment id (model_info.id) CheckBatchCost routes its retrieve through.
+
+    Preference order:
+      1. The Anthropic-provider deployment serving `model` itself.
+      2. ANY Anthropic-provider deployment — retrieve only needs workspace
+         credentials (the proxy runs one shared Anthropic workspace), and the
+         per-record pricing uses each result row's own model field, so a
+         borrowed deployment still prices correctly.
+      3. The "anthropic/<model>" provider-string convention the upstream
+         passthrough handler uses. Last resort only: llm_router.aretrieve_batch
+         cannot resolve it unless the router actually carries that model
+         (verified live 2026-07-18 — the poller skips such rows forever), so
+         this works only for router-known models.
+    """
     llm_router = _get_llm_router()
+    fallback_any: Optional[str] = None
     for deployment in (llm_router.get_model_list() or []) if llm_router is not None else []:
-        if deployment.get("model_name") != model:
-            continue
         litellm_params = deployment.get("litellm_params") or {}
         # Both provider spellings occur in the wild: model: "anthropic/<m>",
         # or model: "<m>" + custom_llm_provider: "anthropic" (this stack).
         is_anthropic = str(litellm_params.get("model", "")).startswith("anthropic/") or (
             litellm_params.get("custom_llm_provider") == "anthropic"
         )
-        if is_anthropic:
-            model_id = (deployment.get("model_info") or {}).get("id")
-            if model_id:
-                return str(model_id)
+        if not is_anthropic:
+            continue
+        model_id = (deployment.get("model_info") or {}).get("id")
+        if not model_id:
+            continue
+        if deployment.get("model_name") == model:
+            return str(model_id)
+        if fallback_any is None:
+            fallback_any = str(model_id)
+    if fallback_any is not None:
+        return fallback_any
     return f"anthropic/{model}" if model else None
 
 

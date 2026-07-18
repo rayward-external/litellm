@@ -199,8 +199,21 @@ def test_find_anthropic_deployment_model_id(monkeypatch):
     monkeypatch.setattr(mb, "_get_llm_router", lambda: router)
     assert mb._find_anthropic_deployment_model_id("claude-opus-4-6") == "anthropic-dep-id"
     assert mb._find_anthropic_deployment_model_id("claude-opus-4-8") == "anthropic-claude-opus-4-8"
-    # no anthropic deployment -> passthrough-handler fallback convention
+    # model without its own anthropic deployment -> borrow ANY anthropic
+    # deployment (shared workspace credentials; rows price by their own model)
+    assert mb._find_anthropic_deployment_model_id("claude-haiku-4-5") == "anthropic-dep-id"
+    # no anthropic deployments at all -> passthrough-handler string convention
+    monkeypatch.setattr(mb, "_get_llm_router", lambda: SimpleNamespace(get_model_list=lambda: []))
     assert mb._find_anthropic_deployment_model_id("claude-haiku-4-5") == "anthropic/claude-haiku-4-5"
+
+
+def test_s3_prefixes_under_managed_namespace():
+    """The poller's output download rejects reads outside the managed
+    prefixes — creation must stage under them."""
+    from litellm.litellm_core_utils.cloud_storage_security import BEDROCK_MANAGED_S3_PREFIXES
+
+    assert mb._S3_INPUT_PREFIX.startswith(BEDROCK_MANAGED_S3_PREFIXES)
+    assert mb._S3_OUTPUT_PREFIX.startswith(BEDROCK_MANAGED_S3_PREFIXES)
 
 
 def test_billing_required_env(monkeypatch):
