@@ -189,10 +189,16 @@ def test_find_anthropic_deployment_model_id(monkeypatch):
             "litellm_params": {"model": "anthropic/claude-opus-4-6"},
             "model_info": {"id": "anthropic-dep-id"},
         },
+        {  # this stack's spelling: bare model + custom_llm_provider (live config)
+            "model_name": "claude-opus-4-8",
+            "litellm_params": {"model": "claude-opus-4-8", "custom_llm_provider": "anthropic"},
+            "model_info": {"id": "anthropic-claude-opus-4-8"},
+        },
     ]
     router = SimpleNamespace(get_model_list=lambda: deployments)
     monkeypatch.setattr(mb, "_get_llm_router", lambda: router)
     assert mb._find_anthropic_deployment_model_id("claude-opus-4-6") == "anthropic-dep-id"
+    assert mb._find_anthropic_deployment_model_id("claude-opus-4-8") == "anthropic-claude-opus-4-8"
     # no anthropic deployment -> passthrough-handler fallback convention
     assert mb._find_anthropic_deployment_model_id("claude-haiku-4-5") == "anthropic/claude-haiku-4-5"
 

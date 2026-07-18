@@ -401,7 +401,12 @@ def _find_anthropic_deployment_model_id(model: str) -> Optional[str]:
         if deployment.get("model_name") != model:
             continue
         litellm_params = deployment.get("litellm_params") or {}
-        if str(litellm_params.get("model", "")).startswith("anthropic/"):
+        # Both provider spellings occur in the wild: model: "anthropic/<m>",
+        # or model: "<m>" + custom_llm_provider: "anthropic" (this stack).
+        is_anthropic = str(litellm_params.get("model", "")).startswith("anthropic/") or (
+            litellm_params.get("custom_llm_provider") == "anthropic"
+        )
+        if is_anthropic:
             model_id = (deployment.get("model_info") or {}).get("id")
             if model_id:
                 return str(model_id)
