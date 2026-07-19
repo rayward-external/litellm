@@ -218,9 +218,11 @@ def test_find_anthropic_deployment_model_id(monkeypatch):
     # model without its own anthropic deployment -> borrow ANY anthropic
     # deployment (shared workspace credentials; rows price by their own model)
     assert mb._find_anthropic_deployment_model_id("claude-haiku-4-5") == "anthropic-dep-id"
-    # no anthropic deployments at all -> passthrough-handler string convention
+    # no anthropic deployments at all -> None (the "anthropic/<model>" string
+    # is unrouteable — registering it would satisfy REQUIRE_BILLING with a row
+    # the poller can never price)
     monkeypatch.setattr(mb, "_get_llm_router", lambda: SimpleNamespace(get_model_list=lambda: []))
-    assert mb._find_anthropic_deployment_model_id("claude-haiku-4-5") == "anthropic/claude-haiku-4-5"
+    assert mb._find_anthropic_deployment_model_id("claude-haiku-4-5") is None
 
 
 def test_s3_prefixes_under_managed_namespace():
@@ -326,5 +328,159 @@ async def test_bedrock_create_refused_when_billing_unavailable(monkeypatch):
 
     response = await mb.create_message_batch(MagicMock(), MagicMock(), _auth())
     assert response.status_code == 503
-    # the just-created job must have been stopped
+    # the preflight refuses BEFORE any provider-side work: no S3 staging, no
+    # job creation, nothing to stop (codex P1 — the old flow created the job
+    # first and only best-effort-stopped it)
+    assert aws_calls == [], aws_calls
+
+
+@pytest.mark.asyncio
+async def test_bedrock_create_stops_job_when_row_write_fails(monkeypatch):
+    """Preflight passes (DB up) but the row write itself fails after the job
+    exists -> the job is stopped and the stop is verified."""
+    monkeypatch.setenv(mb._REQUIRE_BILLING_ENV, "true")
+    prisma = _PrismaStub()
+    prisma.upsert.side_effect = RuntimeError("db write failed")
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", prisma)
+    monkeypatch.setattr(mb, "_find_bedrock_batch_deployment", lambda model: _bedrock_deployment())
+
+    async def _fake_read_body(request):
+        return _create_body()
+
+    async def _fake_check_model_access(models, user_api_key_dict):
+        return None
+
+    aws_calls = []
+
+    async def _fake_aws_call(method, url, body, service, aws_params, region):
+        aws_calls.append((method, url))
+        if service == "s3":
+            return SimpleNamespace(status_code=200, text="")
+        return SimpleNamespace(status_code=200, text="", json=lambda: {"jobArn": JOB_ARN})
+
+    monkeypatch.setattr(mb, "_read_request_body", _fake_read_body)
+    monkeypatch.setattr(mb, "_check_model_access", _fake_check_model_access)
+    monkeypatch.setattr(mb, "_aws_call", _fake_aws_call)
+
+    response = await mb.create_message_batch(MagicMock(), MagicMock(), _auth())
+    assert response.status_code == 503
     assert any(url.endswith("/stop") for _method, url in aws_calls), aws_calls
+
+
+# ── ownership checks (codex P1 fixes) ────────────────────────────────────────
+
+
+def test_bedrock_owner_check_rejects_untagged_ids():
+    """Stripping the _owner8 suffix off a leaked id must not bypass ownership."""
+    from fastapi import HTTPException
+
+    untagged = "msgbatch_bedrock_abc123xyz"
+    with pytest.raises(HTTPException) as exc:
+        mb._check_bedrock_batch_owner(untagged, _auth())
+    assert exc.value.status_code == 404
+    # admins may still access untagged (pre-owner-tag) ids
+    admin = _auth()
+    admin.user_role = "proxy_admin"
+    mb._check_bedrock_batch_owner(untagged, admin)
+
+
+def _billing_row(attribution=None, batch_processed=False, team_id=None, created_by=None):
+    file_object = {"id": "x", "litellm_attribution": attribution or {}}
+    return SimpleNamespace(
+        file_object=json.dumps(file_object),
+        batch_processed=batch_processed,
+        team_id=team_id,
+        created_by=created_by,
+    )
+
+
+@pytest.mark.asyncio
+async def test_upstream_owner_check(monkeypatch):
+    from fastapi import HTTPException
+
+    caller = _auth()
+    row_mine = _billing_row(attribution={"user_api_key": caller.api_key})
+    row_foreign = _billing_row(attribution={"user_api_key": "f" * 64, "user_api_key_team_id": "other-team"})
+
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _PrismaStub())
+
+    async def _row(_batch_id):
+        return row_mine
+
+    monkeypatch.setattr(mb, "_get_billing_row", _row)
+    await mb._check_upstream_batch_owner("msgbatch_01X", caller)  # no raise
+
+    async def _foreign(_batch_id):
+        return row_foreign
+
+    monkeypatch.setattr(mb, "_get_billing_row", _foreign)
+    with pytest.raises(HTTPException) as exc:
+        await mb._check_upstream_batch_owner("msgbatch_01X", caller)
+    assert exc.value.status_code == 404
+
+    async def _missing(_batch_id):
+        return None
+
+    monkeypatch.setattr(mb, "_get_billing_row", _missing)
+    with pytest.raises(HTTPException):
+        await mb._check_upstream_batch_owner("msgbatch_01X", caller)
+
+    # admin bypasses; no-DB deployments keep the historical shared posture
+    admin = _auth()
+    admin.user_role = "proxy_admin"
+    await mb._check_upstream_batch_owner("msgbatch_01X", admin)
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+    await mb._check_upstream_batch_owner("msgbatch_01X", caller)
+
+
+@pytest.mark.asyncio
+async def test_unbilled_delete_block(monkeypatch):
+    async def _unbilled(_batch_id):
+        return _billing_row(batch_processed=False)
+
+    monkeypatch.setattr(mb, "_get_billing_row", _unbilled)
+    blocked = await mb._unbilled_delete_block("msgbatch_01X")
+    assert blocked is not None and blocked.status_code == 400
+
+    async def _billed(_batch_id):
+        return _billing_row(batch_processed=True)
+
+    monkeypatch.setattr(mb, "_get_billing_row", _billed)
+    assert await mb._unbilled_delete_block("msgbatch_01X") is None
+
+    async def _none(_batch_id):
+        return None
+
+    monkeypatch.setattr(mb, "_get_billing_row", _none)
+    assert await mb._unbilled_delete_block("msgbatch_01X") is None
+
+
+def test_billing_preflight(monkeypatch):
+    monkeypatch.delenv(mb._REQUIRE_BILLING_ENV, raising=False)
+    assert mb._billing_preflight(None) is None  # billing not required
+
+    monkeypatch.setenv(mb._REQUIRE_BILLING_ENV, "true")
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _PrismaStub())
+    assert mb._billing_preflight("dep-id") is None
+    refused = mb._billing_preflight(None)  # unrouteable
+    assert refused is not None and refused.status_code == 503
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+    refused = mb._billing_preflight("dep-id")  # no DB
+    assert refused is not None and refused.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_record_batch_stashes_mixed_models_flag(monkeypatch):
+    prisma = _PrismaStub()
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", prisma)
+    await mb._record_batch_for_billing(
+        provider_batch_id="msgbatch_01MIX",
+        router_model_id="anthropic-dep-id",
+        client_batch_id="msgbatch_01MIX",
+        model_name="claude-opus-4-6",
+        total_records=2,
+        user_api_key_dict=_auth(),
+        mixed_models=True,
+    )
+    file_object = json.loads(prisma.upsert.await_args.kwargs["data"]["create"]["file_object"])
+    assert file_object["mixed_models"] is True

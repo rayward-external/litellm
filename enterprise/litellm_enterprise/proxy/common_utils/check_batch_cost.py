@@ -68,6 +68,42 @@ class CheckBatchCost:
         attribution = cls._get_job_file_object(job).get("litellm_attribution")
         return attribution if isinstance(attribution, dict) else {}
 
+    async def _claim_job(self, job: Any) -> bool:
+        """Atomically claim a row before pricing: every proxy process runs
+        this poller, and pricing + flag-flip were previously non-atomic, so
+        concurrent workers could each bill the same batch (codex P1). The
+        conditional update_many means exactly one worker wins the claim.
+        Schemas without the batch_processed column cannot claim atomically
+        and keep the legacy single-worker assumption."""
+        if not self._has_batch_processed_column:
+            return True
+        try:
+            claimed_count = await self.prisma_client.db.litellm_managedobjecttable.update_many(
+                where={"id": job.id, "batch_processed": False},
+                data={"batch_processed": True, "status": "pricing"},
+            )
+        except Exception as claim_err:
+            verbose_proxy_logger.error(
+                f"CheckBatchCost: claim failed for job {job.id}; skipping this cycle: {claim_err}"
+            )
+            return False
+        return claimed_count == 1
+
+    async def _release_job_claim(self, job: Any) -> None:
+        """Return a claimed-but-unpriced row to the pool so the next poll
+        retries it. Best effort: an orphaned claim (release also failed)
+        surfaces as a stuck 'pricing' row rather than a double bill —
+        the deterministic litellm_call_id backstops the opposite failure."""
+        try:
+            await self.prisma_client.db.litellm_managedobjecttable.update(
+                where={"id": job.id},
+                data={"batch_processed": False, "status": "validating"},
+            )
+        except Exception as release_err:
+            verbose_proxy_logger.error(
+                f"CheckBatchCost: failed to release claim on job {job.id}: {release_err}"
+            )
+
     async def _get_user_info(self, batch_id, user_id) -> dict:
         """
         Look up user email and key alias by user_id for enriching the S3 callback metadata.
@@ -448,6 +484,13 @@ class CheckBatchCost:
         stashed_file_object = self._get_job_file_object(job)
         if stashed_file_object.get("litellm_attribution") and stashed_file_object.get("model"):
             model_name = str(stashed_file_object["model"])
+        # Mixed-model batches: the registering deployment is an arbitrary
+        # same-provider one, so neither its model_name nor its custom batch
+        # rates may drive pricing — strip both and let every result row price
+        # by its own model field (codex P1).
+        stashed_mixed_models = bool(stashed_file_object.get("mixed_models"))
+        if stashed_mixed_models:
+            model_name = None
 
         # CheckBatchCost bypasses async_post_call_success_hook, so convert raw
         # output/error file IDs to managed base64 IDs before the DB write here.
@@ -486,8 +529,11 @@ class CheckBatchCost:
                         )
 
         # Pass deployment model_info so custom batch pricing
-        # (input_cost_per_token_batches etc.) is used for cost calc
-        deployment_model_info = deployment_info.model_info.model_dump() if deployment_info.model_info else {}
+        # (input_cost_per_token_batches etc.) is used for cost calc.
+        # Mixed-model rows deliberately drop it (see stashed_mixed_models).
+        deployment_model_info = (
+            {} if stashed_mixed_models else (deployment_info.model_info.model_dump() if deployment_info.model_info else {})
+        )
         batch_cost, batch_usage, batch_models = (
             await calculate_batch_cost_and_usage(
                 file_content_dictionary=file_content_as_dict,
@@ -496,13 +542,20 @@ class CheckBatchCost:
                 model_info=deployment_model_info,  # type: ignore[arg-type]
             )
         )
+        import uuid as _stdlib_uuid
+
         logging_obj = LiteLLMLogging(
-            model=batch_models[0],
+            model=batch_models[0] if batch_models else (model_name or "unknown"),
             messages=[{"role": "user", "content": "<retrieve_batch>"}],
             stream=False,
             call_type="aretrieve_batch",
             start_time=datetime.now(),
-            litellm_call_id=str(uuid.uuid4()),
+            # Deterministic per-batch id: LiteLLM_SpendLogs keys request_id on
+            # litellm_call_id, so a repeat pricing attempt for the same batch
+            # collides on the primary key instead of inserting a second spend
+            # row — the last line of double-billing defense under claim races
+            # or crash-retry (codex P1).
+            litellm_call_id=str(_stdlib_uuid.uuid5(_stdlib_uuid.NAMESPACE_URL, f"litellm:batch-cost:{batch_id}")),
             function_id=str(uuid.uuid4()),
         )
 
@@ -658,10 +711,27 @@ class CheckBatchCost:
                 continue
 
             ## RETRIEVE THE BATCH JOB OUTPUT FILE
-            if (
-                response.status == "completed"
-                and response.output_file_id is not None
+            # Terminal-but-not-completed jobs (stopped/failed/expired) can
+            # still carry billable partial output — Bedrock writes whatever
+            # records finished, and the batch route serves those results.
+            # Finalizing them without pricing hands out free tokens via
+            # cancel-after-partial-processing (codex P1); salvage-price when
+            # an output object was predicted for the job.
+            salvaged_output_file_id: Optional[str] = None
+            if response.status in ("failed", "expired", "cancelled") and response.output_file_id is None:
+                response_metadata = getattr(response, "metadata", None)
+                if isinstance(response_metadata, dict) and response_metadata.get("output_file_uri"):
+                    salvaged_output_file_id = str(response_metadata["output_file_uri"])
+                    response.output_file_id = salvaged_output_file_id
+
+            if response.output_file_id is not None and (
+                response.status == "completed" or salvaged_output_file_id is not None
             ):
+                terminal_status = "complete" if response.status == "completed" else response.status
+                if not await self._claim_job(job):
+                    # Another worker owns this row (or the claim errored) —
+                    # never price without holding the claim.
+                    continue
                 try:
                     tracked = await self._track_completed_batch_cost(
                         job=job,
@@ -671,22 +741,37 @@ class CheckBatchCost:
                         prom_logger=prom_logger,
                     )
                 except Exception as tracking_err:
-                    verbose_proxy_logger.error(
-                        f"CheckBatchCost: failed to track cost for batch {batch_id} "
-                        f"(job {job.id}); leaving it unprocessed so the next poll retries: {tracking_err}"
-                    )
-                    self._record_error(prom_logger, "cost_tracking_error")
-                    continue
-                if tracked is None:
+                    if salvaged_output_file_id is not None:
+                        # Salvage path: most failures mean the job died before
+                        # writing any output (NoSuchKey) — finalize without
+                        # cost instead of retrying a fetch that can never
+                        # succeed. The claim stays held; finalization below.
+                        verbose_proxy_logger.warning(
+                            f"CheckBatchCost: no salvageable output for terminal batch {batch_id} "
+                            f"(job {job.id}, status {response.status}): {tracking_err}"
+                        )
+                        tracked = None
+                    else:
+                        await self._release_job_claim(job)
+                        verbose_proxy_logger.error(
+                            f"CheckBatchCost: failed to track cost for batch {batch_id} "
+                            f"(job {job.id}); released the claim so the next poll retries: {tracking_err}"
+                        )
+                        self._record_error(prom_logger, "cost_tracking_error")
+                        continue
+                if tracked is None and salvaged_output_file_id is None:
+                    # Unroutable row: release so a config fix can still bill it.
+                    await self._release_job_claim(job)
                     continue
 
                 # Track this job for the final metrics summary
-                processed_models.append(tracked)
+                if tracked is not None:
+                    processed_models.append(tracked)
 
-                # mark the job as complete
+                # finalize (batch_processed already True via the claim)
                 try:
                     update_data: dict = {
-                        "status": "complete",
+                        "status": terminal_status,
                         "file_object": response.model_dump_json(),
                     }
                     if self._has_batch_processed_column:
@@ -697,10 +782,13 @@ class CheckBatchCost:
                     )
                 except Exception as db_err:
                     verbose_proxy_logger.error(
-                        f"CheckBatchCost: failed to mark job {job.id} complete in DB: {db_err}"
+                        f"CheckBatchCost: failed to mark job {job.id} {terminal_status} in DB: {db_err}"
                     )
 
             elif response.status in ("failed", "expired", "cancelled"):
+                # Terminal with no output object at all — nothing to price.
+                if not await self._claim_job(job):
+                    continue
                 try:
                     update_data = {
                         "status": response.status,

@@ -268,9 +268,12 @@ def _split_bedrock_batch_id(batch_id: str) -> Tuple[str, Optional[str]]:
 
 def _check_bedrock_batch_owner(batch_id: str, user_api_key_dict: UserAPIKeyAuth) -> None:
     _job_id, owner8 = _split_bedrock_batch_id(batch_id)
-    if owner8 is None or _is_proxy_admin(user_api_key_dict):
+    if _is_proxy_admin(user_api_key_dict):
         return
-    if owner8 != _owner_tag(user_api_key_dict):
+    # A missing owner suffix is NOT a free pass: stripping "_<owner8>" off a
+    # leaked id must not bypass ownership (codex P1). Untagged ids (minted
+    # before owner tags existed) are admin-only.
+    if owner8 is None or owner8 != _owner_tag(user_api_key_dict):
         # 404 (not 403) so foreign ids don't leak existence.
         raise HTTPException(
             status_code=404,
@@ -407,11 +410,11 @@ def _find_anthropic_deployment_model_id(model: str) -> Optional[str]:
          credentials (the proxy runs one shared Anthropic workspace), and the
          per-record pricing uses each result row's own model field, so a
          borrowed deployment still prices correctly.
-      3. The "anthropic/<model>" provider-string convention the upstream
-         passthrough handler uses. Last resort only: llm_router.aretrieve_batch
-         cannot resolve it unless the router actually carries that model
-         (verified live 2026-07-18 — the poller skips such rows forever), so
-         this works only for router-known models.
+    Returns None when the router carries no Anthropic deployment at all: the
+    "anthropic/<model>" provider-string convention is NOT usable here —
+    llm_router.aretrieve_batch cannot resolve it (verified live 2026-07-18:
+    the poller skips such rows forever), so registering it would satisfy
+    ANTHROPIC_BATCHES_REQUIRE_BILLING with a row that never bills (codex P1).
     """
     llm_router = _get_llm_router()
     fallback_any: Optional[str] = None
@@ -431,9 +434,26 @@ def _find_anthropic_deployment_model_id(model: str) -> Optional[str]:
             return str(model_id)
         if fallback_any is None:
             fallback_any = str(model_id)
-    if fallback_any is not None:
-        return fallback_any
-    return f"anthropic/{model}" if model else None
+    return fallback_any
+
+
+def _billing_preflight(router_model_id: Optional[str]) -> Optional[JSONResponse]:
+    """Fail-closed check BEFORE any provider-side job is created: with
+    ANTHROPIC_BATCHES_REQUIRE_BILLING=true, refusing up-front closes most of
+    the created-but-unbillable window that post-create cancellation can only
+    shrink, never eliminate (codex P1)."""
+    if not _billing_required():
+        return None
+    from litellm.proxy.proxy_server import prisma_client
+
+    if prisma_client is None or not router_model_id:
+        verbose_proxy_logger.error(
+            "messages/batches billing: preflight refused batch create (prisma=%s router_model_id=%r)",
+            prisma_client is not None,
+            router_model_id,
+        )
+        return _anthropic_error(503, "api_error", "batch accounting is unavailable; the batch was not accepted")
+    return None
 
 
 async def _record_batch_for_billing(
@@ -444,6 +464,7 @@ async def _record_batch_for_billing(
     model_name: str,
     total_records: int,
     user_api_key_dict: UserAPIKeyAuth,
+    mixed_models: bool = False,
 ) -> bool:
     """Register the batch in LiteLLM_ManagedObjectTable so CheckBatchCost
     prices it at completion and writes key/user/team-attributed spend.
@@ -473,6 +494,10 @@ async def _record_batch_for_billing(
         "object": "batch",
         "status": "validating",
         "model": model_name,
+        # Mixed-model batches must not be priced with the (arbitrary first)
+        # deployment's custom batch rates — the poller strips model_info for
+        # these rows so each result row prices by its own model (codex P1).
+        "mixed_models": mixed_models,
         "total_records": total_records,
         # Read by CheckBatchCost._get_job_attribution — the table itself only
         # carries created_by/team_id, not the submitting key.
@@ -512,6 +537,93 @@ async def _record_batch_for_billing(
             "messages/batches billing: failed to record batch %s for cost tracking", client_batch_id
         )
         return False
+
+
+async def _get_billing_row(batch_id: str) -> Optional[Any]:
+    """The ManagedObjectTable row registered for `batch_id` (Bedrock rows key
+    on the jobArn — matched via endswith on the job id — upstream rows on the
+    raw msgbatch id). None when the DB is absent or no row exists."""
+    from litellm.proxy.proxy_server import prisma_client
+
+    if prisma_client is None:
+        return None
+    try:
+        if batch_id.startswith(BEDROCK_MSGBATCH_PREFIX):
+            job_id, _owner8 = _split_bedrock_batch_id(batch_id)
+            return await prisma_client.db.litellm_managedobjecttable.find_first(
+                where={"model_object_id": {"endswith": f"/model-invocation-job/{job_id}"}}
+            )
+        return await prisma_client.db.litellm_managedobjecttable.find_first(
+            where={"model_object_id": batch_id}
+        )
+    except Exception:
+        verbose_proxy_logger.exception("messages/batches: billing-row lookup failed for %s", batch_id)
+        return None
+
+
+def _row_attribution(row: Any) -> Dict[str, Any]:
+    file_object = getattr(row, "file_object", None)
+    for _ in range(2):
+        if not isinstance(file_object, str):
+            break
+        try:
+            file_object = json.loads(file_object)
+        except ValueError:
+            return {}
+    if isinstance(file_object, dict):
+        attribution = file_object.get("litellm_attribution")
+        if isinstance(attribution, dict):
+            return attribution
+    return {}
+
+
+async def _check_upstream_batch_owner(batch_id: str, user_api_key_dict: UserAPIKeyAuth) -> None:
+    """Per-tenant isolation for upstream (api.anthropic.com) batches: the
+    proxy holds ONE workspace credential, so without this check any caller
+    who learns another tenant's msgbatch id could read or mutate it through
+    the forward (codex P1). Ownership comes from the billing row's
+    attribution; rows are written for every batch this route creates.
+
+    Admin keys bypass. Deployments without a DB keep the historical
+    shared-workspace posture (nothing to check against)."""
+    from litellm.proxy.proxy_server import prisma_client
+
+    if _is_proxy_admin(user_api_key_dict) or prisma_client is None:
+        return
+    row = await _get_billing_row(batch_id)
+    not_found = HTTPException(
+        status_code=404,
+        detail={"type": "error", "error": {"type": "not_found_error", "message": f"batch {batch_id} not found"}},
+    )
+    if row is None:
+        # No registration row (pre-billing batch or foreign id) — 404 for
+        # non-admins rather than exposing the shared workspace.
+        raise not_found
+    attribution = _row_attribution(row)
+    caller_matches = (
+        (user_api_key_dict.api_key and attribution.get("user_api_key") == user_api_key_dict.api_key)
+        or (user_api_key_dict.team_id and attribution.get("user_api_key_team_id") == user_api_key_dict.team_id)
+        or (user_api_key_dict.user_id and attribution.get("user_api_key_user_id") == user_api_key_dict.user_id)
+        or (user_api_key_dict.team_id and getattr(row, "team_id", None) == user_api_key_dict.team_id)
+        or (user_api_key_dict.user_id and getattr(row, "created_by", None) == user_api_key_dict.user_id)
+    )
+    if not caller_matches:
+        raise not_found
+
+
+async def _unbilled_delete_block(batch_id: str) -> Optional[JSONResponse]:
+    """Refuse to delete a batch whose cost has not been finalized: deleting
+    removes the provider-side output the poller prices from, so an early
+    delete would erase the evidence and the spend (codex P1). The poller
+    marks the row batch_processed once spend is written."""
+    row = await _get_billing_row(batch_id)
+    if row is not None and getattr(row, "batch_processed", True) is False:
+        return _anthropic_error(
+            400,
+            "invalid_request_error",
+            "batch cost has not been finalized yet; retry the delete after the next billing cycle",
+        )
+    return None
 
 
 # ── Bedrock <-> MessageBatch mapping ─────────────────────────────────────────
@@ -641,6 +753,13 @@ async def create_message_batch(
         # Mixed-model batches, sub-100-record batches, and models without a
         # Bedrock batch backend run on the Anthropic API upstream (which
         # supports every claude model).
+        billing_model = sorted(models)[0]
+        billing_model_id = _find_anthropic_deployment_model_id(billing_model)
+        refused = _billing_preflight(billing_model_id)
+        if refused is not None:
+            # Refuse BEFORE the upstream batch exists — no cancellation
+            # cleanup, no unbillable-job window.
+            return refused
         response = await _forward_upstream(request, "POST", "/v1/messages/batches", json.dumps(body).encode())
         upstream_batch_id: Optional[str] = None
         upstream_total = len(requests_list)
@@ -652,31 +771,43 @@ async def create_message_batch(
             except (ValueError, TypeError):
                 pass
         if upstream_batch_id is not None:
-            # Mixed-model batches register under the first model's Anthropic
-            # deployment — the deployment only supplies retrieve credentials
-            # (one shared workspace) and the headline pricing model name.
-            billing_model = sorted(models)[0]
+            # The deployment only supplies retrieve credentials (one shared
+            # workspace); mixed batches are flagged so pricing never uses its
+            # custom batch rates.
             recorded = await _record_batch_for_billing(
                 provider_batch_id=upstream_batch_id,
-                router_model_id=_find_anthropic_deployment_model_id(billing_model),
+                router_model_id=billing_model_id,
                 client_batch_id=upstream_batch_id,
                 model_name=billing_model,
                 total_records=upstream_total,
                 user_api_key_dict=user_api_key_dict,
+                mixed_models=len(models) > 1,
             )
             if not recorded and _billing_required():
-                # Refuse + best-effort cancel of the just-created upstream batch.
+                # Refuse + cancel the just-created upstream batch, and VERIFY
+                # the cancel took — an ignored failure leaves a running,
+                # untracked batch (codex P1).
+                cancel_confirmed = False
                 try:
                     client = get_async_httpx_client(
                         llm_provider=httpxSpecialProvider.PassThroughEndpoint, params={"timeout": 60.0}
                     )
-                    await client.post(
-                        f"{_upstream_base()}/v1/messages/batches/{upstream_batch_id}/cancel",
+                    cancel_response = await client.post(
+                        f"{_upstream_base()}/v1/messages/batches/{_url_quote(upstream_batch_id, safe='')}/cancel",
                         headers=_upstream_headers(request),
                     )
+                    if cancel_response.status_code == 200:
+                        cancel_status = cancel_response.json().get("processing_status")
+                        cancel_confirmed = cancel_status in ("canceling", "ended")
                 except Exception:
                     verbose_proxy_logger.exception(
                         "messages/batches billing: cancel of unbillable upstream batch %s failed", upstream_batch_id
+                    )
+                if not cancel_confirmed:
+                    verbose_proxy_logger.critical(
+                        "messages/batches billing: upstream batch %s is RUNNING WITHOUT COST TRACKING "
+                        "(billing row not stored, cancel unconfirmed) — reconcile manually",
+                        upstream_batch_id,
                     )
                 return _anthropic_error(503, "api_error", "batch accounting is unavailable; the batch was not accepted")
         return response
@@ -698,6 +829,12 @@ async def create_message_batch(
         params.pop("stream", None)
         params.setdefault("anthropic_version", "bedrock-2023-05-31")
         records.append(json.dumps({"recordId": custom_id, "modelInput": params}, separators=(",", ":")))
+
+    refused = _billing_preflight((deployment.get("model_info") or {}).get("id"))
+    if refused is not None:
+        # Refuse BEFORE staging input or creating the job — no cleanup, no
+        # unbillable-job window.
+        return refused
 
     ctx = _bedrock_context(deployment)
     input_key = f"{_S3_INPUT_PREFIX}{uuid.uuid4().hex}.jsonl"
@@ -742,12 +879,23 @@ async def create_message_batch(
         user_api_key_dict=user_api_key_dict,
     )
     if not recorded and _billing_required():
-        # Never run an unbillable job: stop it (best effort) and refuse.
+        # Never run an unbillable job: stop it and VERIFY the stop took — an
+        # ignored failure leaves a running, untracked job (codex P1).
         stop = await _aws_call("POST", _job_url(job_id, ctx, "/stop"), None, "bedrock", ctx["params"], ctx["region"])
-        verbose_proxy_logger.error(
-            "messages/batches billing: refused Bedrock batch %s (billing row not stored; stop status %s)",
+        stop_confirmed = stop.status_code in (200, 202)
+        if not stop_confirmed:
+            try:
+                job, _ = await _get_bedrock_job(client_batch_id)
+                stop_confirmed = job.get("status") in ({"Stopping"} | _ENDED_STATUSES)
+            except Exception:
+                pass
+        log = verbose_proxy_logger.error if stop_confirmed else verbose_proxy_logger.critical
+        log(
+            "messages/batches billing: refused Bedrock batch %s (billing row not stored; stop status %s, confirmed=%s)%s",
             client_batch_id,
             stop.status_code,
+            stop_confirmed,
+            "" if stop_confirmed else " — job may be RUNNING WITHOUT COST TRACKING, reconcile manually",
         )
         return _anthropic_error(503, "api_error", "batch accounting is unavailable; the batch was not accepted")
 
@@ -823,6 +971,7 @@ async def retrieve_message_batch(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     if not batch_id.startswith(BEDROCK_MSGBATCH_PREFIX):
+        await _check_upstream_batch_owner(batch_id, user_api_key_dict)
         return await _forward_upstream(request, "GET", f"/v1/messages/batches/{_url_quote(batch_id, safe='')}")
     _check_bedrock_batch_owner(batch_id, user_api_key_dict)
     job, _ctx = await _get_bedrock_job(batch_id)
@@ -841,6 +990,7 @@ async def message_batch_results(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     if not batch_id.startswith(BEDROCK_MSGBATCH_PREFIX):
+        await _check_upstream_batch_owner(batch_id, user_api_key_dict)
         return await _forward_upstream(request, "GET", f"/v1/messages/batches/{_url_quote(batch_id, safe='')}/results")
 
     _check_bedrock_batch_owner(batch_id, user_api_key_dict)
@@ -947,6 +1097,7 @@ async def cancel_message_batch(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     if not batch_id.startswith(BEDROCK_MSGBATCH_PREFIX):
+        await _check_upstream_batch_owner(batch_id, user_api_key_dict)
         return await _forward_upstream(request, "POST", f"/v1/messages/batches/{_url_quote(batch_id, safe='')}/cancel")
     _check_bedrock_batch_owner(batch_id, user_api_key_dict)
     job, ctx = await _get_bedrock_job(batch_id)
@@ -999,8 +1150,17 @@ async def delete_message_batch(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     if not batch_id.startswith(BEDROCK_MSGBATCH_PREFIX):
+        await _check_upstream_batch_owner(batch_id, user_api_key_dict)
+        blocked = await _unbilled_delete_block(batch_id)
+        if blocked is not None:
+            return blocked
         return await _forward_upstream(request, "DELETE", f"/v1/messages/batches/{_url_quote(batch_id, safe='')}")
     _check_bedrock_batch_owner(batch_id, user_api_key_dict)
+    blocked = await _unbilled_delete_block(batch_id)
+    if blocked is not None:
+        # Deleting would remove the S3 output CheckBatchCost prices from —
+        # never before the spend is written (codex P1).
+        return blocked
     job, ctx = await _get_bedrock_job(batch_id)
     if job.get("status") not in _ENDED_STATUSES:
         # Same precondition as Anthropic: an in-progress batch must be
