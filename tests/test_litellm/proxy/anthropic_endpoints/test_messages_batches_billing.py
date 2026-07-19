@@ -644,3 +644,95 @@ async def test_spend_already_recorded_lookup():
     # lookup errors fall through to False (claim + deterministic id still dedup the log)
     find_unique.side_effect = RuntimeError("db down")
     assert await instance._spend_already_recorded("msgbatch_01X") is False
+
+
+# ── poller round-5 behaviors (codex P1 round 5) ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_spend_already_recorded_row_marker():
+    """The row-local marker must dedup even when no SpendLogs row exists —
+    disable_spend_logs deployments never write one, but the key/team/daily
+    counters still increment (codex P1 round 5)."""
+    from litellm_enterprise.proxy.common_utils.check_batch_cost import (
+        SPEND_RECORDED_MARKER_KEY,
+        CheckBatchCost,
+    )
+
+    instance = CheckBatchCost.__new__(CheckBatchCost)
+    find_unique = AsyncMock(return_value=None)
+    instance.prisma_client = SimpleNamespace(
+        db=SimpleNamespace(litellm_spendlogs=SimpleNamespace(find_unique=find_unique))
+    )
+    marked_job = SimpleNamespace(
+        file_object=json.dumps({"id": "msgbatch_01X", SPEND_RECORDED_MARKER_KEY: True})
+    )
+    assert await instance._spend_already_recorded("msgbatch_01X", marked_job) is True
+    find_unique.assert_not_awaited()  # marker short-circuits the DB lookup
+    unmarked_job = SimpleNamespace(file_object=json.dumps({"id": "msgbatch_01X"}))
+    assert await instance._spend_already_recorded("msgbatch_01X", unmarked_job) is False
+    find_unique.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mark_spend_recorded_fenced_write():
+    """The marker write is fenced to the held claim (like release/finalize)
+    and merges into the existing file_object stash; failures are swallowed —
+    spend already ran, so a marker error must not block finalization."""
+    from litellm_enterprise.proxy.common_utils.check_batch_cost import (
+        SPEND_RECORDED_MARKER_KEY,
+        CheckBatchCost,
+    )
+
+    instance = CheckBatchCost.__new__(CheckBatchCost)
+    instance._has_batch_processed_column = True
+    update_many = AsyncMock(return_value=1)
+    instance.prisma_client = SimpleNamespace(
+        db=SimpleNamespace(litellm_managedobjecttable=SimpleNamespace(update_many=update_many))
+    )
+    job = SimpleNamespace(
+        id="job-1",
+        file_object=json.dumps(
+            {"id": "msgbatch_01X", "litellm_attribution": {"user_api_key": "a" * 64}}
+        ),
+    )
+    await instance._mark_spend_recorded(job)
+    assert update_many.await_args.kwargs["where"] == {
+        "id": "job-1",
+        "status": "pricing",
+        "batch_processed": True,
+    }
+    stamped = json.loads(update_many.await_args.kwargs["data"]["file_object"])
+    assert stamped[SPEND_RECORDED_MARKER_KEY] is True
+    assert stamped["litellm_attribution"] == {"user_api_key": "a" * 64}
+    # write errors are swallowed (best effort)
+    update_many.side_effect = RuntimeError("db down")
+    await instance._mark_spend_recorded(job)
+
+
+def test_finalized_file_object_stamps_spend_marker():
+    """spend_recorded=True stamps the marker into the finalized row, and a
+    marker already in the stash survives finalization by default."""
+    from litellm_enterprise.proxy.common_utils.check_batch_cost import (
+        SPEND_RECORDED_MARKER_KEY,
+        CheckBatchCost,
+    )
+
+    response = MagicMock()
+    response.model_dump_json.return_value = json.dumps(
+        {"id": "msgbatch_01X", "status": "completed"}
+    )
+    plain_job = SimpleNamespace(file_object=json.dumps({"id": "msgbatch_01X"}))
+    finalized = json.loads(
+        CheckBatchCost._finalized_file_object(plain_job, response, spend_recorded=True)
+    )
+    assert finalized[SPEND_RECORDED_MARKER_KEY] is True
+    # no spend emitted → no marker invented
+    untracked = json.loads(CheckBatchCost._finalized_file_object(plain_job, response))
+    assert SPEND_RECORDED_MARKER_KEY not in untracked
+    # marker in the stash is preserved even without the flag
+    marked_job = SimpleNamespace(
+        file_object=json.dumps({"id": "msgbatch_01X", SPEND_RECORDED_MARKER_KEY: True})
+    )
+    preserved = json.loads(CheckBatchCost._finalized_file_object(marked_job, response))
+    assert preserved[SPEND_RECORDED_MARKER_KEY] is True

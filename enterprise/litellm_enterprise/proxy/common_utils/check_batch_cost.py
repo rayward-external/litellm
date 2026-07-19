@@ -24,6 +24,14 @@ if TYPE_CHECKING:
 
 CHECK_BATCH_COST_USER_AGENT = "LiteLLM Proxy/CheckBatchCost"
 
+# Row-local dedup marker set the moment spend side effects have run. The
+# SpendLogs request_id lookup is the primary dedup, but it is inert when the
+# operator sets disable_spend_logs — the counters (key/user/team/daily spend)
+# still increment, so without a marker on the billing row itself a worker
+# dying between spend emission and finalization would re-bill them after
+# claim reclamation (codex P1 round 5).
+SPEND_RECORDED_MARKER_KEY = "batch_cost_spend_recorded"
+
 
 class CheckBatchCost:
     def __init__(
@@ -153,16 +161,28 @@ class CheckBatchCost:
             _stdlib_uuid.uuid5(_stdlib_uuid.NAMESPACE_URL, f"litellm:batch-cost:{batch_id}")
         )
 
-    async def _spend_already_recorded(self, batch_id: str) -> bool:
-        """True when a spend row for this batch's deterministic id already
-        exists — a prior worker billed it (then died before finalizing, or
-        lost its claim to reclamation). Spend side effects (spend log AND the
-        key/team/daily counters, which increment independently of the spend
-        log's primary key) must not run twice (codex P1 round 4). Errors
-        return False: with the claim held, the deterministic request_id still
-        dedups the spend LOG on the retry — only the counters ride on this
-        pre-check, and skipping billing on a transient read error would risk
-        never billing at all."""
+    async def _spend_already_recorded(self, batch_id: str, job: Any = None) -> bool:
+        """True when this batch's spend side effects already ran — a prior
+        worker billed it (then died before finalizing, or lost its claim to
+        reclamation). Spend side effects (spend log AND the key/team/daily
+        counters, which increment independently of the spend log's primary
+        key) must not run twice (codex P1 round 4).
+
+        Two independent signals, either suffices:
+        1. The row-local marker stamped by _mark_spend_recorded — works even
+           with disable_spend_logs, where no SpendLogs row ever exists
+           (codex P1 round 5).
+        2. A SpendLogs row under the deterministic request_id.
+
+        Errors on the SpendLogs lookup return False: with the claim held, the
+        deterministic request_id still dedups the spend LOG on the retry —
+        only the counters ride on this pre-check, and skipping billing on a
+        transient read error would risk never billing at all."""
+        if (
+            job is not None
+            and self._get_job_file_object(job).get(SPEND_RECORDED_MARKER_KEY) is True
+        ):
+            return True
         try:
             existing = await self.prisma_client.db.litellm_spendlogs.find_unique(
                 where={"request_id": self._batch_cost_call_id(batch_id)}
@@ -173,6 +193,34 @@ class CheckBatchCost:
                 f"CheckBatchCost: spend-already-recorded lookup failed for {batch_id}: {lookup_err}"
             )
             return False
+
+    async def _mark_spend_recorded(self, job: Any) -> None:
+        """Stamp the billing row the moment spend side effects have run, so
+        the dedup pre-check works without a SpendLogs row (disable_spend_logs
+        deployments — codex P1 round 5). Fenced to the claim this worker
+        holds, matching release/finalize; a slow ex-owner whose claim was
+        reclaimed writes 0 rows (that 2h-reclaim-vs-active-worker race is the
+        pre-existing accepted residual, covered by the SpendLogs backstop
+        when spend logs are enabled). Best effort: spend was already emitted,
+        so a failed marker write must not release the claim or block
+        finalization. Legacy schemas skip it: without the batch_processed
+        column there is no claim reclamation, so the re-bill scenario the
+        marker guards against cannot occur."""
+        if not self._has_batch_processed_column:
+            return
+        try:
+            stamped = dict(self._get_job_file_object(job))
+            stamped[SPEND_RECORDED_MARKER_KEY] = True
+            await self.prisma_client.db.litellm_managedobjecttable.update_many(
+                where={"id": job.id, "status": "pricing", "batch_processed": True},
+                data={"file_object": json.dumps(stamped)},
+            )
+        except Exception as mark_err:
+            verbose_proxy_logger.critical(
+                f"CheckBatchCost: could not stamp spend-recorded marker on job {job.id}; "
+                f"if this worker dies before finalizing and spend logs are disabled, "
+                f"reclamation may re-bill this batch: {mark_err}"
+            )
 
     async def _reclaim_abandoned_pricing_claims(self) -> None:
         """Requeue rows stuck in a pricing claim: a worker that died between
@@ -207,18 +255,30 @@ class CheckBatchCost:
             )
 
     @staticmethod
-    def _finalized_file_object(job: Any, response: "LiteLLMBatch") -> str:
+    def _finalized_file_object(
+        job: Any, response: "LiteLLMBatch", spend_recorded: bool = False
+    ) -> str:
         """The provider response JSON with the registration stash re-attached:
         finalization must not discard litellm_attribution — the upstream
         ownership check matches on it, so dropping it would 404 key-only
-        callers on their own batch after billing (codex P2)."""
+        callers on their own batch after billing (codex P2). spend_recorded
+        stamps the row-local dedup marker (also preserved from the stash) so
+        finalization never erases evidence that billing ran."""
         finalized: Dict[str, Any] = json.loads(response.model_dump_json())
         stash = CheckBatchCost._get_job_file_object(job)
-        for preserved_key in ("litellm_attribution", "model", "mixed_models", "total_records"):
+        for preserved_key in (
+            "litellm_attribution",
+            "model",
+            "mixed_models",
+            "total_records",
+            SPEND_RECORDED_MARKER_KEY,
+        ):
             if preserved_key in stash and (
                 preserved_key not in finalized or finalized.get(preserved_key) is None
             ):
                 finalized[preserved_key] = stash.get(preserved_key)
+        if spend_recorded:
+            finalized[SPEND_RECORDED_MARKER_KEY] = True
         return json.dumps(finalized)
 
     async def _get_user_info(self, batch_id, user_id) -> dict:
@@ -855,7 +915,7 @@ class CheckBatchCost:
                     # Another worker owns this row (or the claim errored) —
                     # never price without holding the claim.
                     continue
-                if await self._spend_already_recorded(batch_id):
+                if await self._spend_already_recorded(batch_id, job):
                     # A prior worker billed this batch but died before
                     # finalizing (or was reclaimed) — finalize WITHOUT
                     # re-running spend side effects.
@@ -866,7 +926,9 @@ class CheckBatchCost:
                     try:
                         already_billed_update: dict = {
                             "status": terminal_status,
-                            "file_object": self._finalized_file_object(job, response),
+                            "file_object": self._finalized_file_object(
+                                job, response, spend_recorded=True
+                            ),
                         }
                         if self._has_batch_processed_column:
                             already_billed_update["batch_processed"] = True
@@ -927,12 +989,18 @@ class CheckBatchCost:
                 # Track this job for the final metrics summary
                 if tracked is not None:
                     processed_models.append(tracked)
+                    # Spend side effects just ran — stamp the row before
+                    # finalizing so a crash in between can't re-bill after
+                    # reclamation, even with disable_spend_logs set.
+                    await self._mark_spend_recorded(job)
 
                 # finalize, fenced to the claim this worker holds
                 try:
                     update_data: dict = {
                         "status": terminal_status,
-                        "file_object": self._finalized_file_object(job, response),
+                        "file_object": self._finalized_file_object(
+                            job, response, spend_recorded=tracked is not None
+                        ),
                     }
                     if self._has_batch_processed_column:
                         update_data["batch_processed"] = True
