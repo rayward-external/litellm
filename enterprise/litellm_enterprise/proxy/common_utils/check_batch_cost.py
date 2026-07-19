@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from litellm._logging import verbose_proxy_logger
 from litellm._uuid import uuid
 from litellm.constants import (
+    ABANDONED_PRICING_CLAIM_RECLAIM_SECONDS,
     MANAGED_OBJECT_STALENESS_CUTOFF_DAYS,
     MAX_OBJECTS_PER_POLL_CYCLE,
 )
@@ -92,8 +93,8 @@ class CheckBatchCost:
     async def _release_job_claim(self, job: Any) -> None:
         """Return a claimed-but-unpriced row to the pool so the next poll
         retries it. Best effort: an orphaned claim (release also failed)
-        surfaces as a stuck 'pricing' row rather than a double bill —
-        the deterministic litellm_call_id backstops the opposite failure."""
+        is recovered by _reclaim_abandoned_pricing_claims on later cycles —
+        the deterministic litellm_call_id backstops the double-bill side."""
         try:
             await self.prisma_client.db.litellm_managedobjecttable.update(
                 where={"id": job.id},
@@ -103,6 +104,53 @@ class CheckBatchCost:
             verbose_proxy_logger.error(
                 f"CheckBatchCost: failed to release claim on job {job.id}: {release_err}"
             )
+
+    async def _reclaim_abandoned_pricing_claims(self) -> None:
+        """Requeue rows stuck in a pricing claim: a worker that died between
+        claiming and finalizing leaves batch_processed=True,status='pricing',
+        which the primary query excludes forever — the batch would never be
+        billed (codex P1 round 2). Claims older than the reclaim window are
+        conditionally flipped back; if the dead worker DID write spend before
+        dying, the deterministic per-batch litellm_call_id makes the re-priced
+        spend row collide instead of double-billing."""
+        if not self._has_batch_processed_column:
+            return
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(
+                seconds=ABANDONED_PRICING_CLAIM_RECLAIM_SECONDS
+            )
+            reclaimed = await self.prisma_client.db.litellm_managedobjecttable.update_many(
+                where={
+                    "file_purpose": "batch",
+                    "status": "pricing",
+                    "batch_processed": True,
+                    "updated_at": {"lt": cutoff},
+                },
+                data={"batch_processed": False, "status": "validating"},
+            )
+            if reclaimed:
+                verbose_proxy_logger.warning(
+                    f"CheckBatchCost: reclaimed {reclaimed} abandoned pricing claim(s) for retry"
+                )
+        except Exception as reclaim_err:
+            verbose_proxy_logger.error(
+                f"CheckBatchCost: abandoned-claim reclaim failed: {reclaim_err}"
+            )
+
+    @staticmethod
+    def _finalized_file_object(job: Any, response: "LiteLLMBatch") -> str:
+        """The provider response JSON with the registration stash re-attached:
+        finalization must not discard litellm_attribution — the upstream
+        ownership check matches on it, so dropping it would 404 key-only
+        callers on their own batch after billing (codex P2)."""
+        finalized: Dict[str, Any] = json.loads(response.model_dump_json())
+        stash = CheckBatchCost._get_job_file_object(job)
+        for preserved_key in ("litellm_attribution", "model", "mixed_models", "total_records"):
+            if preserved_key in stash and (
+                preserved_key not in finalized or finalized.get(preserved_key) is None
+            ):
+                finalized[preserved_key] = stash.get(preserved_key)
+        return json.dumps(finalized)
 
     async def _get_user_info(self, batch_id, user_id) -> dict:
         """
@@ -635,6 +683,7 @@ class CheckBatchCost:
 
         try:
             await self._cleanup_stale_managed_objects()
+            await self._reclaim_abandoned_pricing_claims()
         except Exception as cleanup_err:
             verbose_proxy_logger.warning(
                 f"CheckBatchCost: stale cleanup failed (poll will continue): {cleanup_err}"
@@ -741,11 +790,20 @@ class CheckBatchCost:
                         prom_logger=prom_logger,
                     )
                 except Exception as tracking_err:
-                    if salvaged_output_file_id is not None:
-                        # Salvage path: most failures mean the job died before
-                        # writing any output (NoSuchKey) — finalize without
-                        # cost instead of retrying a fetch that can never
-                        # succeed. The claim stays held; finalization below.
+                    error_text = str(tracking_err).lower()
+                    output_definitively_missing = any(
+                        marker in error_text
+                        for marker in ("nosuchkey", "not found", "does not exist", "404")
+                    )
+                    if salvaged_output_file_id is not None and output_definitively_missing:
+                        # Salvage path, output object confirmed absent: the
+                        # job died before writing any records — finalize
+                        # without cost instead of retrying a fetch that can
+                        # never succeed. Any OTHER error (transient S3,
+                        # credentials, pricing) releases and retries — it
+                        # must not zero out billable partial output (codex
+                        # P1 round 2). The claim stays held; finalization
+                        # happens below.
                         verbose_proxy_logger.warning(
                             f"CheckBatchCost: no salvageable output for terminal batch {batch_id} "
                             f"(job {job.id}, status {response.status}): {tracking_err}"
@@ -772,7 +830,7 @@ class CheckBatchCost:
                 try:
                     update_data: dict = {
                         "status": terminal_status,
-                        "file_object": response.model_dump_json(),
+                        "file_object": self._finalized_file_object(job, response),
                     }
                     if self._has_batch_processed_column:
                         update_data["batch_processed"] = True
@@ -792,7 +850,7 @@ class CheckBatchCost:
                 try:
                     update_data = {
                         "status": response.status,
-                        "file_object": response.model_dump_json(),
+                        "file_object": self._finalized_file_object(job, response),
                     }
                     if self._has_batch_processed_column:
                         update_data["batch_processed"] = True

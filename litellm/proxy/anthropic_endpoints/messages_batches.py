@@ -266,19 +266,52 @@ def _split_bedrock_batch_id(batch_id: str) -> Tuple[str, Optional[str]]:
     return token, None
 
 
-def _check_bedrock_batch_owner(batch_id: str, user_api_key_dict: UserAPIKeyAuth) -> None:
+def _batch_not_found(batch_id: str) -> HTTPException:
+    # 404 (not 403) so foreign ids don't leak existence.
+    return HTTPException(
+        status_code=404,
+        detail={"type": "error", "error": {"type": "not_found_error", "message": f"batch {batch_id} not found"}},
+    )
+
+
+def _check_bedrock_batch_owner_tag(batch_id: str, user_api_key_dict: UserAPIKeyAuth) -> None:
+    """Legacy id-embedded ownership tag check — only used when no billing row
+    exists to bind the job to an owner server-side. A missing owner suffix is
+    NOT a free pass: stripping "_<owner8>" off a leaked id must not bypass
+    ownership. Untagged ids (minted before owner tags existed) are admin-only."""
     _job_id, owner8 = _split_bedrock_batch_id(batch_id)
     if _is_proxy_admin(user_api_key_dict):
         return
-    # A missing owner suffix is NOT a free pass: stripping "_<owner8>" off a
-    # leaked id must not bypass ownership (codex P1). Untagged ids (minted
-    # before owner tags existed) are admin-only.
     if owner8 is None or owner8 != _owner_tag(user_api_key_dict):
-        # 404 (not 403) so foreign ids don't leak existence.
-        raise HTTPException(
-            status_code=404,
-            detail={"type": "error", "error": {"type": "not_found_error", "message": f"batch {batch_id} not found"}},
-        )
+        raise _batch_not_found(batch_id)
+
+
+async def _check_bedrock_batch_owner(batch_id: str, user_api_key_dict: UserAPIKeyAuth) -> None:
+    """Server-side ownership for Bedrock batch ids.
+
+    The id-embedded tag alone is forgeable: an attacker can splice a leaked
+    job id together with the tag from THEIR OWN batch and pass a pure
+    tag-vs-caller comparison (codex P1 round 2). The billing row binds job id
+    to owner server-side, so when one exists it is authoritative. Row-less
+    ids (pre-billing batches / no-DB deployments) fall back to the tag check
+    with the billing-required posture deciding strictness."""
+    if _is_proxy_admin(user_api_key_dict):
+        return
+    from litellm.proxy.proxy_server import prisma_client
+
+    if prisma_client is None:
+        _check_bedrock_batch_owner_tag(batch_id, user_api_key_dict)
+        return
+    row = await _get_billing_row(batch_id)
+    if row is not None:
+        if not _row_matches_caller(row, user_api_key_dict):
+            raise _batch_not_found(batch_id)
+        return
+    if _billing_required():
+        # Every batch created under the fail-closed gate has a row; a
+        # row-less id is foreign, pre-billing, or a DB read failure — 404.
+        raise _batch_not_found(batch_id)
+    _check_bedrock_batch_owner_tag(batch_id, user_api_key_dict)
 
 
 async def _check_model_access(models: List[str], user_api_key_dict: UserAPIKeyAuth) -> Optional[JSONResponse]:
@@ -539,10 +572,12 @@ async def _record_batch_for_billing(
         return False
 
 
-async def _get_billing_row(batch_id: str) -> Optional[Any]:
+async def _get_billing_row(batch_id: str, *, raise_on_error: bool = False) -> Optional[Any]:
     """The ManagedObjectTable row registered for `batch_id` (Bedrock rows key
     on the jobArn — matched via endswith on the job id — upstream rows on the
-    raw msgbatch id). None when the DB is absent or no row exists."""
+    raw msgbatch id). None when the DB is absent or no row exists; DB errors
+    return None unless raise_on_error (callers whose decision must fail
+    CLOSED on lookup errors — e.g. the delete gate — set it)."""
     from litellm.proxy.proxy_server import prisma_client
 
     if prisma_client is None:
@@ -558,6 +593,8 @@ async def _get_billing_row(batch_id: str) -> Optional[Any]:
         )
     except Exception:
         verbose_proxy_logger.exception("messages/batches: billing-row lookup failed for %s", batch_id)
+        if raise_on_error:
+            raise
         return None
 
 
@@ -577,6 +614,17 @@ def _row_attribution(row: Any) -> Dict[str, Any]:
     return {}
 
 
+def _row_matches_caller(row: Any, user_api_key_dict: UserAPIKeyAuth) -> bool:
+    attribution = _row_attribution(row)
+    return bool(
+        (user_api_key_dict.api_key and attribution.get("user_api_key") == user_api_key_dict.api_key)
+        or (user_api_key_dict.team_id and attribution.get("user_api_key_team_id") == user_api_key_dict.team_id)
+        or (user_api_key_dict.user_id and attribution.get("user_api_key_user_id") == user_api_key_dict.user_id)
+        or (user_api_key_dict.team_id and getattr(row, "team_id", None) == user_api_key_dict.team_id)
+        or (user_api_key_dict.user_id and getattr(row, "created_by", None) == user_api_key_dict.user_id)
+    )
+
+
 async def _check_upstream_batch_owner(batch_id: str, user_api_key_dict: UserAPIKeyAuth) -> None:
     """Per-tenant isolation for upstream (api.anthropic.com) batches: the
     proxy holds ONE workspace credential, so without this check any caller
@@ -585,39 +633,51 @@ async def _check_upstream_batch_owner(batch_id: str, user_api_key_dict: UserAPIK
     attribution; rows are written for every batch this route creates.
 
     Admin keys bypass. Deployments without a DB keep the historical
-    shared-workspace posture (nothing to check against)."""
+    shared-workspace posture. Row-less ids: with billing REQUIRED every
+    batch has a row, so no-row means foreign/pre-billing — 404; with billing
+    optional a registration failure is survivable by design, so the batch
+    must stay usable by everyone sharing the workspace (codex P1 round 2:
+    the owner would otherwise be locked out of their own batch)."""
     from litellm.proxy.proxy_server import prisma_client
 
     if _is_proxy_admin(user_api_key_dict) or prisma_client is None:
         return
     row = await _get_billing_row(batch_id)
-    not_found = HTTPException(
-        status_code=404,
-        detail={"type": "error", "error": {"type": "not_found_error", "message": f"batch {batch_id} not found"}},
-    )
     if row is None:
-        # No registration row (pre-billing batch or foreign id) — 404 for
-        # non-admins rather than exposing the shared workspace.
-        raise not_found
-    attribution = _row_attribution(row)
-    caller_matches = (
-        (user_api_key_dict.api_key and attribution.get("user_api_key") == user_api_key_dict.api_key)
-        or (user_api_key_dict.team_id and attribution.get("user_api_key_team_id") == user_api_key_dict.team_id)
-        or (user_api_key_dict.user_id and attribution.get("user_api_key_user_id") == user_api_key_dict.user_id)
-        or (user_api_key_dict.team_id and getattr(row, "team_id", None) == user_api_key_dict.team_id)
-        or (user_api_key_dict.user_id and getattr(row, "created_by", None) == user_api_key_dict.user_id)
-    )
-    if not caller_matches:
-        raise not_found
+        if _billing_required():
+            raise _batch_not_found(batch_id)
+        return
+    if not _row_matches_caller(row, user_api_key_dict):
+        raise _batch_not_found(batch_id)
 
 
-async def _unbilled_delete_block(batch_id: str) -> Optional[JSONResponse]:
+_FINALIZED_ROW_STATUSES = {"complete", "completed", "failed", "expired", "cancelled", "stale_expired"}
+
+
+async def _unbilled_delete_block(batch_id: str, user_api_key_dict: UserAPIKeyAuth) -> Optional[JSONResponse]:
     """Refuse to delete a batch whose cost has not been finalized: deleting
     removes the provider-side output the poller prices from, so an early
-    delete would erase the evidence and the spend (codex P1). The poller
-    marks the row batch_processed once spend is written."""
-    row = await _get_billing_row(batch_id)
-    if row is not None and getattr(row, "batch_processed", True) is False:
+    delete would erase the evidence and the spend (codex P1).
+
+    batch_processed=True alone is NOT finalization — the poller sets it while
+    merely holding the pricing claim, so the status must also be terminal
+    (codex P1 round 2). Lookup errors fail CLOSED when billing is required
+    (fail-open would let a DB outage authorize deleting unpriced output);
+    admins bypass entirely."""
+    if _is_proxy_admin(user_api_key_dict):
+        return None
+    try:
+        row = await _get_billing_row(batch_id, raise_on_error=_billing_required())
+    except Exception:
+        return _anthropic_error(
+            500, "api_error", "batch accounting is unavailable; retry the delete shortly"
+        )
+    if row is None:
+        return None
+    finalized = getattr(row, "batch_processed", False) is True and str(
+        getattr(row, "status", "") or ""
+    ) in _FINALIZED_ROW_STATUSES
+    if not finalized:
         return _anthropic_error(
             400,
             "invalid_request_error",
@@ -973,7 +1033,7 @@ async def retrieve_message_batch(
     if not batch_id.startswith(BEDROCK_MSGBATCH_PREFIX):
         await _check_upstream_batch_owner(batch_id, user_api_key_dict)
         return await _forward_upstream(request, "GET", f"/v1/messages/batches/{_url_quote(batch_id, safe='')}")
-    _check_bedrock_batch_owner(batch_id, user_api_key_dict)
+    await _check_bedrock_batch_owner(batch_id, user_api_key_dict)
     job, _ctx = await _get_bedrock_job(batch_id)
     return JSONResponse(status_code=200, content=_map_job_to_message_batch(job, batch_id, _results_base_url(request)))
 
@@ -993,7 +1053,7 @@ async def message_batch_results(
         await _check_upstream_batch_owner(batch_id, user_api_key_dict)
         return await _forward_upstream(request, "GET", f"/v1/messages/batches/{_url_quote(batch_id, safe='')}/results")
 
-    _check_bedrock_batch_owner(batch_id, user_api_key_dict)
+    await _check_bedrock_batch_owner(batch_id, user_api_key_dict)
     job, ctx = await _get_bedrock_job(batch_id)
     status = job.get("status")
     if status not in _ENDED_STATUSES:
@@ -1099,7 +1159,7 @@ async def cancel_message_batch(
     if not batch_id.startswith(BEDROCK_MSGBATCH_PREFIX):
         await _check_upstream_batch_owner(batch_id, user_api_key_dict)
         return await _forward_upstream(request, "POST", f"/v1/messages/batches/{_url_quote(batch_id, safe='')}/cancel")
-    _check_bedrock_batch_owner(batch_id, user_api_key_dict)
+    await _check_bedrock_batch_owner(batch_id, user_api_key_dict)
     job, ctx = await _get_bedrock_job(batch_id)
     job_id, _owner8 = _split_bedrock_batch_id(batch_id)
     if job.get("status") not in _ENDED_STATUSES:
@@ -1151,12 +1211,12 @@ async def delete_message_batch(
 ):
     if not batch_id.startswith(BEDROCK_MSGBATCH_PREFIX):
         await _check_upstream_batch_owner(batch_id, user_api_key_dict)
-        blocked = await _unbilled_delete_block(batch_id)
+        blocked = await _unbilled_delete_block(batch_id, user_api_key_dict)
         if blocked is not None:
             return blocked
         return await _forward_upstream(request, "DELETE", f"/v1/messages/batches/{_url_quote(batch_id, safe='')}")
-    _check_bedrock_batch_owner(batch_id, user_api_key_dict)
-    blocked = await _unbilled_delete_block(batch_id)
+    await _check_bedrock_batch_owner(batch_id, user_api_key_dict)
+    blocked = await _unbilled_delete_block(batch_id, user_api_key_dict)
     if blocked is not None:
         # Deleting would remove the S3 output CheckBatchCost prices from —
         # never before the spend is written (codex P1).

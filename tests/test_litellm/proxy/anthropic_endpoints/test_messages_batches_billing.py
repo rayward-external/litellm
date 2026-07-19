@@ -370,27 +370,65 @@ async def test_bedrock_create_stops_job_when_row_write_fails(monkeypatch):
 # ── ownership checks (codex P1 fixes) ────────────────────────────────────────
 
 
-def test_bedrock_owner_check_rejects_untagged_ids():
-    """Stripping the _owner8 suffix off a leaked id must not bypass ownership."""
+@pytest.mark.asyncio
+async def test_bedrock_owner_check_rejects_untagged_ids(monkeypatch):
+    """Stripping the _owner8 suffix off a leaked id must not bypass ownership
+    (legacy tag path — no DB configured)."""
     from fastapi import HTTPException
 
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
     untagged = "msgbatch_bedrock_abc123xyz"
     with pytest.raises(HTTPException) as exc:
-        mb._check_bedrock_batch_owner(untagged, _auth())
+        await mb._check_bedrock_batch_owner(untagged, _auth())
     assert exc.value.status_code == 404
     # admins may still access untagged (pre-owner-tag) ids
     admin = _auth()
     admin.user_role = "proxy_admin"
-    mb._check_bedrock_batch_owner(untagged, admin)
+    await mb._check_bedrock_batch_owner(untagged, admin)
 
 
-def _billing_row(attribution=None, batch_processed=False, team_id=None, created_by=None):
+@pytest.mark.asyncio
+async def test_bedrock_owner_check_is_row_based(monkeypatch):
+    """A spliced id (victim job id + the ATTACKER'S OWN valid tag) must fail:
+    ownership binds through the billing row, not the caller-supplied suffix
+    (codex P1 round 2)."""
+    from fastapi import HTTPException
+
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _PrismaStub())
+    attacker = _auth(api_key="e" * 64, user_id="attacker", team_id="attacker-team")
+    victim_row = _billing_row(attribution={"user_api_key": "a" * 64, "user_api_key_user_id": "user-1"})
+    spliced_id = f"msgbatch_bedrock_victimjob_{mb._owner_tag(attacker)}"
+
+    async def _victim_row(_batch_id):
+        return victim_row
+
+    monkeypatch.setattr(mb, "_get_billing_row", _victim_row)
+    with pytest.raises(HTTPException) as exc:
+        await mb._check_bedrock_batch_owner(spliced_id, attacker)
+    assert exc.value.status_code == 404
+    # the real owner still passes on the same row
+    await mb._check_bedrock_batch_owner(spliced_id, _auth())
+
+    # row-less id: billing-required -> 404; optional -> legacy tag decides
+    async def _no_row(_batch_id):
+        return None
+
+    monkeypatch.setattr(mb, "_get_billing_row", _no_row)
+    monkeypatch.setenv(mb._REQUIRE_BILLING_ENV, "true")
+    with pytest.raises(HTTPException):
+        await mb._check_bedrock_batch_owner(spliced_id, attacker)
+    monkeypatch.setenv(mb._REQUIRE_BILLING_ENV, "false")
+    await mb._check_bedrock_batch_owner(spliced_id, attacker)  # tag matches attacker
+
+
+def _billing_row(attribution=None, batch_processed=False, team_id=None, created_by=None, status="validating"):
     file_object = {"id": "x", "litellm_attribution": attribution or {}}
     return SimpleNamespace(
         file_object=json.dumps(file_object),
         batch_processed=batch_processed,
         team_id=team_id,
         created_by=created_by,
+        status=status,
     )
 
 
@@ -422,8 +460,13 @@ async def test_upstream_owner_check(monkeypatch):
         return None
 
     monkeypatch.setattr(mb, "_get_billing_row", _missing)
+    monkeypatch.setenv(mb._REQUIRE_BILLING_ENV, "true")
     with pytest.raises(HTTPException):
         await mb._check_upstream_batch_owner("msgbatch_01X", caller)
+    # billing optional: a registration failure is survivable by design, so a
+    # row-less batch stays usable (owner would otherwise be locked out)
+    monkeypatch.setenv(mb._REQUIRE_BILLING_ENV, "false")
+    await mb._check_upstream_batch_owner("msgbatch_01X", caller)
 
     # admin bypasses; no-DB deployments keep the historical shared posture
     admin = _auth()
@@ -435,24 +478,51 @@ async def test_upstream_owner_check(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unbilled_delete_block(monkeypatch):
-    async def _unbilled(_batch_id):
+    caller = _auth()
+
+    async def _unbilled(_batch_id, **_kwargs):
         return _billing_row(batch_processed=False)
 
     monkeypatch.setattr(mb, "_get_billing_row", _unbilled)
-    blocked = await mb._unbilled_delete_block("msgbatch_01X")
+    blocked = await mb._unbilled_delete_block("msgbatch_01X", caller)
     assert blocked is not None and blocked.status_code == 400
 
-    async def _billed(_batch_id):
-        return _billing_row(batch_processed=True)
+    # batch_processed=True while the claim is merely held ('pricing') is NOT
+    # finalization — deletion mid-pricing would erase the priced output
+    async def _pricing(_batch_id, **_kwargs):
+        return _billing_row(batch_processed=True, status="pricing")
+
+    monkeypatch.setattr(mb, "_get_billing_row", _pricing)
+    blocked = await mb._unbilled_delete_block("msgbatch_01X", caller)
+    assert blocked is not None and blocked.status_code == 400
+
+    async def _billed(_batch_id, **_kwargs):
+        return _billing_row(batch_processed=True, status="complete")
 
     monkeypatch.setattr(mb, "_get_billing_row", _billed)
-    assert await mb._unbilled_delete_block("msgbatch_01X") is None
+    assert await mb._unbilled_delete_block("msgbatch_01X", caller) is None
 
-    async def _none(_batch_id):
+    async def _none(_batch_id, **_kwargs):
         return None
 
     monkeypatch.setattr(mb, "_get_billing_row", _none)
-    assert await mb._unbilled_delete_block("msgbatch_01X") is None
+    assert await mb._unbilled_delete_block("msgbatch_01X", caller) is None
+
+    # DB lookup errors fail CLOSED when billing is required
+    async def _boom(_batch_id, **kwargs):
+        if kwargs.get("raise_on_error"):
+            raise RuntimeError("db down")
+        return None
+
+    monkeypatch.setenv(mb._REQUIRE_BILLING_ENV, "true")
+    monkeypatch.setattr(mb, "_get_billing_row", _boom)
+    blocked = await mb._unbilled_delete_block("msgbatch_01X", caller)
+    assert blocked is not None and blocked.status_code == 500
+
+    # admins bypass the gate entirely
+    admin = _auth()
+    admin.user_role = "proxy_admin"
+    assert await mb._unbilled_delete_block("msgbatch_01X", admin) is None
 
 
 def test_billing_preflight(monkeypatch):
@@ -484,3 +554,51 @@ async def test_record_batch_stashes_mixed_models_flag(monkeypatch):
     )
     file_object = json.loads(prisma.upsert.await_args.kwargs["data"]["create"]["file_object"])
     assert file_object["mixed_models"] is True
+
+
+# ── poller round-2 behaviors (codex P1/P2 round 2) ───────────────────────────
+
+
+def test_finalized_file_object_preserves_attribution():
+    """Finalization must keep litellm_attribution — the upstream ownership
+    check matches on it, so dropping it would 404 key-only callers on their
+    own batch after billing."""
+    from litellm_enterprise.proxy.common_utils.check_batch_cost import CheckBatchCost
+
+    job = SimpleNamespace(
+        file_object=json.dumps(
+            {
+                "id": "msgbatch_01X",
+                "model": "claude-opus-4-6",
+                "mixed_models": False,
+                "litellm_attribution": {"user_api_key": "a" * 64},
+            }
+        )
+    )
+    response = MagicMock()
+    response.model_dump_json.return_value = json.dumps({"id": "msgbatch_01X", "status": "completed"})
+    finalized = json.loads(CheckBatchCost._finalized_file_object(job, response))
+    assert finalized["litellm_attribution"] == {"user_api_key": "a" * 64}
+    assert finalized["model"] == "claude-opus-4-6"
+    assert finalized["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_reclaim_abandoned_pricing_claims():
+    """A worker that dies after claiming leaves batch_processed=True,
+    status='pricing' — invisible to the primary query forever. The reclaim
+    sweep conditionally requeues stale claims."""
+    from litellm_enterprise.proxy.common_utils.check_batch_cost import CheckBatchCost
+
+    instance = CheckBatchCost.__new__(CheckBatchCost)
+    instance._has_batch_processed_column = True
+    update_many = AsyncMock(return_value=2)
+    instance.prisma_client = SimpleNamespace(
+        db=SimpleNamespace(litellm_managedobjecttable=SimpleNamespace(update_many=update_many))
+    )
+    await instance._reclaim_abandoned_pricing_claims()
+    where = update_many.await_args.kwargs["where"]
+    assert where["status"] == "pricing"
+    assert where["batch_processed"] is True
+    assert "updated_at" in where
+    assert update_many.await_args.kwargs["data"] == {"batch_processed": False, "status": "validating"}
