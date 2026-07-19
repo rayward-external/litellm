@@ -602,3 +602,45 @@ async def test_reclaim_abandoned_pricing_claims():
     assert where["batch_processed"] is True
     assert "updated_at" in where
     assert update_many.await_args.kwargs["data"] == {"batch_processed": False, "status": "validating"}
+
+
+def test_spend_logs_id_honors_batch_cost_prefix():
+    """aretrieve_batch spend ids hash the response (user-poll dedup), but the
+    poller's deterministic prefixed call id must win — the response hash
+    changes every retry via freshly-minted managed file ids (codex P1 r4)."""
+    from litellm.proxy.spend_tracking.spend_tracking_utils import (
+        BATCH_COST_CALL_ID_PREFIX,
+        get_spend_logs_id,
+    )
+
+    deterministic = BATCH_COST_CALL_ID_PREFIX + "abc-123"
+    assert (
+        get_spend_logs_id("aretrieve_batch", {"id": "x"}, {"litellm_call_id": deterministic})
+        == deterministic
+    )
+    # random user-poll call ids keep the response-hash dedup
+    hashed = get_spend_logs_id("aretrieve_batch", {"id": "x"}, {"litellm_call_id": "9f2c0b7e"})
+    assert hashed != "9f2c0b7e"
+    assert hashed == get_spend_logs_id("aretrieve_batch", {"id": "x"}, {"litellm_call_id": "other"})
+    # non-batch call types keep response id / call id precedence
+    assert get_spend_logs_id("acompletion", {"id": "resp-1"}, {"litellm_call_id": "c"}) == "resp-1"
+
+
+@pytest.mark.asyncio
+async def test_spend_already_recorded_lookup():
+    from litellm_enterprise.proxy.common_utils.check_batch_cost import CheckBatchCost
+
+    instance = CheckBatchCost.__new__(CheckBatchCost)
+    find_unique = AsyncMock(return_value=SimpleNamespace(request_id="x"))
+    instance.prisma_client = SimpleNamespace(
+        db=SimpleNamespace(litellm_spendlogs=SimpleNamespace(find_unique=find_unique))
+    )
+    assert await instance._spend_already_recorded("msgbatch_01X") is True
+    assert find_unique.await_args.kwargs["where"] == {
+        "request_id": CheckBatchCost._batch_cost_call_id("msgbatch_01X")
+    }
+    find_unique.return_value = None
+    assert await instance._spend_already_recorded("msgbatch_01X") is False
+    # lookup errors fall through to False (claim + deterministic id still dedup the log)
+    find_unique.side_effect = RuntimeError("db down")
+    assert await instance._spend_already_recorded("msgbatch_01X") is False

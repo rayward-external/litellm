@@ -139,6 +139,41 @@ class CheckBatchCost:
             return False
         return True
 
+    @staticmethod
+    def _batch_cost_call_id(batch_id: str) -> str:
+        """Deterministic, prefixed spend id for a batch — the prefix is what
+        get_spend_logs_id keys on to use it as the SpendLogs request_id."""
+        import uuid as _stdlib_uuid
+
+        from litellm.proxy.spend_tracking.spend_tracking_utils import (
+            BATCH_COST_CALL_ID_PREFIX,
+        )
+
+        return BATCH_COST_CALL_ID_PREFIX + str(
+            _stdlib_uuid.uuid5(_stdlib_uuid.NAMESPACE_URL, f"litellm:batch-cost:{batch_id}")
+        )
+
+    async def _spend_already_recorded(self, batch_id: str) -> bool:
+        """True when a spend row for this batch's deterministic id already
+        exists — a prior worker billed it (then died before finalizing, or
+        lost its claim to reclamation). Spend side effects (spend log AND the
+        key/team/daily counters, which increment independently of the spend
+        log's primary key) must not run twice (codex P1 round 4). Errors
+        return False: with the claim held, the deterministic request_id still
+        dedups the spend LOG on the retry — only the counters ride on this
+        pre-check, and skipping billing on a transient read error would risk
+        never billing at all."""
+        try:
+            existing = await self.prisma_client.db.litellm_spendlogs.find_unique(
+                where={"request_id": self._batch_cost_call_id(batch_id)}
+            )
+            return existing is not None
+        except Exception as lookup_err:
+            verbose_proxy_logger.error(
+                f"CheckBatchCost: spend-already-recorded lookup failed for {batch_id}: {lookup_err}"
+            )
+            return False
+
     async def _reclaim_abandoned_pricing_claims(self) -> None:
         """Requeue rows stuck in a pricing claim: a worker that died between
         claiming and finalizing leaves batch_processed=True,status='pricing',
@@ -627,20 +662,19 @@ class CheckBatchCost:
                 model_info=deployment_model_info,  # type: ignore[arg-type]
             )
         )
-        import uuid as _stdlib_uuid
-
         logging_obj = LiteLLMLogging(
             model=batch_models[0] if batch_models else (model_name or "unknown"),
             messages=[{"role": "user", "content": "<retrieve_batch>"}],
             stream=False,
             call_type="aretrieve_batch",
             start_time=datetime.now(),
-            # Deterministic per-batch id: LiteLLM_SpendLogs keys request_id on
-            # litellm_call_id, so a repeat pricing attempt for the same batch
-            # collides on the primary key instead of inserting a second spend
-            # row — the last line of double-billing defense under claim races
-            # or crash-retry (codex P1).
-            litellm_call_id=str(_stdlib_uuid.uuid5(_stdlib_uuid.NAMESPACE_URL, f"litellm:batch-cost:{batch_id}")),
+            # Deterministic per-batch id, honored as the SpendLogs request_id
+            # by get_spend_logs_id via its prefix (aretrieve_batch normally
+            # keys on a response hash, which the poller's freshly-minted
+            # managed file ids change every retry). Combined with the
+            # already-billed pre-check in the caller, retried pricing cannot
+            # insert a second spend row (codex P1 round 4).
+            litellm_call_id=self._batch_cost_call_id(batch_id),
             function_id=str(uuid.uuid4()),
         )
 
@@ -820,6 +854,27 @@ class CheckBatchCost:
                 if not await self._claim_job(job):
                     # Another worker owns this row (or the claim errored) —
                     # never price without holding the claim.
+                    continue
+                if await self._spend_already_recorded(batch_id):
+                    # A prior worker billed this batch but died before
+                    # finalizing (or was reclaimed) — finalize WITHOUT
+                    # re-running spend side effects.
+                    verbose_proxy_logger.warning(
+                        f"CheckBatchCost: spend already recorded for batch {batch_id}; "
+                        f"finalizing job {job.id} without re-billing"
+                    )
+                    try:
+                        already_billed_update: dict = {
+                            "status": terminal_status,
+                            "file_object": self._finalized_file_object(job, response),
+                        }
+                        if self._has_batch_processed_column:
+                            already_billed_update["batch_processed"] = True
+                        await self._finalize_job(job, already_billed_update)
+                    except Exception as db_err:
+                        verbose_proxy_logger.error(
+                            f"CheckBatchCost: failed to finalize already-billed job {job.id}: {db_err}"
+                        )
                     continue
                 try:
                     tracked = await self._track_completed_batch_cost(
