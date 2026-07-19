@@ -92,18 +92,52 @@ class CheckBatchCost:
 
     async def _release_job_claim(self, job: Any) -> None:
         """Return a claimed-but-unpriced row to the pool so the next poll
-        retries it. Best effort: an orphaned claim (release also failed)
-        is recovered by _reclaim_abandoned_pricing_claims on later cycles —
-        the deterministic litellm_call_id backstops the double-bill side."""
+        retries it. Fenced to the claim-held state: after a reclaim, a slow
+        ex-owner's release must not flip a row another worker has since
+        claimed or finalized (codex P2 round 3). Best effort: an orphaned
+        claim (release also failed) is recovered by
+        _reclaim_abandoned_pricing_claims on later cycles — the deterministic
+        litellm_call_id backstops the double-bill side."""
         try:
-            await self.prisma_client.db.litellm_managedobjecttable.update(
-                where={"id": job.id},
+            if not self._has_batch_processed_column:
+                await self.prisma_client.db.litellm_managedobjecttable.update(
+                    where={"id": job.id},
+                    data={"batch_processed": False, "status": "validating"},
+                )
+                return
+            released = await self.prisma_client.db.litellm_managedobjecttable.update_many(
+                where={"id": job.id, "status": "pricing", "batch_processed": True},
                 data={"batch_processed": False, "status": "validating"},
             )
+            if released != 1:
+                verbose_proxy_logger.warning(
+                    f"CheckBatchCost: release skipped for job {job.id} — the claim was taken over by another worker"
+                )
         except Exception as release_err:
             verbose_proxy_logger.error(
                 f"CheckBatchCost: failed to release claim on job {job.id}: {release_err}"
             )
+
+    async def _finalize_job(self, job: Any, update_data: Dict[str, Any]) -> bool:
+        """Write the terminal row state, fenced to the claim this worker
+        holds: a slow ex-owner whose claim was reclaimed must not overwrite
+        the new owner's finalization (codex P2 round 3). Legacy schemas
+        without batch_processed keep the plain unconditional update."""
+        if not self._has_batch_processed_column:
+            await self.prisma_client.db.litellm_managedobjecttable.update(
+                where={"id": job.id}, data=update_data
+            )
+            return True
+        finalized_count = await self.prisma_client.db.litellm_managedobjecttable.update_many(
+            where={"id": job.id, "status": "pricing", "batch_processed": True},
+            data=update_data,
+        )
+        if finalized_count != 1:
+            verbose_proxy_logger.warning(
+                f"CheckBatchCost: finalize skipped for job {job.id} — the claim was reclaimed by another worker"
+            )
+            return False
+        return True
 
     async def _reclaim_abandoned_pricing_claims(self) -> None:
         """Requeue rows stuck in a pricing claim: a worker that died between
@@ -193,6 +227,9 @@ class CheckBatchCost:
                         "expired",
                         "cancelled",
                         "stale_expired",
+                        # claim-held rows belong to the reclaim sweep, never
+                        # stale cleanup (codex P1 round 3)
+                        "pricing",
                     ]
                 },
                 "created_at": {"lt": cutoff},
@@ -682,8 +719,11 @@ class CheckBatchCost:
         processed_models: List[Tuple[Optional[str], Optional[str]]] = []
 
         try:
-            await self._cleanup_stale_managed_objects()
+            # Reclaim FIRST: cleanup running first would stale_expire an
+            # old claim-held row while batch_processed stays True — a state
+            # the delete gate reads as finalized (codex P1 round 3).
             await self._reclaim_abandoned_pricing_claims()
+            await self._cleanup_stale_managed_objects()
         except Exception as cleanup_err:
             verbose_proxy_logger.warning(
                 f"CheckBatchCost: stale cleanup failed (poll will continue): {cleanup_err}"
@@ -790,10 +830,17 @@ class CheckBatchCost:
                         prom_logger=prom_logger,
                     )
                 except Exception as tracking_err:
+                    # S3-specific missing-object signatures ONLY: generic
+                    # markers ("not found", "404") also match pricing errors
+                    # like "Model not found in cost map" and would finalize
+                    # billable partial output at zero (codex P1 round 3).
+                    # Unrecognized errors retry — the reclaim sweep keeps
+                    # retries alive, so the safe direction is to never
+                    # zero-finalize on ambiguity.
                     error_text = str(tracking_err).lower()
                     output_definitively_missing = any(
                         marker in error_text
-                        for marker in ("nosuchkey", "not found", "does not exist", "404")
+                        for marker in ("nosuchkey", "no such key", "specified key does not exist")
                     )
                     if salvaged_output_file_id is not None and output_definitively_missing:
                         # Salvage path, output object confirmed absent: the
@@ -826,7 +873,7 @@ class CheckBatchCost:
                 if tracked is not None:
                     processed_models.append(tracked)
 
-                # finalize (batch_processed already True via the claim)
+                # finalize, fenced to the claim this worker holds
                 try:
                     update_data: dict = {
                         "status": terminal_status,
@@ -834,10 +881,7 @@ class CheckBatchCost:
                     }
                     if self._has_batch_processed_column:
                         update_data["batch_processed"] = True
-                    await self.prisma_client.db.litellm_managedobjecttable.update(
-                        where={"id": job.id},
-                        data=update_data,
-                    )
+                    await self._finalize_job(job, update_data)
                 except Exception as db_err:
                     verbose_proxy_logger.error(
                         f"CheckBatchCost: failed to mark job {job.id} {terminal_status} in DB: {db_err}"
@@ -854,10 +898,7 @@ class CheckBatchCost:
                     }
                     if self._has_batch_processed_column:
                         update_data["batch_processed"] = True
-                    await self.prisma_client.db.litellm_managedobjecttable.update(
-                        where={"id": job.id},
-                        data=update_data,
-                    )
+                    await self._finalize_job(job, update_data)
                     verbose_proxy_logger.info(
                         f"CheckBatchCost: marked job {job.id} as {response.status} in DB"
                     )
