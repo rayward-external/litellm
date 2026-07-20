@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from litellm._logging import verbose_proxy_logger
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.proxy._types import PassThroughEndpointLoggingResultValues
 from litellm.types.passthrough_endpoints.pass_through_endpoints import (
@@ -32,6 +33,85 @@ from .llm_provider_handlers.vertex_passthrough_logging_handler import (
 )
 
 cohere_passthrough_logging_handler = CoherePassthroughLoggingHandler()
+
+# Usage shapes understood by the generic fallback, in probe order. Each entry is
+# (container key, prompt-token field, completion-token field); a `None` container
+# means the fields sit at the top level of the response body.
+#
+# These three cover essentially every LLM API in the wild: the OpenAI wire
+# protocol and its many compatible upstreams, the Anthropic Messages shape, and
+# Google's Gemini/Vertex shape.
+_GENERIC_USAGE_SHAPES = (
+    ("usage", "prompt_tokens", "completion_tokens"),  # OpenAI + compatibles
+    ("usage", "input_tokens", "output_tokens"),  # Anthropic
+    ("usageMetadata", "promptTokenCount", "candidatesTokenCount"),  # Gemini
+)
+
+
+def _coerce_token_count(value: Any) -> Optional[int]:
+    """Return a non-negative int token count, or None if the value isn't one."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    count = int(value)
+    return count if count >= 0 else None
+
+
+def extract_generic_usage(response_body: Any) -> Optional[tuple]:
+    """Best-effort (prompt_tokens, completion_tokens) from an unknown provider.
+
+    Cost tracking for pass-through is otherwise an allow-list: a provider
+    without a bespoke handler records $0 while its request is still billed
+    against our upstream credentials. This makes a recognisable usage block
+    sufficient to be priced, so pricing is the default for future providers
+    rather than the exception.
+
+    Returns None when no shape matches — the caller must then leave the call
+    unpriced rather than invent a number.
+    """
+    if not isinstance(response_body, dict):
+        return None
+    for container_key, prompt_field, completion_field in _GENERIC_USAGE_SHAPES:
+        container = response_body.get(container_key) if container_key else response_body
+        if not isinstance(container, dict):
+            continue
+        if prompt_field not in container and completion_field not in container:
+            continue
+        prompt_tokens = _coerce_token_count(container.get(prompt_field, 0))
+        completion_tokens = _coerce_token_count(container.get(completion_field, 0))
+        if prompt_tokens is None or completion_tokens is None:
+            continue
+        if prompt_tokens == 0 and completion_tokens == 0:
+            # A usage block of all zeros carries no billable signal; keep
+            # probing in case another shape is populated.
+            continue
+        return prompt_tokens, completion_tokens
+    return None
+
+
+def _resolve_generic_price(model: str, custom_llm_provider: Optional[str]) -> Optional[tuple]:
+    """Per-token input/output rates for `model`, or None if it isn't priced.
+
+    Deliberately strict: only a model that resolves to a real price-map entry
+    carrying per-token rates gets a cost. Anything else is left unpriced — an
+    invented number corrupts invoice reconciliation more thoroughly than a
+    missing one, because it looks authoritative.
+
+    Models priced per second / per image (audio, image generation) resolve with
+    zero per-token rates; those belong to dedicated handlers, so they are
+    skipped here rather than recorded as a misleading $0.00.
+    """
+    from litellm.utils import get_model_info
+
+    for provider in (custom_llm_provider, None):
+        try:
+            model_info = get_model_info(model=model, custom_llm_provider=provider)
+        except Exception:
+            continue
+        input_rate = model_info.get("input_cost_per_token") or 0
+        output_rate = model_info.get("output_cost_per_token") or 0
+        if input_rate or output_rate:
+            return input_rate, output_rate
+    return None
 
 
 def _safe_response_text(httpx_response: httpx.Response) -> str:
@@ -262,6 +342,18 @@ class PassThroughEndpointLogging:
 
             standard_logging_response_object = vertex_ai_live_handler_result["result"]
             kwargs = vertex_ai_live_handler_result["kwargs"]
+        else:
+            # No bespoke handler matched. Rather than record $0 for a request we
+            # are still billed for, price it from whatever recognisable usage
+            # block the upstream returned. See `_price_generic_passthrough`.
+            kwargs = self._price_generic_passthrough(
+                response_body=response_body,
+                request_body=request_body,
+                logging_obj=logging_obj,
+                url_route=url_route,
+                custom_llm_provider=custom_llm_provider,
+                kwargs=kwargs,
+            )
         return_dict["standard_logging_response_object"] = standard_logging_response_object
 
         return_dict["kwargs"] = kwargs
@@ -449,6 +541,98 @@ class PassThroughEndpointLogging:
             or OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route, custom_llm_provider)
             or OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route, custom_llm_provider)
         )
+
+    def _resolve_generic_model(
+        self,
+        response_body: Optional[dict],
+        request_body: dict,
+        logging_obj: LiteLLMLoggingObj,
+    ) -> Optional[str]:
+        """Find the model name for an otherwise-unrecognised pass-through call."""
+        candidates = [
+            request_body.get("model") if isinstance(request_body, dict) else None,
+            response_body.get("model") if isinstance(response_body, dict) else None,
+            logging_obj.model_call_details.get("model"),
+        ]
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return None
+
+    def _price_generic_passthrough(
+        self,
+        response_body: Optional[dict],
+        request_body: dict,
+        logging_obj: LiteLLMLoggingObj,
+        url_route: str,
+        custom_llm_provider: Optional[str],
+        kwargs: dict,
+    ) -> dict:
+        """Price a pass-through call that no provider handler recognised.
+
+        Cost tracking used to be a strict allow-list: any route without a
+        bespoke handler recorded $0 while still billing our upstream account,
+        which breaks per-key budgets and corrupts invoice reconciliation. This
+        makes pricing the default — a recognisable usage block plus a model
+        that resolves to a real price entry is enough.
+
+        Cost is published via `logging_obj.model_call_details["response_cost"]`,
+        the contract every provider handler uses (see
+        `base_passthrough_logging_handler._create_response_logging_payload`).
+        It must be set here, synchronously, and not from a later callback:
+        a callback races the spend-log DB writer.
+
+        Silent no-op when the usage shape is unrecognised or the model is not
+        priced — leaving a call unpriced is recoverable, inventing a number is
+        not.
+        """
+        try:
+            payload = logging_obj.model_call_details.get("passthrough_logging_payload") or {}
+            body = response_body if isinstance(response_body, dict) else payload.get("response_body")
+
+            usage = extract_generic_usage(body)
+            if usage is None:
+                return kwargs
+            prompt_tokens, completion_tokens = usage
+
+            model = self._resolve_generic_model(
+                response_body=body,
+                request_body=request_body,
+                logging_obj=logging_obj,
+            )
+            if not model:
+                verbose_proxy_logger.debug(
+                    "Generic passthrough usage found for %s but no model to price it with", url_route
+                )
+                return kwargs
+
+            rates = _resolve_generic_price(model=model, custom_llm_provider=custom_llm_provider)
+            if rates is None:
+                verbose_proxy_logger.debug(
+                    "Generic passthrough model %s has no per-token price entry; leaving unpriced", model
+                )
+                return kwargs
+            input_rate, output_rate = rates
+
+            response_cost = (prompt_tokens * input_rate) + (completion_tokens * output_rate)
+
+            kwargs["response_cost"] = response_cost
+            kwargs["model"] = model
+            if custom_llm_provider:
+                kwargs["custom_llm_provider"] = custom_llm_provider
+            # The pass-through spend path reads cost from model_call_details.
+            logging_obj.model_call_details["response_cost"] = response_cost
+            logging_obj.model_call_details.setdefault("model", model)
+            if custom_llm_provider:
+                logging_obj.model_call_details.setdefault("custom_llm_provider", custom_llm_provider)
+
+            verbose_proxy_logger.debug(
+                "Priced generic passthrough %s (model=%s) at %s", url_route, model, response_cost
+            )
+        except Exception as e:
+            # Cost tracking must never break the response path.
+            verbose_proxy_logger.exception("Error pricing generic passthrough request: %s", e)
+        return kwargs
 
     def _set_cost_per_request(
         self,

@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 from contextlib import ExitStack
+from datetime import datetime
 from io import BytesIO
 from types import SimpleNamespace
 from typing import Optional
@@ -4794,3 +4795,227 @@ async def test_pass_through_relay_full_consumption_logs_no_partial_relay_warning
     finally:
         cleanup()
         await fake_client.aclose()
+
+
+class TestGenericPassthroughUsagePricing:
+    """Cost tracking used to be a strict allow-list.
+
+    Any pass-through route without a bespoke provider handler recorded $0
+    while its request was still forwarded upstream with *our* credentials and
+    billed to us — breaking per-key budgets and corrupting invoice
+    reconciliation. `normalize_llm_passthrough_logging_payload` now ends in a
+    fallback that prices any recognisable usage shape, so pricing is the
+    default for a new provider rather than something each one must opt into.
+    """
+
+    # A host and path that deliberately match no provider handler.
+    URL = "https://api.novel-provider.example/v1/generate"
+    PROMPT_TOKENS = 1000
+    COMPLETION_TOKENS = 500
+
+    def _logging_obj(self):
+        from litellm.litellm_core_utils.litellm_logging import (
+            Logging as LiteLLMLoggingObj,
+        )
+
+        mock_logging_obj = MagicMock(spec=LiteLLMLoggingObj)
+        mock_logging_obj.model_call_details = {}
+        mock_logging_obj.optional_params = {}
+        mock_logging_obj.litellm_call_id = "test-call-id"
+        mock_logging_obj.litellm_trace_id = "test-trace-id"
+        return mock_logging_obj
+
+    def _normalize(self, response_body, request_body=None, url=None, logging_obj=None):
+        from litellm.proxy.pass_through_endpoints.success_handler import (
+            PassThroughEndpointLogging,
+        )
+
+        logging_obj = logging_obj or self._logging_obj()
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.text = json.dumps(response_body)
+
+        PassThroughEndpointLogging().normalize_llm_passthrough_logging_payload(
+            httpx_response=mock_response,
+            response_body=response_body,
+            request_body=request_body or {},
+            logging_obj=logging_obj,
+            url_route=url or self.URL,
+            result="",
+            start_time=datetime.now(),
+            end_time=datetime.now(),
+            cache_hit=False,
+            custom_llm_provider=None,
+        )
+        return logging_obj.model_call_details.get("response_cost")
+
+    def _expected(self, price_key):
+        import litellm
+
+        price = litellm.model_cost[price_key]
+        return (
+            price["input_cost_per_token"] * self.PROMPT_TOKENS
+            + price["output_cost_per_token"] * self.COMPLETION_TOKENS
+        )
+
+    def test_prices_openai_usage_shape(self):
+        """`usage.prompt_tokens` / `usage.completion_tokens`."""
+        cost = self._normalize(
+            {
+                "model": "gpt-4o",
+                "usage": {
+                    "prompt_tokens": self.PROMPT_TOKENS,
+                    "completion_tokens": self.COMPLETION_TOKENS,
+                },
+            }
+        )
+        assert cost == pytest.approx(self._expected("gpt-4o"), rel=1e-6)
+
+    def test_prices_anthropic_usage_shape(self):
+        """`usage.input_tokens` / `usage.output_tokens`."""
+        cost = self._normalize(
+            {
+                "model": "claude-sonnet-4-5",
+                "usage": {
+                    "input_tokens": self.PROMPT_TOKENS,
+                    "output_tokens": self.COMPLETION_TOKENS,
+                },
+            }
+        )
+        assert cost == pytest.approx(self._expected("claude-sonnet-4-5"), rel=1e-6)
+
+    def test_prices_gemini_usage_shape(self):
+        """`usageMetadata.promptTokenCount` / `.candidatesTokenCount`."""
+        cost = self._normalize(
+            {
+                "usageMetadata": {
+                    "promptTokenCount": self.PROMPT_TOKENS,
+                    "candidatesTokenCount": self.COMPLETION_TOKENS,
+                }
+            },
+            request_body={"model": "gemini-2.5-flash"},
+        )
+        assert cost == pytest.approx(self._expected("gemini/gemini-2.5-flash"), rel=1e-6)
+
+    def test_model_may_come_from_the_request_body(self):
+        """Many APIs echo no model in the response."""
+        cost = self._normalize(
+            {
+                "usage": {
+                    "prompt_tokens": self.PROMPT_TOKENS,
+                    "completion_tokens": self.COMPLETION_TOKENS,
+                }
+            },
+            request_body={"model": "gpt-4o"},
+        )
+        assert cost == pytest.approx(self._expected("gpt-4o"), rel=1e-6)
+
+    def test_unknown_model_is_left_unpriced(self):
+        """Never invent a number: an unpriced row is recoverable, a wrong one
+        looks authoritative and corrupts reconciliation."""
+        assert (
+            self._normalize(
+                {
+                    "model": "some-model-that-does-not-exist-xyz",
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                }
+            )
+            is None
+        )
+
+    def test_missing_model_is_left_unpriced(self):
+        assert (
+            self._normalize(
+                {"usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+            )
+            is None
+        )
+
+    def test_unrecognised_body_is_left_unpriced(self):
+        """No usage block -> nothing to price (file uploads, deletes, ...)."""
+        assert self._normalize({"model": "gpt-4o", "id": "file-123"}) is None
+        assert self._normalize({"model": "gpt-4o", "usage": "not-a-dict"}) is None
+        assert self._normalize(None) is None
+
+    def test_all_zero_usage_is_left_unpriced(self):
+        """A zeroed usage block carries no billable signal."""
+        assert (
+            self._normalize(
+                {
+                    "model": "gpt-4o",
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+                }
+            )
+            is None
+        )
+
+    def test_per_second_priced_models_are_left_unpriced(self):
+        """Audio / image models price per second or per image, not per token.
+        Multiplying their zero per-token rates would write a misleading $0.00
+        that looks like real coverage."""
+        assert (
+            self._normalize(
+                {
+                    "model": "whisper-1",
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 50},
+                }
+            )
+            is None
+        )
+
+    def test_fallback_does_not_shadow_a_provider_handler(self):
+        """The fallback is the last `else` — a route a real handler claims must
+        still go to that handler."""
+        from litellm.proxy.pass_through_endpoints.success_handler import (
+            PassThroughEndpointLogging,
+        )
+
+        handler = PassThroughEndpointLogging()
+        with patch.object(
+            handler, "_price_generic_passthrough", side_effect=AssertionError("shadowed")
+        ):
+            anthropic_body = {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-4-5",
+                "content": [{"type": "text", "text": "hi"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
+            mock_response = MagicMock(spec=httpx.Response)
+            mock_response.status_code = 200
+            mock_response.text = json.dumps(anthropic_body)
+            mock_response.headers = {}
+            mock_response.json.return_value = anthropic_body
+            # An Anthropic route: claimed by the Anthropic handler, so the
+            # generic fallback must not run.
+            handler.normalize_llm_passthrough_logging_payload(
+                httpx_response=mock_response,
+                response_body=anthropic_body,
+                request_body={},
+                logging_obj=self._logging_obj(),
+                url_route="https://api.anthropic.com/v1/messages",
+                result="",
+                start_time=datetime.now(),
+                end_time=datetime.now(),
+                cache_hit=False,
+                custom_llm_provider=None,
+            )
+
+    def test_pricing_failure_never_breaks_the_request(self):
+        """Cost tracking is best-effort; it must not raise into the response
+        path."""
+        with patch(
+            "litellm.proxy.pass_through_endpoints.success_handler._resolve_generic_price",
+            side_effect=RuntimeError("boom"),
+        ):
+            assert (
+                self._normalize(
+                    {
+                        "model": "gpt-4o",
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                    }
+                )
+                is None
+            )
