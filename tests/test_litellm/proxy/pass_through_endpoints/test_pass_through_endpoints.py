@@ -3705,6 +3705,70 @@ class TestGetEndpointType:
                 == EndpointType.GENERIC
             ), url
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://api.cohere.com/v2/chat",
+            "https://api.cohere.ai/v2/chat",
+        ],
+    )
+    def test_cohere_chat_is_cohere(self, url):
+        """Streamed Cohere chat fell through to `GENERIC`, which reassembles
+        nothing and costs nothing — so it was billed against our Cohere account
+        and recorded at $0, even though `CoherePassthroughLoggingHandler`
+        already had a `_build_complete_streaming_response`. It simply had no
+        call site. `COHERE` routes the collected chunks to it.
+        """
+        assert (
+            HttpPassThroughEndpointHelpers.get_endpoint_type(url)
+            == EndpointType.COHERE
+        )
+
+    def test_non_streaming_cohere_routes_stay_generic(self):
+        """Only `/v2/chat` streams and is reconstructable from SSE chunks.
+        Claiming `COHERE` for embed / rerank / classify would assert cost
+        coverage that does not exist — the handler has no parser for them.
+        (Non-streamed embed is still costed by the success-handler path.)
+        """
+        for url in (
+            "https://api.cohere.com/v1/embed",
+            "https://api.cohere.com/v2/rerank",
+            "https://api.cohere.com/v1/classify",
+        ):
+            assert (
+                HttpPassThroughEndpointHelpers.get_endpoint_type(url)
+                == EndpointType.GENERIC
+            ), url
+
+    def test_cohere_lookalike_host_is_not_cohere(self):
+        """Suffix matching, not a substring test."""
+        for url in (
+            "https://api.cohere.com.attacker.example/v2/chat",
+            "https://notcohere.ai.evil.test/v2/chat",
+        ):
+            assert (
+                HttpPassThroughEndpointHelpers.get_endpoint_type(url)
+                == EndpointType.GENERIC
+            ), url
+
+    def test_gemini_streaming_stays_vertex_ai(self):
+        """Streamed Gemini is deliberately routed through the Vertex handler.
+
+        There is no `EndpointType.GEMINI`: both providers share the same
+        `generateContent` chunk iterator, and
+        `VertexPassthroughLoggingHandler._get_custom_llm_provider_from_url`
+        resolves the AI Studio host to the `gemini` provider, so the Vertex
+        branch already prices and attributes streamed Gemini correctly. This
+        pins that routing so a future change cannot silently drop Gemini into
+        `GENERIC` (which would cost nothing).
+        """
+        assert (
+            HttpPassThroughEndpointHelpers.get_endpoint_type(
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+            )
+            == EndpointType.VERTEX_AI
+        )
+
     def test_other_providers_unchanged(self):
         assert (
             HttpPassThroughEndpointHelpers.get_endpoint_type(

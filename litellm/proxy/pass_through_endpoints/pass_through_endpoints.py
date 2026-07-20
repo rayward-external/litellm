@@ -78,7 +78,11 @@ from litellm.types.passthrough_endpoints.pass_through_endpoints import (
     PassthroughStandardLoggingPayload,
 )
 
-from .common_utils import is_fireworks_url, is_openai_compatible_url
+from .common_utils import (
+    is_cohere_streaming_url,
+    is_fireworks_url,
+    is_openai_compatible_url,
+)
 from .streaming_handler import PassThroughStreamingHandler
 from .success_handler import PassThroughEndpointLogging
 
@@ -345,6 +349,13 @@ class HttpPassThroughEndpointHelpers(BasePassthroughUtils):
             return EndpointType.VERTEX_AI
         elif parsed_url.hostname == "api.anthropic.com":
             return EndpointType.ANTHROPIC
+        elif is_cohere_streaming_url(url):
+            # Cohere fell through to GENERIC, which reassembles nothing and
+            # costs nothing — so every *streamed* Cohere pass-through was
+            # billed against our Cohere account and recorded at $0. COHERE
+            # routes the collected chunks to the Cohere logging handler, which
+            # rebuilds the response and prices it.
+            return EndpointType.COHERE
         elif is_openai_compatible_url(url):
             # Suffix match, not equality: real Azure resources are
             # `{resource}.openai.azure.com` / `{resource}.cognitiveservices.azure.com`,

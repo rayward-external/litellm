@@ -24,6 +24,10 @@ class EndpointType(str, Enum):
     VERTEX_AI = "vertex-ai"
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
+    # Streamed Cohere chat. Without its own member `api.cohere.com` classified
+    # as GENERIC, which reassembles nothing and costs nothing — every streamed
+    # Cohere pass-through was billed upstream and recorded at $0.
+    COHERE = "cohere"
     GENERIC = "generic"
 
 

@@ -95,6 +95,28 @@ def is_fireworks_url(url_route: Optional[str]) -> bool:
     return hostname_matches(hostname, FIREWORKS_HOSTNAMES)
 
 
+# Cohere's API host. Suffix-matched (like every other host predicate here) so
+# regional/alternate subdomains stay covered without accepting look-alikes.
+COHERE_HOSTNAMES = ("cohere.com", "cohere.ai")
+
+# Only the chat surface streams and is reconstructable from SSE chunks by
+# `CoherePassthroughLoggingHandler`. `/v1/embed` is non-streaming, and rerank /
+# classify have no chunk parser — classifying those as a streaming Cohere
+# endpoint would claim cost coverage that does not exist.
+COHERE_STREAMING_PATHS = ("/v2/chat",)
+
+
+def is_cohere_streaming_url(url_route: Optional[str]) -> bool:
+    """True if the URL is a Cohere endpoint whose stream we can cost."""
+    if not url_route:
+        return False
+    parsed_url = urlparse(url_route)
+    hostname = parsed_url.hostname
+    if not hostname or not hostname_matches(hostname, COHERE_HOSTNAMES):
+        return False
+    return any(path in parsed_url.path for path in COHERE_STREAMING_PATHS)
+
+
 def is_openai_compatible_provider(custom_llm_provider: Optional[str]) -> bool:
     """True when `custom_llm_provider` speaks the OpenAI wire protocol.
 
