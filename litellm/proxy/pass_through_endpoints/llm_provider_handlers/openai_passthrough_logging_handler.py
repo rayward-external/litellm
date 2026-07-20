@@ -195,6 +195,134 @@ def _in_openai_scope(url_route: str, custom_llm_provider: Optional[str] = None) 
     return is_openai_wire_compatible_route(url_route, custom_llm_provider)
 
 
+def _build_response_and_cost_for_surface(
+    *,
+    is_chat_completions: bool,
+    is_image_generation: bool,
+    is_image_editing: bool,
+    is_responses: bool,
+    is_embeddings: bool,
+    handler_instance: "OpenAIPassthroughLoggingHandler",
+    model: str,
+    cost_model: str,
+    custom_llm_provider: Optional[str],
+    httpx_response: httpx.Response,
+    response_body: dict,
+    request_body: dict,
+    logging_obj: LiteLLMLoggingObj,
+    kwargs: dict,
+):
+    """Build the response object and its cost for the matched surface.
+
+    Split out of `openai_passthrough_handler`: every new surface added another
+    branch to a chain that had grown past the complexity budget. The dispatch
+    is the part that varies per surface; the caller keeps the shared setup and
+    the shared logging that follows.
+    """
+    litellm_model_response = None
+    response_cost = 0.0
+    if is_chat_completions:
+        # Handle chat completions with existing logic
+        provider_config = handler_instance.get_provider_config(model=model)
+        # Preserve existing litellm_params to maintain metadata tags
+        existing_litellm_params = kwargs.get("litellm_params", {}) or {}
+        litellm_model_response = provider_config.transform_response(
+            raw_response=httpx_response,
+            model_response=litellm.ModelResponse(),
+            model=model,
+            messages=request_body.get("messages", []),
+            logging_obj=logging_obj,
+            optional_params=request_body.get("optional_params", {}),
+            api_key="",
+            request_data=request_body,
+            encoding=litellm.encoding,
+            json_mode=request_body.get("response_format", {}).get("type") == "json_object",
+            litellm_params=existing_litellm_params,
+        )
+
+        # Calculate cost using LiteLLM's cost calculator
+        response_cost = litellm.completion_cost(
+            completion_response=litellm_model_response,
+            model=cost_model,
+            custom_llm_provider=custom_llm_provider,
+        )
+    elif is_image_generation:
+        # Handle image generation cost calculation
+        response_cost = OpenAIPassthroughLoggingHandler._calculate_image_generation_cost(
+            model=model,
+            response_body=response_body,
+            request_body=request_body,
+        )
+        # Mark call type for downstream image-aware logic/metrics
+        try:
+            logging_obj.call_type = PassthroughCallTypes.passthrough_image_generation.value
+        except Exception:
+            pass
+        # Create a simple response object for logging
+        litellm_model_response = ImageResponse(
+            data=response_body.get("data", []),
+            model=model,
+        )
+        # Set the calculated cost in _hidden_params to prevent recalculation
+        if not hasattr(litellm_model_response, "_hidden_params"):
+            litellm_model_response._hidden_params = {}
+        litellm_model_response._hidden_params["response_cost"] = response_cost
+    elif is_image_editing:
+        # Handle image editing cost calculation
+        response_cost = OpenAIPassthroughLoggingHandler._calculate_image_editing_cost(
+            model=model,
+            response_body=response_body,
+            request_body=request_body,
+        )
+        # Mark call type for downstream image-aware logic/metrics
+        try:
+            logging_obj.call_type = PassthroughCallTypes.passthrough_image_generation.value
+        except Exception:
+            pass
+        # Create a simple response object for logging
+        litellm_model_response = ImageResponse(
+            data=response_body.get("data", []),
+            model=model,
+        )
+        # Set the calculated cost in _hidden_params to prevent recalculation
+        if not hasattr(litellm_model_response, "_hidden_params"):
+            litellm_model_response._hidden_params = {}
+        litellm_model_response._hidden_params["response_cost"] = response_cost
+    elif is_responses:
+        # Responses-API cost tracking — see
+        # `_build_responses_api_response_and_cost` for why this needs
+        # a dedicated transformer (the chat-completions transform
+        # crashes on the Responses payload shape).
+        (
+            litellm_model_response,
+            response_cost,
+        ) = OpenAIPassthroughLoggingHandler._build_responses_api_response_and_cost(
+            model=cost_model,
+            httpx_response=httpx_response,
+            logging_obj=logging_obj,
+            custom_llm_provider=custom_llm_provider,
+        )
+    elif is_embeddings:
+        # Embeddings cost tracking — the response is plain JSON with a
+        # standard `usage` object, so build the response object inline
+        # (as the image branches do) and price it with the embedding
+        # call type.
+        (
+            litellm_model_response,
+            response_cost,
+        ) = OpenAIPassthroughLoggingHandler._build_embeddings_response_and_cost(
+            model=cost_model,
+            response_body=response_body,
+            custom_llm_provider=custom_llm_provider,
+        )
+        # Set the calculated cost in _hidden_params to prevent recalculation
+        if not hasattr(litellm_model_response, "_hidden_params"):
+            litellm_model_response._hidden_params = {}
+        litellm_model_response._hidden_params["response_cost"] = response_cost
+
+    return litellm_model_response, response_cost
+
+
 class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
     """
     OpenAI-specific passthrough logging handler that provides cost tracking for /chat/completions endpoints.
@@ -514,105 +642,25 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             # Fireworks cost calculator's lookup hits.
             cost_model = normalize_fireworks_model_id(model) or model
 
-            if is_chat_completions:
-                # Handle chat completions with existing logic
-                provider_config = handler_instance.get_provider_config(model=model)
-                # Preserve existing litellm_params to maintain metadata tags
-                existing_litellm_params = kwargs.get("litellm_params", {}) or {}
-                litellm_model_response = provider_config.transform_response(
-                    raw_response=httpx_response,
-                    model_response=litellm.ModelResponse(),
-                    model=model,
-                    messages=request_body.get("messages", []),
-                    logging_obj=logging_obj,
-                    optional_params=request_body.get("optional_params", {}),
-                    api_key="",
-                    request_data=request_body,
-                    encoding=litellm.encoding,
-                    json_mode=request_body.get("response_format", {}).get("type") == "json_object",
-                    litellm_params=existing_litellm_params,
-                )
-
-                # Calculate cost using LiteLLM's cost calculator
-                response_cost = litellm.completion_cost(
-                    completion_response=litellm_model_response,
-                    model=cost_model,
-                    custom_llm_provider=custom_llm_provider,
-                )
-            elif is_image_generation:
-                # Handle image generation cost calculation
-                response_cost = OpenAIPassthroughLoggingHandler._calculate_image_generation_cost(
-                    model=model,
-                    response_body=response_body,
-                    request_body=request_body,
-                )
-                # Mark call type for downstream image-aware logic/metrics
-                try:
-                    logging_obj.call_type = PassthroughCallTypes.passthrough_image_generation.value
-                except Exception:
-                    pass
-                # Create a simple response object for logging
-                litellm_model_response = ImageResponse(
-                    data=response_body.get("data", []),
-                    model=model,
-                )
-                # Set the calculated cost in _hidden_params to prevent recalculation
-                if not hasattr(litellm_model_response, "_hidden_params"):
-                    litellm_model_response._hidden_params = {}
-                litellm_model_response._hidden_params["response_cost"] = response_cost
-            elif is_image_editing:
-                # Handle image editing cost calculation
-                response_cost = OpenAIPassthroughLoggingHandler._calculate_image_editing_cost(
-                    model=model,
-                    response_body=response_body,
-                    request_body=request_body,
-                )
-                # Mark call type for downstream image-aware logic/metrics
-                try:
-                    logging_obj.call_type = PassthroughCallTypes.passthrough_image_generation.value
-                except Exception:
-                    pass
-                # Create a simple response object for logging
-                litellm_model_response = ImageResponse(
-                    data=response_body.get("data", []),
-                    model=model,
-                )
-                # Set the calculated cost in _hidden_params to prevent recalculation
-                if not hasattr(litellm_model_response, "_hidden_params"):
-                    litellm_model_response._hidden_params = {}
-                litellm_model_response._hidden_params["response_cost"] = response_cost
-            elif is_responses:
-                # Responses-API cost tracking — see
-                # `_build_responses_api_response_and_cost` for why this needs
-                # a dedicated transformer (the chat-completions transform
-                # crashes on the Responses payload shape).
-                (
-                    litellm_model_response,
-                    response_cost,
-                ) = OpenAIPassthroughLoggingHandler._build_responses_api_response_and_cost(
-                    model=cost_model,
-                    httpx_response=httpx_response,
-                    logging_obj=logging_obj,
-                    custom_llm_provider=custom_llm_provider,
-                )
-            elif is_embeddings:
-                # Embeddings cost tracking — the response is plain JSON with a
-                # standard `usage` object, so build the response object inline
-                # (as the image branches do) and price it with the embedding
-                # call type.
-                (
-                    litellm_model_response,
-                    response_cost,
-                ) = OpenAIPassthroughLoggingHandler._build_embeddings_response_and_cost(
-                    model=cost_model,
-                    response_body=response_body,
-                    custom_llm_provider=custom_llm_provider,
-                )
-                # Set the calculated cost in _hidden_params to prevent recalculation
-                if not hasattr(litellm_model_response, "_hidden_params"):
-                    litellm_model_response._hidden_params = {}
-                litellm_model_response._hidden_params["response_cost"] = response_cost
-
+            (
+                litellm_model_response,
+                response_cost,
+            ) = _build_response_and_cost_for_surface(
+                is_chat_completions=is_chat_completions,
+                is_image_generation=is_image_generation,
+                is_image_editing=is_image_editing,
+                is_responses=is_responses,
+                is_embeddings=is_embeddings,
+                handler_instance=handler_instance,
+                model=model,
+                cost_model=cost_model,
+                custom_llm_provider=custom_llm_provider,
+                httpx_response=httpx_response,
+                response_body=response_body,
+                request_body=request_body,
+                logging_obj=logging_obj,
+                kwargs=kwargs,
+            )
             # Update kwargs with cost information
             kwargs["response_cost"] = response_cost
             kwargs["model"] = model
