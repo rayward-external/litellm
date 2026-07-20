@@ -41,7 +41,7 @@ zero-cost alerting are for.
 
 import re
 from collections.abc import Mapping
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from litellm._logging import verbose_proxy_logger
 

@@ -1,4 +1,3 @@
-from typing import Optional, Tuple
 from urllib.parse import urlparse
 
 from fastapi import Request
