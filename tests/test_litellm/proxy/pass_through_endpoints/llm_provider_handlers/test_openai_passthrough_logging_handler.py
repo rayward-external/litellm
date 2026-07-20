@@ -20,6 +20,7 @@ from litellm.proxy.pass_through_endpoints.success_handler import (
     PassThroughEndpointLogging,
 )
 from litellm.types.passthrough_endpoints.pass_through_endpoints import (
+    EndpointType,
     PassthroughStandardLoggingPayload,
 )
 
@@ -1796,3 +1797,336 @@ class TestOpenAIPassthroughIntegration:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+class TestOpenAICompatibleProviderScope:
+    """`is_openai_route` / the `is_openai_*_route` helpers must key off
+    `custom_llm_provider`, not a hardcoded hostname allow-list.
+
+    Pass-through forwards a request upstream using OUR credentials. The OpenAI
+    handler's cost math is already provider-agnostic — it transforms the
+    response with the OpenAI config and hands the usage to `completion_cost`
+    together with the provider. But entry to that handler was gated on a
+    hardcoded tuple of hostnames (`api.openai.com` + the two Azure domains), so
+    every other OpenAI-compatible upstream (Fireworks, Groq, Together, ...) was
+    never dispatched and recorded $0 while still billing us.
+    """
+
+    def setup_method(self):
+        self.success_handler = PassThroughEndpointLogging()
+
+    FIREWORKS_CHAT = "https://api.fireworks.ai/inference/v1/chat/completions"
+    GROQ_CHAT = "https://api.groq.com/openai/v1/chat/completions"
+
+    @pytest.mark.parametrize(
+        "url, provider",
+        [
+            (FIREWORKS_CHAT, "fireworks_ai"),
+            (GROQ_CHAT, "groq"),
+            ("https://api.together.xyz/v1/chat/completions", "together_ai"),
+            ("https://api.deepseek.com/v1/chat/completions", "deepseek"),
+        ],
+    )
+    def test_openai_compatible_providers_are_in_scope(self, url, provider):
+        """An OpenAI-compatible provider is in scope regardless of hostname."""
+        assert self.success_handler.is_openai_route(url, provider) is True
+        assert (
+            self.success_handler._is_supported_openai_endpoint(url, provider) is True
+        )
+
+    def test_fireworks_is_in_scope_without_a_configured_provider(self):
+        """Generic pass-throughs (`general_settings.pass_through_endpoints`)
+        have no `custom_llm_provider` field at all, so the hostname must still
+        place a known OpenAI-protocol upstream in scope."""
+        assert self.success_handler.is_openai_route(self.FIREWORKS_CHAT) is True
+        assert (
+            self.success_handler._is_supported_openai_endpoint(self.FIREWORKS_CHAT)
+            is True
+        )
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://api.openai.com/v1/chat/completions",
+            "https://my-resource.openai.azure.com/openai/deployments/gpt-4o/chat/completions",
+            "https://my-resource.cognitiveservices.azure.com/v1/chat/completions",
+        ],
+    )
+    def test_hostname_path_still_works_without_a_provider(self, url):
+        """No regression: OpenAI/Azure keep matching on hostname alone."""
+        assert self.success_handler.is_openai_route(url) is True
+        assert self.success_handler._is_supported_openai_endpoint(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://my-resource.cognitiveservices.azure.com/speechtotext/v3.1/transcriptions",
+            "https://my-resource.cognitiveservices.azure.com/vision/v3.2/analyze",
+        ],
+    )
+    def test_azure_path_marker_guard_survives_a_provider_label(self, url):
+        """The shared Azure domains also host Speech / Vision / Language. A
+        `custom_llm_provider: azure` label must NOT let those bypass the
+        `/openai/` `/v1/` path-marker guard and be costed as chat completions."""
+        assert self.success_handler.is_openai_route(url, "azure") is False
+        assert self.success_handler.is_openai_route(url) is False
+
+    def test_non_openai_providers_stay_out_of_scope(self):
+        """Providers with their own dedicated handler must not be swallowed."""
+        for provider in ("anthropic", "gemini", "vertex_ai", "cohere", "cursor"):
+            assert (
+                self.success_handler.is_openai_route(
+                    "https://api.anthropic.com/v1/messages", provider
+                )
+                is False
+            ), provider
+
+    def test_unknown_host_without_a_provider_stays_out_of_scope(self):
+        """The provider is what widens the scope — an unlabelled unknown host
+        must not silently become an OpenAI route."""
+        assert (
+            self.success_handler.is_openai_route(
+                "https://api.example.com/v1/chat/completions"
+            )
+            is False
+        )
+
+    def test_fireworks_lookalike_host_is_rejected(self):
+        """Suffix matching, not a substring test."""
+        assert (
+            self.success_handler.is_openai_route(
+                "https://api.fireworks.ai.attacker.example/v1/chat/completions"
+            )
+            is False
+        )
+
+    @pytest.mark.parametrize(
+        "predicate, url",
+        [
+            ("is_openai_chat_completions_route", FIREWORKS_CHAT),
+            (
+                "is_openai_embeddings_route",
+                "https://api.fireworks.ai/inference/v1/embeddings",
+            ),
+            (
+                "is_openai_responses_route",
+                "https://api.fireworks.ai/inference/v1/responses",
+            ),
+        ],
+    )
+    def test_route_predicates_accept_a_provider(self, predicate, url):
+        """Each `is_openai_*_route` helper takes `custom_llm_provider`."""
+        assert getattr(OpenAIPassthroughLoggingHandler, predicate)(
+            url, "fireworks_ai"
+        ) is True
+
+
+class TestFireworksPassthroughCostTracking:
+    """Fireworks pass-through must resolve to a real price, not $0.
+
+    Two defects: (a) Fireworks prices are keyed `fireworks_ai/accounts/...` in
+    the price map while a native response echoes the bare `accounts/...` id, and
+    the handler defaulted `custom_llm_provider` to "openai" — which makes
+    `completion_cost` raise "model isn't mapped yet", swallowed by the handler,
+    so the call was billed upstream and recorded at $0. (b) Streamed Fireworks
+    responses were classified `EndpointType.GENERIC`, which costs nothing.
+    """
+
+    FIREWORKS_MODEL = "accounts/fireworks/models/deepseek-v3"
+    FIREWORKS_CHAT_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
+    PROMPT_TOKENS = 1000
+    COMPLETION_TOKENS = 500
+
+    def setup_method(self):
+        self.start_time = datetime.now()
+        self.end_time = datetime.now()
+        self.response_body = {
+            "id": "chatcmpl-fw-1",
+            "object": "chat.completion",
+            "created": 1677652288,
+            "model": self.FIREWORKS_MODEL,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "Hello!"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": self.PROMPT_TOKENS,
+                "completion_tokens": self.COMPLETION_TOKENS,
+                "total_tokens": self.PROMPT_TOKENS + self.COMPLETION_TOKENS,
+            },
+        }
+
+    def _expected_cost(self) -> float:
+        """Price straight from the map, so a price refresh cannot break this."""
+        import litellm
+
+        entry = litellm.model_cost["fireworks_ai/" + self.FIREWORKS_MODEL]
+        return (
+            self.PROMPT_TOKENS * entry["input_cost_per_token"]
+            + self.COMPLETION_TOKENS * entry["output_cost_per_token"]
+        )
+
+    def _mock_httpx_response(self) -> httpx.Response:
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.text = json.dumps(self.response_body)
+        mock_response.json.return_value = self.response_body
+        mock_response.headers = {"content-type": "application/json"}
+        return mock_response
+
+    def _mock_logging_obj(self) -> LiteLLMLoggingObj:
+        mock_logging_obj = MagicMock()
+        mock_logging_obj.model_call_details = {}
+        return mock_logging_obj
+
+    def _run_handler(self, custom_llm_provider=None):
+        kwargs = {
+            "passthrough_logging_payload": PassthroughStandardLoggingPayload(
+                url=self.FIREWORKS_CHAT_URL,
+                request_body={"model": self.FIREWORKS_MODEL},
+                request_method="POST",
+            ),
+            "litellm_params": {},
+        }
+        if custom_llm_provider is not None:
+            kwargs["custom_llm_provider"] = custom_llm_provider
+        return OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
+            httpx_response=self._mock_httpx_response(),
+            response_body=self.response_body,
+            logging_obj=self._mock_logging_obj(),
+            url_route=self.FIREWORKS_CHAT_URL,
+            result="",
+            start_time=self.start_time,
+            end_time=self.end_time,
+            cache_hit=False,
+            request_body={
+                "model": self.FIREWORKS_MODEL,
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+            **kwargs,
+        )
+
+    def test_bare_fireworks_model_id_resolves_to_a_real_price(self):
+        """The map is keyed `fireworks_ai/accounts/...`; the wire id is bare."""
+        result = self._run_handler(custom_llm_provider="fireworks_ai")
+
+        assert result["kwargs"]["custom_llm_provider"] == "fireworks_ai"
+        assert result["kwargs"]["response_cost"] > 0, "Fireworks recorded $0"
+        assert result["kwargs"]["response_cost"] == pytest.approx(
+            self._expected_cost()
+        )
+
+    def test_provider_is_inferred_when_the_passthrough_declares_none(self):
+        """A generic pass-through carries no `custom_llm_provider`, and
+        defaulting to "openai" made the price lookup raise and record $0."""
+        result = self._run_handler(custom_llm_provider=None)
+
+        assert result["kwargs"]["custom_llm_provider"] == "fireworks_ai"
+        assert result["kwargs"]["response_cost"] == pytest.approx(
+            self._expected_cost()
+        )
+
+    def test_prefixed_fireworks_model_id_is_normalized(self):
+        """`fireworks_ai/accounts/...` must not double up into
+        `fireworks_ai/fireworks_ai/accounts/...` when it reaches the calculator."""
+        from litellm.proxy.pass_through_endpoints.common_utils import (
+            normalize_fireworks_model_id,
+        )
+
+        assert (
+            normalize_fireworks_model_id("fireworks_ai/" + self.FIREWORKS_MODEL)
+            == self.FIREWORKS_MODEL
+        )
+        assert normalize_fireworks_model_id(self.FIREWORKS_MODEL) == self.FIREWORKS_MODEL
+        # Non-Fireworks models are returned untouched.
+        assert normalize_fireworks_model_id("gpt-4o") == "gpt-4o"
+        assert normalize_fireworks_model_id("azure/my-deployment") == "azure/my-deployment"
+
+    def test_unmapped_fireworks_model_falls_back_to_the_parameter_size_tier(self):
+        """LiteLLM's Fireworks calculator maps an unknown id to a size tier
+        (`fireworks-ai-above-16b`, ...). Route through it rather than $0."""
+        import litellm
+
+        unmapped = "accounts/fireworks/models/some-unreleased-70b"
+        assert unmapped not in litellm.model_cost
+        assert "fireworks_ai/" + unmapped not in litellm.model_cost
+
+        self.FIREWORKS_MODEL = unmapped
+        self.response_body["model"] = unmapped
+        result = self._run_handler(custom_llm_provider="fireworks_ai")
+
+        tier = litellm.model_cost["fireworks-ai-above-16b"]
+        assert result["kwargs"]["response_cost"] == pytest.approx(
+            self.PROMPT_TOKENS * tier["input_cost_per_token"]
+            + self.COMPLETION_TOKENS * tier["output_cost_per_token"]
+        )
+
+    def test_openai_costing_is_unchanged(self):
+        """No regression: an OpenAI route with no provider still prices as
+        OpenAI, not as an inferred third party."""
+        import litellm
+
+        self.FIREWORKS_MODEL = "gpt-4o"
+        self.response_body["model"] = "gpt-4o"
+        self.FIREWORKS_CHAT_URL = "https://api.openai.com/v1/chat/completions"
+        result = self._run_handler(custom_llm_provider=None)
+
+        entry = litellm.model_cost["gpt-4o"]
+        assert result["kwargs"]["custom_llm_provider"] == "openai"
+        assert result["kwargs"]["response_cost"] == pytest.approx(
+            self.PROMPT_TOKENS * entry["input_cost_per_token"]
+            + self.COMPLETION_TOKENS * entry["output_cost_per_token"]
+        )
+
+    def test_streamed_fireworks_chunks_are_costed(self):
+        """Streaming path: reassembled chunks must price via Fireworks."""
+        import litellm
+
+        chunk_template = {
+            "id": "chatcmpl-fw-stream",
+            "object": "chat.completion.chunk",
+            "created": 1677652288,
+            "model": self.FIREWORKS_MODEL,
+        }
+        all_chunks = [
+            json.dumps(
+                {
+                    **chunk_template,
+                    "choices": [
+                        {"index": 0, "delta": {"role": "assistant", "content": "Hi"}}
+                    ],
+                }
+            ),
+            json.dumps(
+                {
+                    **chunk_template,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    "usage": {
+                        "prompt_tokens": self.PROMPT_TOKENS,
+                        "completion_tokens": self.COMPLETION_TOKENS,
+                        "total_tokens": self.PROMPT_TOKENS + self.COMPLETION_TOKENS,
+                    },
+                }
+            ),
+        ]
+
+        logging_obj = self._mock_logging_obj()
+        result = OpenAIPassthroughLoggingHandler._handle_logging_openai_collected_chunks(
+            litellm_logging_obj=logging_obj,
+            passthrough_success_handler_obj=PassThroughEndpointLogging(),
+            url_route=self.FIREWORKS_CHAT_URL,
+            request_body={"model": self.FIREWORKS_MODEL},
+            endpoint_type=EndpointType.OPENAI,
+            start_time=self.start_time,
+            all_chunks=all_chunks,
+            end_time=self.end_time,
+        )
+
+        assert result["kwargs"]["custom_llm_provider"] == "fireworks_ai"
+        assert result["kwargs"]["response_cost"] > 0, "streamed Fireworks recorded $0"
+        assert result["kwargs"]["response_cost"] == pytest.approx(
+            self._expected_cost()
+        )

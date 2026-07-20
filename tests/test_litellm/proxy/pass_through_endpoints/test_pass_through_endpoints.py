@@ -3674,6 +3674,37 @@ class TestGetEndpointType:
                 == EndpointType.GENERIC
             ), url
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://api.fireworks.ai/inference/v1/chat/completions",
+            "https://api.fireworks.ai/inference/v1/completions",
+        ],
+    )
+    def test_fireworks_is_openai(self, url):
+        """Fireworks serves an OpenAI-compatible API.
+
+        Anything `get_endpoint_type` does not match becomes `GENERIC`, which
+        reassembles nothing and costs nothing — so every *streamed* Fireworks
+        pass-through was billed upstream and recorded $0. Mapping it to OPENAI
+        routes the collected chunks to the OpenAI streaming cost handler.
+        """
+        assert (
+            HttpPassThroughEndpointHelpers.get_endpoint_type(url)
+            == EndpointType.OPENAI
+        )
+
+    def test_fireworks_lookalike_host_is_not_openai(self):
+        """Suffix matching, not a substring test."""
+        for url in (
+            "https://api.fireworks.ai.attacker.example/v1/chat/completions",
+            "https://notfireworks.ai.evil.test/v1/chat/completions",
+        ):
+            assert (
+                HttpPassThroughEndpointHelpers.get_endpoint_type(url)
+                == EndpointType.GENERIC
+            ), url
+
     def test_other_providers_unchanged(self):
         assert (
             HttpPassThroughEndpointHelpers.get_endpoint_type(

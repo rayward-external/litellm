@@ -26,6 +26,9 @@ from litellm.proxy.pass_through_endpoints.common_utils import (
     OPENAI_HOSTNAMES,
     hostname_matches,
     is_openai_compatible_url,
+    is_openai_wire_compatible_route,
+    normalize_fireworks_model_id,
+    resolve_openai_passthrough_provider,
 )
 from litellm.proxy.pass_through_endpoints.llm_provider_handlers.base_passthrough_logging_handler import (
     BasePassthroughLoggingHandler,
@@ -79,14 +82,30 @@ def _is_chat_completions_path(path: str) -> bool:
 def _is_openai_compatible_host(hostname: Optional[str]) -> bool:
     """True if the hostname is OpenAI proper or one of the Azure OpenAI domains.
 
-    Hostname-only check, kept for the route-level helpers that additionally
-    require a specific OpenAI path (e.g. `/v1/chat/completions`). When only the
-    hostname would otherwise gate dispatch, use `_is_openai_compatible_url` so
-    non-OpenAI Azure Cognitive Services on the shared domains are excluded.
+    Narrow hostname-only test for OpenAI proper / the Azure OpenAI domains.
+    Route-level dispatch goes through `_in_openai_scope`, which additionally
+    honours `custom_llm_provider` and applies the Azure path-marker guard.
     """
     if not hostname:
         return False
     return _hostname_matches(hostname, _OPENAI_HOSTNAMES) or _hostname_matches(hostname, _AZURE_OPENAI_HOSTNAMES)
+
+
+def _in_openai_scope(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
+    """Scope gate shared by every `is_openai_*_route` helper.
+
+    Each helper used to gate on `_is_openai_compatible_host`, a hardcoded tuple
+    of OpenAI/Azure hostnames. Any other OpenAI-compatible upstream — Fireworks
+    today, others tomorrow — was therefore never dispatched to this handler and
+    recorded $0, even though the handler's cost math is entirely
+    provider-agnostic. Key off the provider (as `is_gemini_route` /
+    `is_cursor_route` already do) and keep the hostname classification as the
+    fallback, so OpenAI/Azure routes with no configured provider behave exactly
+    as before — including the Azure `/openai/` / `/v1/` path-marker guard that
+    stops non-OpenAI Cognitive Services on the shared domains being
+    misclassified.
+    """
+    return is_openai_wire_compatible_route(url_route, custom_llm_provider)
 
 
 class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
@@ -103,7 +122,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         return OpenAIConfig()
 
     @staticmethod
-    def is_openai_chat_completions_route(url_route: str) -> bool:
+    def is_openai_chat_completions_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
         """Check if the URL route is an OpenAI chat completions endpoint.
 
         Accepts both the OpenAI-v1 shape and the classic Azure OpenAI
@@ -112,36 +131,36 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         if not url_route:
             return False
         parsed_url = urlparse(url_route)
-        return _is_openai_compatible_host(parsed_url.hostname) and _is_chat_completions_path(parsed_url.path)
+        return _in_openai_scope(url_route, custom_llm_provider) and _is_chat_completions_path(parsed_url.path)
 
     @staticmethod
-    def is_openai_image_generation_route(url_route: str) -> bool:
+    def is_openai_image_generation_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
         """Check if the URL route is an OpenAI image generation endpoint."""
         if not url_route:
             return False
         parsed_url = urlparse(url_route)
-        return _is_openai_compatible_host(parsed_url.hostname) and "/v1/images/generations" in parsed_url.path
+        return _in_openai_scope(url_route, custom_llm_provider) and "/v1/images/generations" in parsed_url.path
 
     @staticmethod
-    def is_openai_image_editing_route(url_route: str) -> bool:
+    def is_openai_image_editing_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
         """Check if the URL route is an OpenAI image editing endpoint."""
         if not url_route:
             return False
         parsed_url = urlparse(url_route)
-        return _is_openai_compatible_host(parsed_url.hostname) and "/v1/images/edits" in parsed_url.path
+        return _in_openai_scope(url_route, custom_llm_provider) and "/v1/images/edits" in parsed_url.path
 
     @staticmethod
-    def is_openai_responses_route(url_route: str) -> bool:
+    def is_openai_responses_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
         """Check if the URL route is an OpenAI responses API endpoint."""
         if not url_route:
             return False
         parsed_url = urlparse(url_route)
-        return _is_openai_compatible_host(parsed_url.hostname) and (
+        return _in_openai_scope(url_route, custom_llm_provider) and (
             "/v1/responses" in parsed_url.path or "/responses" in parsed_url.path
         )
 
     @staticmethod
-    def is_openai_embeddings_route(url_route: str) -> bool:
+    def is_openai_embeddings_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
         """Check if the URL route is an OpenAI embeddings endpoint.
 
         Matches both the OpenAI-v1 surface (`/v1/embeddings`, which is also
@@ -152,7 +171,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         if not url_route:
             return False
         parsed_url = urlparse(url_route)
-        return _is_openai_compatible_host(parsed_url.hostname) and "/embeddings" in parsed_url.path
+        return _in_openai_scope(url_route, custom_llm_provider) and "/embeddings" in parsed_url.path
 
     def _get_user_from_metadata(
         self,
@@ -316,17 +335,27 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         end_time: datetime,
         cache_hit: bool,
         request_body: dict,
+        custom_llm_provider: Optional[str] = None,
         **kwargs,
     ) -> PassThroughEndpointLoggingTypedDict:
         """
         Handle OpenAI passthrough logging with cost tracking for chat completions, image generation, image editing, embeddings, and responses API.
         """
+        # `custom_llm_provider` is an explicit parameter (not part of **kwargs)
+        # on the whole pass-through success path, so read it from there first
+        # and only then fall back to kwargs.
+        configured_provider = custom_llm_provider or kwargs.get("custom_llm_provider")
+
         # Check if this is a supported endpoint for cost tracking
-        is_chat_completions = OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url_route)
-        is_image_generation = OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url_route)
-        is_image_editing = OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url_route)
-        is_responses = OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route)
-        is_embeddings = OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route)
+        is_chat_completions = OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(
+            url_route, configured_provider
+        )
+        is_image_generation = OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(
+            url_route, configured_provider
+        )
+        is_image_editing = OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url_route, configured_provider)
+        is_responses = OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route, configured_provider)
+        is_embeddings = OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route, configured_provider)
 
         if not (is_chat_completions or is_image_generation or is_image_editing or is_responses or is_embeddings):
             # For unsupported endpoints, return None to let the system fall back to generic behavior
@@ -366,7 +395,21 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             ] = None
             handler_instance = OpenAIPassthroughLoggingHandler()
 
-            custom_llm_provider = kwargs.get("custom_llm_provider", "openai")
+            # Resolve the pricing provider. A generic pass-through
+            # (`general_settings.pass_through_endpoints`) carries no
+            # `custom_llm_provider` field at all, and defaulting to "openai"
+            # made every non-OpenAI upstream raise "model isn't mapped yet" in
+            # `completion_cost` — swallowed by the except below, so the call was
+            # billed upstream and recorded at $0.
+            custom_llm_provider = resolve_openai_passthrough_provider(
+                model=model,
+                custom_llm_provider=configured_provider,
+                url_route=url_route,
+            )
+            # Fireworks ids arrive bare (`accounts/.../models/...`) while the
+            # price map is keyed `fireworks_ai/accounts/...`; normalize so the
+            # Fireworks cost calculator's lookup hits.
+            cost_model = normalize_fireworks_model_id(model) or model
 
             if is_chat_completions:
                 # Handle chat completions with existing logic
@@ -390,7 +433,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 # Calculate cost using LiteLLM's cost calculator
                 response_cost = litellm.completion_cost(
                     completion_response=litellm_model_response,
-                    model=model,
+                    model=cost_model,
                     custom_llm_provider=custom_llm_provider,
                 )
             elif is_image_generation:
@@ -444,7 +487,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                     litellm_model_response,
                     response_cost,
                 ) = OpenAIPassthroughLoggingHandler._build_responses_api_response_and_cost(
-                    model=model,
+                    model=cost_model,
                     httpx_response=httpx_response,
                     logging_obj=logging_obj,
                     custom_llm_provider=custom_llm_provider,
@@ -458,7 +501,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                     litellm_model_response,
                     response_cost,
                 ) = OpenAIPassthroughLoggingHandler._build_embeddings_response_and_cost(
-                    model=model,
+                    model=cost_model,
                     response_body=response_body,
                     custom_llm_provider=custom_llm_provider,
                 )
@@ -656,7 +699,12 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
             handler = OpenAIPassthroughLoggingHandler()
             handler_instance = handler
-            custom_llm_provider = litellm_logging_obj.model_call_details.get("custom_llm_provider", "openai")
+            custom_llm_provider = resolve_openai_passthrough_provider(
+                model=model,
+                custom_llm_provider=litellm_logging_obj.model_call_details.get("custom_llm_provider"),
+                url_route=url_route,
+            )
+            cost_model = normalize_fireworks_model_id(model) or model
 
             complete_response: Optional[
                 Union[ModelResponse, TextCompletionResponse, ResponsesAPIResponse]
@@ -681,7 +729,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                     complete_response,
                     response_cost,
                 ) = OpenAIPassthroughLoggingHandler._build_responses_api_response_and_cost(
-                    model=model,
+                    model=cost_model,
                     httpx_response=httpx.Response(
                         status_code=200,
                         json=responses_api_completed_response,
@@ -707,7 +755,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 # Calculate cost using LiteLLM's cost calculator
                 response_cost = litellm.completion_cost(
                     completion_response=complete_response,
-                    model=model,
+                    model=cost_model,
                     custom_llm_provider=custom_llm_provider,
                 )
 

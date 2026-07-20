@@ -202,7 +202,9 @@ class PassThroughEndpointLogging:
             )
             standard_logging_response_object = cohere_passthrough_logging_handler_result["result"]
             kwargs = cohere_passthrough_logging_handler_result["kwargs"]
-        elif self.is_openai_route(url_route) and self._is_supported_openai_endpoint(url_route):
+        elif self.is_openai_route(url_route, custom_llm_provider) and self._is_supported_openai_endpoint(
+            url_route, custom_llm_provider
+        ):
             from .llm_provider_handlers.openai_passthrough_logging_handler import (
                 OpenAIPassthroughLoggingHandler,
             )
@@ -217,6 +219,7 @@ class PassThroughEndpointLogging:
                 end_time=end_time,
                 cache_hit=cache_hit,
                 request_body=request_body,
+                custom_llm_provider=custom_llm_provider,
                 **kwargs,
             )
             standard_logging_response_object = openai_passthrough_logging_handler_result["result"]
@@ -393,20 +396,25 @@ class PassThroughEndpointLogging:
                     return custom_llm_provider == "cursor"
         return False
 
-    def is_openai_route(self, url_route: str):
-        """Check if the URL route is an OpenAI API route.
+    def is_openai_route(self, url_route: str, custom_llm_provider: Optional[str] = None):
+        """Check if this pass-through call speaks the OpenAI wire protocol.
 
-        Uses the URL-aware helper so that non-OpenAI Azure Cognitive Services
-        (Speech, Vision, Language, ...) sharing the `*.cognitiveservices.azure.com`
-        / `*.openai.azure.com` domains are not misclassified as OpenAI routes.
+        Keys off `custom_llm_provider` first — the same way `is_gemini_route`
+        and `is_cursor_route` do — so that ANY OpenAI-compatible upstream
+        (Fireworks, Groq, Together, ...) reaches the OpenAI handler, whose cost
+        math is already provider-agnostic. A hostname allow-list alone excluded
+        them, and every such route recorded $0 while still billing our upstream
+        account.
+
+        Falls back to the URL-aware classification so OpenAI/Azure routes with
+        no configured provider are unchanged, and non-OpenAI Azure Cognitive
+        Services (Speech, Vision, Language, ...) sharing the
+        `*.cognitiveservices.azure.com` / `*.openai.azure.com` domains are still
+        excluded by the path-marker guard.
         """
-        if not url_route:
-            return False
-        from .llm_provider_handlers.openai_passthrough_logging_handler import (
-            _is_openai_compatible_url,
-        )
+        from .common_utils import is_openai_wire_compatible_route
 
-        return _is_openai_compatible_url(url_route)
+        return is_openai_wire_compatible_route(url_route, custom_llm_provider)
 
     def is_gemini_route(self, url_route: str, custom_llm_provider: Optional[str] = None):
         """Check if the URL route is a Gemini API route."""
@@ -415,7 +423,7 @@ class PassThroughEndpointLogging:
                 return True
         return False
 
-    def _is_supported_openai_endpoint(self, url_route: str) -> bool:
+    def _is_supported_openai_endpoint(self, url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
         """Check if the OpenAI endpoint is supported by the passthrough logging handler.
 
         The Responses API route is included because
@@ -435,11 +443,11 @@ class PassThroughEndpointLogging:
         )
 
         return (
-            OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url_route)
-            or OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url_route)
-            or OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url_route)
-            or OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route)
-            or OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route)
+            OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url_route, custom_llm_provider)
+            or OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url_route, custom_llm_provider)
+            or OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url_route, custom_llm_provider)
+            or OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route, custom_llm_provider)
+            or OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route, custom_llm_provider)
         )
 
     def _set_cost_per_request(

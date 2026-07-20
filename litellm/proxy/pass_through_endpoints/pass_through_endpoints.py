@@ -78,7 +78,7 @@ from litellm.types.passthrough_endpoints.pass_through_endpoints import (
     PassthroughStandardLoggingPayload,
 )
 
-from .common_utils import is_openai_compatible_url
+from .common_utils import is_fireworks_url, is_openai_compatible_url
 from .streaming_handler import PassThroughStreamingHandler
 from .success_handler import PassThroughEndpointLogging
 
@@ -352,6 +352,14 @@ class HttpPassThroughEndpointHelpers(BasePassthroughUtils):
             # stream fell through to GENERIC, which does no cost tracking at all
             # (silent $0 rows). `is_openai_compatible_url` also keeps the
             # OpenAI-path guard on the shared Azure Cognitive Services domains.
+            return EndpointType.OPENAI
+        elif is_fireworks_url(url):
+            # Fireworks serves an OpenAI-compatible API. Without this branch it
+            # fell through to GENERIC, which reassembles nothing and costs
+            # nothing — so every *streamed* Fireworks pass-through was billed
+            # upstream and recorded at $0. OPENAI routes the collected chunks to
+            # `_handle_logging_openai_collected_chunks`, which prices them via
+            # the Fireworks cost calculator.
             return EndpointType.OPENAI
         return EndpointType.GENERIC
 
