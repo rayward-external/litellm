@@ -34,6 +34,7 @@ from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.types.passthrough_endpoints.pass_through_endpoints import (
     LITELLM_PASS_THROUGH_RAW_BODY_STATE_KEY,
+    EndpointType,
 )
 from litellm.proxy.pass_through_endpoints.success_handler import (
     PassThroughEndpointLogging,
@@ -3611,6 +3612,87 @@ async def test_multipart_passthrough_preserves_boundary():
     # Verify the response
     assert response.status_code == 200
     async_client.request.assert_called_once()
+
+
+class TestGetEndpointType:
+    """Regression tests for `HttpPassThroughEndpointHelpers.get_endpoint_type`.
+
+    `get_endpoint_type` picks the `EndpointType` used to route *streaming*
+    passthrough responses to a cost-tracking handler. It used to compare
+    hostnames with exact equality (`hostname == "openai.azure.com"`), but a real
+    Azure resource is `{resource}.openai.azure.com` — so the check never fired,
+    every raw Azure stream fell through to `EndpointType.GENERIC`, which does no
+    cost tracking, and the call was billed upstream while recording $0.
+    """
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://my-resource.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-02-01",
+            "https://my-resource.openai.azure.com/openai/v1/chat/completions",
+            "https://my-resource.cognitiveservices.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-02-01",
+            "https://my-resource.cognitiveservices.azure.com/v1/chat/completions",
+        ],
+    )
+    def test_azure_subdomains_are_openai(self, url):
+        """Real Azure resources live on a subdomain of the shared Azure domains."""
+        assert (
+            HttpPassThroughEndpointHelpers.get_endpoint_type(url) == EndpointType.OPENAI
+        )
+
+    def test_openai_proper_is_openai(self):
+        assert (
+            HttpPassThroughEndpointHelpers.get_endpoint_type(
+                "https://api.openai.com/v1/chat/completions"
+            )
+            == EndpointType.OPENAI
+        )
+
+    def test_lookalike_host_is_not_openai(self):
+        """Suffix matching must not degrade into a substring test: an attacker
+        controlled `...azure.com.attacker.example` host must stay GENERIC."""
+        for url in (
+            "https://cognitiveservices.azure.com.attacker.example/v1/chat/completions",
+            "https://openai.azure.com.attacker.example/v1/chat/completions",
+            "https://api.openai.com.attacker.example/v1/chat/completions",
+            "https://notopenai.azure.com.evil.test/openai/v1/chat/completions",
+        ):
+            assert (
+                HttpPassThroughEndpointHelpers.get_endpoint_type(url)
+                == EndpointType.GENERIC
+            ), url
+
+    def test_non_openai_cognitive_services_stay_generic(self):
+        """The shared Azure domains also host Speech / Vision / Language. Those
+        carry no OpenAI-style path marker and must not be classified as OpenAI."""
+        for url in (
+            "https://my-resource.cognitiveservices.azure.com/speechtotext/v3.1/transcriptions",
+            "https://my-resource.cognitiveservices.azure.com/vision/v3.2/analyze",
+        ):
+            assert (
+                HttpPassThroughEndpointHelpers.get_endpoint_type(url)
+                == EndpointType.GENERIC
+            ), url
+
+    def test_other_providers_unchanged(self):
+        assert (
+            HttpPassThroughEndpointHelpers.get_endpoint_type(
+                "https://api.anthropic.com/v1/messages"
+            )
+            == EndpointType.ANTHROPIC
+        )
+        assert (
+            HttpPassThroughEndpointHelpers.get_endpoint_type(
+                "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/l/publishers/google/models/gemini-2.0-flash:generateContent"
+            )
+            == EndpointType.VERTEX_AI
+        )
+        assert (
+            HttpPassThroughEndpointHelpers.get_endpoint_type(
+                "https://api.cohere.com/v1/chat"
+            )
+            == EndpointType.GENERIC
+        )
 
 
 def test_get_response_headers_strips_server_and_date():

@@ -315,6 +315,53 @@ class TestOpenAIPassthroughLoggingHandler:
             is False
         )
 
+    def test_is_openai_chat_completions_route_classic_azure_deployment_path(self):
+        """Classic Azure OpenAI chat completions are shaped
+        `/openai/deployments/{deployment-id}/chat/completions?api-version=...`
+        — no `/v1/` segment. Requiring `/v1/chat/completions` missed them
+        entirely, so those calls were billed upstream and recorded as $0.
+        """
+        for url in (
+            "https://my-resource.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-02-01",
+            "https://my-resource.cognitiveservices.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-02-01",
+            # Deployment ids may contain dots/dashes.
+            "https://my-resource.openai.azure.com/openai/deployments/gpt-4.1-mini/chat/completions?api-version=2024-10-21",
+        ):
+            assert (
+                OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url)
+                is True
+            ), url
+
+        # The `/v1/` form keeps working.
+        assert (
+            OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(
+                "https://my-resource.openai.azure.com/openai/v1/chat/completions"
+            )
+            is True
+        )
+
+        # Other classic-deployment operations are not chat completions.
+        for url in (
+            "https://my-resource.openai.azure.com/openai/deployments/text-embedding-3-small/embeddings?api-version=2024-02-01",
+            "https://my-resource.openai.azure.com/openai/deployments/dall-e-3/images/generations?api-version=2024-02-01",
+        ):
+            assert (
+                OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url)
+                is False
+            ), url
+
+    def test_is_openai_chat_completions_route_rejects_lookalike_hosts(self):
+        """Host matching is suffix-based, not substring-based."""
+        for url in (
+            "https://openai.azure.com.attacker.example/openai/deployments/gpt-4o/chat/completions",
+            "https://cognitiveservices.azure.com.attacker.example/v1/chat/completions",
+            "https://api.openai.com.attacker.example/v1/chat/completions",
+        ):
+            assert (
+                OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url)
+                is False
+            ), url
+
     @patch("litellm.completion_cost")
     @patch(
         "litellm.litellm_core_utils.litellm_logging.get_standard_logging_object_payload"
@@ -879,6 +926,274 @@ class TestOpenAIPassthroughLoggingHandler:
         )
 
 
+    def test_is_openai_embeddings_route(self):
+        """Test OpenAI embeddings route detection.
+
+        Both the OpenAI-v1 surface and the classic Azure deployment path
+        (`/openai/deployments/{deployment}/embeddings`, which carries no
+        `/v1/` segment) must be recognised, or those calls record $0.
+        """
+        # Positive cases
+        assert (
+            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
+                "https://api.openai.com/v1/embeddings"
+            )
+            is True
+        )
+        assert (
+            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
+                "https://myresource.openai.azure.com/openai/v1/embeddings"
+            )
+            is True
+        )
+        assert (
+            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
+                "https://myresource.openai.azure.com/openai/deployments/emb/embeddings?api-version=2024-02-01"
+            )
+            is True
+        )
+        assert (
+            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
+                "https://myresource.cognitiveservices.azure.com/openai/v1/embeddings"
+            )
+            is True
+        )
+
+        # Negative cases — other endpoints and non-OpenAI hosts
+        assert (
+            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
+                "https://api.openai.com/v1/chat/completions"
+            )
+            is False
+        )
+        assert (
+            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
+                "https://api.anthropic.com/v1/embeddings"
+            )
+            is False
+        )
+        assert OpenAIPassthroughLoggingHandler.is_openai_embeddings_route("") is False
+
+    def test_openai_passthrough_handler_embeddings_cost_tracking(self):
+        """Regression test: pass-through embeddings must not record $0.
+
+        BUG: the handler had no embeddings predicate at all, so
+        `/v1/embeddings` fell through the supported-endpoint check and
+        returned `result: None` with no `response_cost`. We billed upstream
+        for the tokens and wrote a zero-spend row against the calling
+        virtual key.
+
+        This exercises the REAL cost calculator (no mock) so the assertion
+        pins actual pricing behavior, not just that some number was set.
+        """
+        import litellm
+
+        prompt_tokens = 1000
+        embeddings_response_body = {
+            "object": "list",
+            "model": "text-embedding-3-small",
+            "data": [
+                {"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3]}
+            ],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "total_tokens": prompt_tokens,
+            },
+        }
+
+        mock_httpx_response = self._create_mock_httpx_response(
+            embeddings_response_body
+        )
+        mock_logging_obj = self._create_mock_logging_obj()
+
+        result = OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
+            httpx_response=mock_httpx_response,
+            response_body=embeddings_response_body,
+            logging_obj=mock_logging_obj,
+            url_route="https://api.openai.com/v1/embeddings",
+            result="",
+            start_time=self.start_time,
+            end_time=self.end_time,
+            cache_hit=False,
+            request_body={"model": "text-embedding-3-small", "input": "hello"},
+            passthrough_logging_payload=None,
+            litellm_params={},
+            custom_llm_provider="openai",
+        )
+
+        expected_cost = (
+            litellm.model_cost["text-embedding-3-small"]["input_cost_per_token"]
+            * prompt_tokens
+        )
+        assert expected_cost > 0, "test fixture model must have non-zero pricing"
+
+        assert result is not None
+        assert result["kwargs"]["response_cost"] == pytest.approx(expected_cost)
+        assert result["kwargs"]["model"] == "text-embedding-3-small"
+        assert mock_logging_obj.model_call_details["response_cost"] == pytest.approx(
+            expected_cost
+        )
+
+        # The response object must be an EmbeddingResponse carrying the usage,
+        # with the cost pinned in _hidden_params so downstream logging does not
+        # recalculate it (same contract as the image branches).
+        from litellm.types.utils import EmbeddingResponse
+
+        embedding_response = result["result"]
+        assert isinstance(embedding_response, EmbeddingResponse)
+        assert embedding_response.usage.prompt_tokens == prompt_tokens
+        assert embedding_response.usage.completion_tokens == 0
+        assert embedding_response._hidden_params["response_cost"] == pytest.approx(
+            expected_cost
+        )
+
+    def test_responses_api_streaming_cost_tracking(self):
+        """Regression test: streamed Responses API calls must not record $0.
+
+        BUG: `_handle_logging_openai_collected_chunks` reassembled every
+        stream with `OpenAIChatCompletionResponseIterator` +
+        `stream_chunk_builder`, which understand chat-completion chunks only.
+        A streamed Responses call emits `response.*` typed events instead, so
+        parsing yielded nothing, the handler bailed with `result: None`, and
+        the SpendLogs row was written with zero spend — even though
+        non-streaming Responses calls were costed correctly.
+
+        FIX: detect the terminal `response.completed` event and route its
+        `response` object through the same
+        `_build_responses_api_response_and_cost` path the non-streaming
+        branch uses.
+
+        Uses the REAL cost calculator so the numbers are meaningful.
+        """
+        import litellm
+
+        input_tokens = 1000
+        output_tokens = 500
+        completed_response = {
+            "id": "resp_abc123",
+            "object": "response",
+            "created_at": 1677652288,
+            "model": "gpt-4o-2024-08-06",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Hello!"}],
+                }
+            ],
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            },
+        }
+
+        # A realistic Responses event stream: the SSE `event:` line and its
+        # `data:` payload arrive as separate entries because
+        # `_convert_raw_bytes_to_str_lines` splits on newlines.
+        all_chunks = [
+            "event: response.created",
+            "data: "
+            + json.dumps({"type": "response.created", "response": {"id": "resp_abc123"}}),
+            "event: response.output_text.delta",
+            "data: " + json.dumps({"type": "response.output_text.delta", "delta": "Hello!"}),
+            "event: response.completed",
+            "data: "
+            + json.dumps({"type": "response.completed", "response": completed_response}),
+            "data: [DONE]",
+        ]
+
+        mock_logging_obj = self._create_mock_logging_obj()
+
+        result = OpenAIPassthroughLoggingHandler._handle_logging_openai_collected_chunks(
+            litellm_logging_obj=mock_logging_obj,
+            passthrough_success_handler_obj=None,
+            url_route="https://api.openai.com/v1/responses",
+            request_body={"model": "gpt-4o", "stream": True},
+            endpoint_type=None,
+            start_time=self.start_time,
+            all_chunks=all_chunks,
+            end_time=self.end_time,
+        )
+
+        model_pricing = litellm.model_cost["gpt-4o"]
+        expected_cost = (
+            model_pricing["input_cost_per_token"] * input_tokens
+            + model_pricing["output_cost_per_token"] * output_tokens
+        )
+        assert expected_cost > 0, "test fixture model must have non-zero pricing"
+
+        # Pre-fix this is the failing assertion: the chat-chunk reassembly
+        # returns None, so the handler returns `{"result": None, "kwargs": {}}`
+        # and there is no response_cost at all.
+        assert result["kwargs"].get("response_cost") == pytest.approx(expected_cost)
+        assert mock_logging_obj.model_call_details["response_cost"] == pytest.approx(
+            expected_cost
+        )
+
+        from litellm.types.llms.openai import ResponsesAPIResponse
+
+        assert isinstance(result["result"], ResponsesAPIResponse), (
+            "streamed Responses calls must reassemble into a "
+            "ResponsesAPIResponse via the shared Responses costing path"
+        )
+
+    def test_responses_streaming_detection_leaves_chat_streams_alone(self):
+        """The Responses event detector must not hijack chat-completion streams.
+
+        Chat chunks carry no `type: response.completed`, so detection returns
+        None and the existing `stream_chunk_builder` path still runs — this
+        guards the regression risk of the streaming fix.
+        """
+        chat_chunks = [
+            "data: "
+            + json.dumps(
+                {
+                    "id": "chatcmpl-123",
+                    "object": "chat.completion.chunk",
+                    "created": 1677652288,
+                    "model": "gpt-4o",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": "Hello"},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            ),
+            "data: [DONE]",
+        ]
+
+        assert (
+            OpenAIPassthroughLoggingHandler._extract_responses_api_completed_response(
+                all_chunks=chat_chunks
+            )
+            is None
+        )
+
+        # And a Responses stream IS detected, returning the completed
+        # `response` object (not the event envelope).
+        responses_chunks = [
+            "event: response.completed",
+            "data: "
+            + json.dumps(
+                {
+                    "type": "response.completed",
+                    "response": {"id": "resp_1", "usage": {"input_tokens": 5}},
+                }
+            ),
+        ]
+        detected = (
+            OpenAIPassthroughLoggingHandler._extract_responses_api_completed_response(
+                all_chunks=responses_chunks
+            )
+        )
+        assert detected is not None
+        assert detected["id"] == "resp_1"
+
+
 class TestOpenAIPassthroughIntegration:
     """Integration tests for OpenAI passthrough cost tracking"""
 
@@ -1030,6 +1345,41 @@ class TestOpenAIPassthroughIntegration:
             is True
         )
         # Unsupported OpenAI endpoints (e.g. /v1/models) still return False.
+        assert (
+            self.handler._is_supported_openai_endpoint(
+                "https://api.openai.com/v1/models"
+            )
+            is False
+        )
+
+    def test_is_supported_openai_endpoint_includes_embeddings(self):
+        """Regression test for the embeddings dispatch gate.
+
+        `_is_supported_openai_endpoint` allow-listed exactly four shapes
+        (chat, image generation, image editing, responses). Embeddings were
+        absent, so `/v1/embeddings` never reached the handler and every
+        pass-through embedding call was billed upstream but recorded as $0
+        against the calling virtual key.
+        """
+        assert (
+            self.handler._is_supported_openai_endpoint(
+                "https://api.openai.com/v1/embeddings"
+            )
+            is True
+        )
+        assert (
+            self.handler._is_supported_openai_endpoint(
+                "https://myresource.openai.azure.com/openai/v1/embeddings"
+            )
+            is True
+        )
+        assert (
+            self.handler._is_supported_openai_endpoint(
+                "https://myresource.openai.azure.com/openai/deployments/emb/embeddings?api-version=2024-02-01"
+            )
+            is True
+        )
+        # Still not a blanket allow: unrelated OpenAI routes stay unsupported.
         assert (
             self.handler._is_supported_openai_endpoint(
                 "https://api.openai.com/v1/models"
