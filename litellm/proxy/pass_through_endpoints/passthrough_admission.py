@@ -40,6 +40,7 @@ zero-cost alerting are for.
 """
 
 import re
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Tuple
 
 from litellm._logging import verbose_proxy_logger
@@ -60,6 +61,23 @@ class PassthroughAdmissionError(Exception):
         self.message = message
         self.status_code = status_code
         super().__init__(message)
+
+
+def _is_explicitly_true(value: Any) -> bool:
+    """True only for a real boolean True or an explicit truthy scalar.
+
+    Deliberately strict. An arbitrary object (a Mock, a config stub, anything
+    whose `.get()` returns another object) must NOT count as "enabled" — that
+    would turn admission control on by accident and reject every pass-through
+    request with a 500.
+    """
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value == 1
+    return False
 
 
 def _template_to_regex(path_template: str) -> re.Pattern:
@@ -172,7 +190,13 @@ def enforce_passthrough_admission(
 
     No-op unless `passthrough_require_cost_tracking` is true.
     """
-    if not general_settings or not general_settings.get(REQUIRE_COST_TRACKING_SETTING, False):
+    # Enforcement must be turned on EXPLICITLY. Never infer it from
+    # truthiness: `general_settings` is not guaranteed to be a plain dict, and
+    # an object whose `.get()` returns another object would otherwise switch
+    # enforcement on by accident and reject every pass-through request.
+    if not isinstance(general_settings, Mapping):
+        return
+    if not _is_explicitly_true(general_settings.get(REQUIRE_COST_TRACKING_SETTING, False)):
         return
 
     capabilities = general_settings.get(CAPABILITIES_SETTING) or []

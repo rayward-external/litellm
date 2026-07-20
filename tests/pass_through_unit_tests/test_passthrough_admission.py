@@ -218,3 +218,50 @@ def test_find_matching_capability_returns_the_match_object():
     )
     assert capability is BEDROCK_CONVERSE
     assert match is not None and match.group("model_id") == "my-model"
+
+
+# ---------------------------------------------------------------------------
+# Enforcement must be explicit, never inferred.
+# ---------------------------------------------------------------------------
+
+
+def test_mock_like_settings_do_not_enable_enforcement():
+    """Regression: a Mock's .get() returns a truthy Mock.
+
+    `general_settings` is not guaranteed to be a plain dict. Treating any
+    truthy return as "enabled" switched admission control on by accident and
+    rejected every pass-through request with a 500.
+    """
+    from unittest.mock import MagicMock
+
+    _enforce("/anything/unregistered", settings=MagicMock())
+
+
+def test_non_mapping_settings_are_ignored():
+    # Called directly rather than through _enforce, whose settings=None
+    # sentinel means "use the enabled config".
+    for settings in (None, [], "true", 1, object()):
+        enforce_passthrough_admission(
+            general_settings=settings,
+            provider="anthropic",
+            method="POST",
+            path="/anything/unregistered",
+            request_body={},
+        )
+
+
+@pytest.mark.parametrize("value", [True, "true", "True", "yes", "on", "1", 1])
+def test_explicit_truthy_values_enable_enforcement(value):
+    with pytest.raises(PassthroughAdmissionError):
+        _enforce(
+            "/anything/unregistered",
+            settings={"passthrough_require_cost_tracking": value, "passthrough_capabilities": []},
+        )
+
+
+@pytest.mark.parametrize("value", [False, "false", "no", 0, None, "", object()])
+def test_non_explicit_values_leave_enforcement_off(value):
+    _enforce(
+        "/anything/unregistered",
+        settings={"passthrough_require_cost_tracking": value, "passthrough_capabilities": []},
+    )
