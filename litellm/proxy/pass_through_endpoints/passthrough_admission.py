@@ -126,7 +126,8 @@ def _model_is_priced(model: Optional[str]) -> bool:
     if "/" in model and model.split("/", 1)[1] in litellm.model_cost:
         return True
     return any(
-        key.endswith("/" + model) for key in litellm.model_cost  # type: ignore[union-attr]
+        key.endswith("/" + model)
+        for key in litellm.model_cost  # type: ignore[union-attr]
     )
 
 
@@ -201,9 +202,7 @@ def enforce_passthrough_admission(
 
     capabilities = general_settings.get(CAPABILITIES_SETTING) or []
     if not isinstance(capabilities, list):
-        raise PassthroughAdmissionError(
-            f"{CAPABILITIES_SETTING} must be a list of capability objects", status_code=500
-        )
+        raise PassthroughAdmissionError(f"{CAPABILITIES_SETTING} must be a list of capability objects", status_code=500)
 
     capability, path_match = find_matching_capability(capabilities, provider, method, path)
     if capability is None:

@@ -30,9 +30,7 @@ def hostname_matches(hostname: str, suffixes: Tuple[str, ...]) -> bool:
     Uses suffix matching (not a bare substring test) so look-alikes such as
     `cognitiveservices.azure.com.attacker.example` are not accepted.
     """
-    return any(
-        hostname == suffix or hostname.endswith("." + suffix) for suffix in suffixes
-    )
+    return any(hostname == suffix or hostname.endswith("." + suffix) for suffix in suffixes)
 
 
 def is_openai_compatible_url(url_route: Optional[str]) -> bool:

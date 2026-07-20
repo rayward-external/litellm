@@ -809,9 +809,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             )
             cost_model = normalize_fireworks_model_id(model) or model
 
-            complete_response: Optional[
-                Union[ModelResponse, TextCompletionResponse, ResponsesAPIResponse]
-            ] = None
+            complete_response: Optional[Union[ModelResponse, TextCompletionResponse, ResponsesAPIResponse]] = None
             responses_api_completed_response = (
                 OpenAIPassthroughLoggingHandler._extract_responses_api_completed_response(all_chunks=all_chunks)
             )
