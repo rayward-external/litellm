@@ -24,7 +24,7 @@ AZURE_OPENAI_HOSTNAMES = ("openai.azure.com", "cognitiveservices.azure.com")
 AZURE_OPENAI_PATH_MARKERS = ("/openai/", "/v1/")
 
 
-def hostname_matches(hostname: str, suffixes: Tuple[str, ...]) -> bool:
+def hostname_matches(hostname: str, suffixes: tuple[str, ...]) -> bool:
     """True if hostname equals one of `suffixes` or is a subdomain of it.
 
     Uses suffix matching (not a bare substring test) so look-alikes such as
@@ -33,7 +33,7 @@ def hostname_matches(hostname: str, suffixes: Tuple[str, ...]) -> bool:
     return any(hostname == suffix or hostname.endswith("." + suffix) for suffix in suffixes)
 
 
-def is_openai_compatible_url(url_route: Optional[str]) -> bool:
+def is_openai_compatible_url(url_route: str | None) -> bool:
     """True if the URL targets an OpenAI-compatible API surface.
 
     For the shared Azure Cognitive Services domains we additionally require an
@@ -83,7 +83,7 @@ _FIREWORKS_ACCOUNTS_PREFIX = "accounts/"
 _FIREWORKS_MODELS_MARKER = "/models/"
 
 
-def is_fireworks_url(url_route: Optional[str]) -> bool:
+def is_fireworks_url(url_route: str | None) -> bool:
     """True if the URL targets the Fireworks AI API."""
     if not url_route:
         return False
@@ -104,7 +104,7 @@ COHERE_HOSTNAMES = ("cohere.com", "cohere.ai")
 COHERE_STREAMING_PATHS = ("/v2/chat",)
 
 
-def is_cohere_streaming_url(url_route: Optional[str]) -> bool:
+def is_cohere_streaming_url(url_route: str | None) -> bool:
     """True if the URL is a Cohere endpoint whose stream we can cost."""
     if not url_route:
         return False
@@ -115,7 +115,7 @@ def is_cohere_streaming_url(url_route: Optional[str]) -> bool:
     return any(path in parsed_url.path for path in COHERE_STREAMING_PATHS)
 
 
-def is_openai_compatible_provider(custom_llm_provider: Optional[str]) -> bool:
+def is_openai_compatible_provider(custom_llm_provider: str | None) -> bool:
     """True when `custom_llm_provider` speaks the OpenAI wire protocol.
 
     Pass-through cost math for OpenAI-shaped responses is already
@@ -135,7 +135,7 @@ def is_openai_compatible_provider(custom_llm_provider: Optional[str]) -> bool:
     return provider in _NATIVE_OPENAI_PROVIDERS or provider in openai_compatible_providers
 
 
-def _is_shared_azure_cognitive_host(url_route: Optional[str]) -> bool:
+def _is_shared_azure_cognitive_host(url_route: str | None) -> bool:
     """True for a host on the Azure domains shared with non-OpenAI services."""
     if not url_route:
         return False
@@ -146,8 +146,8 @@ def _is_shared_azure_cognitive_host(url_route: Optional[str]) -> bool:
 
 
 def is_openai_wire_compatible_route(
-    url_route: Optional[str],
-    custom_llm_provider: Optional[str] = None,
+    url_route: str | None,
+    custom_llm_provider: str | None = None,
 ) -> bool:
     """True if this pass-through call should be costed by the OpenAI handler.
 
@@ -169,7 +169,7 @@ def is_openai_wire_compatible_route(
     return is_openai_compatible_provider(custom_llm_provider)
 
 
-def is_fireworks_model_id(model: Optional[str]) -> bool:
+def is_fireworks_model_id(model: str | None) -> bool:
     """True for a Fireworks serverless model id, provider-prefixed or bare."""
     if not model:
         return False
@@ -177,7 +177,7 @@ def is_fireworks_model_id(model: Optional[str]) -> bool:
     return candidate.startswith(_FIREWORKS_ACCOUNTS_PREFIX) and _FIREWORKS_MODELS_MARKER in candidate
 
 
-def normalize_fireworks_model_id(model: Optional[str]) -> Optional[str]:
+def normalize_fireworks_model_id(model: str | None) -> str | None:
     """Return the bare `accounts/.../models/...` id for a Fireworks model.
 
     `litellm.llms.fireworks_ai.cost_calculator` is the pricing authority for
@@ -199,9 +199,9 @@ def normalize_fireworks_model_id(model: Optional[str]) -> Optional[str]:
 
 
 def resolve_openai_passthrough_provider(
-    model: Optional[str] = None,
-    custom_llm_provider: Optional[str] = None,
-    url_route: Optional[str] = None,
+    model: str | None = None,
+    custom_llm_provider: str | None = None,
+    url_route: str | None = None,
 ) -> str:
     """Pick the provider to price an OpenAI-compatible pass-through call with.
 

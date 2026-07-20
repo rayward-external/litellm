@@ -81,7 +81,7 @@ def _is_explicitly_true(value: Any) -> bool:
 
 
 def _template_to_regex(path_template: str) -> re.Pattern:
-    parts: List[str] = []
+    parts: list[str] = []
     last = 0
     for match in _PLACEHOLDER_RE.finditer(path_template):
         parts.append(re.escape(path_template[last : match.start()]))
@@ -106,7 +106,7 @@ def _normalize_path(path: str) -> str:
     return collapsed or "/"
 
 
-def _model_is_priced(model: Optional[str]) -> bool:
+def _model_is_priced(model: str | None) -> bool:
     """True when `model` resolves to an explicit entry in the price map.
 
     A fallback or default price is treated as unpriced on purpose: a wrong
@@ -132,10 +132,10 @@ def _model_is_priced(model: Optional[str]) -> bool:
 
 
 def _extract_model(
-    capability: Dict[str, Any],
-    path_match: Optional[re.Match],
-    request_body: Optional[dict],
-) -> Optional[str]:
+    capability: dict[str, Any],
+    path_match: re.Match | None,
+    request_body: dict | None,
+) -> str | None:
     source = str(capability.get("model_source") or "body")
     if source.startswith("path:"):
         placeholder = source.split(":", 1)[1]
@@ -155,11 +155,11 @@ def _extract_model(
 
 
 def find_matching_capability(
-    capabilities: List[Dict[str, Any]],
-    provider: Optional[str],
+    capabilities: list[dict[str, Any]],
+    provider: str | None,
     method: str,
     path: str,
-) -> Tuple[Optional[Dict[str, Any]], Optional[re.Match]]:
+) -> tuple[dict[str, Any] | None, re.Match | None]:
     normalized = _normalize_path(path)
     upper_method = (method or "").upper()
     for capability in capabilities:
@@ -181,11 +181,11 @@ def find_matching_capability(
 
 
 def enforce_passthrough_admission(
-    general_settings: Optional[dict],
-    provider: Optional[str],
+    general_settings: dict | None,
+    provider: str | None,
     method: str,
     path: str,
-    request_body: Optional[dict],
+    request_body: dict | None,
 ) -> None:
     """Raise PassthroughAdmissionError if this request has no costing path.
 

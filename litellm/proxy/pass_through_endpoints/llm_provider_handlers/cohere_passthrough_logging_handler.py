@@ -82,7 +82,7 @@ class CoherePassthroughLoggingHandler(BasePassthroughLoggingHandler):
                     all_openai_chunks.append(litellm_chunk)
             except (StopIteration, StopAsyncIteration):
                 break
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # cost tracking is best-effort; never break the response path
                 # One malformed line must not discard the usage carried by the
                 # rest of the stream — that would silently reintroduce a $0 row.
                 verbose_proxy_logger.debug("Skipping unparseable Cohere stream line: %s", e)

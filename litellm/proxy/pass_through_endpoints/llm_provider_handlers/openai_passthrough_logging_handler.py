@@ -771,7 +771,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         for chunk_str in reversed(all_chunks):
             try:
                 parsed_chunk = BaseModelResponseIterator._string_to_dict_parser(str_line=chunk_str)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # cost tracking is best-effort; never break the response path
                 verbose_proxy_logger.debug(f"Error parsing streaming chunk as Responses event: {e}")
                 continue
             if not isinstance(parsed_chunk, dict):

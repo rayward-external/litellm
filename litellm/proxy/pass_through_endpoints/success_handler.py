@@ -48,7 +48,7 @@ _GENERIC_USAGE_SHAPES = (
 )
 
 
-def _coerce_token_count(value: Any) -> Optional[int]:
+def _coerce_token_count(value: Any) -> int | None:
     """Return a non-negative int token count, or None if the value isn't one."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -56,7 +56,7 @@ def _coerce_token_count(value: Any) -> Optional[int]:
     return count if count >= 0 else None
 
 
-def extract_generic_usage(response_body: Any) -> Optional[tuple]:
+def extract_generic_usage(response_body: Any) -> tuple | None:
     """Best-effort (prompt_tokens, completion_tokens) from an unknown provider.
 
     Cost tracking for pass-through is otherwise an allow-list: a provider
@@ -88,7 +88,7 @@ def extract_generic_usage(response_body: Any) -> Optional[tuple]:
     return None
 
 
-def _resolve_generic_price(model: str, custom_llm_provider: Optional[str]) -> Optional[tuple]:
+def _resolve_generic_price(model: str, custom_llm_provider: str | None) -> tuple | None:
     """Per-token input/output rates for `model`, or None if it isn't priced.
 
     Deliberately strict: only a model that resolves to a real price-map entry
@@ -105,7 +105,7 @@ def _resolve_generic_price(model: str, custom_llm_provider: Optional[str]) -> Op
     for provider in (custom_llm_provider, None):
         try:
             model_info = get_model_info(model=model, custom_llm_provider=provider)
-        except Exception:
+        except Exception:  # noqa: BLE001  # price lookup is best-effort; try the next provider
             continue
         input_rate = model_info.get("input_cost_per_token") or 0
         output_rate = model_info.get("output_cost_per_token") or 0
@@ -203,7 +203,7 @@ class PassThroughEndpointLogging:
     def normalize_llm_passthrough_logging_payload(
         self,
         httpx_response: httpx.Response,
-        response_body: Optional[dict],
+        response_body: dict | None,
         request_body: dict,
         logging_obj: LiteLLMLoggingObj,
         url_route: str,
@@ -211,14 +211,14 @@ class PassThroughEndpointLogging:
         start_time: datetime,
         end_time: datetime,
         cache_hit: bool,
-        custom_llm_provider: Optional[str] = None,
+        custom_llm_provider: str | None = None,
         **kwargs,
     ):
         return_dict = {
             "standard_logging_response_object": None,
             "kwargs": kwargs,
         }
-        standard_logging_response_object: Optional[Any] = None
+        standard_logging_response_object: Any | None = None
 
         if self.is_gemini_route(url_route, custom_llm_provider):
             gemini_passthrough_logging_handler_result = GeminiPassthroughLoggingHandler.gemini_passthrough_handler(
@@ -362,7 +362,7 @@ class PassThroughEndpointLogging:
     async def pass_through_async_success_handler(
         self,
         httpx_response: httpx.Response,
-        response_body: Optional[dict],
+        response_body: dict | None,
         logging_obj: LiteLLMLoggingObj,
         url_route: str,
         result: str,
@@ -371,10 +371,10 @@ class PassThroughEndpointLogging:
         cache_hit: bool,
         request_body: dict,
         passthrough_logging_payload: PassthroughStandardLoggingPayload,
-        custom_llm_provider: Optional[str] = None,
+        custom_llm_provider: str | None = None,
         **kwargs,
     ):
-        standard_logging_response_object: Optional[PassThroughEndpointLoggingResultValues] = None
+        standard_logging_response_object: PassThroughEndpointLoggingResultValues | None = None
         logging_obj.model_call_details["passthrough_logging_payload"] = passthrough_logging_payload
         if self.is_assemblyai_route(url_route):
             if AssemblyAIPassthroughLoggingHandler._should_log_request(httpx_response.request.method) is not True:
@@ -474,7 +474,7 @@ class PassThroughEndpointLogging:
                 return True
         return False
 
-    def is_cursor_route(self, url_route: str, custom_llm_provider: Optional[str] = None):
+    def is_cursor_route(self, url_route: str, custom_llm_provider: str | None = None):
         """Check if the URL route is a Cursor Cloud Agents API route."""
         if custom_llm_provider == "cursor":
             return True
@@ -488,7 +488,7 @@ class PassThroughEndpointLogging:
                     return custom_llm_provider == "cursor"
         return False
 
-    def is_openai_route(self, url_route: str, custom_llm_provider: Optional[str] = None):
+    def is_openai_route(self, url_route: str, custom_llm_provider: str | None = None):
         """Check if this pass-through call speaks the OpenAI wire protocol.
 
         Keys off `custom_llm_provider` first — the same way `is_gemini_route`
@@ -508,14 +508,14 @@ class PassThroughEndpointLogging:
 
         return is_openai_wire_compatible_route(url_route, custom_llm_provider)
 
-    def is_gemini_route(self, url_route: str, custom_llm_provider: Optional[str] = None):
+    def is_gemini_route(self, url_route: str, custom_llm_provider: str | None = None):
         """Check if the URL route is a Gemini API route."""
         for route in self.TRACKED_GEMINI_ROUTES:
             if route in url_route and custom_llm_provider == "gemini":
                 return True
         return False
 
-    def _is_supported_openai_endpoint(self, url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
+    def _is_supported_openai_endpoint(self, url_route: str, custom_llm_provider: str | None = None) -> bool:
         """Check if the OpenAI endpoint is supported by the passthrough logging handler.
 
         The Responses API route is included because
@@ -544,10 +544,10 @@ class PassThroughEndpointLogging:
 
     def _resolve_generic_model(
         self,
-        response_body: Optional[dict],
+        response_body: dict | None,
         request_body: dict,
         logging_obj: LiteLLMLoggingObj,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Find the model name for an otherwise-unrecognised pass-through call."""
         candidates = [
             request_body.get("model") if isinstance(request_body, dict) else None,
@@ -561,11 +561,11 @@ class PassThroughEndpointLogging:
 
     def _price_generic_passthrough(
         self,
-        response_body: Optional[dict],
+        response_body: dict | None,
         request_body: dict,
         logging_obj: LiteLLMLoggingObj,
         url_route: str,
-        custom_llm_provider: Optional[str],
+        custom_llm_provider: str | None,
         kwargs: dict,
     ) -> dict:
         """Price a pass-through call that no provider handler recognised.
@@ -629,7 +629,7 @@ class PassThroughEndpointLogging:
             verbose_proxy_logger.debug(
                 "Priced generic passthrough %s (model=%s) at %s", url_route, model, response_cost
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # cost tracking must never break the response path
             # Cost tracking must never break the response path.
             verbose_proxy_logger.exception("Error pricing generic passthrough request: %s", e)
         return kwargs
