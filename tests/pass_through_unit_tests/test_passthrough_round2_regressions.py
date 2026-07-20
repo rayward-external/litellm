@@ -449,3 +449,67 @@ def test_real_string_get_on_mock_response_still_trips_the_gate(monkeypatch):
     result = _call_openai_handler_with_mock_response(monkeypatch, method_value="GET")
     assert result["result"] is None
     assert "response_cost" not in result["kwargs"]
+
+
+# ---------------------------------------------------------------------------
+# 7. Round-3 refinement of the dispatch: three fates on a recognised OpenAI
+#    route. Blanket-unpricing everything unsupported (the round-2 shape)
+#    regressed billable provider-less POSTs (`/v1/completions` on an OpenAI
+#    host) from generic-priced to $0; only Responses ITEM routes are priced by
+#    nobody, because their bodies echo the original usage block and
+#    `POST .../{id}/cancel` slips past the generic pricer's method gate.
+# ---------------------------------------------------------------------------
+
+_LEGACY_COMPLETIONS_URL = "https://api.openai.com/v1/completions"
+_LEGACY_COMPLETIONS_BODY = {
+    "model": "gpt-3.5-turbo-instruct",
+    "usage": {"prompt_tokens": 100, "completion_tokens": 50},
+}
+_RESPONSES_CANCEL_URL = "https://api.openai.com/v1/responses/resp_123/cancel"
+
+
+def _dispatch(monkeypatch, url, method, body, custom_llm_provider):
+    monkeypatch.setattr(
+        "litellm.utils.get_model_info",
+        _fake_get_model_info({None: {"input_cost_per_token": 1.5e-6, "output_cost_per_token": 2e-6}}),
+    )
+    handler = PassThroughEndpointLogging()
+    logging_obj = MagicMock()
+    logging_obj.model_call_details = {"passthrough_logging_payload": {"request_method": method}}
+    httpx_response = httpx.Response(status_code=200, json=body, request=httpx.Request(method, url))
+    return_dict = handler.normalize_llm_passthrough_logging_payload(
+        httpx_response=httpx_response,
+        response_body=body,
+        request_body=dict(body),
+        logging_obj=logging_obj,
+        url_route=url,
+        result="",
+        start_time=datetime.now(),
+        end_time=datetime.now(),
+        cache_hit=False,
+        custom_llm_provider=custom_llm_provider,
+    )
+    return return_dict, logging_obj
+
+
+def test_provider_less_legacy_completions_post_is_generic_priced(monkeypatch):
+    """The round-2 regression: a billable POST outside the 5-recognizer
+    allow-list must still reach the generic pricer, not be blanket-unpriced."""
+    return_dict, logging_obj = _dispatch(
+        monkeypatch, _LEGACY_COMPLETIONS_URL, "POST", _LEGACY_COMPLETIONS_BODY, custom_llm_provider=None
+    )
+    expected = 100 * 1.5e-6 + 50 * 2e-6
+    assert logging_obj.model_call_details.get("response_cost") == pytest.approx(expected)
+    assert return_dict["kwargs"].get("response_cost") == pytest.approx(expected)
+
+
+def test_responses_cancel_post_is_priced_by_nobody(monkeypatch):
+    """POST .../{id}/cancel echoes the original usage block and passes the
+    generic pricer's method gate — only the item-route exclusion stops the
+    full generation being re-billed on every cancel."""
+    body = dict(_RESPONSES_ECHO_BODY)
+    return_dict, logging_obj = _dispatch(monkeypatch, _RESPONSES_CANCEL_URL, "POST", body, custom_llm_provider="openai")
+    assert "response_cost" not in return_dict["kwargs"]
+    assert "response_cost" not in {
+        k: v for k, v in logging_obj.model_call_details.items() if k != "passthrough_logging_payload"
+    }

@@ -166,6 +166,24 @@ def _is_responses_path(path: str) -> bool:
     return parent in _RESPONSES_PARENT_SEGMENTS
 
 
+def _is_responses_item_path(path: str) -> bool:
+    """True for Responses ITEM routes: `/v1/responses/{id}`, `.../cancel`,
+    `.../input_items` — a real `responses` segment with trailing segments.
+
+    Item responses ECHO the original usage block. `POST .../{id}/cancel` slips
+    past a method gate, so the dispatch must name these routes explicitly when
+    deciding what may fall through to the generic pricer.
+    """
+    segments = [segment for segment in path.split("/") if segment != ""]
+    for index, segment in enumerate(segments):
+        if segment != "responses":
+            continue
+        parent = segments[index - 1] if index > 0 else ""
+        if parent in _RESPONSES_PARENT_SEGMENTS:
+            return index < len(segments) - 1
+    return False
+
+
 def _is_openai_compatible_host(hostname: Optional[str]) -> bool:
     """True if the hostname is OpenAI proper or one of the Azure OpenAI domains.
 
@@ -382,6 +400,19 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             return False
         parsed_url = urlparse(url_route)
         return _in_openai_scope(url_route, custom_llm_provider) and _is_responses_path(parsed_url.path)
+
+    @staticmethod
+    def is_openai_responses_item_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
+        """Responses ITEM routes (`/v1/responses/{id}`, `.../cancel`, ...).
+
+        These echo the original usage block, so the success dispatch must keep
+        them away from ANY pricer — including the generic fallback, whose POST
+        gate alone does not stop `POST .../{id}/cancel`.
+        """
+        if not url_route:
+            return False
+        parsed_url = urlparse(url_route)
+        return _in_openai_scope(url_route, custom_llm_provider) and _is_responses_item_path(parsed_url.path)
 
     @staticmethod
     def is_openai_embeddings_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:

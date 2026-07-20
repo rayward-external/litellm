@@ -325,18 +325,22 @@ class PassThroughEndpointLogging:
             standard_logging_response_object = cohere_passthrough_logging_handler_result["result"]
             kwargs = cohere_passthrough_logging_handler_result["kwargs"]
         elif self.is_openai_route(url_route, custom_llm_provider):
-            # The nested check matters: a recognised-OpenAI route that is NOT a
-            # supported billable endpoint (retrieval GETs, `.../{id}/cancel`,
-            # stored-object listings) must be DELIBERATELY unpriced, not fall
-            # through to the generic pricer. Those responses echo the original
-            # usage block, so the generic fallback would re-bill the full
-            # generation on every poll — with a `.and.` here instead of nesting,
-            # that is exactly what happened.
-            if self._is_supported_openai_endpoint(url_route, custom_llm_provider):
-                from .llm_provider_handlers.openai_passthrough_logging_handler import (
-                    OpenAIPassthroughLoggingHandler,
-                )
+            # Nested on purpose. Three distinct fates on a recognised OpenAI
+            # route, and collapsing any two of them has already caused a money
+            # bug in each direction:
+            #   1. supported billable endpoint -> the OpenAI handler;
+            #   2. a Responses ITEM route -> priced by NOBODY. Its body echoes
+            #      the original usage block, and `POST .../{id}/cancel` slips
+            #      past the generic pricer's method gate — falling through
+            #      re-billed the full generation on every poll;
+            #   3. anything else -> the generic pricer. Blanket-unpricing this
+            #      bucket instead regressed billable provider-less POSTs
+            #      (`/v1/completions` on an OpenAI host) from priced to $0.
+            from .llm_provider_handlers.openai_passthrough_logging_handler import (
+                OpenAIPassthroughLoggingHandler,
+            )
 
+            if self._is_supported_openai_endpoint(url_route, custom_llm_provider):
                 openai_passthrough_logging_handler_result = OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
                     httpx_response=httpx_response,
                     response_body=response_body or {},
@@ -352,10 +356,19 @@ class PassThroughEndpointLogging:
                 )
                 standard_logging_response_object = openai_passthrough_logging_handler_result["result"]
                 kwargs = openai_passthrough_logging_handler_result["kwargs"]
-            else:
+            elif OpenAIPassthroughLoggingHandler.is_openai_responses_item_route(url_route, custom_llm_provider):
                 verbose_proxy_logger.debug(
-                    "OpenAI passthrough object-management route %s left unpriced on purpose",
+                    "OpenAI passthrough responses item route %s left unpriced on purpose",
                     url_route,
+                )
+            else:
+                kwargs = self._price_generic_passthrough(
+                    response_body=response_body,
+                    request_body=request_body,
+                    logging_obj=logging_obj,
+                    url_route=url_route,
+                    custom_llm_provider=custom_llm_provider,
+                    kwargs=kwargs,
                 )
 
         elif self.is_cursor_route(url_route, custom_llm_provider):
