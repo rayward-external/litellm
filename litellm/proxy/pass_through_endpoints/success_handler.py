@@ -337,20 +337,18 @@ class PassThroughEndpointLogging:
                     OpenAIPassthroughLoggingHandler,
                 )
 
-                openai_passthrough_logging_handler_result = (
-                    OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
-                        httpx_response=httpx_response,
-                        response_body=response_body or {},
-                        logging_obj=logging_obj,
-                        url_route=url_route,
-                        result=result,
-                        start_time=start_time,
-                        end_time=end_time,
-                        cache_hit=cache_hit,
-                        request_body=request_body,
-                        custom_llm_provider=custom_llm_provider,
-                        **kwargs,
-                    )
+                openai_passthrough_logging_handler_result = OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
+                    httpx_response=httpx_response,
+                    response_body=response_body or {},
+                    logging_obj=logging_obj,
+                    url_route=url_route,
+                    result=result,
+                    start_time=start_time,
+                    end_time=end_time,
+                    cache_hit=cache_hit,
+                    request_body=request_body,
+                    custom_llm_provider=custom_llm_provider,
+                    **kwargs,
                 )
                 standard_logging_response_object = openai_passthrough_logging_handler_result["result"]
                 kwargs = openai_passthrough_logging_handler_result["kwargs"]
