@@ -79,6 +79,93 @@ def _is_chat_completions_path(path: str) -> bool:
     return _AZURE_DEPLOYMENTS_PATH_MARKER in path and path.rstrip("/").endswith("/chat/completions")
 
 
+def _is_classic_azure_deployment_operation(path: str, operation: str) -> bool:
+    """True for `/openai/deployments/{deployment-id}/{operation}`.
+
+    Generalises the classic-Azure half of `_is_chat_completions_path` so every
+    per-operation predicate can accept the deployment shape, which carries no
+    `/v1/` segment.
+    """
+    return _AZURE_DEPLOYMENTS_PATH_MARKER in path and path.rstrip("/").endswith("/" + operation)
+
+
+def _extract_azure_deployment_name(path: str) -> Optional[str]:
+    """Return `{deployment-id}` from `/openai/deployments/{deployment-id}/...`.
+
+    On the classic Azure surface the model lives *only* in the URL: the request
+    body carries no `model` field, and an image response (`{"created": ...,
+    "data": [...]}`) echoes none either. Recognising the route is therefore not
+    enough on its own — without this the model resolves to `""` and the call is
+    still recorded at $0. Azure prices per deployment, and deployments are
+    conventionally named after the model they serve.
+    """
+    marker_index = path.find(_AZURE_DEPLOYMENTS_PATH_MARKER)
+    if marker_index == -1:
+        return None
+    remainder = path[marker_index + len(_AZURE_DEPLOYMENTS_PATH_MARKER) :]
+    deployment = remainder.split("/", 1)[0].strip()
+    return deployment or None
+
+
+def _is_image_generation_path(path: str) -> bool:
+    """True for both OpenAI-v1 and classic Azure-deployment image-generation paths.
+
+    OpenAI-v1: `/v1/images/generations`.
+    Classic Azure: `/openai/deployments/{deployment-id}/images/generations?api-version=...`.
+
+    Same defect the chat-completions predicate had: requiring `/v1/images/generations`
+    missed every DALL-E call against a classic Azure deployment, so those
+    requests were billed against our Azure account and recorded at $0.
+    """
+    if "/v1/images/generations" in path:
+        return True
+    return _is_classic_azure_deployment_operation(path, "images/generations")
+
+
+def _is_image_editing_path(path: str) -> bool:
+    """True for both OpenAI-v1 and classic Azure-deployment image-editing paths.
+
+    OpenAI-v1: `/v1/images/edits`.
+    Classic Azure: `/openai/deployments/{deployment-id}/images/edits?api-version=...`.
+    """
+    if "/v1/images/edits" in path:
+        return True
+    return _is_classic_azure_deployment_operation(path, "images/edits")
+
+
+# Path segments that may legitimately precede a `responses` segment. `v1` is the
+# OpenAI-v1 surface (`/v1/responses`, `/openai/v1/responses`), `openai` is the
+# classic Azure surface (`/openai/responses?api-version=...`), and the empty
+# string is OpenAI proper at the root (`/responses`).
+_RESPONSES_PARENT_SEGMENTS = ("", "v1", "openai")
+
+
+def _is_responses_path(path: str) -> bool:
+    """True for the OpenAI Responses API surface.
+
+    The previous test was `"/v1/responses" in path or "/responses" in path`,
+    where the second disjunct made the first redundant and matched a
+    `responses` segment *anywhere* on an in-scope host — including sibling
+    resources that merely start with the word (`/responses_archive`) and
+    unrelated nested routes (`/v0/agents/responses`). Anything it wrongly
+    matched was then costed with the Responses-API transformer, which
+    mis-parses it.
+
+    Match `responses` as a whole path segment, and only where its parent
+    segment is one of the surfaces that actually serves the Responses API.
+    Item routes (`/v1/responses/{id}`, `.../{id}/cancel`) still match because
+    the parent of the `responses` segment is unchanged.
+    """
+    segments = path.split("/")
+    for index, segment in enumerate(segments):
+        if segment != "responses":
+            continue
+        parent = segments[index - 1] if index > 0 else ""
+        if parent in _RESPONSES_PARENT_SEGMENTS:
+            return True
+    return False
+
+
 def _is_openai_compatible_host(hostname: Optional[str]) -> bool:
     """True if the hostname is OpenAI proper or one of the Azure OpenAI domains.
 
@@ -135,29 +222,38 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
     @staticmethod
     def is_openai_image_generation_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
-        """Check if the URL route is an OpenAI image generation endpoint."""
+        """Check if the URL route is an OpenAI image generation endpoint.
+
+        Accepts both the OpenAI-v1 shape and the classic Azure OpenAI
+        deployment shape — see `_is_image_generation_path`.
+        """
         if not url_route:
             return False
         parsed_url = urlparse(url_route)
-        return _in_openai_scope(url_route, custom_llm_provider) and "/v1/images/generations" in parsed_url.path
+        return _in_openai_scope(url_route, custom_llm_provider) and _is_image_generation_path(parsed_url.path)
 
     @staticmethod
     def is_openai_image_editing_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
-        """Check if the URL route is an OpenAI image editing endpoint."""
+        """Check if the URL route is an OpenAI image editing endpoint.
+
+        Accepts both the OpenAI-v1 shape and the classic Azure OpenAI
+        deployment shape — see `_is_image_editing_path`.
+        """
         if not url_route:
             return False
         parsed_url = urlparse(url_route)
-        return _in_openai_scope(url_route, custom_llm_provider) and "/v1/images/edits" in parsed_url.path
+        return _in_openai_scope(url_route, custom_llm_provider) and _is_image_editing_path(parsed_url.path)
 
     @staticmethod
     def is_openai_responses_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
-        """Check if the URL route is an OpenAI responses API endpoint."""
+        """Check if the URL route is an OpenAI responses API endpoint.
+
+        Segment-exact — see `_is_responses_path`.
+        """
         if not url_route:
             return False
         parsed_url = urlparse(url_route)
-        return _in_openai_scope(url_route, custom_llm_provider) and (
-            "/v1/responses" in parsed_url.path or "/responses" in parsed_url.path
-        )
+        return _in_openai_scope(url_route, custom_llm_provider) and _is_responses_path(parsed_url.path)
 
     @staticmethod
     def is_openai_embeddings_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
@@ -364,8 +460,15 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 "kwargs": kwargs,
             }
 
-        # Extract model from request or response
-        model = request_body.get("model", response_body.get("model", ""))
+        # Extract model from request or response, falling back to the Azure
+        # deployment segment — the classic Azure surface names the model only
+        # in the URL, and image responses echo no `model` field at all.
+        model = (
+            request_body.get("model")
+            or response_body.get("model")
+            or _extract_azure_deployment_name(urlparse(url_route).path)
+            or ""
+        )
         if not model:
             verbose_proxy_logger.warning("No model found in request or response for OpenAI passthrough cost tracking")
             base_handler = OpenAIPassthroughLoggingHandler()

@@ -351,6 +351,141 @@ class TestOpenAIPassthroughLoggingHandler:
                 is False
             ), url
 
+    def test_is_openai_image_generation_route_classic_azure_deployment_path(self):
+        """Classic Azure DALL-E / gpt-image calls are shaped
+        `/openai/deployments/{deployment-id}/images/generations?api-version=...`
+        — no `/v1/` segment. Requiring `/v1/images/generations` missed them
+        entirely, so every Azure image generation was billed against our Azure
+        account and recorded as $0. Same defect already fixed for chat.
+        """
+        for url in (
+            "https://my-resource.openai.azure.com/openai/deployments/dall-e-3/images/generations?api-version=2024-02-01",
+            "https://my-resource.cognitiveservices.azure.com/openai/deployments/gpt-image-1/images/generations?api-version=2025-04-01",
+            # Deployment ids may contain dots/dashes.
+            "https://my-resource.openai.azure.com/openai/deployments/dall-e-3.0/images/generations?api-version=2024-02-01",
+        ):
+            assert (
+                OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url)
+                is True
+            ), url
+
+        # The `/v1/` form keeps working.
+        assert (
+            OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(
+                "https://my-resource.openai.azure.com/openai/v1/images/generations"
+            )
+            is True
+        )
+
+        # Other classic-deployment operations are not image generation.
+        for url in (
+            "https://my-resource.openai.azure.com/openai/deployments/dall-e-3/images/edits?api-version=2024-02-01",
+            "https://my-resource.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-02-01",
+        ):
+            assert (
+                OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url)
+                is False
+            ), url
+
+    def test_is_openai_image_editing_route_classic_azure_deployment_path(self):
+        """Classic Azure image *edits* have the same shape defect as
+        generations — see the sibling test.
+        """
+        for url in (
+            "https://my-resource.openai.azure.com/openai/deployments/gpt-image-1/images/edits?api-version=2025-04-01",
+            "https://my-resource.cognitiveservices.azure.com/openai/deployments/gpt-image-1/images/edits?api-version=2025-04-01",
+        ):
+            assert (
+                OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url)
+                is True
+            ), url
+
+        # The `/v1/` form keeps working.
+        assert (
+            OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(
+                "https://my-resource.openai.azure.com/openai/v1/images/edits"
+            )
+            is True
+        )
+
+        # Generations are not edits.
+        assert (
+            OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(
+                "https://my-resource.openai.azure.com/openai/deployments/dall-e-3/images/generations?api-version=2024-02-01"
+            )
+            is False
+        )
+
+    def test_classic_azure_image_generation_is_costed_not_zero(self):
+        """End-to-end: a classic Azure image generation must produce a real cost.
+
+        Recognising the route is necessary but not sufficient — the classic
+        Azure surface carries the model *only* in the URL (the request body has
+        no `model`, and an image response body echoes none), so the model must
+        be resolved from the deployment segment or the call still records $0.
+        """
+        url = "https://my-resource.openai.azure.com/openai/deployments/dall-e-3/images/generations?api-version=2024-02-01"
+        response_body = {
+            "created": 1700000000,
+            "data": [{"url": "https://example.com/generated.png"}],
+        }
+        mock_httpx_response = self._create_mock_httpx_response(response_body)
+        mock_logging_obj = self._create_mock_logging_obj()
+
+        result = OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
+            httpx_response=mock_httpx_response,
+            response_body=response_body,
+            logging_obj=mock_logging_obj,
+            url_route=url,
+            result="",
+            start_time=self.start_time,
+            end_time=self.end_time,
+            cache_hit=False,
+            request_body={
+                "prompt": "a cat",
+                "size": "1024x1024",
+                "quality": "standard",
+                "n": 1,
+            },
+        )
+
+        # Model comes from the deployment segment, since neither body has one.
+        assert result["kwargs"]["model"] == "dall-e-3"
+        assert result["kwargs"]["response_cost"] > 0
+        # The pass-through spend path reads cost from model_call_details.
+        assert mock_logging_obj.model_call_details["response_cost"] > 0
+
+    def test_is_openai_responses_route_matches_whole_segment_only(self):
+        """`is_openai_responses_route` used a bare `"/responses" in path`
+        containment test, which matched a `responses` segment anywhere on an
+        in-scope host — including sibling resources that merely start with the
+        word, and unrelated nested routes. Those were then costed with the
+        Responses-API transformer, which mis-parses them.
+        """
+        # Every surface that really serves the Responses API still matches.
+        for url in (
+            "https://api.openai.com/v1/responses",
+            "https://api.openai.com/responses",
+            "https://my-resource.openai.azure.com/openai/responses?api-version=preview",
+            "https://my-resource.openai.azure.com/openai/v1/responses",
+            # Item routes keep matching — the parent segment is unchanged.
+            "https://api.openai.com/v1/responses/resp_123",
+            "https://api.openai.com/v1/responses/resp_123/cancel",
+        ):
+            assert (
+                OpenAIPassthroughLoggingHandler.is_openai_responses_route(url) is True
+            ), url
+
+        # Newly rejected: partial-word segments and unrelated nesting.
+        for url in (
+            "https://api.openai.com/v1/responses_archive",
+            "https://api.openai.com/v1/evals/responses",
+            "https://api.openai.com/v1/containers/responses",
+        ):
+            assert (
+                OpenAIPassthroughLoggingHandler.is_openai_responses_route(url) is False
+            ), url
+
     def test_is_openai_chat_completions_route_rejects_lookalike_hosts(self):
         """Host matching is suffix-based, not substring-based."""
         for url in (
