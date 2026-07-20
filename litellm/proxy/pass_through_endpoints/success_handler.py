@@ -57,13 +57,20 @@ def _coerce_token_count(value: Any) -> int | None:
 
 
 def extract_generic_usage(response_body: Any) -> tuple | None:
-    """Best-effort (prompt_tokens, completion_tokens) from an unknown provider.
+    """Best-effort (prompt, completion, cache_read, cache_creation) token counts.
 
     Cost tracking for pass-through is otherwise an allow-list: a provider
     without a bespoke handler records $0 while its request is still billed
     against our upstream credentials. This makes a recognisable usage block
     sufficient to be priced, so pricing is the default for future providers
     rather than the exception.
+
+    `prompt` INCLUDES any cache_read tokens (the OpenAI-wire convention);
+    `cache_read`/`cache_creation` are broken out so the pricer can apply the
+    discounted rates. Pricing every token flat at the input rate is not a safe
+    simplification: DeepSeek bills cache hits at ~10% of the input rate, so a
+    flat calc confidently OVERCHARGES the caller's key — worse than $0,
+    because nothing looks wrong.
 
     Returns None when no shape matches — the caller must then leave the call
     unpriced rather than invent a number.
@@ -80,11 +87,36 @@ def extract_generic_usage(response_body: Any) -> tuple | None:
         completion_tokens = _coerce_token_count(container.get(completion_field, 0))
         if prompt_tokens is None or completion_tokens is None:
             continue
+
+        cache_read = 0
+        cache_creation = 0
+        if prompt_field == "prompt_tokens":
+            # OpenAI wire: cached tokens are INSIDE prompt_tokens, detailed in
+            # prompt_tokens_details. DeepSeek's dialect uses a top-level
+            # prompt_cache_hit_tokens (also included in prompt_tokens).
+            details = container.get("prompt_tokens_details")
+            cache_read = (
+                (_coerce_token_count(details.get("cached_tokens", 0)) or 0) if isinstance(details, dict) else 0
+            ) or (_coerce_token_count(container.get("prompt_cache_hit_tokens", 0)) or 0)
+        elif prompt_field == "input_tokens":
+            # Anthropic: cache tokens are OUTSIDE input_tokens. Fold them in so
+            # `prompt` means the same thing across shapes — without this they
+            # were priced at $0.
+            cache_read = _coerce_token_count(container.get("cache_read_input_tokens", 0)) or 0
+            cache_creation = _coerce_token_count(container.get("cache_creation_input_tokens", 0)) or 0
+            prompt_tokens += cache_read + cache_creation
+        elif prompt_field == "promptTokenCount":
+            # Gemini: cachedContentTokenCount is inside promptTokenCount;
+            # thinking tokens are OUTSIDE candidatesTokenCount but billed at
+            # the output rate — without this they were priced at $0.
+            cache_read = _coerce_token_count(container.get("cachedContentTokenCount", 0)) or 0
+            completion_tokens += _coerce_token_count(container.get("thoughtsTokenCount", 0)) or 0
+
         if prompt_tokens == 0 and completion_tokens == 0:
             # A usage block of all zeros carries no billable signal; keep
             # probing in case another shape is populated.
             continue
-        return prompt_tokens, completion_tokens
+        return prompt_tokens, completion_tokens, cache_read, cache_creation
     return None
 
 
@@ -102,7 +134,12 @@ def _resolve_generic_price(model: str, custom_llm_provider: str | None) -> tuple
     """
     from litellm.utils import get_model_info
 
-    for provider in (custom_llm_provider, None):
+    # When a provider IS configured, its price map is authoritative — no
+    # fallback to a provider-less lookup. A self-hosted upstream (vllm) serving
+    # a model whose name collides with a price-map entry ("gpt-4o") must stay
+    # unpriced, not be billed at the real provider's rates.
+    providers = (custom_llm_provider,) if custom_llm_provider else (None,)
+    for provider in providers:
         try:
             model_info = get_model_info(model=model, custom_llm_provider=provider)
         except Exception:  # noqa: BLE001  # price lookup is best-effort; try the next provider
@@ -110,7 +147,12 @@ def _resolve_generic_price(model: str, custom_llm_provider: str | None) -> tuple
         input_rate = model_info.get("input_cost_per_token") or 0
         output_rate = model_info.get("output_cost_per_token") or 0
         if input_rate or output_rate:
-            return input_rate, output_rate
+            return (
+                input_rate,
+                output_rate,
+                model_info.get("cache_read_input_token_cost"),
+                model_info.get("cache_creation_input_token_cost"),
+            )
     return None
 
 
@@ -446,8 +488,19 @@ class PassThroughEndpointLogging:
         return False
 
     def is_cohere_route(self, url_route: str):
+        # Host-gated like is_cohere_streaming_url. Path containment alone is a
+        # trap: "/v1/embed" is a substring of "/v1/embeddings", and this branch
+        # runs BEFORE the OpenAI one, so every OpenAI-shaped embeddings call
+        # would be fed to the Cohere transform — which crashes the spend-logging
+        # path instead of recording a row.
+        from .common_utils import COHERE_HOSTNAMES, hostname_matches
+
+        parsed_url = urlparse(url_route)
+        hostname = parsed_url.hostname
+        if not hostname or not hostname_matches(hostname, COHERE_HOSTNAMES):
+            return False
         for route in self.TRACKED_COHERE_ROUTES:
-            if route in url_route:
+            if route in parsed_url.path:
                 return True
 
     def is_assemblyai_route(self, url_route: str):
@@ -593,7 +646,7 @@ class PassThroughEndpointLogging:
             usage = extract_generic_usage(body)
             if usage is None:
                 return kwargs
-            prompt_tokens, completion_tokens = usage
+            prompt_tokens, completion_tokens, cache_read_tokens, cache_creation_tokens = usage
 
             model = self._resolve_generic_model(
                 response_body=body,
@@ -612,9 +665,37 @@ class PassThroughEndpointLogging:
                     "Generic passthrough model %s has no per-token price entry; leaving unpriced", model
                 )
                 return kwargs
-            input_rate, output_rate = rates
+            input_rate, output_rate, cache_read_rate, cache_creation_rate = rates
 
-            response_cost = (prompt_tokens * input_rate) + (completion_tokens * output_rate)
+            # A cache component without an explicit discounted rate must leave
+            # the call unpriced, not be flattened to the input rate: DeepSeek
+            # bills cache hits at ~10% of input, so flat pricing confidently
+            # overcharges — harder to detect than the $0 row this module exists
+            # to prevent.
+            if cache_read_tokens and cache_read_rate is None:
+                verbose_proxy_logger.debug(
+                    "Generic passthrough model %s reports %d cached tokens but has no "
+                    "cache_read_input_token_cost; leaving unpriced rather than overcharging",
+                    model,
+                    cache_read_tokens,
+                )
+                return kwargs
+            if cache_creation_tokens and cache_creation_rate is None:
+                verbose_proxy_logger.debug(
+                    "Generic passthrough model %s reports %d cache-creation tokens but has no "
+                    "cache_creation_input_token_cost; leaving unpriced rather than mispricing",
+                    model,
+                    cache_creation_tokens,
+                )
+                return kwargs
+
+            uncached_prompt_tokens = max(prompt_tokens - cache_read_tokens - cache_creation_tokens, 0)
+            response_cost = (
+                (uncached_prompt_tokens * input_rate)
+                + (cache_read_tokens * (cache_read_rate or 0))
+                + (cache_creation_tokens * (cache_creation_rate or 0))
+                + (completion_tokens * output_rate)
+            )
 
             kwargs["response_cost"] = response_cost
             kwargs["model"] = model

@@ -151,19 +151,19 @@ def _is_responses_path(path: str) -> bool:
     matched was then costed with the Responses-API transformer, which
     mis-parses it.
 
-    Match `responses` as a whole path segment, and only where its parent
-    segment is one of the surfaces that actually serves the Responses API.
-    Item routes (`/v1/responses/{id}`, `.../{id}/cancel`) still match because
-    the parent of the `responses` segment is unchanged.
+    Match `responses` as a whole path segment, only where its parent segment is
+    one of the surfaces that actually serves the Responses API, and only as the
+    COLLECTION route (`responses` is the final segment). Item routes
+    (`/v1/responses/{id}`, `.../{id}/cancel`, `.../{id}/input_items`) are
+    deliberately excluded: their responses echo the original usage block, so
+    costing them re-bills the full generation — `POST .../{id}/cancel` would
+    slip past a method gate alone.
     """
-    segments = path.split("/")
-    for index, segment in enumerate(segments):
-        if segment != "responses":
-            continue
-        parent = segments[index - 1] if index > 0 else ""
-        if parent in _RESPONSES_PARENT_SEGMENTS:
-            return True
-    return False
+    segments = [segment for segment in path.split("/") if segment != ""]
+    if not segments or segments[-1] != "responses":
+        return False
+    parent = segments[-2] if len(segments) > 1 else ""
+    return parent in _RESPONSES_PARENT_SEGMENTS
 
 
 def _is_openai_compatible_host(hostname: Optional[str]) -> bool:
@@ -395,7 +395,10 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         if not url_route:
             return False
         parsed_url = urlparse(url_route)
-        return _in_openai_scope(url_route, custom_llm_provider) and "/embeddings" in parsed_url.path
+        # Final-segment match, not containment: "/embeddings" as a substring
+        # also matches nested/sibling resources (`/v1/embeddings/jobs`), which
+        # would be costed with the embeddings transformer and mis-priced.
+        return _in_openai_scope(url_route, custom_llm_provider) and parsed_url.path.rstrip("/").endswith("/embeddings")
 
     def _get_user_from_metadata(
         self,
@@ -569,6 +572,22 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         # on the whole pass-through success path, so read it from there first
         # and only then fall back to kwargs.
         configured_provider = custom_llm_provider or kwargs.get("custom_llm_provider")
+
+        # Every billable operation on this surface is a POST. A GET on the very
+        # same path is free object management (`GET /v1/chat/completions` lists
+        # stored completions, `GET /v1/responses/{id}` retrieves one) whose body
+        # ECHOES the original usage block — costing it would re-bill the full
+        # generation on every poll. Unknown method (test doubles without a
+        # request) is treated as POST to preserve the existing behaviour.
+        try:
+            request_method: Optional[str] = httpx_response.request.method
+        except Exception:  # noqa: BLE001  # httpx raises if no request is attached (test doubles); treat as POST
+            request_method = None
+        if request_method is not None and request_method.upper() != "POST":
+            return {
+                "result": None,
+                "kwargs": kwargs,
+            }
 
         # Check if this is a supported endpoint for cost tracking
         is_chat_completions = OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(

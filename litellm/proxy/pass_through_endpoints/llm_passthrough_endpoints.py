@@ -56,6 +56,10 @@ from litellm.secret_managers.main import get_secret_str
 from litellm.types.utils import LlmProviders
 from litellm.utils import ProviderConfigManager
 
+from .passthrough_admission import (
+    PassthroughAdmissionError,
+    enforce_passthrough_admission,
+)
 from .passthrough_endpoint_router import PassthroughEndpointRouter
 
 vertex_llm_base = VertexBase()
@@ -1010,6 +1014,22 @@ async def bedrock_llm_proxy_route(
     )
 
     request_body = await _read_request_body(request=request)
+
+    # Admission control (before any upstream call). The generic guard inside
+    # pass_through_request never sees this route: Bedrock inference dispatches
+    # through base_passthrough_process_llm_request, and count_tokens returns
+    # even earlier. Without this call, a registered `bedrock` capability is
+    # dead config and the fail-closed setting silently exempts Bedrock.
+    try:
+        enforce_passthrough_admission(
+            general_settings=general_settings,
+            provider="bedrock",
+            method=request.method,
+            path=endpoint if endpoint.startswith("/") else "/" + endpoint,
+            request_body=request_body,
+        )
+    except PassthroughAdmissionError as e:
+        raise HTTPException(status_code=e.status_code, detail={"error": e.message})
 
     # Special handling for count_tokens endpoints
     if "count_tokens" in endpoint or "count-tokens" in endpoint:

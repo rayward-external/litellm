@@ -82,6 +82,7 @@ from .common_utils import (
     is_cohere_streaming_url,
     is_fireworks_url,
     is_openai_compatible_url,
+    is_openai_wire_compatible_route,
 )
 from .streaming_handler import PassThroughStreamingHandler
 from .success_handler import PassThroughEndpointLogging
@@ -338,7 +339,7 @@ class HttpPassThroughEndpointHelpers(BasePassthroughUtils):
         return return_headers
 
     @staticmethod
-    def get_endpoint_type(url: str) -> EndpointType:
+    def get_endpoint_type(url: str, custom_llm_provider: Optional[str] = None) -> EndpointType:
         parsed_url = urlparse(url)
         if (
             ("generateContent") in url
@@ -371,6 +372,15 @@ class HttpPassThroughEndpointHelpers(BasePassthroughUtils):
             # upstream and recorded at $0. OPENAI routes the collected chunks to
             # `_handle_logging_openai_collected_chunks`, which prices them via
             # the Fireworks cost calculator.
+            return EndpointType.OPENAI
+        elif is_openai_wire_compatible_route(url, custom_llm_provider):
+            # Provider-keyed OpenAI-compatible upstreams (groq, together_ai,
+            # deepseek, ...) carry no hostname marker. The NON-streaming
+            # dispatch already prices these through the OpenAI handler; without
+            # this branch their streamed twin classified GENERIC — no costing —
+            # so the same call recorded a real cost in one mode and $0 in the
+            # other. The streamed chunk handler resolves the provider itself,
+            # so OPENAI is safe for any wire-compatible upstream.
             return EndpointType.OPENAI
         return EndpointType.GENERIC
 
@@ -853,7 +863,9 @@ async def pass_through_request(
 
         requested_query_params: Optional[dict] = query_params or dict(request.query_params)
 
-        endpoint_type: EndpointType = HttpPassThroughEndpointHelpers.get_endpoint_type(str(url))
+        endpoint_type: EndpointType = HttpPassThroughEndpointHelpers.get_endpoint_type(
+            str(url), custom_llm_provider=custom_llm_provider
+        )
 
         # SigV4-signed callers (e.g. Bedrock) attach the exact bytes that were
         # signed via request.state; we must send those instead of re-encoding the

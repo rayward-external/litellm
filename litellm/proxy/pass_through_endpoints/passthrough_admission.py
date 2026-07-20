@@ -88,7 +88,9 @@ def _template_to_regex(path_template: str) -> re.Pattern:
         parts.append(f"(?P<{match.group(1)}>[^/]+)")
         last = match.end()
     parts.append(re.escape(path_template[last:]))
-    return re.compile("^" + "".join(parts) + "$")
+    # \Z, not $: `$` also matches before a trailing newline, so a path ending
+    # in an encoded %0A would satisfy a template it should not.
+    return re.compile("^" + "".join(parts) + r"\Z")
 
 
 def _normalize_path(path: str) -> str:
@@ -106,29 +108,95 @@ def _normalize_path(path: str) -> str:
     return collapsed or "/"
 
 
-def _model_is_priced(model: str | None) -> bool:
+def _price_entry_matches_provider(litellm_provider: str, provider: str) -> bool:
+    """Is a price-map entry's `litellm_provider` the same billing family as `provider`?
+
+    Deliberately narrow: `azure` must NOT match `azure_ai` — they are different
+    upstreams with different prices. Only families litellm itself splits across
+    sibling names are aliased.
+    """
+    if litellm_provider == provider:
+        return True
+    if provider == "bedrock" and litellm_provider in {"bedrock", "bedrock_converse"}:
+        return True
+    if provider == "vertex_ai" and litellm_provider.startswith("vertex_ai"):
+        return True
+    if provider in ("fireworks", "fireworks_ai") and litellm_provider == "fireworks_ai":
+        return True
+    return False
+
+
+def _model_is_priced(model: str | None, provider: str | None = None) -> bool:
     """True when `model` resolves to an explicit entry in the price map.
 
     A fallback or default price is treated as unpriced on purpose: a wrong
     non-zero cost is harder to detect than a zero one, because nothing looks
     broken.
+
+    When `provider` is given, the entry must belong to THAT provider's billing
+    family. A price existing *anywhere* is not enough: admitting `gpt-4` onto
+    an Azure route because `openai/gpt-4` is priced still records $0, because
+    the success handler prices under the azure key. Ambiguity fails closed —
+    a false deny is visible and fixable; a $0 row is silent.
     """
     if not model:
         return False
 
     import litellm
 
-    if model in litellm.model_cost:
+    def _bare_key_ok(key: str) -> bool:
+        if provider is None:
+            return True
+        info = litellm.model_cost.get(key) or {}
+        return _price_entry_matches_provider(str(info.get("litellm_provider") or ""), provider)
+
+    if model in litellm.model_cost and _bare_key_ok(model):
+        return True
+    # The provider-prefixed key form (`azure/gpt-4`): the prefix itself names
+    # the billing family, so it is authoritative without an alias check.
+    if provider is not None and f"{provider}/{model}" in litellm.model_cost:
         return True
     # Providers commonly return a bare id where the map is prefixed
     # (`fireworks_ai/accounts/...`), or the reverse. Accept a prefixed form only
-    # if it exists explicitly.
-    if "/" in model and model.split("/", 1)[1] in litellm.model_cost:
-        return True
+    # if it exists explicitly — and, when scoped, only under this provider.
+    if "/" in model:
+        prefix, bare = model.split("/", 1)
+        if bare in litellm.model_cost and (provider is None or prefix == provider or _bare_key_ok(bare)):
+            return True
     return any(
         key.endswith("/" + model)
+        and (provider is None or _price_entry_matches_provider(key.split("/", 1)[0], provider))
         for key in litellm.model_cost  # type: ignore[union-attr]
     )
+
+
+def _router_model_is_priced(model: str) -> bool:
+    """True when `model` resolves to a router deployment that can price.
+
+    Router-based pass-through (Bedrock) carries a router alias in the URL, not
+    a raw price-map key. The costing path for those requests IS the router, so
+    admission must accept an alias whose deployment prices — via an explicit
+    per-token cost on the deployment, or a priced underlying/base model.
+    """
+    try:
+        from litellm.proxy.proxy_server import llm_router
+    except Exception:  # noqa: BLE001  # no proxy server (unit tests, SDK use) just means "no router pricing"
+        return False
+    if llm_router is None:
+        return False
+    try:
+        deployments = llm_router.get_model_list(model_name=model) or []
+    except Exception:  # noqa: BLE001  # a router lookup error must deny (fail closed), not 500 the request
+        return False
+    for deployment in deployments:
+        litellm_params = deployment.get("litellm_params") or {}
+        if litellm_params.get("input_cost_per_token") is not None:
+            return True
+        model_info = deployment.get("model_info") or {}
+        for candidate in (model_info.get("base_model"), litellm_params.get("model")):
+            if candidate and _model_is_priced(str(candidate)):
+                return True
+    return False
 
 
 def _extract_model(
@@ -166,7 +234,11 @@ def find_matching_capability(
         if not isinstance(capability, dict):
             continue
         cap_provider = capability.get("provider")
-        if cap_provider and provider and str(cap_provider) != str(provider):
+        # A provider-scoped capability requires a KNOWN matching provider.
+        # Entry points that pass provider=None (e.g. the vertex router) only
+        # match capabilities that don't declare one — otherwise the provider
+        # constraint would silently not bind exactly where identity is weakest.
+        if cap_provider and (provider is None or str(cap_provider) != str(provider)):
             continue
         methods = capability.get("methods") or []
         if methods and upper_method not in {str(m).upper() for m in methods}:
@@ -174,7 +246,16 @@ def find_matching_capability(
         template = str(capability.get("path") or "")
         if not template:
             continue
-        match = _template_to_regex(_normalize_path(template)).match(normalized)
+        try:
+            pattern = _template_to_regex(_normalize_path(template))
+        except re.error as exc:
+            # e.g. `/x/{id}/y/{id}` — duplicate group names. A config error,
+            # not a client error; name it instead of surfacing an opaque 500.
+            raise PassthroughAdmissionError(
+                f"Invalid capability path template {template!r}: {exc}",
+                status_code=500,
+            )
+        match = pattern.match(normalized)
         if match:
             return capability, match
     return None, None
@@ -223,7 +304,11 @@ def enforce_passthrough_admission(
     # precisely because we intend to price it.
     if capability.get("require_priced_model", True):
         model = _extract_model(capability, path_match, request_body)
-        if not _model_is_priced(model):
+        cap_provider = capability.get("provider") or provider
+        priced = _model_is_priced(model, provider=str(cap_provider) if cap_provider else None) or (
+            model is not None and _router_model_is_priced(model)
+        )
+        if not priced:
             verbose_proxy_logger.warning(
                 "pass-through admission denied: model %r has no explicit price entry (%s %s)",
                 model,
