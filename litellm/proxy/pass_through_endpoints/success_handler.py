@@ -425,6 +425,10 @@ class PassThroughEndpointLogging:
         outer dispatch filters Responses calls out before reaching the
         handler — the inner branch is then unreachable and Responses
         calls land in `LiteLLM_SpendLogs` with zero tokens / zero spend.
+
+        The embeddings route is included for the same reason: pass-through
+        embeddings bill upstream against our credentials, so omitting them
+        from this allow-list records $0 against the calling virtual key.
         """
         from .llm_provider_handlers.openai_passthrough_logging_handler import (
             OpenAIPassthroughLoggingHandler,
@@ -435,6 +439,7 @@ class PassThroughEndpointLogging:
             or OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url_route)
             or OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url_route)
             or OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route)
+            or OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route)
         )
 
     def _set_cost_per_request(
