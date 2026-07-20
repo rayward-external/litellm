@@ -278,6 +278,13 @@ async def llm_passthrough_factory_proxy_route(
 
     ## CREATE PASS-THROUGH
     endpoint_func = create_pass_through_route(
+        # Thread the provider into pass_through_request: the admission
+        # guard matches provider-scoped capabilities, and provider=None
+        # deliberately matches none of them (fail closed). Callers pass either
+        # the string or the LlmProviders enum despite the annotation — the
+        # guard compares strings, and str(LlmProviders.VLLM) is
+        # "LlmProviders.VLLM", which would never match a capability.
+        custom_llm_provider=getattr(custom_llm_provider, "value", custom_llm_provider),
         endpoint=endpoint,
         target=str(updated_url),
         custom_headers=auth_headers,
@@ -400,6 +407,10 @@ async def cohere_proxy_route(
 
     ## CREATE PASS-THROUGH
     endpoint_func = create_pass_through_route(
+        # Thread the provider into pass_through_request: the admission
+        # guard matches provider-scoped capabilities, and provider=None
+        # deliberately matches none of them (fail closed).
+        custom_llm_provider="cohere",
         endpoint=endpoint,
         target=str(updated_url),
         custom_headers={"Authorization": "Bearer {}".format(cohere_api_key)},
@@ -521,6 +532,10 @@ async def mistral_proxy_route(
 
     ## CREATE PASS-THROUGH
     endpoint_func = create_pass_through_route(
+        # Thread the provider into pass_through_request: the admission
+        # guard matches provider-scoped capabilities, and provider=None
+        # deliberately matches none of them (fail closed).
+        custom_llm_provider="mistral",
         endpoint=endpoint,
         target=str(updated_url),
         custom_headers={"Authorization": "Bearer {}".format(mistral_api_key)},
@@ -648,6 +663,10 @@ async def milvus_proxy_route(
     )
     ## CREATE PASS-THROUGH
     endpoint_func = create_pass_through_route(
+        # Thread the provider into pass_through_request: the admission
+        # guard matches provider-scoped capabilities, and provider=None
+        # deliberately matches none of them (fail closed).
+        custom_llm_provider="milvus",
         endpoint=endpoint,
         target=str(updated_url),
         custom_headers=extra_headers,
@@ -713,6 +732,10 @@ async def anthropic_proxy_route(
     ## CREATE PASS-THROUGH
     auth_header = AnthropicModelInfo.get_auth_header(anthropic_api_key or None)
     endpoint_func = create_pass_through_route(
+        # Thread the provider into pass_through_request: the admission
+        # guard matches provider-scoped capabilities, and provider=None
+        # deliberately matches none of them (fail closed).
+        custom_llm_provider="anthropic",
         endpoint=endpoint,
         target=str(updated_url),
         custom_headers=auth_header if auth_header is not None else {},
@@ -1020,6 +1043,14 @@ async def bedrock_llm_proxy_route(
     # through base_passthrough_process_llm_request, and count_tokens returns
     # even earlier. Without this call, a registered `bedrock` capability is
     # dead config and the fail-closed setting silently exempts Bedrock.
+    #
+    # Running BEFORE the count_tokens branch is deliberate: when enforcement is
+    # on, even free routes must be registered (`require_priced_model: false`) —
+    # deny-by-default means unlisted routes 403, billable or not. Multi-segment
+    # model ids (router aliases with "/", inference profiles) need a greedy
+    # `{model_id*}` placeholder in the capability path; plain `{model_id}`
+    # matches a single segment only. ARN-form ids stay unpriceable and are
+    # denied — a fail-closed limitation, not an oversight.
     try:
         enforce_passthrough_admission(
             general_settings=general_settings,
@@ -1185,6 +1216,10 @@ async def bedrock_proxy_route(
 
     ## CREATE PASS-THROUGH
     endpoint_func = create_pass_through_route(
+        # Thread the provider into pass_through_request: the admission
+        # guard matches provider-scoped capabilities, and provider=None
+        # deliberately matches none of them (fail closed).
+        custom_llm_provider="bedrock",
         endpoint=endpoint,
         target=str(prepped.url),
         custom_headers=prepped.headers,  # type: ignore
@@ -1346,6 +1381,10 @@ async def assemblyai_proxy_route(
 
     ## CREATE PASS-THROUGH
     endpoint_func = create_pass_through_route(
+        # Thread the provider into pass_through_request: the admission
+        # guard matches provider-scoped capabilities, and provider=None
+        # deliberately matches none of them (fail closed).
+        custom_llm_provider="assemblyai",
         endpoint=endpoint,
         target=str(updated_url),
         custom_headers={"Authorization": "{}".format(assemblyai_api_key)},
@@ -1895,6 +1934,10 @@ async def _base_vertex_proxy_route(
 
     ## CREATE PASS-THROUGH
     endpoint_func = create_pass_through_route(
+        # Thread the provider into pass_through_request: the admission
+        # guard matches provider-scoped capabilities, and provider=None
+        # deliberately matches none of them (fail closed).
+        custom_llm_provider="vertex_ai",
         endpoint=endpoint,
         target=target,
         custom_headers=headers,

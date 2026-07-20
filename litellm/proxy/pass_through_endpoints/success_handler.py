@@ -324,28 +324,41 @@ class PassThroughEndpointLogging:
             )
             standard_logging_response_object = cohere_passthrough_logging_handler_result["result"]
             kwargs = cohere_passthrough_logging_handler_result["kwargs"]
-        elif self.is_openai_route(url_route, custom_llm_provider) and self._is_supported_openai_endpoint(
-            url_route, custom_llm_provider
-        ):
-            from .llm_provider_handlers.openai_passthrough_logging_handler import (
-                OpenAIPassthroughLoggingHandler,
-            )
+        elif self.is_openai_route(url_route, custom_llm_provider):
+            # The nested check matters: a recognised-OpenAI route that is NOT a
+            # supported billable endpoint (retrieval GETs, `.../{id}/cancel`,
+            # stored-object listings) must be DELIBERATELY unpriced, not fall
+            # through to the generic pricer. Those responses echo the original
+            # usage block, so the generic fallback would re-bill the full
+            # generation on every poll — with a `.and.` here instead of nesting,
+            # that is exactly what happened.
+            if self._is_supported_openai_endpoint(url_route, custom_llm_provider):
+                from .llm_provider_handlers.openai_passthrough_logging_handler import (
+                    OpenAIPassthroughLoggingHandler,
+                )
 
-            openai_passthrough_logging_handler_result = OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
-                httpx_response=httpx_response,
-                response_body=response_body or {},
-                logging_obj=logging_obj,
-                url_route=url_route,
-                result=result,
-                start_time=start_time,
-                end_time=end_time,
-                cache_hit=cache_hit,
-                request_body=request_body,
-                custom_llm_provider=custom_llm_provider,
-                **kwargs,
-            )
-            standard_logging_response_object = openai_passthrough_logging_handler_result["result"]
-            kwargs = openai_passthrough_logging_handler_result["kwargs"]
+                openai_passthrough_logging_handler_result = (
+                    OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
+                        httpx_response=httpx_response,
+                        response_body=response_body or {},
+                        logging_obj=logging_obj,
+                        url_route=url_route,
+                        result=result,
+                        start_time=start_time,
+                        end_time=end_time,
+                        cache_hit=cache_hit,
+                        request_body=request_body,
+                        custom_llm_provider=custom_llm_provider,
+                        **kwargs,
+                    )
+                )
+                standard_logging_response_object = openai_passthrough_logging_handler_result["result"]
+                kwargs = openai_passthrough_logging_handler_result["kwargs"]
+            else:
+                verbose_proxy_logger.debug(
+                    "OpenAI passthrough object-management route %s left unpriced on purpose",
+                    url_route,
+                )
 
         elif self.is_cursor_route(url_route, custom_llm_provider):
             cursor_passthrough_logging_handler_result = CursorPassthroughLoggingHandler.cursor_passthrough_handler(
@@ -641,6 +654,20 @@ class PassThroughEndpointLogging:
         """
         try:
             payload = logging_obj.model_call_details.get("passthrough_logging_payload") or {}
+
+            # Only POST creates work. A GET/DELETE on any surface is object
+            # management whose response may ECHO the original usage block —
+            # pricing it re-bills a generation the caller already paid for.
+            # Unknown method (older payloads, test doubles) keeps pricing.
+            request_method = payload.get("request_method")
+            if isinstance(request_method, str) and request_method.upper() != "POST":
+                verbose_proxy_logger.debug(
+                    "Generic passthrough pricing skipped for %s %s: non-POST object management",
+                    request_method,
+                    url_route,
+                )
+                return kwargs
+
             body = response_body if isinstance(response_body, dict) else payload.get("response_body")
 
             usage = extract_generic_usage(body)

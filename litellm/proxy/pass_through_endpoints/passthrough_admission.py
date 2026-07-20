@@ -51,7 +51,13 @@ CAPABILITIES_SETTING = "passthrough_capabilities"
 # `{name}` matches exactly one path segment, so `/model/{id}/converse` cannot
 # swallow `/model/a/b/converse`. Keeping placeholders segment-bound is what
 # stops a template from widening into the subtree it was meant to exclude.
-_PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+#
+# `{name*}` matches one or MORE segments (greedy, still bounded by the
+# template's literal suffix). Needed where the value itself contains slashes:
+# Bedrock router aliases (`aws/anthropic/my-alias`) and inference-profile
+# paths — with only single-segment placeholders those are inexpressible, so a
+# registered capability silently false-denies them.
+_PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)(\*)?\}")
 
 
 class PassthroughAdmissionError(Exception):
@@ -85,7 +91,8 @@ def _template_to_regex(path_template: str) -> re.Pattern:
     last = 0
     for match in _PLACEHOLDER_RE.finditer(path_template):
         parts.append(re.escape(path_template[last : match.start()]))
-        parts.append(f"(?P<{match.group(1)}>[^/]+)")
+        segment_pattern = ".+" if match.group(2) else "[^/]+"
+        parts.append(f"(?P<{match.group(1)}>{segment_pattern})")
         last = match.end()
     parts.append(re.escape(path_template[last:]))
     # \Z, not $: `$` also matches before a trailing newline, so a path ending

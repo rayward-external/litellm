@@ -580,9 +580,14 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         # generation on every poll. Unknown method (test doubles without a
         # request) is treated as POST to preserve the existing behaviour.
         try:
-            request_method: Optional[str] = httpx_response.request.method
+            request_method_raw = httpx_response.request.method
         except Exception:  # noqa: BLE001  # httpx raises if no request is attached (test doubles); treat as POST
-            request_method = None
+            request_method_raw = None
+        # Only a REAL string may trip the gate. A mock response yields a Mock
+        # here, and treating "not POST-shaped" as "not POST" would reject every
+        # request in that situation — the exact accidental-enable failure the
+        # admission guard's _is_explicitly_true exists to prevent.
+        request_method: Optional[str] = request_method_raw if isinstance(request_method_raw, str) else None
         if request_method is not None and request_method.upper() != "POST":
             return {
                 "result": None,

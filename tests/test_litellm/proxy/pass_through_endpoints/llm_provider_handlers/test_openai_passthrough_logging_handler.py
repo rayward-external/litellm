@@ -468,19 +468,22 @@ class TestOpenAIPassthroughLoggingHandler:
             "https://api.openai.com/responses",
             "https://my-resource.openai.azure.com/openai/responses?api-version=preview",
             "https://my-resource.openai.azure.com/openai/v1/responses",
-            # Item routes keep matching — the parent segment is unchanged.
-            "https://api.openai.com/v1/responses/resp_123",
-            "https://api.openai.com/v1/responses/resp_123/cancel",
         ):
             assert (
                 OpenAIPassthroughLoggingHandler.is_openai_responses_route(url) is True
             ), url
 
-        # Newly rejected: partial-word segments and unrelated nesting.
+        # Newly rejected: partial-word segments, unrelated nesting — and item
+        # routes. Item responses ECHO the original usage block, so costing them
+        # re-bills the full generation on every retrieve/cancel; a method gate
+        # alone would not stop `POST .../{id}/cancel`.
         for url in (
             "https://api.openai.com/v1/responses_archive",
             "https://api.openai.com/v1/evals/responses",
             "https://api.openai.com/v1/containers/responses",
+            "https://api.openai.com/v1/responses/resp_123",
+            "https://api.openai.com/v1/responses/resp_123/cancel",
+            "https://api.openai.com/v1/responses/resp_123/input_items",
         ):
             assert (
                 OpenAIPassthroughLoggingHandler.is_openai_responses_route(url) is False
