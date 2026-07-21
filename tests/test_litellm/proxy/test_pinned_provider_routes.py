@@ -27,9 +27,11 @@ Covers, per the 2026-07-21 provider-pinned-routes design:
 
 import asyncio
 import importlib
+import json
 import os
 import sys
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -210,6 +212,70 @@ def _tags_the_router_reads(body: dict, path: str):
     updated = _run_add_litellm_data(body, path)
     router_field = get_metadata_variable_name_from_kwargs(updated)
     return _resolve_request_tags(updated.get(router_field) or {})
+
+
+def _aliased_provider(provider: str) -> str:
+    """The provider name a pinned route stashes as the trusted routing signal
+    (alias-resolved): ``gemini`` -> ``vertex_ai``."""
+    return EXPECTED_PIN_TAGS[provider][len("pin:") :]
+
+
+# The attribution team tag the authenticated key carries. add_litellm_data_to_
+# request appends it to metadata["tags"], which — WITHOUT the trusted signal —
+# would re-enter the routing snapshot and break the pin's subset match (the P2
+# 400). Threading it through every matrix cell makes the matrix a TIGHT proof of
+# the signal: remove the PINNED_PROVIDER_ROUTE_KEY branch and every cell fails.
+_ATTRIBUTION_TEAM_TAG = "team:attr"
+
+
+def _run_add_litellm_data_pinned(body: dict, path: str, pinned_provider: str) -> dict:
+    """Run the (post-pinned-handler) body through the REAL
+    add_litellm_data_to_request with ``request.state`` carrying the trusted pin —
+    exactly as the pinned handler sets it on the live request object — and using a
+    key that carries a configured team tag (so metadata["tags"] is polluted with
+    ``team:attr``, as in production). Exercises the full production pin path: the
+    base processor strips any client ``_pinned_provider_route``, appends the team
+    tag for attribution, and re-asserts the trusted pin from ``request.state``
+    last."""
+    from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request
+
+    request_mock = MagicMock(spec=Request)
+    request_mock.scope = {"path": path, "root_path": ""}
+    request_mock.method = "POST"
+    request_mock.query_params = {}
+    request_mock.headers = {"content-type": "application/json"}
+    request_mock.url = MagicMock()
+    request_mock.url.path = path
+    request_mock.url.__str__.return_value = f"http://localhost{path}"
+    request_mock.client = MagicMock()
+    request_mock.client.host = "127.0.0.1"
+    request_mock.state = SimpleNamespace(_pinned_provider_route=pinned_provider)
+
+    return asyncio.run(
+        add_litellm_data_to_request(
+            data=dict(body),
+            request=request_mock,
+            user_api_key_dict=UserAPIKeyAuth(
+                api_key="hashed-test-key",
+                team_metadata={"tags": [_ATTRIBUTION_TEAM_TAG]},
+            ),
+            proxy_config=MagicMock(),
+            general_settings={},
+            version="test-version",
+        )
+    )
+
+
+def _router_pinned_tags(body: dict, path: str, pinned_provider: str):
+    """The routing tags the tag router uses for a pinned request, through the
+    full production flow (``request.state`` trusted pin -> add_litellm_data ->
+    ``_resolve_request_tags`` on the router's presence-selected bucket)."""
+    from litellm.litellm_core_utils.core_helpers import get_metadata_variable_name_from_kwargs
+    from litellm.router_strategy.tag_based_routing import _resolve_request_tags
+
+    updated = _run_add_litellm_data_pinned(body, path, pinned_provider)
+    router_field = get_metadata_variable_name_from_kwargs(updated)
+    return _resolve_request_tags(updated.get(router_field) or {}), updated
 
 
 class TestTagInjectionChatDialect:
@@ -450,26 +516,40 @@ class TestDecoyMetadataBucketCannotEscapeThePin:
         assert resp.status_code == 200
         assert _tags_the_router_reads(capture["body"], path) == [EXPECTED_PIN_TAGS[provider]]
 
-    def test_non_authoritative_bucket_removed_from_body(self, pinned_app, capture):
-        """Structural proof the handler removes the decoy: on an azure chat
-        route (authoritative = ``metadata``) a client ``litellm_metadata`` is
-        dropped from the body before delegation; on a messages route
-        (authoritative = ``litellm_metadata``) a client ``metadata`` is dropped."""
+    def test_non_authoritative_bucket_handled_surgically(self, pinned_app, capture):
+        """Structural proof of the surgical decoy handling (Codex R4 P2): the
+        handler no longer drops the alternate bucket wholesale.
+
+        - On an azure CHAT route (authoritative = ``metadata``) the
+          ``litellm_metadata`` decoy is litellm-internal: its non-routing fields
+          are MERGED into ``metadata`` and the decoy is then removed (so the
+          router's presence-selector cannot land on it).
+        - On a MESSAGES route (authoritative = ``litellm_metadata``) the
+          ``metadata`` bucket is the provider-facing Anthropic field: it is KEPT
+          (with routing controls stripped), so ``metadata.user_id`` survives."""
         chat_resp = _post(
             pinned_app,
             "/azure/v1/chat/completions",
             {"model": "m", "messages": [], "litellm_metadata": {"foo": "bar"}},
         )
         assert chat_resp.status_code == 200
-        assert "litellm_metadata" not in capture["body"]
+        body = capture["body"]
+        # Decoy removed, its non-routing field merged into the authoritative bucket.
+        assert "litellm_metadata" not in body
+        assert body["metadata"]["foo"] == "bar"
 
         msg_resp = _post(
             pinned_app,
             "/azure/v1/messages",
-            {"model": "m", "messages": [], "max_tokens": 16, "metadata": {"foo": "bar"}},
+            {"model": "m", "messages": [], "max_tokens": 16, "metadata": {"user_id": "u-1", "tags": ["x"]}},
         )
         assert msg_resp.status_code == 200
-        assert "metadata" not in capture["body"]
+        body = capture["body"]
+        # Provider-facing metadata KEPT (user_id survives), routing controls stripped.
+        assert body["metadata"]["user_id"] == "u-1"
+        assert "tags" not in body["metadata"]
+        # The trusted signal lands in the authoritative litellm_metadata bucket.
+        assert body["litellm_metadata"]["_pinned_provider_route"] == "azure"
 
 
 def _first_full_match_route(app, path: str):
@@ -966,3 +1046,131 @@ class TestAppScopedRouteRegistry:
         # Every registry entry refers to a live, mounted route object.
         live_ids = {id(r) for r in app.router.routes}
         assert set(_pinned_route_registry(app)) <= live_ids
+
+
+# ---------------------------------------------------------------------------
+# Codex R4 CONVERGENCE MATRIX. The pinned routing decision derives SOLELY from
+# one server-authoritative signal (the provider from the URL), read by the tag
+# router with absolute priority. This exhaustive adversarial matrix is the
+# convergence proof: for every provider x dialect x metadata-encoding (dict AND
+# JSON-string) x decoy-bucket-placement, a client sending EVERY hostile field
+# (pin:otherprovider, _original_request_tags, a forged _pinned_provider_route,
+# team:x, spend_logs_metadata, user_id) still yields a router-visible pinned
+# routing tag of EXACTLY [pin:<url-provider>], while legitimate non-routing
+# fields (user_id / spend_logs_metadata) survive to a real bucket.
+#
+# Mutation-verify the trusted-signal override two ways:
+#   1. In tag_based_routing._resolve_request_tags, drop the PINNED_PROVIDER_ROUTE
+#      _KEY branch -> the forged pin/tags leak into routing and the string-encoded
+#      + team-tag cells fail.
+#   2. In add_litellm_data_to_request, delete the request.state re-assert -> the
+#      signal is absent and forged client fields drive routing again.
+# ---------------------------------------------------------------------------
+
+
+# Every hostile control a client could plant to try to redirect a pinned request.
+_ADVERSARIAL_META = {
+    "tags": ["pin:otherprovider", "team:x"],
+    "_original_request_tags": ["pin:otherprovider"],
+    "_original_request_tags_snapshotted": True,
+    "_pinned_provider_route": "otherprovider",
+    "spend_logs_metadata": {"trace": "adv"},
+    "user_id": "u-adv",
+}
+
+
+def _encode_bucket(as_string: bool):
+    payload = dict(_ADVERSARIAL_META)
+    return json.dumps(payload) if as_string else payload
+
+
+class TestConvergenceMatrixNoClientInputChangesPinnedRouting:
+    @pytest.mark.parametrize("provider", PINNED_PROVIDERS)
+    @pytest.mark.parametrize("suffix", ["/v1/chat/completions", "/v1/messages"])
+    @pytest.mark.parametrize("as_string", [False, True], ids=["dict", "jsonstring"])
+    @pytest.mark.parametrize("decoy_buckets", [("metadata",), ("litellm_metadata",), ("metadata", "litellm_metadata")])
+    def test_router_sees_exactly_the_url_pin_and_fields_survive(
+        self, pinned_app, capture, provider, suffix, as_string, decoy_buckets
+    ):
+        path = f"/{provider}{suffix}"
+        body = {"model": "some-model", "messages": [{"role": "user", "content": "hi"}]}
+        if suffix == "/v1/messages":
+            body["max_tokens"] = 16
+        # Plant every hostile control at the body root AND in the chosen bucket(s),
+        # in the chosen encoding (dict or JSON-string).
+        body["tags"] = ["pin:otherprovider", "team:x"]
+        body["_original_request_tags"] = ["pin:otherprovider"]
+        body["_pinned_provider_route"] = "otherprovider"
+        for bucket in decoy_buckets:
+            body[bucket] = _encode_bucket(as_string)
+
+        resp = _post(pinned_app, path, body)
+        assert resp.status_code == 200, resp.text
+
+        routing_tags, updated = _router_pinned_tags(capture["body"], path, _aliased_provider(provider))
+
+        # (1) NO client input changed the pinned routing decision.
+        assert routing_tags == [EXPECTED_PIN_TAGS[provider]], (
+            f"{path} enc={'str' if as_string else 'dict'} decoy={decoy_buckets}: "
+            f"router saw {routing_tags}, expected [{EXPECTED_PIN_TAGS[provider]}]"
+        )
+
+        # (2) The trusted signal in the router's bucket is the URL provider, never
+        # the client's forged "otherprovider".
+        from litellm.litellm_core_utils.core_helpers import get_metadata_variable_name_from_kwargs
+
+        router_field = get_metadata_variable_name_from_kwargs(updated)
+        assert updated[router_field]["_pinned_provider_route"] == _aliased_provider(provider)
+
+        # (3) No client routing control leaked into either final bucket.
+        both = {**(updated.get("metadata") or {}), **(updated.get("litellm_metadata") or {})}
+        assert "_original_request_tags" not in both
+        assert "_original_request_tags_snapshotted" not in both
+
+        # (4) Legitimate non-routing fields survive to a real bucket.
+        assert both.get("user_id") == "u-adv"
+        assert both.get("spend_logs_metadata") == {"trace": "adv"}
+
+        # (5) The key's team tag reached the router-visible bucket for SPEND
+        # ATTRIBUTION (and the forged client "pin:otherprovider" did not) —
+        # proving attribution is intact even though routing ignored the tag.
+        attribution_tags = updated[router_field].get("tags") or []
+        assert _ATTRIBUTION_TEAM_TAG in attribution_tags
+        assert "pin:otherprovider" not in attribution_tags
+
+    def test_body_root_only_forged_signal_is_ignored(self, pinned_app, capture):
+        """Even with the forged signal ONLY at the body root (no metadata bucket),
+        routing is the URL pin — the router reads the metadata bucket, never root."""
+        path = "/fireworks/v1/chat/completions"
+        body = {
+            "model": "m",
+            "messages": [],
+            "_pinned_provider_route": "bedrock",
+            "_original_request_tags": ["pin:bedrock"],
+            "tags": ["pin:bedrock"],
+        }
+        resp = _post(pinned_app, path, body)
+        assert resp.status_code == 200
+        routing_tags, _ = _router_pinned_tags(capture["body"], path, _aliased_provider("fireworks"))
+        assert routing_tags == ["pin:fireworks"]
+
+    @pytest.mark.parametrize("bucket", ["metadata", "litellm_metadata"])
+    def test_unified_route_strips_client_forged_signal(self, bucket):
+        """Requirement 4 defense: on a UNIFIED route (no pinned handler, no
+        request.state pin) a client-planted ``_pinned_provider_route`` in either
+        metadata bucket must be STRIPPED by add_litellm_data_to_request, so it can
+        never forge a pin and hijack normal tag routing.
+
+        Mutation-verify: remove PINNED_PROVIDER_ROUTE_KEY from
+        ``_UNTRUSTED_METADATA_CONTROL_FIELDS`` -> the forged signal survives and
+        the router would route to the client's ``bedrock`` pin."""
+        from litellm.litellm_core_utils.core_helpers import get_metadata_variable_name_from_kwargs
+        from litellm.router_strategy.tag_based_routing import _resolve_request_tags
+
+        path = "/v1/chat/completions"  # no provider prefix -> unified, no pin
+        body = {"model": "m", "messages": [], bucket: {"_pinned_provider_route": "bedrock", "tags": ["team:x"]}}
+        updated = _run_add_litellm_data(body, path)
+        for field in ("metadata", "litellm_metadata"):
+            assert "_pinned_provider_route" not in (updated.get(field) or {})
+        router_field = get_metadata_variable_name_from_kwargs(updated)
+        assert _resolve_request_tags(updated.get(router_field) or {}) != ["pin:bedrock"]

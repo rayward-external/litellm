@@ -47,6 +47,26 @@ ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY = "_original_request_tags_snapshotted"
 # flag set in the wrong field. The pin policy stays in one place (the tag).
 PIN_TAG_PREFIX = "pin:"
 
+# The SINGLE server-authoritative routing signal for a provider-pinned request.
+# Holds the provider whose pin the URL selected (alias-resolved, e.g. ``gemini``
+# → ``vertex_ai``). It is set UNCONDITIONALLY from the URL by the proxy's pinned
+# routes (litellm/proxy/pinned_provider_routes.py) — overwriting any client
+# value in ANY form (dict or JSON-string, ``metadata`` or ``litellm_metadata``)
+# and re-asserted last from ``request.state`` in ``add_litellm_data_to_request``
+# so a string-encoded client bucket cannot preempt it. It is ALSO used as the
+# ``request.state`` attribute name the pinned handler stashes the trusted
+# provider under.
+#
+# When present, ``_resolve_request_tags`` derives the ROUTING tag set SOLELY
+# from this signal — ``[pin:<provider>]`` — and ignores ``tags`` /
+# ``_original_request_tags`` / key+team tags entirely for the routing decision.
+# That closes the whole class of metadata-seam bypasses (dict decoy,
+# string-encoded metadata, key/team tag pollution, spoofed snapshot) BY
+# CONSTRUCTION: none of those inputs feed a pinned routing decision. ``tags``
+# still flows untouched to SPEND ATTRIBUTION. On unified (non-pinned) routes the
+# signal is absent, so normal tag routing/attribution is unchanged.
+PINNED_PROVIDER_ROUTE_KEY = "_pinned_provider_route"
+
 if TYPE_CHECKING:
     from litellm.router import Router as _Router
 
@@ -204,19 +224,32 @@ def _ban_only_base_pool(
 
 
 def _resolve_request_tags(metadata: dict[Any, Any]) -> Any:
-    """Return the caller's ORIGINAL request tags to route on.
+    """Return the request tags to route on.
 
-    Prefers the pre-merge snapshot (``ORIGINAL_REQUEST_TAGS_KEY``) captured once
-    per request by ``Router._update_kwargs_before_fallbacks``, so a selected
-    deployment's own tags — merged into ``metadata["tags"]`` by
-    ``_update_kwargs_with_deployment`` for spend attribution, then reused as the
-    kwargs dict is reused across retries/fallbacks — can never leak back in as
-    routing input on a later attempt (which would reject every other-provider
-    deployment). The snapshot is the request as the caller sent it: the pin tag
-    for a pinned request, ``[]`` for an untagged one. Falls back to the live
-    ``metadata["tags"]`` for back-compat when no snapshot was taken (e.g. direct
-    router use in tests that bypasses ``_update_kwargs_before_fallbacks``).
+    ABSOLUTE-PRIORITY provider pin. If the trusted, URL-derived
+    ``PINNED_PROVIDER_ROUTE_KEY`` signal is present, the routing tag set is
+    EXACTLY ``["pin:<that provider>"]`` — derived from that single
+    server-authoritative field alone, IGNORING ``tags``,
+    ``ORIGINAL_REQUEST_TAGS_KEY`` and any key/team tags for the routing
+    decision. The proxy's pinned routes set the signal from the URL and nowhere
+    else, overwriting any client-supplied copy in any form, so no client input
+    can change a pinned routing decision. (``metadata["tags"]`` is left intact
+    for SPEND ATTRIBUTION.)
+
+    Otherwise (unified routes — the signal is absent): prefer the pre-merge
+    snapshot (``ORIGINAL_REQUEST_TAGS_KEY``) captured once per request by
+    ``Router._update_kwargs_before_fallbacks``, so a selected deployment's own
+    tags — merged into ``metadata["tags"]`` by ``_update_kwargs_with_deployment``
+    for spend attribution, then reused as the kwargs dict is reused across
+    retries/fallbacks — can never leak back in as routing input on a later
+    attempt (which would reject every other-provider deployment). Falls back to
+    the live ``metadata["tags"]`` for back-compat when no snapshot was taken
+    (e.g. direct router use in tests that bypasses
+    ``_update_kwargs_before_fallbacks``).
     """
+    pinned_provider = metadata.get(PINNED_PROVIDER_ROUTE_KEY)
+    if isinstance(pinned_provider, str) and pinned_provider:
+        return [PIN_TAG_PREFIX + pinned_provider]
     if ORIGINAL_REQUEST_TAGS_KEY in metadata:
         return metadata.get(ORIGINAL_REQUEST_TAGS_KEY)
     return metadata.get("tags")

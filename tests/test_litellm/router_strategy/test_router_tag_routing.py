@@ -1453,3 +1453,193 @@ async def test_untagged_request_still_uses_default_pool_unchanged():
             mock_response="ok",
         )
         assert response._hidden_params["model_id"] == "default-model"
+
+
+# ---------------------------------------------------------------------------
+# Codex R4 convergence: the pinned routing decision derives SOLELY from the
+# trusted PINNED_PROVIDER_ROUTE_KEY signal (the provider from the URL), read by
+# get_deployments_for_tag with absolute priority. metadata["tags"] (incl. the
+# appended key/team tags) is IGNORED for routing but still carried for spend
+# attribution. This structurally closes the key/team-tag 400 (P2) and the
+# spoofed-snapshot / forged-tag bypasses (P1): none of them feed the pinned
+# routing decision.
+#
+# Mutation-verify: drop the PINNED_PROVIDER_ROUTE_KEY branch in
+# _resolve_request_tags -> test_pinned_signal_routes_despite_team_tags 400s
+# (team:x re-enters routing and breaks the subset match) and
+# test_pinned_signal_overrides_forged_client_routing routes to / fails on the
+# forged pin instead of the trusted one.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio()
+async def test_pinned_signal_routes_despite_team_tags():
+    """A pinned request whose metadata also carries an appended team tag
+    (``metadata["tags"] == ["pin:bedrock", "team:x"]``) must still route to the
+    pin leg under strict subset matching — the trusted signal makes the routing
+    tag set EXACTLY ``["pin:bedrock"]``, so the team tag never breaks the subset
+    match (previously a 400). The team tag remains in ``metadata["tags"]`` for
+    attribution."""
+    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
+
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["pin:bedrock"],
+                },
+                "model_info": {"id": "bedrock-dep"},
+            },
+        ],
+        enable_tag_filtering=True,
+        tag_filtering_match_any=False,
+        num_retries=0,
+    )
+
+    metadata = {"tags": ["pin:bedrock", "team:x"], PINNED_PROVIDER_ROUTE_KEY: "bedrock"}
+    response = await router.acompletion(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        metadata=metadata,
+        mock_response="ok",
+    )
+    assert response._hidden_params["model_id"] == "bedrock-dep"
+    # Attribution tags untouched: the team tag is still present for spend.
+    assert "team:x" in metadata["tags"]
+
+
+@pytest.mark.asyncio()
+async def test_pinned_signal_overrides_forged_client_routing():
+    """Every client-controllable routing input points at ``azure``; the trusted
+    signal points at ``bedrock``. Routing must honor the signal (bedrock leg),
+    proving no client field can redirect a pinned request."""
+    from litellm.router_strategy.tag_based_routing import (
+        ORIGINAL_REQUEST_TAGS_KEY,
+        PINNED_PROVIDER_ROUTE_KEY,
+    )
+
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["pin:bedrock"],
+                },
+                "model_info": {"id": "bedrock-dep"},
+            },
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["pin:azure"],
+                    "mock_response": "should-never-be-reached-azure",
+                },
+                "model_info": {"id": "azure-dep"},
+            },
+        ],
+        enable_tag_filtering=True,
+        tag_filtering_match_any=False,
+        num_retries=0,
+    )
+
+    response = await router.acompletion(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        metadata={
+            "tags": ["pin:azure"],
+            ORIGINAL_REQUEST_TAGS_KEY: ["pin:azure"],
+            PINNED_PROVIDER_ROUTE_KEY: "bedrock",
+        },
+        mock_response="ok",
+    )
+    assert response._hidden_params["model_id"] == "bedrock-dep"
+
+
+@pytest.mark.asyncio()
+async def test_pinned_signal_still_fails_loud_when_no_matching_leg():
+    """The trusted signal must not weaken a genuine pin: a ``bedrock`` signal
+    with only an ``azure`` leg (and a ``default`` leg present) fails loud — the
+    pin still disables the default-pool fallback."""
+    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
+    from litellm.types.router import RouterErrors
+
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["default"],
+                    "mock_response": "should-never-be-reached-default",
+                },
+                "model_info": {"id": "default-model"},
+            },
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["pin:azure"],
+                    "mock_response": "should-never-be-reached-azure",
+                },
+                "model_info": {"id": "azure-dep"},
+            },
+        ],
+        enable_tag_filtering=True,
+        tag_filtering_match_any=False,
+        num_retries=0,
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await router.acompletion(
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["pin:bedrock"], PINNED_PROVIDER_ROUTE_KEY: "bedrock"},
+        )
+    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
+
+
+@pytest.mark.asyncio()
+async def test_unified_route_unchanged_without_signal():
+    """Requirement 4: with no pinned signal present, tag routing is identical to
+    vanilla — a team-tagged request still routes to its team leg by subset."""
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["team:x"],
+                },
+                "model_info": {"id": "team-dep"},
+            },
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["default"],
+                },
+                "model_info": {"id": "default-dep"},
+            },
+        ],
+        enable_tag_filtering=True,
+        tag_filtering_match_any=False,
+        num_retries=0,
+    )
+
+    response = await router.acompletion(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        metadata={"tags": ["team:x"]},
+        mock_response="ok",
+    )
+    assert response._hidden_params["model_id"] == "team-dep"
