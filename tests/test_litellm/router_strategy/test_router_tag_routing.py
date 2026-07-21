@@ -1268,3 +1268,188 @@ async def test_genuine_pin_still_enforced_and_fails_loud_when_no_matching_leg():
     from litellm.types.router import RouterErrors
 
     assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Codex re-review P1-A (part 2): a client-smuggled ORIGINAL_REQUEST_TAGS_KEY
+# must never be trusted as the routing snapshot. Router._update_kwargs_before_
+# fallbacks OVERWRITES the snapshot from the trusted live tags on the FIRST
+# invocation (setdefault would have honored the spoof). Reverting the overwrite
+# back to setdefault makes test_spoofed_original_request_tags_snapshot_is_
+# overwritten route to the spoofed pin instead of failing loud.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio()
+async def test_spoofed_original_request_tags_snapshot_is_overwritten():
+    """A spoofed ``_original_request_tags`` in the caller's metadata must be
+    overwritten by the router from the trusted live ``tags`` on the first
+    invocation. Live pin is ``pin:bedrock``; the spoof claims ``pin:azure``.
+    Routing must honor ``pin:bedrock`` and fail loud — never serve the
+    ``pin:azure`` leg the spoof points at."""
+    from litellm.router_strategy.tag_based_routing import ORIGINAL_REQUEST_TAGS_KEY
+
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["pin:azure"],
+                    "mock_response": "should-never-be-reached",
+                },
+                "model_info": {"id": "azure-dep"},
+            },
+        ],
+        enable_tag_filtering=True,
+        tag_filtering_match_any=False,
+        num_retries=0,
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await router.acompletion(
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            # Live tags are the server-set pin; the client also smuggled a
+            # conflicting pre-merge snapshot pointing at the azure leg.
+            metadata={"tags": ["pin:bedrock"], ORIGINAL_REQUEST_TAGS_KEY: ["pin:azure"]},
+        )
+
+    from litellm.types.router import RouterErrors
+
+    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Codex re-review P1-B: a hard provider pin (any ``pin:`` tag) must NEVER fall
+# through to the ``default``-deployment pool — the fork must not depend on a
+# static config guard in another repo to forbid ``default`` tags. get_deployments
+# _for_tag skips the default fallback for pinned requests. Reverting the
+# ``not disable_default_fallback`` guard makes test_pin_never_falls_back_to_
+# default_pool serve the default deployment instead of failing loud.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio()
+async def test_pin_never_falls_back_to_default_pool():
+    """A ``pin:bedrock`` request with a ``default``-tagged deployment present but
+    NO bedrock leg must fail loud — the pin can never be served by the default
+    pool."""
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["default"],
+                    "mock_response": "should-never-be-reached-default",
+                },
+                "model_info": {"id": "default-model"},
+            },
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["pin:azure"],
+                    "mock_response": "should-never-be-reached-azure",
+                },
+                "model_info": {"id": "azure-dep"},
+            },
+        ],
+        enable_tag_filtering=True,
+        tag_filtering_match_any=False,
+        num_retries=0,
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await router.acompletion(
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["pin:bedrock"]},
+        )
+
+    from litellm.types.router import RouterErrors
+
+    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
+
+
+@pytest.mark.asyncio()
+async def test_non_pin_tag_still_falls_back_to_default_pool_unchanged():
+    """The pin guard is scoped to ``pin:`` tags: a NON-pin tagged request with no
+    exact match still falls back to the ``default`` pool (vanilla behavior). This
+    guards against the guard over-firing on all tagged requests."""
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["default"],
+                },
+                "model_info": {"id": "default-model"},
+            },
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["teamA"],
+                },
+                "model_info": {"id": "team-a"},
+            },
+        ],
+        enable_tag_filtering=True,
+        tag_filtering_match_any=False,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["team-does-not-exist"]},
+            mock_response="ok",
+        )
+        assert response._hidden_params["model_id"] == "default-model"
+
+
+@pytest.mark.asyncio()
+async def test_untagged_request_still_uses_default_pool_unchanged():
+    """Vanilla behavior preserved: an UNTAGGED request with a ``default``-tagged
+    deployment still routes to it (the pin guard never fires without a pin)."""
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["default"],
+                },
+                "model_info": {"id": "default-model"},
+            },
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["pin:azure"],
+                },
+                "model_info": {"id": "azure-dep"},
+            },
+        ],
+        enable_tag_filtering=True,
+        tag_filtering_match_any=False,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={},
+            mock_response="ok",
+        )
+        assert response._hidden_params["model_id"] == "default-model"

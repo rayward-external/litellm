@@ -341,6 +341,38 @@ class TestClientTagsCannotEscapeThePin:
         tags = _router_visible_tags(capture["body"], path, expected_field="litellm_metadata")
         assert tags == ["pin:bedrock"]
 
+    def test_client_original_request_tags_snapshot_is_stripped(self, pinned_app, capture):
+        """Codex re-review P1-A (part 1): a client cannot smuggle the router's
+        internal pre-merge tag SNAPSHOT (``_original_request_tags``) to re-open
+        the pin. The tag router PREFERS that snapshot over the live ``tags``
+        (``_resolve_request_tags``), so a surviving ``_original_request_tags:
+        [pin:openai]`` on a ``/bedrock`` request would route to OpenAI. The
+        pinned handler strips it from the body root AND from every client
+        metadata field, so it never reaches the router. Mutation-verify: revert
+        the strip in ``_pin_request_tags`` and the smuggled key survives here."""
+        path = "/bedrock/v1/chat/completions"
+        resp = _post(
+            pinned_app,
+            path,
+            {
+                "model": "claude-haiku-4-5",
+                "messages": [],
+                "_original_request_tags": ["pin:openai"],
+                "metadata": {"_original_request_tags": ["pin:openai"]},
+                "litellm_metadata": {"_original_request_tags": ["pin:openai"]},
+            },
+        )
+        assert resp.status_code == 200
+        body = capture["body"]
+        # Stripped from the body root and from every client metadata field, so
+        # nothing can survive into the router's routing snapshot.
+        assert "_original_request_tags" not in body
+        for field in ("metadata", "litellm_metadata"):
+            assert "_original_request_tags" not in (body.get(field) or {})
+        # And the routing tag set the router will snapshot is exactly the pin.
+        tags = _router_visible_tags(body, path, expected_field="litellm_metadata")
+        assert tags == ["pin:bedrock"]
+
 
 def _first_full_match_route(app, path: str):
     scope = {
@@ -724,6 +756,29 @@ class TestReinitializeRemovesStaleRoutes:
         assert self._pinned_paths(app)
         assert initialize_pinned_provider_routes(app=app, general_settings={}) == []
         assert self._pinned_paths(app) == set()
+
+    def test_invalid_reload_value_still_removes_stale_routes(self):
+        """Codex re-review P2-C: a hot reload whose ``pinned_provider_routes`` is
+        a non-list (rejected config) must STILL drop previously-registered
+        routes — not leave stale endpoints live behind the rejected value.
+        Mutation-verify: restore the early ``return []`` before cleanup and the
+        stale routes survive the rejected reload."""
+        app = FastAPI()
+        initialize_pinned_provider_routes(app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]})
+        assert self._pinned_paths(app) == {"/bedrock/v1/chat/completions", "/bedrock/v1/messages"}
+
+        # Reload with a malformed non-list string value -> rejected, cleanup runs.
+        assert (
+            initialize_pinned_provider_routes(app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: "bedrock"})
+            == []
+        )
+        assert self._pinned_paths(app) == set(), "stale routes survived a rejected non-list (str) reload"
+
+        # Also robust for a non-string non-list value (e.g. int).
+        initialize_pinned_provider_routes(app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["baseten"]})
+        assert self._pinned_paths(app)
+        assert initialize_pinned_provider_routes(app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: 5}) == []
+        assert self._pinned_paths(app) == set(), "stale routes survived a rejected non-list (int) reload"
 
     def test_reload_can_reregister_a_removed_provider(self):
         app = FastAPI()

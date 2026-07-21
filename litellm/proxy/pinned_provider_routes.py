@@ -77,6 +77,11 @@ from litellm.proxy.common_utils.http_parsing_utils import (
     _read_request_body,
     _safe_set_request_parsed_body,
 )
+from litellm.router_strategy.tag_based_routing import (
+    ORIGINAL_REQUEST_TAGS_KEY,
+    ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY,
+    PIN_TAG_PREFIX,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -84,10 +89,12 @@ if TYPE_CHECKING:
 # general_settings key that enables + configures this feature.
 PINNED_PROVIDER_ROUTES_SETTING = "pinned_provider_routes"
 
-# Server-side tag namespace. By convention, not enforcement: a client may
-# send "pin:<provider>" itself on a unified route and get the same pinning —
-# acceptable, since under subset matching tags only ever narrow eligibility.
-PIN_TAG_PREFIX = "pin:"
+# Server-side tag namespace (``PIN_TAG_PREFIX``, imported from the tag router).
+# By convention, not enforcement on unified routes: a client may send
+# "pin:<provider>" itself there and get the same pinning — acceptable, since
+# under subset matching tags only ever narrow eligibility. On a PINNED route the
+# prefix is authoritative and also disables the default-pool fallback in the tag
+# router (get_deployments_for_tag), so a hard pin can never spill to ``default``.
 
 # Body fields the base request processor also reads client-supplied ``tags``
 # from when it builds the router-visible tag stream (besides the body-root
@@ -97,6 +104,18 @@ PIN_TAG_PREFIX = "pin:"
 # ``litellm/proxy/litellm_pre_call_utils.py``. A pinned route strips ``tags``
 # from these so the replaced pin is the only routing tag.
 _CLIENT_TAG_METADATA_FIELDS: tuple[str, ...] = ("metadata", "litellm_metadata")
+
+# Internal, server-authoritative routing fields a client must NEVER supply. The
+# router captures ``ORIGINAL_REQUEST_TAGS_KEY`` (its pre-merge tag snapshot) plus
+# the ``..._SNAPSHOT_TAKEN_KEY`` sentinel itself; a client that pre-seeds either
+# on a pinned route could otherwise re-open the pin (a /bedrock request smuggling
+# ``_original_request_tags=["pin:openai"]`` and routing to OpenAI). The pinned
+# route strips both from the body root and from every metadata field the base
+# processor merges, so only the server-set pin ever reaches the router.
+_CLIENT_STRIPPED_ROUTING_FIELDS: tuple[str, ...] = (
+    ORIGINAL_REQUEST_TAGS_KEY,
+    ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY,
+)
 
 # Route prefixes that are aliases of another provider's tag namespace:
 # "/gemini/..." addresses the same deployments as "/vertex_ai/..." (both
@@ -189,12 +208,22 @@ async def _pin_request_tags(request: Request, pin_tag: str) -> None:
     # REPLACE (not union): the pin is the sole routing tag, whatever the
     # client sent at the body root.
     data["tags"] = [pin_tag]
-    # Strip client-supplied tags from the metadata fields the base processor
-    # also merges into the routing stream, so none can survive the merge.
+    # Strip client-supplied tags AND the internal, server-authoritative routing
+    # fields from the body root, so a client cannot pre-seed the router's
+    # original-tags snapshot (re-opening the pin) or the default-fallback flag.
+    for internal_field in _CLIENT_STRIPPED_ROUTING_FIELDS:
+        data.pop(internal_field, None)
+    # Same strip on every metadata field the base processor merges into the
+    # routing stream, so none can survive the merge.
     for metadata_field in _CLIENT_TAG_METADATA_FIELDS:
         metadata = data.get(metadata_field)
         if isinstance(metadata, dict):
             metadata.pop("tags", None)
+            for internal_field in _CLIENT_STRIPPED_ROUTING_FIELDS:
+                metadata.pop(internal_field, None)
+    # The pin tag itself disables the default-pool fallback in the tag router
+    # (get_deployments_for_tag keys off the ``pin:`` prefix), so no separate
+    # flag needs to ride the request — the pin can never spill to ``default``.
     # Re-store explicitly: the parsed-body cache snapshots accepted keys at
     # set time (see _safe_get_request_parsed_body), so an in-place mutation
     # that ADDS a "tags" key would be dropped on the next read.
@@ -348,6 +377,10 @@ def initialize_pinned_provider_routes(
             "pinned_provider_routes: expected a list of provider names, got %r — ignoring.",
             type(configured).__name__,
         )
+        # Treat an invalid value as "disabled": a reload that REJECTED the
+        # setting must still drop any routes an earlier valid config registered,
+        # rather than leaving stale endpoints live behind a rejected config.
+        _remove_stale_pinned_routes(app, desired_paths=set())
         return []
     if not configured:
         # Disabled (setting absent or []): a reload that dropped the setting

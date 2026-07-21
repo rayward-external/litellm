@@ -91,6 +91,7 @@ from litellm.router_strategy.lowest_tpm_rpm_v2 import LowestTPMLoggingHandler_v2
 from litellm.router_strategy.simple_shuffle import simple_shuffle
 from litellm.router_strategy.tag_based_routing import (
     ORIGINAL_REQUEST_TAGS_KEY,
+    ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY,
     _get_tags_from_request_kwargs,
     get_deployments_for_tag,
     is_valid_deployment_tag,
@@ -3238,11 +3239,23 @@ class Router:
         # level, ahead of every _update_kwargs_with_deployment call site (see
         # _acompletion / completion / *_with_fallbacks), so the tags read here are
         # still exactly what the caller sent — the pin tag for a pinned request,
-        # nothing for an untagged one. setdefault makes it idempotent: the capture
-        # survives kwargs reuse across retries/fallbacks and is never overwritten
-        # by a leaked deployment tag. Tag-based routing reads this in preference to
-        # the live metadata["tags"] (see get_deployments_for_tag).
-        _metadata.setdefault(ORIGINAL_REQUEST_TAGS_KEY, list(_metadata.get("tags") or []))
+        # nothing for an untagged one.
+        #
+        # OVERWRITE (not setdefault) from the trusted live tags: a client can
+        # smuggle a spoofed ORIGINAL_REQUEST_TAGS_KEY into metadata (it survives
+        # add_litellm_data_to_request), and setdefault would then TRUST it —
+        # re-opening a provider pin (e.g. a /bedrock request carrying
+        # _original_request_tags=["pin:openai"]). Overwriting from
+        # metadata["tags"] — which the proxy has already reduced to exactly the
+        # pin on a pinned route — discards any spoofed snapshot. A DEDICATED
+        # sentinel (never the spoofable field itself) gates the capture to the
+        # FIRST invocation, so the snapshot still survives kwargs reuse across
+        # retries/fallbacks and is never overwritten by a leaked deployment tag.
+        # Tag-based routing reads this in preference to the live metadata["tags"]
+        # (see get_deployments_for_tag).
+        if not _metadata.get(ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY):
+            _metadata[ORIGINAL_REQUEST_TAGS_KEY] = list(_metadata.get("tags") or [])
+            _metadata[ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY] = True
 
     def _set_deployment_num_retries_on_exception(self, exception: Exception, deployment: dict) -> None:
         """

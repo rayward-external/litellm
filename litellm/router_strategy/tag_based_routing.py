@@ -22,6 +22,31 @@ from litellm.types.router import RouterErrors
 # in as routing input on a later attempt (see get_deployments_for_tag).
 ORIGINAL_REQUEST_TAGS_KEY = "_original_request_tags"
 
+# Neutral internal sentinel marking that ``Router._update_kwargs_before_fallbacks``
+# has already captured ``ORIGINAL_REQUEST_TAGS_KEY`` for THIS request. The snapshot
+# is captured on the FIRST invocation only and OVERWRITTEN from the trusted live
+# tags, so a client that smuggles a spoofed ``ORIGINAL_REQUEST_TAGS_KEY`` into
+# metadata cannot pre-seed the routing snapshot (setdefault would have trusted it).
+# Gating on this dedicated sentinel — never the spoofable field itself — preserves
+# idempotency across the retry/fallback re-invocations that reuse the kwargs dict.
+ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY = "_original_request_tags_snapshotted"
+
+# Server-side namespace prefix for provider-pin routing tags. A request whose
+# (original) tags carry ANY ``pin:``-prefixed tag is a HARD provider pin set by
+# the proxy's provider-pinned routes (litellm/proxy/pinned_provider_routes.py):
+# it must NEVER fall through to the ``default``-deployment pool — an empty tag
+# match fails loud (``no_deployments_with_tag_routing``) instead, so a pin can
+# never be silently served by a ``default``-tagged deployment, independent of
+# any static config guard in another repo.
+#
+# Keying this off the pin tag itself (not a separate metadata flag) is
+# deliberate: the pin tag already reaches the router-visible metadata reliably,
+# whereas a companion flag would have to survive the proxy's PATH-based
+# metadata-field selection vs the router's PRESENCE-based selection
+# (get_metadata_variable_name_from_kwargs) — a divergence that silently drops a
+# flag set in the wrong field. The pin policy stays in one place (the tag).
+PIN_TAG_PREFIX = "pin:"
+
 if TYPE_CHECKING:
     from litellm.router import Router as _Router
 
@@ -234,6 +259,12 @@ async def get_deployments_for_tag(
         metadata = request_kwargs[metadata_variable_name]
         request_tags = _resolve_request_tags(metadata)
         match_any = llm_router_instance.tag_filtering_match_any
+        # A hard provider pin (any ``pin:`` tag) must never spill to the
+        # ``default`` pool: an empty tag match fails loud rather than being
+        # served by a ``default``-tagged deployment.
+        disable_default_fallback = any(
+            isinstance(t, str) and t.startswith(PIN_TAG_PREFIX) for t in (request_tags or [])
+        )
 
         # Build header strings for regex matching from what the proxy already stores.
         # Currently we match against User-Agent; format matches "^User-Agent: claude-code/..."
@@ -289,7 +320,11 @@ async def get_deployments_for_tag(
                         }
                     new_healthy_deployments.append(deployment)
 
-                if deployment_tags and "default" in deployment_tags:
+                # Skip building the default-pool fallback entirely when this
+                # request forbids it (a hard pin): with default_deployments left
+                # empty, an unmatched pin falls through to the fail-loud raise
+                # below instead of being served by a ``default`` deployment.
+                if not disable_default_fallback and deployment_tags and "default" in deployment_tags:
                     default_deployments.append(deployment)
 
             if len(new_healthy_deployments) == 0 and len(default_deployments) == 0:
