@@ -1877,11 +1877,6 @@
       "count": 1
     }
   },
-  "src/components/model_add/credentials.tsx": {
-    "no-restricted-imports": {
-      "count": 1
-    }
-  },
   "src/components/model_add/reuse_credentials.tsx": {
     "no-restricted-imports": {
       "count": 1
@@ -2148,11 +2143,6 @@
     "no-nested-ternary": {
       "count": 1
     },
-    "no-restricted-imports": {
-      "count": 1
-    }
-  },
-  "src/components/team/available_teams.tsx": {
     "no-restricted-imports": {
       "count": 1
     }
