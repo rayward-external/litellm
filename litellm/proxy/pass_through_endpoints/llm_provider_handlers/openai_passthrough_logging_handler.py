@@ -187,9 +187,15 @@ def _is_responses_item_path(path: str) -> bool:
 def _is_openai_compatible_host(hostname: Optional[str]) -> bool:
     """True if the hostname is OpenAI proper or one of the Azure OpenAI domains.
 
+<<<<<<< Updated upstream
     Narrow hostname-only test for OpenAI proper / the Azure OpenAI domains.
     Route-level dispatch goes through `_in_openai_scope`, which additionally
     honours `custom_llm_provider` and applies the Azure path-marker guard.
+=======
+    Hostname-only check. Retained as the narrow OpenAI/Azure test; route-level
+    dispatch goes through `_in_openai_scope`, which also honours
+    `custom_llm_provider` and the Azure path-marker guard.
+>>>>>>> Stashed changes
     """
     if not hostname:
         return False
@@ -199,6 +205,7 @@ def _is_openai_compatible_host(hostname: Optional[str]) -> bool:
 def _in_openai_scope(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
     """Scope gate shared by every `is_openai_*_route` helper.
 
+<<<<<<< Updated upstream
     Each helper used to gate on `_is_openai_compatible_host`, a hardcoded tuple
     of OpenAI/Azure hostnames. Any other OpenAI-compatible upstream — Fireworks
     today, others tomorrow — was therefore never dispatched to this handler and
@@ -209,10 +216,22 @@ def _in_openai_scope(url_route: str, custom_llm_provider: Optional[str] = None) 
     as before — including the Azure `/openai/` / `/v1/` path-marker guard that
     stops non-OpenAI Cognitive Services on the shared domains being
     misclassified.
+=======
+    Previously each helper gated on `_is_openai_compatible_host`, a hardcoded
+    tuple of OpenAI/Azure hostnames. Any other OpenAI-compatible upstream —
+    Fireworks today, others tomorrow — was therefore never dispatched to this
+    handler and recorded $0, despite the handler's cost math being entirely
+    provider-agnostic. Key off the provider (as `is_gemini_route` /
+    `is_cursor_route` do) and keep the hostname path as the fallback, so
+    OpenAI/Azure routes with no configured provider behave exactly as before —
+    including the Azure `/openai/` `/v1/` path-marker guard that stops non-OpenAI
+    Cognitive Services on the shared domains being misclassified.
+>>>>>>> Stashed changes
     """
     return is_openai_wire_compatible_route(url_route, custom_llm_provider)
 
 
+<<<<<<< Updated upstream
 def _build_response_and_cost_for_surface(
     *,
     is_chat_completions: bool,
@@ -341,6 +360,8 @@ def _build_response_and_cost_for_surface(
     return litellm_model_response, response_cost
 
 
+=======
+>>>>>>> Stashed changes
 class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
     """
     OpenAI-specific passthrough logging handler that provides cost tracking for /chat/completions endpoints.
@@ -368,6 +389,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
     @staticmethod
     def is_openai_image_generation_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
+<<<<<<< Updated upstream
         """Check if the URL route is an OpenAI image generation endpoint.
 
         Accepts both the OpenAI-v1 shape and the classic Azure OpenAI
@@ -415,6 +437,33 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         return _in_openai_scope(url_route, custom_llm_provider) and _is_responses_item_path(parsed_url.path)
 
     @staticmethod
+=======
+        """Check if the URL route is an OpenAI image generation endpoint."""
+        if not url_route:
+            return False
+        parsed_url = urlparse(url_route)
+        return _in_openai_scope(url_route, custom_llm_provider) and "/v1/images/generations" in parsed_url.path
+
+    @staticmethod
+    def is_openai_image_editing_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
+        """Check if the URL route is an OpenAI image editing endpoint."""
+        if not url_route:
+            return False
+        parsed_url = urlparse(url_route)
+        return _in_openai_scope(url_route, custom_llm_provider) and "/v1/images/edits" in parsed_url.path
+
+    @staticmethod
+    def is_openai_responses_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
+        """Check if the URL route is an OpenAI responses API endpoint."""
+        if not url_route:
+            return False
+        parsed_url = urlparse(url_route)
+        return _in_openai_scope(url_route, custom_llm_provider) and (
+            "/v1/responses" in parsed_url.path or "/responses" in parsed_url.path
+        )
+
+    @staticmethod
+>>>>>>> Stashed changes
     def is_openai_embeddings_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
         """Check if the URL route is an OpenAI embeddings endpoint.
 
@@ -426,10 +475,14 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         if not url_route:
             return False
         parsed_url = urlparse(url_route)
+<<<<<<< Updated upstream
         # Final-segment match, not containment: "/embeddings" as a substring
         # also matches nested/sibling resources (`/v1/embeddings/jobs`), which
         # would be costed with the embeddings transformer and mis-priced.
         return _in_openai_scope(url_route, custom_llm_provider) and parsed_url.path.rstrip("/").endswith("/embeddings")
+=======
+        return _in_openai_scope(url_route, custom_llm_provider) and "/embeddings" in parsed_url.path
+>>>>>>> Stashed changes
 
     def _get_user_from_metadata(
         self,
