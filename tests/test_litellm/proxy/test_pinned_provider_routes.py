@@ -5,8 +5,11 @@ Tests for the provider-pinned standard routes module
 Covers, per the 2026-07-21 provider-pinned-routes design:
 - pin-tag injection on both dialects, including the router-visible metadata
   field (metadata vs litellm_metadata per LITELLM_METADATA_ROUTES);
-- client-supplied tags are unioned with the pin, never replaced by it and
-  never able to replace it;
+- the routing tag set is REPLACED with exactly the pin (client-supplied tags
+  are dropped from the routing decision), so an extra client tag can never
+  make the request not-a-subset of the pinned deployment and fall through to
+  the tag router's `default` pool, and a conflicting `pin:*` tag can never
+  widen or redirect — asserted through the real add_litellm_data_to_request;
 - route precedence over the four provider pass-through catch-alls
   (/gemini, /bedrock, /azure, /vertex_ai {endpoint:path}) plus resolution
   for fireworks/baseten which have no catch-all (the R4 regression guard);
@@ -189,7 +192,10 @@ def _router_visible_tags(body: dict, path: str, expected_field: str):
 
 class TestTagInjectionChatDialect:
     @pytest.mark.parametrize("provider", PINNED_PROVIDERS)
-    def test_pin_appended_to_client_tags(self, pinned_app, capture, provider):
+    def test_pin_replaces_client_tags(self, pinned_app, capture, provider):
+        """The pin REPLACES client body-root tags (not union): the routing tag
+        set must be exactly the pin so an extra client tag can't break the
+        subset match and escape to the default pool."""
         resp = _post(
             pinned_app,
             f"/{provider}/v1/chat/completions",
@@ -197,7 +203,7 @@ class TestTagInjectionChatDialect:
         )
         assert resp.status_code == 200
         assert resp.json() == CHAT_STUB_SENTINEL
-        assert capture["body"]["tags"] == ["client-tag", EXPECTED_PIN_TAGS[provider]]
+        assert capture["body"]["tags"] == [EXPECTED_PIN_TAGS[provider]]
 
     def test_pin_alone_when_no_client_tags(self, pinned_app, capture):
         resp = _post(
@@ -210,12 +216,13 @@ class TestTagInjectionChatDialect:
 
     def test_tag_reaches_router_visible_metadata_plain_route(self, pinned_app, capture):
         """/azure/... does not match LITELLM_METADATA_ROUTES -> tags must land
-        in `metadata` (the field tag-based routing reads for chat routes)."""
+        in `metadata` (the field tag-based routing reads for chat routes), and
+        the client tag is dropped so the routing set is exactly the pin."""
         path = "/azure/v1/chat/completions"
         resp = _post(pinned_app, path, {"model": "gpt-5.4-nano", "messages": [], "tags": ["client-tag"]})
         assert resp.status_code == 200
         tags = _router_visible_tags(capture["body"], path, expected_field="metadata")
-        assert tags is not None and "pin:azure" in tags and "client-tag" in tags
+        assert tags == ["pin:azure"]
 
     def test_tag_reaches_router_visible_metadata_litellm_metadata_route(self, pinned_app, capture):
         """/bedrock/... contains "bedrock", a LITELLM_METADATA_ROUTES entry ->
@@ -229,7 +236,7 @@ class TestTagInjectionChatDialect:
 
 class TestTagInjectionMessagesDialect:
     @pytest.mark.parametrize("provider", PINNED_PROVIDERS)
-    def test_pin_appended_to_client_tags(self, pinned_app, capture, provider):
+    def test_pin_replaces_client_tags(self, pinned_app, capture, provider):
         resp = _post(
             pinned_app,
             f"/{provider}/v1/messages",
@@ -242,7 +249,7 @@ class TestTagInjectionMessagesDialect:
         )
         assert resp.status_code == 200
         assert resp.json() == MESSAGES_STUB_SENTINEL
-        assert capture["body"]["tags"] == ["client-tag", EXPECTED_PIN_TAGS[provider]]
+        assert capture["body"]["tags"] == [EXPECTED_PIN_TAGS[provider]]
 
     def test_tag_reaches_litellm_metadata(self, pinned_app, capture):
         """Every pinned messages path contains "/v1/messages", a
@@ -261,18 +268,18 @@ class TestTagInjectionMessagesDialect:
             assert any(route in path for route in LITELLM_METADATA_ROUTES)
 
 
-class TestClientTagsCannotReplacePin:
-    def test_client_pin_tag_for_other_provider_is_unioned(self, pinned_app, capture):
-        """A client sending its own pin: tag cannot REPLACE the server-side
-        pin — both remain (union), which under subset matching can only
-        narrow eligibility (worst case: matches nothing, fail-loud 4xx)."""
+class TestClientTagsCannotEscapeThePin:
+    def test_client_pin_tag_for_other_provider_is_dropped(self, pinned_app, capture):
+        """A client sending its own conflicting pin: tag can neither replace
+        nor widen the server-side pin — the routing tag set is REPLACED with
+        exactly the pinned provider's tag, so the client's pin:azure is gone."""
         resp = _post(
             pinned_app,
             "/bedrock/v1/chat/completions",
             {"model": "claude-haiku-4-5", "messages": [], "tags": ["pin:azure"]},
         )
         assert resp.status_code == 200
-        assert capture["body"]["tags"] == ["pin:azure", "pin:bedrock"]
+        assert capture["body"]["tags"] == ["pin:bedrock"]
 
     def test_duplicate_pin_not_doubled(self, pinned_app, capture):
         resp = _post(
@@ -293,6 +300,46 @@ class TestClientTagsCannotReplacePin:
         )
         assert resp.status_code == 200
         assert capture["body"]["tags"] == ["pin:bedrock"]
+
+    @pytest.mark.parametrize(
+        "suffix, expected_field",
+        [("/v1/chat/completions", "litellm_metadata"), ("/v1/messages", "litellm_metadata")],
+    )
+    def test_extra_client_tags_cannot_escape_pin_end_to_end(self, pinned_app, capture, suffix, expected_field):
+        """P1 escape guard, asserted through the REAL add_litellm_data_to_request:
+        a client sending a conflicting pin plus an unrelated tag to /bedrock/*
+        must yield a router-visible tag set of EXACTLY ["pin:bedrock"] — not a
+        superset that (under subset matching) matches nothing and falls through
+        to the tag router's `default`-deployment pool. /bedrock/* is a
+        LITELLM_METADATA_ROUTES prefix, so the pin must land in litellm_metadata
+        for both dialects."""
+        path = f"/bedrock{suffix}"
+        body = {"model": "claude-haiku-4-5", "messages": [], "tags": ["pin:openai", "team:x"]}
+        if suffix == "/v1/messages":
+            body["max_tokens"] = 16
+        resp = _post(pinned_app, path, body)
+        assert resp.status_code == 200
+        tags = _router_visible_tags(capture["body"], path, expected_field=expected_field)
+        assert tags == ["pin:bedrock"]
+
+    def test_client_metadata_tags_cannot_escape_pin(self, pinned_app, capture):
+        """Client tags planted in the body `metadata`/`litellm_metadata` dict
+        (the other sources add_request_tag_to_metadata merges from) are stripped
+        too, so they can't reintroduce an escaping tag after the replace."""
+        path = "/bedrock/v1/chat/completions"
+        resp = _post(
+            pinned_app,
+            path,
+            {
+                "model": "claude-haiku-4-5",
+                "messages": [],
+                "metadata": {"tags": ["pin:openai"]},
+                "litellm_metadata": {"tags": ["team:evil"]},
+            },
+        )
+        assert resp.status_code == 200
+        tags = _router_visible_tags(capture["body"], path, expected_field="litellm_metadata")
+        assert tags == ["pin:bedrock"]
 
 
 def _first_full_match_route(app, path: str):
@@ -425,6 +472,67 @@ async def test_load_config_seam_registers_pinned_routes(tmp_path, monkeypatch):
     try:
         await ProxyConfig().load_config(router=None, config_file_path=str(f))
         assert _pinned_paths_of(app) == {"/baseten/v1/chat/completions", "/baseten/v1/messages"}
+    finally:
+        _remove_pinned_routes(app)
+
+
+@pytest.mark.asyncio
+async def test_load_config_seam_removes_routes_when_setting_deleted(tmp_path, monkeypatch):
+    """P2 regression guard, at the proxy_server load-config seam: DELETING the
+    pinned_provider_routes key entirely (not setting it to []) must still run
+    the initializer so previously-registered routes are cleaned up. Gating on
+    `setting is not None` alone skipped the initializer on key removal and left
+    stale pinned routes live."""
+    from litellm.proxy.proxy_server import ProxyConfig, app
+
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.store_model_in_db", False)
+    monkeypatch.delenv("LITELLM_CONFIG_BUCKET_NAME", raising=False)
+
+    with_pin = tmp_path / "with.yaml"
+    with_pin.write_text(
+        "model_list: []\nlitellm_settings: {}\ngeneral_settings:\n  pinned_provider_routes: [bedrock]\n"
+    )
+    # The reload config omits the key ENTIRELY (not `pinned_provider_routes: []`).
+    without_pin = tmp_path / "without.yaml"
+    without_pin.write_text("model_list: []\nlitellm_settings: {}\ngeneral_settings: {}\n")
+
+    _remove_pinned_routes(app)
+    try:
+        await ProxyConfig().load_config(router=None, config_file_path=str(with_pin))
+        assert _pinned_paths_of(app) == {"/bedrock/v1/chat/completions", "/bedrock/v1/messages"}
+
+        await ProxyConfig().load_config(router=None, config_file_path=str(without_pin))
+        assert _pinned_paths_of(app) == set(), "stale pinned routes survived key deletion"
+    finally:
+        _remove_pinned_routes(app)
+
+
+@pytest.mark.asyncio
+async def test_load_config_seam_vanilla_never_calls_initializer(tmp_path, monkeypatch):
+    """Vanilla posture: a config that never configured pinned routes — and no
+    prior registration on this app — must not even CALL (hence not import)
+    the initializer. The prior-registration probe must read app.state without
+    importing the module."""
+    import litellm.proxy.pinned_provider_routes as pinned_module
+    from litellm.proxy.proxy_server import ProxyConfig, app
+
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.store_model_in_db", False)
+    monkeypatch.delenv("LITELLM_CONFIG_BUCKET_NAME", raising=False)
+
+    spy = MagicMock(wraps=pinned_module.initialize_pinned_provider_routes)
+    monkeypatch.setattr(pinned_module, "initialize_pinned_provider_routes", spy)
+
+    f = tmp_path / "vanilla.yaml"
+    f.write_text("model_list: []\nlitellm_settings: {}\ngeneral_settings: {}\n")
+
+    # Ensure no leftover registration makes the app look "previously configured".
+    _remove_pinned_routes(app)
+    try:
+        await ProxyConfig().load_config(router=None, config_file_path=str(f))
+        spy.assert_not_called()
+        assert _pinned_paths_of(app) == set()
     finally:
         _remove_pinned_routes(app)
 

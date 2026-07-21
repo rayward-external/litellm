@@ -4752,14 +4752,6 @@ class ProxyConfig:
                     config_file_path=config_file_path,
                 )
 
-            ## provider-pinned standard routes (/{provider}/v1/chat/completions, /{provider}/v1/messages)
-            if general_settings.get("pinned_provider_routes", None) is not None:
-                from litellm.proxy.pinned_provider_routes import (  # noqa: PLC0415
-                    initialize_pinned_provider_routes,
-                )
-
-                initialize_pinned_provider_routes(app=app, general_settings=general_settings)
-
             ## ADMIN UI ACCESS ##
             ui_access_mode = general_settings.get("ui_access_mode", "all")  # can be either ["admin_only" or "all"]
             ### ALLOWED IP ###
@@ -4830,6 +4822,26 @@ class ProxyConfig:
             if "litellm_license" in general_settings:
                 _license_check.license_str = general_settings["litellm_license"]
                 premium_user = _license_check.is_premium()
+
+        ## provider-pinned standard routes (/{provider}/v1/chat/completions, /{provider}/v1/messages)
+        # Intentionally OUTSIDE the `if general_settings:` block above: run the
+        # initializer when the setting is present OR when a prior config reload
+        # already registered pinned routes on this app. Gating on the setting
+        # (or on a truthy general_settings) alone would skip cleanup when the
+        # key — or the whole general_settings block — is DELETED on reload,
+        # leaving stale pinned routes live; the initializer treats an absent
+        # setting like [] and removes them all. The prior-registration probe
+        # reads the app.state registry (pinned_provider_routes.
+        # PINNED_ROUTE_REGISTRY_STATE_ATTR) WITHOUT importing the module, so a
+        # deployment that never configured pinned routes still imports/registers
+        # nothing (vanilla posture preserved).
+        _pinned_routes_previously_registered = bool(getattr(app.state, "pinned_provider_route_objects", None))
+        if general_settings.get("pinned_provider_routes", None) is not None or _pinned_routes_previously_registered:
+            from litellm.proxy.pinned_provider_routes import (  # noqa: PLC0415
+                initialize_pinned_provider_routes,
+            )
+
+            initialize_pinned_provider_routes(app=app, general_settings=general_settings)
 
         router_params: dict = {
             "cache_responses": litellm.cache is not None,  # cache if user passed in cache values

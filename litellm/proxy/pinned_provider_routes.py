@@ -7,16 +7,28 @@ module registers two literal routes:
     POST /{provider}/v1/chat/completions
     POST /{provider}/v1/messages
 
-Each route injects a server-side namespaced tag ``pin:{provider}`` into the
-request's body-root ``tags`` list (union with any client-supplied tags — the
-pin is appended, never replaces) and then delegates to the SAME endpoint
-functions the unified routes use (``chat_completion`` /
-``anthropic_response``). Combined with router-level
-``enable_tag_filtering: true`` + ``tag_filtering_match_any: false`` (subset
-matching) and deployments tagged ``pin:<provider>``, the URL prefix pins
-which deployments are eligible to serve the call. Because request tags merge
-by union and matching is subset-based, an added tag can only narrow
-eligibility — a pin can never be widened or escaped by client-supplied tags.
+Each route REPLACES the request's routing tags with exactly the server-side
+namespaced tag ``pin:{provider}`` (client-supplied tags are dropped from the
+routing decision) and then delegates to the SAME endpoint functions the
+unified routes use (``chat_completion`` / ``anthropic_response``). Combined
+with router-level ``enable_tag_filtering: true`` +
+``tag_filtering_match_any: false`` (subset matching) and deployments tagged
+``pin:<provider>``, the URL prefix — not the client — decides which
+deployments are eligible to serve the call.
+
+The routing tag set is REPLACED, not unioned: under strict subset matching
+any EXTRA client tag would make the request tag set not-a-subset of the
+pinned deployment's ``["pin:{provider}"]``, matching nothing and falling
+through to the tag router's ``default``-deployment pool — an escape from the
+pin (see ``get_deployments_for_tag`` in
+``litellm/router_strategy/tag_based_routing.py``). Forcing the routing tags
+to exactly the pin closes that: the pinned deployment always matches by
+subset, the default fallback is unreachable, and a client-supplied
+CONFLICTING ``pin:*`` tag can never widen or redirect. Spend attribution is
+keyed by API-key hash, not tags, so dropping the client's own routing tags
+here costs only optional analytics grouping — the correct security trade-off
+for a pinned route (this REVERSES the earlier union-not-replace choice, for
+pinned routes only; unified routes still union).
 
 Enable via::
 
@@ -77,6 +89,15 @@ PINNED_PROVIDER_ROUTES_SETTING = "pinned_provider_routes"
 # acceptable, since under subset matching tags only ever narrow eligibility.
 PIN_TAG_PREFIX = "pin:"
 
+# Body fields the base request processor also reads client-supplied ``tags``
+# from when it builds the router-visible tag stream (besides the body-root
+# ``tags`` list): the client ``metadata`` dict and, for
+# ``LITELLM_METADATA_ROUTES``, ``litellm_metadata`` — see
+# ``add_request_tag_to_metadata`` and its cross-merge in
+# ``litellm/proxy/litellm_pre_call_utils.py``. A pinned route strips ``tags``
+# from these so the replaced pin is the only routing tag.
+_CLIENT_TAG_METADATA_FIELDS: tuple[str, ...] = ("metadata", "litellm_metadata")
+
 # Route prefixes that are aliases of another provider's tag namespace:
 # "/gemini/..." addresses the same deployments as "/vertex_ai/..." (both
 # inject "pin:vertex_ai") — the deployments carry a single canonical tag.
@@ -93,6 +114,14 @@ _EXTRA_ALLOWED_PREFIXES: frozenset[str] = frozenset({"fireworks"})
 # pinned literal route spliced ahead of them would shadow real client
 # traffic on those trees. Warn + skip instead of registering.
 PINNED_PREFIX_DENYLIST: frozenset[str] = frozenset({"openai", "anthropic"})
+
+# ``app.state`` attribute under which this module keeps its per-app registry
+# of the route objects it mounted (see ``_pinned_route_registry``). Named
+# here so the proxy_server load-config gate can cheaply detect a prior
+# registration — ``bool(getattr(app.state, PINNED_ROUTE_REGISTRY_STATE_ATTR,
+# None))`` — WITHOUT importing this module, preserving the vanilla posture
+# that a deployment which never configured pinned routes imports nothing.
+PINNED_ROUTE_REGISTRY_STATE_ATTR = "pinned_provider_route_objects"
 
 # Module path of the heavy, lazily-attached messages-dialect delegate
 # (see litellm/proxy/_lazy_features.py). Imported off the event loop at
@@ -118,10 +147,10 @@ def _pinned_route_registry(app: "FastAPI") -> dict[int, tuple[str, APIRoute]]:
     so first access creates the dict.
     """
     try:
-        return app.state.pinned_provider_route_objects
+        return getattr(app.state, PINNED_ROUTE_REGISTRY_STATE_ATTR)
     except AttributeError:
         registry: dict[int, tuple[str, APIRoute]] = {}
-        app.state.pinned_provider_route_objects = registry
+        setattr(app.state, PINNED_ROUTE_REGISTRY_STATE_ATTR, registry)
         return registry
 
 
@@ -130,27 +159,42 @@ def _known_provider_prefixes() -> frozenset[str]:
     return frozenset(provider_names | _EXTRA_ALLOWED_PREFIXES | set(PINNED_TAG_ALIASES))
 
 
-async def _inject_pin_tag(request: Request, pin_tag: str) -> None:
-    """Union ``pin_tag`` into the body-root ``tags`` list and re-cache the body.
+async def _pin_request_tags(request: Request, pin_tag: str) -> None:
+    """REPLACE the request's routing tags with exactly ``[pin_tag]`` and
+    re-cache the body.
 
-    The base request processor already merges body-root ``tags`` into the
-    request's router-visible tag stream
-    (``LiteLLMProxyRequestSetup.add_request_tag_to_metadata`` →
-    ``_merge_tags`` in ``litellm/proxy/litellm_pre_call_utils.py``), landing
-    in ``metadata`` or ``litellm_metadata`` per ``LITELLM_METADATA_ROUTES``
-    — no new tag plumbing is needed here.
+    On a pinned route the URL prefix — not the client — decides which
+    deployments are eligible, so the routing tag set must be EXACTLY the pin
+    regardless of client input. Under strict subset matching
+    (``tag_filtering_match_any: false``) any EXTRA client tag would make the
+    request tag set not-a-subset of the pinned deployment's
+    ``["pin:{provider}"]``, matching nothing and falling through to the tag
+    router's ``default``-deployment pool — an escape from the pin. Replacing
+    (not unioning) the client's tags closes that, and a client-supplied
+    CONFLICTING ``pin:*`` tag can never widen or redirect. Spend attribution
+    is keyed by API-key hash (not tags), so this costs only optional
+    analytics grouping.
+
+    The base request processor builds the router-visible tag stream (landing
+    in ``metadata`` or ``litellm_metadata`` per ``LITELLM_METADATA_ROUTES``)
+    by merging client tags from BOTH the body-root ``tags`` list AND any
+    client-supplied ``metadata`` / ``litellm_metadata`` ``tags`` — see
+    ``LiteLLMProxyRequestSetup.add_request_tag_to_metadata`` and its
+    ``litellm_metadata`` cross-merge in
+    ``litellm/proxy/litellm_pre_call_utils.py``. To make the pin the ONLY
+    routing tag, set body-root ``tags`` to the pin and strip ``tags`` from
+    every client metadata field the merge reads.
     """
     data = await _read_request_body(request=request)
-    existing_tags = data.get("tags")
-    if isinstance(existing_tags, list):
-        # Union: client tags are preserved, the pin is appended (never
-        # replaced, never deduplicated away from the client's own tags).
-        if pin_tag not in existing_tags:
-            data["tags"] = [*existing_tags, pin_tag]
-    else:
-        # Absent (or malformed non-list, which downstream ignores anyway):
-        # the pin alone.
-        data["tags"] = [pin_tag]
+    # REPLACE (not union): the pin is the sole routing tag, whatever the
+    # client sent at the body root.
+    data["tags"] = [pin_tag]
+    # Strip client-supplied tags from the metadata fields the base processor
+    # also merges into the routing stream, so none can survive the merge.
+    for metadata_field in _CLIENT_TAG_METADATA_FIELDS:
+        metadata = data.get(metadata_field)
+        if isinstance(metadata, dict):
+            metadata.pop("tags", None)
     # Re-store explicitly: the parsed-body cache snapshots accepted keys at
     # set time (see _safe_get_request_parsed_body), so an in-place mutation
     # that ADDS a "tags" key would be dropped on the next read.
@@ -167,7 +211,7 @@ def _make_pinned_chat_completion_handler(pin_tag: str) -> Callable:
         delegate to the exact endpoint function the unified route uses."""
         from litellm.proxy.proxy_server import chat_completion  # noqa: PLC0415
 
-        await _inject_pin_tag(request=request, pin_tag=pin_tag)
+        await _pin_request_tags(request=request, pin_tag=pin_tag)
         return await chat_completion(
             request=request,
             fastapi_response=fastapi_response,
@@ -195,7 +239,7 @@ def _make_pinned_anthropic_messages_handler(pin_tag: str) -> Callable:
             anthropic_response,
         )
 
-        await _inject_pin_tag(request=request, pin_tag=pin_tag)
+        await _pin_request_tags(request=request, pin_tag=pin_tag)
         return await anthropic_response(
             fastapi_response=fastapi_response,
             request=request,
