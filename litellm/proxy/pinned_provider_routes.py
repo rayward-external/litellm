@@ -156,7 +156,10 @@ def _make_pinned_chat_completion_handler(provider: str, pin_tag: str) -> Callabl
             user_api_key_dict=user_api_key_dict,
         )
 
-    pinned_chat_completion._pinned_provider_route = provider  # type: ignore[attr-defined]
+    # setattr, not direct assignment: functions accept dynamic attributes at
+    # runtime but not in the type system, and the marker must live on the
+    # endpoint so stale-route removal stays app-scoped.
+    setattr(pinned_chat_completion, "_pinned_provider_route", provider)
     return pinned_chat_completion
 
 
@@ -184,7 +187,10 @@ def _make_pinned_anthropic_messages_handler(provider: str, pin_tag: str) -> Call
             user_api_key_dict=user_api_key_dict,
         )
 
-    pinned_anthropic_messages._pinned_provider_route = provider  # type: ignore[attr-defined]
+    # setattr, not direct assignment: functions accept dynamic attributes at
+    # runtime but not in the type system, and the marker must live on the
+    # endpoint so stale-route removal stays app-scoped.
+    setattr(pinned_anthropic_messages, "_pinned_provider_route", provider)
     return pinned_anthropic_messages
 
 
