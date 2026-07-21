@@ -20,6 +20,12 @@ from litellm.litellm_core_utils.initialize_dynamic_callback_params import (
 )
 from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
 from litellm.litellm_core_utils.url_utils import is_url_destination_allowed_by_host
+from litellm.router_strategy.tag_based_routing import (
+    ORIGINAL_REQUEST_TAGS_KEY,
+    ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY,
+    PIN_TAG_PREFIX,
+    PINNED_PROVIDER_ROUTE_KEY,
+)
 from litellm.proxy._types import (
     AddTeamCallback,
     CommonProxyErrors,
@@ -183,6 +189,23 @@ _UNTRUSTED_METADATA_CONTROL_FIELDS = (
     "client_disconnected",
     "error_information",
     PRE_CALL_EXECUTED_GUARDRAILS_KEY,
+    # Server-authoritative provider-pin routing signal: only the pinned routes
+    # may set it, and only from the URL (re-asserted from request.state below).
+    # Strip any client-supplied copy from BOTH metadata buckets so a unified
+    # route can never carry a forged pin, and a pinned route re-derives it from
+    # the trusted request.state.
+    PINNED_PROVIDER_ROUTE_KEY,
+    # Internal, server-authoritative pre-merge tag SNAPSHOT + its capture
+    # sentinel. The ONLY legitimate writer is ``Router._update_kwargs_before_
+    # fallbacks`` (which runs AFTER this strip, inside the router). Stripped from
+    # BOTH metadata buckets on EVERY route so a client can never (a) plant a
+    # spoofed ``_original_request_tags`` that ``_resolve_request_tags`` would
+    # prefer over the live tags, nor (b) pre-set the ``..._snapshotted`` sentinel
+    # to BLOCK the router's trusted overwrite of that snapshot — either of which
+    # would let client input steer routing on a UNIFIED route. Parsed-then-
+    # stripped above handles the JSON-string bucket form too.
+    ORIGINAL_REQUEST_TAGS_KEY,
+    ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY,
 )
 
 _UNTRUSTED_REQUEST_HEADER_CONTROL_FIELDS = frozenset(
@@ -353,6 +376,24 @@ def _strip_client_pricing_overrides(data: Dict[str, Any]) -> None:
             "metadata to keep these values.",
             ", ".join(stripped),
         )
+
+
+def _trusted_pinned_provider_route(request: Request | None) -> str | None:
+    """The trusted provider a pinned route stashed on ``request.state``, or None.
+
+    The provider-pinned routes (``litellm/proxy/pinned_provider_routes.py``) set
+    ``request.state._pinned_provider_route`` from the URL before delegating. This
+    reads it back so the pin signal can be re-asserted LAST — after the body is
+    parsed/merged — making a client string-encoded metadata bucket unable to
+    preempt it. ``request.state`` is server-only, so a client can never set it.
+
+    Returns the value only when it is a non-empty ``str`` — a ``MagicMock``
+    ``request.state`` in tests (and unified routes with no pin) yield None, so
+    unified-route behaviour is untouched.
+    """
+    state = getattr(request, "state", None) if request is not None else None
+    value = getattr(state, PINNED_PROVIDER_ROUTE_KEY, None) if state is not None else None
+    return value if isinstance(value, str) and value else None
 
 
 def _get_metadata_variable_name(request: Request) -> str:
@@ -1721,6 +1762,44 @@ async def add_litellm_data_to_request(
                     request_tags=data[_metadata_variable_name].get("tags"),
                     tags_to_add=_user_tags,
                 )
+
+    # Re-assert the trusted, URL-derived provider-pin routing signal LAST, from
+    # request.state (set by the pinned routes). Any client-supplied copy was
+    # already stripped from both metadata buckets above (_UNTRUSTED_METADATA_
+    # CONTROL_FIELDS) and from the body root below; running the trusted write
+    # after the body has been parsed/merged means a client string-encoded
+    # metadata bucket can never preempt it. Absent on unified routes (no pin on
+    # request.state), so their routing/attribution is unchanged.
+    data.pop(PINNED_PROVIDER_ROUTE_KEY, None)
+    _pinned_provider = _trusted_pinned_provider_route(request)
+    if _pinned_provider is not None:
+        data[_metadata_variable_name][PINNED_PROVIDER_ROUTE_KEY] = _pinned_provider
+        # ATTRIBUTION-TAG SANITIZE (P2). Routing already derives SOLELY from the
+        # trusted signal above, but the attribution ``tags`` list has by now
+        # accumulated every baseline source — client body tags, key tags
+        # (add_key_level_controls), team tags, and project tags — merged into this
+        # ONE list above. Any of those may carry a NON-authoritative ``pin:*`` tag
+        # (e.g. a key tagged ``pin:openai`` calling ``/bedrock/*``), which would
+        # otherwise land in SpendLogs alongside the authoritative pin and
+        # double-count / misattribute the spend under a pin-grouped report. Running
+        # ONE sanitize here — after every tag source has merged, and before the
+        # router snapshots ``tags`` (Router._update_kwargs_before_fallbacks) and
+        # rebuilds attribution from that snapshot — reduces the pin:* namespace to
+        # EXACTLY the one authoritative ``pin:<provider>`` by construction, while
+        # PRESERVING all non-pin attribution tags (cost-center:*, customer:* …).
+        # Routing is untouched (it never reads ``tags``). No-op on unified routes
+        # (no trusted pin), so their attribution is byte-for-byte unchanged.
+        _authoritative_pin_tag = PIN_TAG_PREFIX + _pinned_provider
+        _existing_tags = data[_metadata_variable_name].get("tags")
+        if isinstance(_existing_tags, list):
+            _sanitized_tags = [
+                tag
+                for tag in _existing_tags
+                if not (isinstance(tag, str) and tag.startswith(PIN_TAG_PREFIX)) or tag == _authoritative_pin_tag
+            ]
+            if _authoritative_pin_tag not in _sanitized_tags:
+                _sanitized_tags.append(_authoritative_pin_tag)
+            data[_metadata_variable_name]["tags"] = _sanitized_tags
 
     # Team Callbacks controls
     callback_settings_obj = _get_dynamic_logging_metadata(

@@ -1,0 +1,48 @@
+# Complement to the path-filtered "Terraform Provider" workflow
+# (.github/workflows/test-terraform-provider.yml), so its check names can be
+# REQUIRED by branch protection on litellm_internal_staging without deadlocking
+# PRs that don't touch those paths (e.g. a Python-only fix under litellm/llms/**,
+# where the real workflow never fires and a required context would wait forever).
+#
+# Each job below mirrors a job NAME in test-terraform-provider.yml and runs a
+# no-op ONLY when that real workflow is path-filtered out. When a PR *does* touch
+# the filtered paths, the real workflow runs and this complement is skipped by
+# paths-ignore, so there is no duplicate/conflict for a paths-only PR.
+#   - job provider-checks mirrors "gofmt, vet, build, test"
+#   - job endpoint-drift  mirrors "Provider endpoints vs proxy OpenAPI schema"
+#
+# Mirrors the infra repo's required-checks-complement.yml (llm-gateway-infra
+# PR #261).
+#
+# INVARIANT: the paths-ignore list AND the branches list below must stay
+# byte-equal to test-terraform-provider.yml's pull_request paths/branches lists.
+# If you edit one, edit the other. The job name: strings must stay
+# character-for-character identical to the required status check contexts.
+name: required-checks-complement-terraform-provider
+
+on:
+  pull_request:
+    branches:
+      - main
+      - litellm_internal_staging
+      - litellm_oss_staging
+      - "litellm_**"
+    paths-ignore:
+      - "terraform/provider/**"
+      - "litellm/proxy/**"
+      - ".github/workflows/test-terraform-provider.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  provider-checks:
+    name: "gofmt, vet, build, test"
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Terraform provider paths not touched — real check not applicable."
+  endpoint-drift:
+    name: "Provider endpoints vs proxy OpenAPI schema"
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Terraform provider paths not touched — real check not applicable."

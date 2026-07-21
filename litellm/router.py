@@ -90,7 +90,12 @@ from litellm.router_strategy.lowest_tpm_rpm import LowestTPMLoggingHandler
 from litellm.router_strategy.lowest_tpm_rpm_v2 import LowestTPMLoggingHandler_v2
 from litellm.router_strategy.simple_shuffle import simple_shuffle
 from litellm.router_strategy.tag_based_routing import (
+    ORIGINAL_REQUEST_TAGS_KEY,
+    ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY,
+    PIN_TAG_PREFIX,
     _get_tags_from_request_kwargs,
+    _pinned_provider_from_kwargs,
+    _raise_no_deployments_for_tags,
     get_deployments_for_tag,
     is_valid_deployment_tag,
 )
@@ -429,12 +434,8 @@ class _RefusalStreamHold:
         content = getattr(delta, "content", None)
         refusal = getattr(delta, "refusal", None)
         reasoning = getattr(delta, "reasoning_content", None)
-        text = (content if isinstance(content, str) else "") + (
-            refusal if isinstance(refusal, str) else ""
-        )
-        saw_tool_call = bool(getattr(delta, "tool_calls", None)) or bool(
-            getattr(delta, "function_call", None)
-        )
+        text = (content if isinstance(content, str) else "") + (refusal if isinstance(refusal, str) else "")
+        saw_tool_call = bool(getattr(delta, "tool_calls", None)) or bool(getattr(delta, "function_call", None))
         return text, len(reasoning) if isinstance(reasoning, str) else 0, saw_tool_call
 
     @staticmethod
@@ -532,9 +533,7 @@ async def _maybe_abandon_refused_stream_source(e: Any, source: Any, log_label: s
             try:
                 await source.aclose()
             except BaseException as close_err:  # noqa: BLE001 — shielded cleanup must never raise
-                verbose_router_logger.debug(
-                    "%s: error closing refused source: %s", log_label, close_err
-                )
+                verbose_router_logger.debug("%s: error closing refused source: %s", log_label, close_err)
     try:
         source.completed_response = None
     except (AttributeError, TypeError):
@@ -1321,9 +1320,7 @@ class Router:
                 )
             return self._override_selectors[strategy]
 
-    def _get_routing_context(
-        self, model: str, request_kwargs: dict | None = None
-    ) -> tuple[str | None, Any | None]:
+    def _get_routing_context(self, model: str, request_kwargs: dict | None = None) -> tuple[str | None, Any | None]:
         """
         Resolves the routing strategy and selector to use for the given model.
 
@@ -2208,6 +2205,32 @@ class Router:
             _is_prompt_management_model = self._is_prompt_management_model(model)
 
             if _is_prompt_management_model:
+                # HARD PROVIDER-PIN vs PROMPT-MANAGEMENT (P1 + P2 @ descriptor commit).
+                # A hard provider pin and prompt-managed model resolution are
+                # incompatible, and we do not use prompt management on pinned routes.
+                # Prompt management (a) can resolve to a DIFFERENT, potentially
+                # cross-provider model, and (b) lets the prompt manager's
+                # optional_params overwrite kwargs["metadata"] in
+                # _prompt_management_factory — ERASING the trusted pin signal and
+                # defeating BOTH the in-factory guard and the deployment chokepoint.
+                # It also commits a prompt-management DESCRIPTOR deployment (config used
+                # to RESOLVE a prompt, not the upstream LLM leg) to the chokepoint,
+                # which would false-positive when that descriptor lacks pin:<provider>.
+                # Close the whole class at the ENTRY — before the factory runs, before
+                # any optional_params merge, and before the descriptor is committed — by
+                # refusing a pinned request to a prompt-managed model with the SAME
+                # non-retryable 400 the chokepoint raises. Reading the pin here (before
+                # the factory's merge) cannot be evaded by optional_params. NON-pinned
+                # prompt management is a pure no-op (guard fires only when a trusted pin
+                # is present), so unified behaviour is byte-for-byte unchanged.
+                pinned_provider = _pinned_provider_from_kwargs(kwargs, "metadata") or _pinned_provider_from_kwargs(
+                    kwargs, "litellm_metadata"
+                )
+                if pinned_provider is not None:
+                    _raise_no_deployments_for_tags(
+                        model=(f"pinned provider {pinned_provider} does not support prompt-managed model {model}"),
+                        request_tags=[PIN_TAG_PREFIX + pinned_provider],
+                    )
                 return await self._prompt_management_factory(
                     model=model,
                     messages=messages,
@@ -2793,9 +2816,7 @@ class Router:
 
         async def stream_with_fallbacks():
             fallback_response = None
-            refusal_hold = self._refusal_stream_hold_for_call(
-                initial_kwargs, hold_cls=_ResponsesRefusalStreamHold
-            )
+            refusal_hold = self._refusal_stream_hold_for_call(initial_kwargs, hold_cls=_ResponsesRefusalStreamHold)
             try:
                 async for item in source_iterator:
                     for released_item in refusal_hold.process(item):
@@ -3239,9 +3260,32 @@ class Router:
         model_group_alias: Optional[str] = None
         if self._get_model_from_alias(model=model):
             model_group_alias = model
-        kwargs.setdefault(metadata_variable_name, {}).update(
-            {"model_group": model, "model_group_alias": model_group_alias}
-        )
+        _metadata = kwargs.setdefault(metadata_variable_name, {})
+        _metadata.update({"model_group": model, "model_group_alias": model_group_alias})
+        # Snapshot the caller's ORIGINAL request tags exactly once, before the
+        # first deployment is selected and before _update_kwargs_with_deployment
+        # merges the selected deployment's own tags into metadata["tags"] for
+        # spend attribution. This hook runs once per request at the model-group
+        # level, ahead of every _update_kwargs_with_deployment call site (see
+        # _acompletion / completion / *_with_fallbacks), so the tags read here are
+        # still exactly what the caller sent — the pin tag for a pinned request,
+        # nothing for an untagged one.
+        #
+        # OVERWRITE (not setdefault) from the trusted live tags: a client can
+        # smuggle a spoofed ORIGINAL_REQUEST_TAGS_KEY into metadata (it survives
+        # add_litellm_data_to_request), and setdefault would then TRUST it —
+        # re-opening a provider pin (e.g. a /bedrock request carrying
+        # _original_request_tags=["pin:openai"]). Overwriting from
+        # metadata["tags"] — which the proxy has already reduced to exactly the
+        # pin on a pinned route — discards any spoofed snapshot. A DEDICATED
+        # sentinel (never the spoofable field itself) gates the capture to the
+        # FIRST invocation, so the snapshot still survives kwargs reuse across
+        # retries/fallbacks and is never overwritten by a leaked deployment tag.
+        # Tag-based routing reads this in preference to the live metadata["tags"]
+        # (see get_deployments_for_tag).
+        if not _metadata.get(ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY):
+            _metadata[ORIGINAL_REQUEST_TAGS_KEY] = list(_metadata.get("tags") or [])
+            _metadata[ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY] = True
 
     def _set_deployment_num_retries_on_exception(self, exception: Exception, deployment: dict) -> None:
         """
@@ -3372,6 +3416,34 @@ class Router:
         - Adds default litellm params to kwargs, if set.
         - Merges tools from deployment with request (proxy-configured tools + request tools).
         """
+        # HARD PROVIDER-PIN CHOKEPOINT (P1). Every router path that commits a
+        # chosen deployment for a request funnels it through here BEFORE the
+        # upstream call — including the early-return dicts that skip
+        # get_deployments_for_tag's selection-layer enforcement: a
+        # single-deployment-by-id (an explicit deployment id passed as `model`)
+        # and the `default_deployment` pool. When the request carries the trusted,
+        # URL-derived provider pin, re-assert HERE that the committed deployment
+        # actually carries the `pin:<provider>` tag; if not, fail loud with the
+        # SAME non-retryable 400 the tag-filter layer raises. This makes the served
+        # provider a pure function of the URL for EVERY selection path (tag-filtered,
+        # single-deployment-by-id, default_deployment, and any future path) by
+        # construction — the tag-filter-layer enforcement in get_deployments_for_tag
+        # is kept as defense in depth. Reading the pin is a pure read (no mutation),
+        # so the snapshot/attribution logic below is unaffected, and the whole guard
+        # is a no-op when no trusted pin is present, leaving unified (non-pinned)
+        # routes byte-for-byte unchanged.
+        pinned_provider = _pinned_provider_from_kwargs(kwargs, "metadata") or _pinned_provider_from_kwargs(
+            kwargs, "litellm_metadata"
+        )
+        if pinned_provider is not None:
+            required_pin_tag = PIN_TAG_PREFIX + pinned_provider
+            committed_deployment_tags = deployment.get("litellm_params", {}).get("tags") or []
+            if required_pin_tag not in committed_deployment_tags:
+                _raise_no_deployments_for_tags(
+                    model=deployment.get("model_name", ""),
+                    request_tags=[required_pin_tag],
+                )
+
         self._merge_tools_from_deployment(deployment=deployment, kwargs=kwargs)
 
         model_info = deployment.get("model_info", {}).copy()
@@ -3406,24 +3478,49 @@ class Router:
         refund_stale_reservation_before_retry(self.cache, kwargs)
         set_io_token_rate_limit_request_kwargs(kwargs, store_in_context=deployment_has_io_token_limits(deployment))
 
-        ## DEPLOYMENT-LEVEL TAGS
+        ## DEPLOYMENT-LEVEL ATTRIBUTION TAGS (winning-deployment-only)
+        # This same kwargs dict is REUSED across retries/fallbacks. Appending the
+        # selected deployment's tags to whatever is already in metadata["tags"]
+        # would ACCUMULATE every failed attempt's tags — so the successful
+        # SpendLogs row (request_tags read from metadata["tags"]) would carry
+        # BOTH the failed and the winning provider's tags, double/mis-attributing
+        # the spend. Instead REBUILD the attribution tag list from the caller's
+        # ORIGINAL pre-merge tag snapshot (captured once in
+        # _update_kwargs_before_fallbacks, before any deployment merge) plus ONLY
+        # this (winning) deployment's own tags + credential tag. Falls back to the
+        # live tags when no snapshot was taken (direct router use that bypasses
+        # _update_kwargs_before_fallbacks) to preserve legacy behaviour there.
+        #
+        # Routing SELECTION is unaffected: get_deployments_for_tag routes on the
+        # snapshot / trusted pin, never on this attribution list.
         deployment_tags = deployment.get("litellm_params", {}).get("tags")
-        if deployment_tags:
-            existing_tags = kwargs[metadata_variable_name].get("tags") or []
-            merged_tags = list(existing_tags)
-            for tag in deployment_tags:
+        credential_name = deployment.get("litellm_params", {}).get("litellm_credential_name")
+
+        deployment_attribution_tags: list = list(deployment_tags) if deployment_tags else []
+        if credential_name:
+            credential_tag = f"Credential: {credential_name}"
+            if credential_tag not in deployment_attribution_tags:
+                deployment_attribution_tags.append(credential_tag)
+
+        _original_request_tags = kwargs[metadata_variable_name].get(ORIGINAL_REQUEST_TAGS_KEY)
+        if isinstance(_original_request_tags, list):
+            # Snapshot present: the winning row's tags = caller baseline + this
+            # deployment's tags, discarding any prior attempt's deployment tags.
+            caller_baseline = list(_original_request_tags)
+            merged_tags = list(caller_baseline)
+            for tag in deployment_attribution_tags:
+                if tag not in merged_tags:
+                    merged_tags.append(tag)
+            if merged_tags or "tags" in kwargs[metadata_variable_name]:
+                kwargs[metadata_variable_name]["tags"] = merged_tags
+        elif deployment_attribution_tags:
+            # No snapshot (legacy/direct path): preserve the prior append onto the
+            # live tags rather than fabricating a baseline.
+            merged_tags = list(kwargs[metadata_variable_name].get("tags") or [])
+            for tag in deployment_attribution_tags:
                 if tag not in merged_tags:
                     merged_tags.append(tag)
             kwargs[metadata_variable_name]["tags"] = merged_tags
-
-        ## CREDENTIAL NAME AS TAG
-        credential_name = deployment.get("litellm_params", {}).get("litellm_credential_name")
-        if credential_name:
-            credential_tag = f"Credential: {credential_name}"
-            existing_tags = kwargs[metadata_variable_name].get("tags") or []
-            if credential_tag not in existing_tags:
-                existing_tags.append(credential_tag)
-            kwargs[metadata_variable_name]["tags"] = existing_tags
 
         kwargs["model_info"] = model_info
 
@@ -3959,6 +4056,10 @@ class Router:
 
         _model_list = self.get_model_list(model_name=model)
         if _model_list is None or len(_model_list) == 0:  # if direct call to model
+            # A pinned request can never reach here: the acompletion entry guard
+            # rejects a pinned prompt-management model before this factory runs
+            # (see acompletion). So the URL-derived pin cannot be silently dropped
+            # by a direct (non-router) resolution, and this branch stays vanilla.
             kwargs.pop("original_function")
             return await litellm.acompletion(**kwargs)
 
@@ -7521,9 +7622,7 @@ class Router:
             # of half-working detection.
             patterns = []
         if patterns and isinstance(model_group, str):
-            content_policy_fallbacks = initial_kwargs.get(
-                "content_policy_fallbacks", self.content_policy_fallbacks
-            )
+            content_policy_fallbacks = initial_kwargs.get("content_policy_fallbacks", self.content_policy_fallbacks)
             if content_policy_fallbacks and self._get_fallback_model_group_from_fallbacks(
                 fallbacks=content_policy_fallbacks, model_group=model_group
             ):
@@ -7543,9 +7642,8 @@ class Router:
         Else, original response is returned.
         """
         if response.choices and len(response.choices) > 0:
-            if (
-                response.choices[0].finish_reason != "content_filter"
-                and not _completion_matches_refusal_patterns(response)
+            if response.choices[0].finish_reason != "content_filter" and not _completion_matches_refusal_patterns(
+                response
             ):
                 return False
 
@@ -9174,9 +9272,7 @@ class Router:
         # to the right one. Without this hint, get_model_info() silently returns
         # whichever entry it finds first for the bare name.
         deployment = self.get_deployment(model_id=model_id) if model_id else None
-        custom_llm_provider = (
-            deployment.litellm_params.custom_llm_provider if deployment is not None else None
-        )
+        custom_llm_provider = deployment.litellm_params.custom_llm_provider if deployment is not None else None
 
         try:
             litellm_model_name_model_info = litellm.get_model_info(
