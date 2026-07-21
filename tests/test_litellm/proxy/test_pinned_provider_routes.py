@@ -159,9 +159,9 @@ def _post(app, path: str, body: dict):
     return client.post(path, json=body, headers={"Authorization": "Bearer sk-test"})
 
 
-def _router_visible_tags(body: dict, path: str, expected_field: str):
-    """Run the captured (post-injection) body through the real
-    add_litellm_data_to_request and return the tag list the router sees."""
+def _run_add_litellm_data(body: dict, path: str) -> dict:
+    """Run the captured (post-injection) body through the REAL
+    add_litellm_data_to_request for ``path`` and return the resulting data."""
     from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request
 
     request_mock = MagicMock(spec=Request)
@@ -175,7 +175,7 @@ def _router_visible_tags(body: dict, path: str, expected_field: str):
     request_mock.client = MagicMock()
     request_mock.client.host = "127.0.0.1"
 
-    updated = asyncio.run(
+    return asyncio.run(
         add_litellm_data_to_request(
             data=dict(body),
             request=request_mock,
@@ -185,9 +185,31 @@ def _router_visible_tags(body: dict, path: str, expected_field: str):
             version="test-version",
         )
     )
+
+
+def _router_visible_tags(body: dict, path: str, expected_field: str):
+    """Run the captured (post-injection) body through the real
+    add_litellm_data_to_request and return the tag list the router sees."""
+    updated = _run_add_litellm_data(body, path)
     other_field = "litellm_metadata" if expected_field == "metadata" else "metadata"
     assert not (updated.get(other_field) or {}).get("tags"), f"tags leaked into {other_field} for path {path}"
     return (updated.get(expected_field) or {}).get("tags")
+
+
+def _tags_the_router_reads(body: dict, path: str):
+    """The routing tags the ROUTER actually reads — selecting the bucket with
+    its OWN presence-based selector (``get_metadata_variable_name_from_kwargs``,
+    ``litellm_metadata`` if that key exists else ``metadata``), NOT the
+    processor's path-based selection. This is the seam the round-3 P1 bypass
+    exploited: a client-injected empty decoy bucket could steer this selector
+    onto an untagged bucket. Reads the tags exactly as the tag router does
+    (``_resolve_request_tags``)."""
+    from litellm.litellm_core_utils.core_helpers import get_metadata_variable_name_from_kwargs
+    from litellm.router_strategy.tag_based_routing import _resolve_request_tags
+
+    updated = _run_add_litellm_data(body, path)
+    router_field = get_metadata_variable_name_from_kwargs(updated)
+    return _resolve_request_tags(updated.get(router_field) or {})
 
 
 class TestTagInjectionChatDialect:
@@ -372,6 +394,82 @@ class TestClientTagsCannotEscapeThePin:
         # And the routing tag set the router will snapshot is exactly the pin.
         tags = _router_visible_tags(body, path, expected_field="litellm_metadata")
         assert tags == ["pin:bedrock"]
+
+
+class TestDecoyMetadataBucketCannotEscapeThePin:
+    """Codex round-3 P1 regression guard, asserted through the ROUTER's OWN
+    presence-based bucket selector (``get_metadata_variable_name_from_kwargs``).
+
+    The processor writes the pin into the PATH-selected bucket; the router
+    reads the PRESENCE-selected bucket. A client can inject an EMPTY decoy
+    bucket the path-writer never touches (e.g. ``litellm_metadata: {}`` on an
+    azure chat route whose authoritative bucket is ``metadata``) to steer the
+    presence-selector onto the untagged decoy → the request looks UNTAGGED and
+    escapes the pin to the default pool. ``_pin_request_tags`` removes the
+    non-authoritative decoy so pin and router always agree.
+
+    Mutation-verify: restore the empty decoy bucket (delete the
+    ``data.pop(metadata_field, None)`` branch in ``_pin_request_tags`` so the
+    empty ``litellm_metadata: {}`` survives) and
+    ``test_azure_chat_empty_litellm_metadata_decoy_cannot_escape`` fails —
+    the router reads the empty decoy and sees no pin.
+    """
+
+    def test_azure_chat_empty_litellm_metadata_decoy_cannot_escape(self, pinned_app, capture):
+        """The exploit: azure chat (authoritative bucket = ``metadata``) with a
+        client-injected empty ``litellm_metadata: {}``. The router's
+        presence-selector must NOT be steered onto the empty decoy."""
+        path = "/azure/v1/chat/completions"
+        resp = _post(pinned_app, path, {"model": "gpt-5.4-nano", "messages": [], "litellm_metadata": {}})
+        assert resp.status_code == 200
+        assert _tags_the_router_reads(capture["body"], path) == ["pin:azure"]
+
+    @pytest.mark.parametrize("provider", PINNED_PROVIDERS)
+    @pytest.mark.parametrize("suffix", ["/v1/chat/completions", "/v1/messages"])
+    @pytest.mark.parametrize(
+        "decoy",
+        [
+            {"litellm_metadata": {}},
+            {"metadata": {}},
+            {"litellm_metadata": {}, "metadata": {}},
+            {"litellm_metadata": {"tags": ["pin:openai", "team:x"]}},
+            {"metadata": {"tags": ["pin:openai"]}},
+            {"litellm_metadata": {"tags": ["team:x"]}, "metadata": {"tags": ["pin:openai"]}},
+        ],
+    )
+    def test_router_reads_exactly_the_pin_for_every_pinned_path(self, pinned_app, capture, provider, suffix, decoy):
+        """For all 7 providers x both dialects, whichever bucket(s) the client
+        injects (empty or populated), the tag set the ROUTER reads via its own
+        presence-based selector is EXACTLY the provider's pin — no empty-decoy
+        escape, no client tag leaking through."""
+        path = f"/{provider}{suffix}"
+        body = {"model": "some-model", "messages": [{"role": "user", "content": "hi"}], **decoy}
+        if suffix == "/v1/messages":
+            body["max_tokens"] = 16
+        resp = _post(pinned_app, path, body)
+        assert resp.status_code == 200
+        assert _tags_the_router_reads(capture["body"], path) == [EXPECTED_PIN_TAGS[provider]]
+
+    def test_non_authoritative_bucket_removed_from_body(self, pinned_app, capture):
+        """Structural proof the handler removes the decoy: on an azure chat
+        route (authoritative = ``metadata``) a client ``litellm_metadata`` is
+        dropped from the body before delegation; on a messages route
+        (authoritative = ``litellm_metadata``) a client ``metadata`` is dropped."""
+        chat_resp = _post(
+            pinned_app,
+            "/azure/v1/chat/completions",
+            {"model": "m", "messages": [], "litellm_metadata": {"foo": "bar"}},
+        )
+        assert chat_resp.status_code == 200
+        assert "litellm_metadata" not in capture["body"]
+
+        msg_resp = _post(
+            pinned_app,
+            "/azure/v1/messages",
+            {"model": "m", "messages": [], "max_tokens": 16, "metadata": {"foo": "bar"}},
+        )
+        assert msg_resp.status_code == 200
+        assert "metadata" not in capture["body"]
 
 
 def _first_full_match_route(app, path: str):

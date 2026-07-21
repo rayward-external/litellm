@@ -96,13 +96,16 @@ PINNED_PROVIDER_ROUTES_SETTING = "pinned_provider_routes"
 # prefix is authoritative and also disables the default-pool fallback in the tag
 # router (get_deployments_for_tag), so a hard pin can never spill to ``default``.
 
-# Body fields the base request processor also reads client-supplied ``tags``
-# from when it builds the router-visible tag stream (besides the body-root
-# ``tags`` list): the client ``metadata`` dict and, for
-# ``LITELLM_METADATA_ROUTES``, ``litellm_metadata`` — see
+# The two metadata buckets the base request processor and the router key the
+# routing tags off (besides the body-root ``tags`` list): ``metadata`` and,
+# for ``LITELLM_METADATA_ROUTES``, ``litellm_metadata`` — see
 # ``add_request_tag_to_metadata`` and its cross-merge in
-# ``litellm/proxy/litellm_pre_call_utils.py``. A pinned route strips ``tags``
-# from these so the replaced pin is the only routing tag.
+# ``litellm/proxy/litellm_pre_call_utils.py``. On a pinned route exactly ONE
+# is authoritative (the base processor's path-based ``_get_metadata_variable_name``
+# selects it); ``_pin_request_tags`` strips ``tags`` from the authoritative one
+# and REMOVES the other wholesale, so the router's presence-based selector
+# (``get_metadata_variable_name_from_kwargs``) cannot be steered onto an
+# empty client-injected decoy bucket and escape the pin.
 _CLIENT_TAG_METADATA_FIELDS: tuple[str, ...] = ("metadata", "litellm_metadata")
 
 # Internal, server-authoritative routing fields a client must NEVER supply. The
@@ -203,6 +206,33 @@ async def _pin_request_tags(request: Request, pin_tag: str) -> None:
     ``litellm/proxy/litellm_pre_call_utils.py``. To make the pin the ONLY
     routing tag, set body-root ``tags`` to the pin and strip ``tags`` from
     every client metadata field the merge reads.
+
+    Path-vs-presence bucket alignment (Codex round-3 P1). Two different
+    selectors decide WHICH metadata bucket carries the routing tags, and they
+    disagree:
+
+    - ``add_litellm_data_to_request`` writes the pin into the bucket
+      ``_get_metadata_variable_name(request)`` picks — PATH-based
+      (``litellm_metadata`` for ``LITELLM_METADATA_ROUTES`` paths, else
+      ``metadata``).
+    - the router reads the bucket ``get_metadata_variable_name_from_kwargs``
+      picks — PRESENCE-based (``litellm_metadata`` if that key EXISTS in the
+      request, else ``metadata``).
+
+    A client can steer the presence-based selector by injecting an EMPTY decoy
+    bucket the path-based writer never touches: e.g. ``litellm_metadata: {}``
+    on a chat route whose authoritative bucket is ``metadata``. The pin lands
+    in ``metadata``, but the router — seeing the ``litellm_metadata`` key
+    exists — reads the empty decoy, treats the request as UNTAGGED, and routes
+    it through the default pool, escaping the pin. Stripping ``tags`` from the
+    decoy (below) does not help: the empty object still EXISTS, so the
+    presence-based selector still lands on it.
+
+    Fix: make the router's presence-based selection deterministic by removing
+    the NON-authoritative decoy bucket entirely, so the only metadata bucket
+    left for the presence-selector to land on is the authoritative one the pin
+    is written into. ``add_litellm_data_to_request`` re-creates the
+    authoritative bucket, so removing the decoy never breaks the normal flow.
     """
     data = await _read_request_body(request=request)
     # REPLACE (not union): the pin is the sole routing tag, whatever the
@@ -213,9 +243,27 @@ async def _pin_request_tags(request: Request, pin_tag: str) -> None:
     # original-tags snapshot (re-opening the pin) or the default-fallback flag.
     for internal_field in _CLIENT_STRIPPED_ROUTING_FIELDS:
         data.pop(internal_field, None)
-    # Same strip on every metadata field the base processor merges into the
-    # routing stream, so none can survive the merge.
+    # Which bucket both the base processor writes and the router must read: the
+    # SAME path-based selector the processor uses, so the pin and the router
+    # can never diverge onto different buckets. Import inline — importing
+    # litellm_pre_call_utils at module load would eagerly pull the proxy import
+    # graph and defeat this module's vanilla-until-configured posture.
+    from litellm.proxy.litellm_pre_call_utils import (  # noqa: PLC0415
+        _get_metadata_variable_name,
+    )
+
+    authoritative_field = _get_metadata_variable_name(request)
     for metadata_field in _CLIENT_TAG_METADATA_FIELDS:
+        if metadata_field != authoritative_field:
+            # Non-authoritative decoy bucket: a client-injected (possibly
+            # empty) object here can steer the router's presence-based selector
+            # onto an untagged bucket and escape the pin. Drop it wholesale so
+            # only the authoritative bucket survives for the router to read.
+            data.pop(metadata_field, None)
+            continue
+        # Authoritative bucket: keep any legitimate client metadata but strip
+        # ``tags`` (the pin is the only routing tag) and the internal,
+        # server-authoritative routing fields, so none can survive the merge.
         metadata = data.get(metadata_field)
         if isinstance(metadata, dict):
             metadata.pop("tags", None)
