@@ -92,7 +92,10 @@ from litellm.router_strategy.simple_shuffle import simple_shuffle
 from litellm.router_strategy.tag_based_routing import (
     ORIGINAL_REQUEST_TAGS_KEY,
     ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY,
+    PIN_TAG_PREFIX,
     _get_tags_from_request_kwargs,
+    _pinned_provider_from_kwargs,
+    _raise_no_deployments_for_tags,
     get_deployments_for_tag,
     is_valid_deployment_tag,
 )
@@ -3386,6 +3389,34 @@ class Router:
         - Adds default litellm params to kwargs, if set.
         - Merges tools from deployment with request (proxy-configured tools + request tools).
         """
+        # HARD PROVIDER-PIN CHOKEPOINT (P1). Every router path that commits a
+        # chosen deployment for a request funnels it through here BEFORE the
+        # upstream call — including the early-return dicts that skip
+        # get_deployments_for_tag's selection-layer enforcement: a
+        # single-deployment-by-id (an explicit deployment id passed as `model`)
+        # and the `default_deployment` pool. When the request carries the trusted,
+        # URL-derived provider pin, re-assert HERE that the committed deployment
+        # actually carries the `pin:<provider>` tag; if not, fail loud with the
+        # SAME non-retryable 400 the tag-filter layer raises. This makes the served
+        # provider a pure function of the URL for EVERY selection path (tag-filtered,
+        # single-deployment-by-id, default_deployment, and any future path) by
+        # construction — the tag-filter-layer enforcement in get_deployments_for_tag
+        # is kept as defense in depth. Reading the pin is a pure read (no mutation),
+        # so the snapshot/attribution logic below is unaffected, and the whole guard
+        # is a no-op when no trusted pin is present, leaving unified (non-pinned)
+        # routes byte-for-byte unchanged.
+        pinned_provider = _pinned_provider_from_kwargs(kwargs, "metadata") or _pinned_provider_from_kwargs(
+            kwargs, "litellm_metadata"
+        )
+        if pinned_provider is not None:
+            required_pin_tag = PIN_TAG_PREFIX + pinned_provider
+            committed_deployment_tags = deployment.get("litellm_params", {}).get("tags") or []
+            if required_pin_tag not in committed_deployment_tags:
+                _raise_no_deployments_for_tags(
+                    model=deployment.get("model_name", ""),
+                    request_tags=[required_pin_tag],
+                )
+
         self._merge_tools_from_deployment(deployment=deployment, kwargs=kwargs)
 
         model_info = deployment.get("model_info", {}).copy()

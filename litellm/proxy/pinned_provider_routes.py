@@ -24,9 +24,10 @@ Because the pinned routing decision derives from ONE field with ONE trusted
 source (the URL, set unconditionally by ``_pin_request_tags``), no client
 input can change it — dict decoy, JSON-string-encoded metadata, key/team tag
 pollution and spoofed pre-merge snapshots are all closed BY CONSTRUCTION, not
-by a blocklist. The handler still sets body-root ``tags`` to the pin for SPEND
-ATTRIBUTION (key/team tags are appended there for analytics), but routing never
-reads it. The pin also disables the tag router's ``default``-pool fallback (see
+by a blocklist. The handler PRESERVES the client's legitimate body-root
+attribution ``tags`` and appends the pin tag for SPEND ATTRIBUTION (key/team
+tags are appended there too for analytics); routing never reads ``tags``. The
+pin also disables the tag router's ``default``-pool fallback (see
 ``get_deployments_for_tag``), so an unmatched pin fails loud rather than
 spilling to ``default``. Unified routes carry no signal, so their tag
 routing/attribution is entirely unchanged.
@@ -168,18 +169,34 @@ def assert_tag_filtering_enabled_for_pinned_routes(
     general_settings: Optional[dict],
     router_settings: Optional[dict],
 ) -> None:
-    """Fail loud at startup when pinned provider routes are configured but the
-    router's ``enable_tag_filtering`` is not turned on.
+    """Fail loud at startup when a pinned-provider-routes config would let a
+    pinned request escape pin enforcement.
 
     The hard product contract of a pinned route — a pinned request is served
     ONLY by a ``pin:<provider>`` deployment, or fails loud — is enforced at
-    request time in ``get_deployments_for_tag`` even with tag filtering off (the
-    trusted pin signal forces pin filtering there). This assertion is the
-    complementary STARTUP guard: it refuses to boot a config whose intent (pin
-    the provider) and router policy (tag filtering disabled) contradict each
-    other, rather than depending solely on the request-time enforcement. Names
-    the exact missing setting so the operator can fix it. Prefers failing loud
-    over silently serving unpinned traffic.
+    request time in ``get_deployments_for_tag`` and re-asserted at the single
+    commit chokepoint ``Router._update_kwargs_with_deployment`` (even with tag
+    filtering off, the trusted pin signal forces the check). This assertion is
+    the complementary STARTUP guard: it refuses to boot a config whose intent
+    (pin the provider) contradicts a router/proxy policy that would bypass the
+    router or disable tag filtering, rather than depending solely on the
+    request-time enforcement. It closes two contradictions:
+
+    1. ``general_settings.pass_through_all_models`` (finding 1): when enabled the
+       proxy calls ``litellm.acompletion`` DIRECTLY for a model outside the
+       router model list, bypassing the router entirely — so a pinned request
+       would never be pin-enforced OR attributable. A pinned request must go
+       through the router. Refuse to boot the two together.
+    2. ``router_settings.enable_tag_filtering`` not genuinely enabled (finding 4):
+       the router treats this setting with STRICT ``is True`` semantics
+       (``get_deployments_for_tag`` / ``Router.__init__``), so a quoted
+       ``enable_tag_filtering: "false"`` (or ``"true"``, ``"0"``, ``1``) is
+       DISABLED at the router yet would pass a truthiness check here. Require the
+       genuine boolean ``True`` so this guard agrees with the router EXACTLY and
+       a string can never sneak past it.
+
+    Names the exact conflicting setting so the operator can fix it. Prefers
+    failing loud over silently serving unpinned traffic.
 
     No-ops when pinned routes are not configured (setting absent, empty, or an
     invalid non-list — the latter is separately rejected by the initializer).
@@ -187,16 +204,35 @@ def assert_tag_filtering_enabled_for_pinned_routes(
     configured = (general_settings or {}).get(PINNED_PROVIDER_ROUTES_SETTING)
     if not configured or not isinstance(configured, list):
         return
-    enable_tag_filtering = bool((router_settings or {}).get("enable_tag_filtering"))
-    if enable_tag_filtering:
+
+    # Finding 1: a pinned request must never take the pass-through-all-models
+    # direct-call branch (route_llm_request.py), which skips the router and thus
+    # the pin. Forbid the two together at boot.
+    if (general_settings or {}).get("pass_through_all_models"):
+        raise ValueError(
+            f"{PINNED_PROVIDER_ROUTES_SETTING} is configured ({configured!r}) but "
+            "general_settings.pass_through_all_models is enabled. A pass-through-all "
+            "request calls litellm.acompletion directly, bypassing the router — so a "
+            "pinned request would never be pin-enforced or attributable. A pinned "
+            "request must go through the router. Disable pass_through_all_models or "
+            f"remove {PINNED_PROVIDER_ROUTES_SETTING}."
+        )
+
+    # Finding 4: match the router's STRICT ``is True`` interpretation exactly — a
+    # string "false"/"true"/"0" is treated as DISABLED by the router, so it must
+    # not pass a truthiness check here.
+    enable_tag_filtering = (router_settings or {}).get("enable_tag_filtering")
+    if enable_tag_filtering is True:
         return
     raise ValueError(
         f"{PINNED_PROVIDER_ROUTES_SETTING} is configured ({configured!r}) but "
-        "router_settings.enable_tag_filtering is not true. Provider-pinned routes "
-        "require tag filtering so a pinned request is restricted to its "
-        "pin:<provider> deployments (or fails loud) and can never be served by an "
-        "off-provider deployment. Set `router_settings: {enable_tag_filtering: true}` "
-        f"or remove {PINNED_PROVIDER_ROUTES_SETTING}."
+        f"router_settings.enable_tag_filtering is not the boolean true (got {enable_tag_filtering!r}). "
+        "The router enables tag filtering only for the genuine boolean true (a quoted "
+        '"false"/"true"/"0" is treated as disabled), so provider-pinned routes require it '
+        "set to true — a pinned request is then restricted to its pin:<provider> deployments "
+        "(or fails loud) and can never be served by an off-provider deployment. Set "
+        "`router_settings: {enable_tag_filtering: true}` (unquoted) or remove "
+        f"{PINNED_PROVIDER_ROUTES_SETTING}."
     )
 
 
@@ -271,9 +307,18 @@ async def _pin_request_tags(request: Request, pin_tag: str) -> None:
 
     Alongside the signal this handler keeps the request well-formed:
 
-    - Body-root ``tags`` is set to ``[pin_tag]`` for SPEND ATTRIBUTION (the base
-      processor merges it into ``metadata["tags"]``, where key/team tags are
-      also appended); routing does not read it.
+    - Body-root ``tags``: the client's legitimate SPEND-ATTRIBUTION tags
+      (``cost-center:*``, ``customer:*`` …) are PRESERVED and the server pin tag
+      is appended (the base processor merges the result into ``metadata["tags"]``,
+      where key/team tags are also appended). Routing NEVER reads ``tags`` — it
+      derives SOLELY from the trusted ``PINNED_PROVIDER_ROUTE_KEY`` signal
+      (``_resolve_request_tags`` ignores ``tags`` when the pin is present) — so
+      preserving client tags cannot change where a pinned request routes; they
+      flow only to attribution. Only client-supplied ``pin:*`` tags are dropped:
+      the server owns pinning, and a stray client pin in SpendLogs would
+      misattribute the provider. (This replaces the earlier destructive
+      ``tags = [pin_tag]`` overwrite, which was only needed back when routing
+      read ``tags`` and which discarded legitimate attribution tags.)
     - Both metadata buckets are parsed (if JSON-encoded) and stripped of routing
       controls. The NON-authoritative bucket's legitimate NON-routing fields are
       preserved — MERGED into the authoritative bucket when it is the
@@ -288,9 +333,19 @@ async def _pin_request_tags(request: Request, pin_tag: str) -> None:
     data = await _read_request_body(request=request)
     pinned_provider = pin_tag[len(PIN_TAG_PREFIX) :]
 
-    # Body-root: pin the attribution tags and drop any client-supplied internal
-    # routing fields + the trusted pin signal (only the URL may set it).
-    data["tags"] = [pin_tag]
+    # Body-root: PRESERVE the client's legitimate spend-attribution tags and
+    # append the server pin tag. Drop only client-supplied ``pin:*`` tags (the
+    # server owns pinning). Routing reads the trusted signal, not ``tags``, so
+    # preserved client tags can never redirect a pinned request — they flow only
+    # to SPEND ATTRIBUTION. Also drop any client-supplied internal routing fields
+    # + the trusted pin signal (only the URL may set it).
+    raw_client_tags = data.get("tags")
+    preserved_client_tags = (
+        [tag for tag in raw_client_tags if isinstance(tag, str) and not tag.startswith(PIN_TAG_PREFIX)]
+        if isinstance(raw_client_tags, list)
+        else []
+    )
+    data["tags"] = [*preserved_client_tags, pin_tag]
     for internal_field in _CLIENT_STRIPPED_ROUTING_FIELDS:
         data.pop(internal_field, None)
     data.pop(PINNED_PROVIDER_ROUTE_KEY, None)

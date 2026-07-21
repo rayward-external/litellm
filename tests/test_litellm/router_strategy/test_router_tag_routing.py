@@ -1961,6 +1961,121 @@ def test_update_kwargs_with_deployment_keeps_caller_tags_and_swaps_deployment_ta
     assert kwargs["metadata"]["tags"] == ["team:x", "pin:openai"]
 
 
+# ---------------------------------------------------------------------------
+# HARD PROVIDER-PIN CHOKEPOINT (P1). Every router path that commits a chosen
+# deployment funnels through _update_kwargs_with_deployment, INCLUDING the
+# early-return dicts (single-deployment-by-id, default_deployment) that skip
+# get_deployments_for_tag's selection-layer enforcement. The chokepoint re-asserts
+# the pin there, so the served provider is a pure function of the URL for EVERY
+# selection path by construction.
+# Mutation-verify: delete the chokepoint block at the top of
+# _update_kwargs_with_deployment and the two "off provider" tests stop raising.
+# ---------------------------------------------------------------------------
+
+
+def test_chokepoint_rejects_off_provider_committed_deployment_for_pinned_request():
+    """Requirement 1: a pinned request (trusted signal -> bedrock) whose COMMITTED
+    deployment is off-provider (``pin:openai`` — e.g. resolved via a
+    single-deployment-by-id early return that never ran tag filtering) fails loud
+    at the commit chokepoint with a non-retryable 400 naming the model and the
+    required ``pin:bedrock`` tag."""
+    from litellm.router_strategy.tag_based_routing import ORIGINAL_REQUEST_TAGS_KEY, PINNED_PROVIDER_ROUTE_KEY
+    from litellm.types.router import RouterErrors
+
+    router = _minimal_router_for_kwargs_merge()
+    off_provider_dep = {
+        "model_name": "m",
+        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:openai"]},
+        "model_info": {"id": "openai-dep"},
+    }
+    kwargs = {"metadata": {PINNED_PROVIDER_ROUTE_KEY: "bedrock", ORIGINAL_REQUEST_TAGS_KEY: [], "tags": []}}
+
+    with pytest.raises(litellm.BadRequestError) as exc_info:
+        router._update_kwargs_with_deployment(deployment=off_provider_dep, kwargs=kwargs)
+    msg = str(exc_info.value)
+    assert RouterErrors.no_deployments_with_tag_routing.value in msg
+    assert "pin:bedrock" in msg
+    # Non-retryable: BadRequestError carries status_code 400.
+    assert getattr(exc_info.value, "status_code", None) == 400
+
+
+def test_chokepoint_reads_pin_from_litellm_metadata_bucket():
+    """The chokepoint must catch a pin recorded in the ``litellm_metadata`` bucket
+    too (the bucket used for /v1/messages, bedrock, batches …), not only
+    ``metadata`` — otherwise a bucket-selection divergence would let a pinned
+    request slip through uncaught."""
+    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
+
+    router = _minimal_router_for_kwargs_merge()
+    off_provider_dep = {
+        "model_name": "m",
+        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:openai"]},
+        "model_info": {"id": "openai-dep"},
+    }
+    kwargs = {"litellm_metadata": {PINNED_PROVIDER_ROUTE_KEY: "bedrock"}}
+    with pytest.raises(litellm.BadRequestError):
+        router._update_kwargs_with_deployment(deployment=off_provider_dep, kwargs=kwargs)
+
+
+def test_chokepoint_passes_correct_pin_and_is_noop_when_unpinned():
+    """Requirement 6: a correctly pin-tagged deployment passes the chokepoint with
+    no false 4xx, and when NO trusted pin is present the chokepoint is a pure
+    no-op — even an off-provider deployment on a unified request is untouched
+    (unified routes behave byte-for-byte as before)."""
+    from litellm.router_strategy.tag_based_routing import ORIGINAL_REQUEST_TAGS_KEY, PINNED_PROVIDER_ROUTE_KEY
+
+    router = _minimal_router_for_kwargs_merge()
+    bedrock_dep = {
+        "model_name": "m",
+        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:bedrock"]},
+        "model_info": {"id": "bedrock-dep"},
+    }
+    # (a) Correctly pin-tagged deployment for a pinned request: no raise.
+    kwargs_pinned = {"metadata": {PINNED_PROVIDER_ROUTE_KEY: "bedrock", ORIGINAL_REQUEST_TAGS_KEY: [], "tags": []}}
+    router._update_kwargs_with_deployment(deployment=bedrock_dep, kwargs=kwargs_pinned)
+    assert "pin:bedrock" in kwargs_pinned["metadata"]["tags"]
+
+    # (b) Unified request (no trusted pin): chokepoint is a no-op even for an
+    # off-provider deployment — unified routing is unaffected.
+    off_provider_dep = {
+        "model_name": "m",
+        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:openai"]},
+        "model_info": {"id": "openai-dep"},
+    }
+    kwargs_unpinned = {"metadata": {ORIGINAL_REQUEST_TAGS_KEY: ["team:x"], "tags": ["team:x"]}}
+    router._update_kwargs_with_deployment(deployment=off_provider_dep, kwargs=kwargs_unpinned)
+    assert kwargs_unpinned["metadata"]["tags"] == ["team:x", "pin:openai"]
+
+
+def test_default_deployment_off_provider_pinned_request_fails_loud():
+    """Requirement 2: with ``default_deployment`` set to an OFF-PROVIDER deployment,
+    a pinned request for an unknown model resolves to that default via the
+    early-return path that SKIPS get_deployments_for_tag — the chokepoint is what
+    stops it from being served off-provider."""
+    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
+
+    router = _minimal_router_for_kwargs_merge()
+    router.default_deployment = {
+        "model_name": "default-model",
+        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:openai"]},
+        "model_info": {"id": "default-dep"},
+    }
+    kwargs = {"metadata": {PINNED_PROVIDER_ROUTE_KEY: "bedrock"}}
+
+    # The default_deployment early return hands back the off-provider dict without
+    # any tag filtering — proving the selection layer alone would serve it.
+    _model, deployment = router._common_checks_available_deployment(
+        model="totally-unknown-model", request_kwargs=kwargs
+    )
+    assert isinstance(deployment, dict)
+    assert deployment["litellm_params"]["tags"] == ["pin:openai"]
+
+    # The commit chokepoint refuses it.
+    with pytest.raises(litellm.BadRequestError) as exc_info:
+        router._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
+    assert "pin:bedrock" in str(exc_info.value)
+
+
 @pytest.mark.asyncio()
 async def test_fallback_winning_row_request_tags_exclude_failed_deployment_tag():
     """End-to-end: Azure leg fails, OpenAI fallback serves. The successful row's
