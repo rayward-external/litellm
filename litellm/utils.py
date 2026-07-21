@@ -7453,7 +7453,7 @@ def cleanup_none_field_in_message(message: AllMessageValues):
     return {k: v for k, v in new_message.items() if v is not None}
 
 
-def _client_side_bad_request(message: str) -> "litellm.BadRequestError":
+def _client_side_bad_request(message: str) -> litellm.BadRequestError:
     """Build the 400 raised by the pre-flight request validators.
 
     These validators run in completion() BEFORE a provider is selected or contacted,
@@ -7472,12 +7472,15 @@ def _client_side_bad_request(message: str) -> "litellm.BadRequestError":
     return litellm.BadRequestError(message=message, model="", llm_provider="")
 
 
-def _first_invalid_content_type(message: AllMessageValues) -> Any:
-    """Return the first disallowed content-part `type` in a user message, for the error.
+def _first_invalid_content_type(message: AllMessageValues) -> str:
+    """Return repr() of the first disallowed content-part `type` in a user message.
 
-    `type=None` is the common case and the most confusing one to debug blind: it means
-    the content-part dicts carry no "type" key at all, which is what a client sends when
-    it passes a messages array (or raw domain objects) where a content-part list belongs.
+    repr() rather than the raw value because the value is client-controlled and need
+    not be a string, and because `type=None` -- the common case and the most confusing
+    one to debug blind -- must be visibly distinct from the string "None". None means
+    the content-part dicts carry no "type" key at all, which is what a client sends
+    when it passes a messages array (or raw domain objects) where a content-part list
+    belongs.
     """
     content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, list):
@@ -7485,8 +7488,8 @@ def _first_invalid_content_type(message: AllMessageValues) -> Any:
             if isinstance(item, dict):
                 item_type = item.get("type")
                 if item_type not in ValidUserMessageContentTypes:
-                    return item_type
-    return None
+                    return repr(item_type)
+    return repr(None)
 
 
 def validate_chat_completion_user_messages(messages: List[AllMessageValues]):
@@ -7523,7 +7526,7 @@ def validate_chat_completion_user_messages(messages: List[AllMessageValues]):
             if "invalid content type" in str(e):
                 raise _client_side_bad_request(
                     f"Invalid user message at index {idx}. Please ensure all user messages are valid OpenAI chat completion messages. "
-                    f"Got content part with type={_first_invalid_content_type(messages[idx])!r}."
+                    f"Got content part with type={_first_invalid_content_type(messages[idx])}."
                 )
             else:
                 raise e
