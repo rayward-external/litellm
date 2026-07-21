@@ -1,0 +1,42 @@
+# Complement to the path-filtered "Check UI API Types Sync" workflow
+# (.github/workflows/check-ui-api-types.yml), so its check name can be REQUIRED
+# by branch protection on litellm_internal_staging without deadlocking PRs that
+# don't touch those paths (e.g. a Python-only fix under litellm/llms/**, where
+# the real workflow never fires and a required context would wait forever).
+#
+# The job below mirrors the job NAME in check-ui-api-types.yml and runs a no-op
+# ONLY when that real workflow is path-filtered out. When a PR *does* touch the
+# filtered paths, the real workflow runs and this complement is skipped by
+# paths-ignore, so there is no duplicate/conflict for a paths-only PR.
+#   - job check-sync mirrors "Verify schema.d.ts matches the proxy OpenAPI spec"
+#
+# Mirrors the infra repo's required-checks-complement.yml (llm-gateway-infra
+# PR #261).
+#
+# INVARIANT: the paths-ignore list below must stay byte-equal to
+# check-ui-api-types.yml's pull_request paths list (same order, same globs).
+# check-ui-api-types.yml has no branches filter, so this complement has none
+# either. The job name: string must stay character-for-character identical to
+# the required status check context.
+name: required-checks-complement-ui-api-types
+
+on:
+  pull_request:
+    paths-ignore:
+      - "litellm/proxy/**"
+      - "litellm/types/**"
+      - "ui/litellm-dashboard/src/lib/http/schema.d.ts"
+      - "ui/litellm-dashboard/scripts/gen-api-types.mjs"
+      - "ui/litellm-dashboard/package.json"
+      - "ui/litellm-dashboard/package-lock.json"
+      - ".github/workflows/check-ui-api-types.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check-sync:
+    name: "Verify schema.d.ts matches the proxy OpenAPI spec"
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "UI API types paths not touched — real check not applicable."
