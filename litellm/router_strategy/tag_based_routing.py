@@ -269,9 +269,9 @@ def _resolve_request_tags(metadata: dict[Any, Any]) -> Any:
 
 
 def _pinned_provider_from_kwargs(
-    request_kwargs: Optional[dict[Any, Any]],
+    request_kwargs: dict[Any, Any] | None,
     metadata_variable_name: Literal["metadata", "litellm_metadata"],
-) -> Optional[str]:
+) -> str | None:
     """Return the trusted, URL-derived provider pin from the routing metadata
     bucket, or ``None`` when the request is not pinned.
 

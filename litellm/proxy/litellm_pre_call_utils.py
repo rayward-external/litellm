@@ -378,7 +378,7 @@ def _strip_client_pricing_overrides(data: Dict[str, Any]) -> None:
         )
 
 
-def _trusted_pinned_provider_route(request: Optional[Request]) -> Optional[str]:
+def _trusted_pinned_provider_route(request: Request | None) -> str | None:
     """The trusted provider a pinned route stashed on ``request.state``, or None.
 
     The provider-pinned routes (``litellm/proxy/pinned_provider_routes.py``) set

@@ -65,7 +65,7 @@ defeat that startup laziness.
 import asyncio
 import importlib
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Annotated, Optional
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.routing import APIRoute
@@ -166,8 +166,8 @@ def get_pin_tag(provider: str) -> str:
 
 
 def assert_tag_filtering_enabled_for_pinned_routes(
-    general_settings: Optional[dict],
-    router_settings: Optional[dict],
+    general_settings: dict | None,
+    router_settings: dict | None,
 ) -> None:
     """Fail loud at startup when a pinned-provider-routes config would let a
     pinned request escape pin enforcement.
@@ -260,7 +260,7 @@ def _known_provider_prefixes() -> frozenset[str]:
     return frozenset(provider_names | _EXTRA_ALLOWED_PREFIXES | set(PINNED_TAG_ALIASES))
 
 
-def _sanitize_client_metadata_bucket(bucket: object) -> Optional[dict]:
+def _sanitize_client_metadata_bucket(bucket: object) -> dict | None:
     """Parse a client metadata bucket to a dict (if it arrived JSON-encoded) and
     strip every routing control from it.
 
@@ -541,7 +541,7 @@ def _remove_stale_pinned_routes(app: "FastAPI", desired_paths: set[str]) -> list
 
 def initialize_pinned_provider_routes(
     app: "FastAPI",
-    general_settings: Optional[dict],
+    general_settings: dict | None,
 ) -> list[str]:
     """Register the pinned provider routes named in
     ``general_settings.pinned_provider_routes``. Returns the list of route
