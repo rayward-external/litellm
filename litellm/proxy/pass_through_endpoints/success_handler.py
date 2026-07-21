@@ -324,7 +324,6 @@ class PassThroughEndpointLogging:
             )
             standard_logging_response_object = cohere_passthrough_logging_handler_result["result"]
             kwargs = cohere_passthrough_logging_handler_result["kwargs"]
-<<<<<<< Updated upstream
         elif self.is_openai_route(url_route, custom_llm_provider):
             # Nested on purpose. Three distinct fates on a recognised OpenAI
             # route, and collapsing any two of them has already caused a money
@@ -337,16 +336,10 @@ class PassThroughEndpointLogging:
             #   3. anything else -> the generic pricer. Blanket-unpricing this
             #      bucket instead regressed billable provider-less POSTs
             #      (`/v1/completions` on an OpenAI host) from priced to $0.
-=======
-        elif self.is_openai_route(url_route, custom_llm_provider) and self._is_supported_openai_endpoint(
-            url_route, custom_llm_provider
-        ):
->>>>>>> Stashed changes
             from .llm_provider_handlers.openai_passthrough_logging_handler import (
                 OpenAIPassthroughLoggingHandler,
             )
 
-<<<<<<< Updated upstream
             if self._is_supported_openai_endpoint(url_route, custom_llm_provider):
                 openai_passthrough_logging_handler_result = OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
                     httpx_response=httpx_response,
@@ -377,23 +370,6 @@ class PassThroughEndpointLogging:
                     custom_llm_provider=custom_llm_provider,
                     kwargs=kwargs,
                 )
-=======
-            openai_passthrough_logging_handler_result = OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
-                httpx_response=httpx_response,
-                response_body=response_body or {},
-                logging_obj=logging_obj,
-                url_route=url_route,
-                result=result,
-                start_time=start_time,
-                end_time=end_time,
-                cache_hit=cache_hit,
-                request_body=request_body,
-                custom_llm_provider=custom_llm_provider,
-                **kwargs,
-            )
-            standard_logging_response_object = openai_passthrough_logging_handler_result["result"]
-            kwargs = openai_passthrough_logging_handler_result["kwargs"]
->>>>>>> Stashed changes
 
         elif self.is_cursor_route(url_route, custom_llm_provider):
             cursor_passthrough_logging_handler_result = CursorPassthroughLoggingHandler.cursor_passthrough_handler(
@@ -589,11 +565,7 @@ class PassThroughEndpointLogging:
                     return custom_llm_provider == "cursor"
         return False
 
-<<<<<<< Updated upstream
     def is_openai_route(self, url_route: str, custom_llm_provider: str | None = None):
-=======
-    def is_openai_route(self, url_route: str, custom_llm_provider: Optional[str] = None):
->>>>>>> Stashed changes
         """Check if this pass-through call speaks the OpenAI wire protocol.
 
         Keys off `custom_llm_provider` first — the same way `is_gemini_route`
@@ -620,11 +592,7 @@ class PassThroughEndpointLogging:
                 return True
         return False
 
-<<<<<<< Updated upstream
     def _is_supported_openai_endpoint(self, url_route: str, custom_llm_provider: str | None = None) -> bool:
-=======
-    def _is_supported_openai_endpoint(self, url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
->>>>>>> Stashed changes
         """Check if the OpenAI endpoint is supported by the passthrough logging handler.
 
         The Responses API route is included because

@@ -902,17 +902,7 @@ async def pass_through_request(
         # already spent — so refuse here, while refusing is still free.
         # No-op unless general_settings.passthrough_require_cost_tracking.
         #########################################################
-        # Resolving general_settings must never itself break a request. This
-        # imports proxy_server, which can still be mid-import when a caller
-        # reaches here (notably under test collection), and an ImportError
-        # would otherwise surface as an opaque upstream failure. Absent
-        # settings simply mean enforcement is off, which is the default.
-        try:
-            from litellm.proxy.proxy_server import (
-                general_settings as _admission_general_settings,
-            )
-        except Exception:  # pragma: no cover - import-order dependent
-            _admission_general_settings = None
+        from litellm.proxy.proxy_server import general_settings as _admission_general_settings
 
         enforce_passthrough_admission(
             general_settings=_admission_general_settings,

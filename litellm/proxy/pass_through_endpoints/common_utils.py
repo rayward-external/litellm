@@ -82,11 +82,7 @@ _FIREWORKS_ACCOUNTS_PREFIX = "accounts/"
 _FIREWORKS_MODELS_MARKER = "/models/"
 
 
-<<<<<<< Updated upstream
 def is_fireworks_url(url_route: str | None) -> bool:
-=======
-def is_fireworks_url(url_route: Optional[str]) -> bool:
->>>>>>> Stashed changes
     """True if the URL targets the Fireworks AI API."""
     if not url_route:
         return False
@@ -96,7 +92,6 @@ def is_fireworks_url(url_route: Optional[str]) -> bool:
     return hostname_matches(hostname, FIREWORKS_HOSTNAMES)
 
 
-<<<<<<< Updated upstream
 # Cohere's API host. Suffix-matched (like every other host predicate here) so
 # regional/alternate subdomains stay covered without accepting look-alikes.
 COHERE_HOSTNAMES = ("cohere.com", "cohere.ai")
@@ -120,9 +115,6 @@ def is_cohere_streaming_url(url_route: str | None) -> bool:
 
 
 def is_openai_compatible_provider(custom_llm_provider: str | None) -> bool:
-=======
-def is_openai_compatible_provider(custom_llm_provider: Optional[str]) -> bool:
->>>>>>> Stashed changes
     """True when `custom_llm_provider` speaks the OpenAI wire protocol.
 
     Pass-through cost math for OpenAI-shaped responses is already
@@ -142,7 +134,6 @@ def is_openai_compatible_provider(custom_llm_provider: Optional[str]) -> bool:
     return provider in _NATIVE_OPENAI_PROVIDERS or provider in openai_compatible_providers
 
 
-<<<<<<< Updated upstream
 def _is_shared_azure_cognitive_host(url_route: str | None) -> bool:
     """True for a host on the Azure domains shared with non-OpenAI services."""
     if not url_route:
@@ -178,27 +169,6 @@ def is_openai_wire_compatible_route(
 
 
 def is_fireworks_model_id(model: str | None) -> bool:
-=======
-def is_openai_wire_compatible_route(
-    url_route: Optional[str],
-    custom_llm_provider: Optional[str] = None,
-) -> bool:
-    """True if this pass-through call should be costed by the OpenAI handler.
-
-    Keyed off the provider first — the way `is_gemini_route` / `is_cursor_route`
-    already work — and falling back to the hostname classification so
-    OpenAI/Azure routes configured without an explicit `custom_llm_provider`
-    keep behaving exactly as before, Azure path-marker guard included.
-    """
-    return (
-        is_openai_compatible_provider(custom_llm_provider)
-        or is_openai_compatible_url(url_route)
-        or is_fireworks_url(url_route)
-    )
-
-
-def is_fireworks_model_id(model: Optional[str]) -> bool:
->>>>>>> Stashed changes
     """True for a Fireworks serverless model id, provider-prefixed or bare."""
     if not model:
         return False
@@ -206,11 +176,7 @@ def is_fireworks_model_id(model: Optional[str]) -> bool:
     return candidate.startswith(_FIREWORKS_ACCOUNTS_PREFIX) and _FIREWORKS_MODELS_MARKER in candidate
 
 
-<<<<<<< Updated upstream
 def normalize_fireworks_model_id(model: str | None) -> str | None:
-=======
-def normalize_fireworks_model_id(model: Optional[str]) -> Optional[str]:
->>>>>>> Stashed changes
     """Return the bare `accounts/.../models/...` id for a Fireworks model.
 
     `litellm.llms.fireworks_ai.cost_calculator` is the pricing authority for
@@ -232,15 +198,9 @@ def normalize_fireworks_model_id(model: Optional[str]) -> Optional[str]:
 
 
 def resolve_openai_passthrough_provider(
-<<<<<<< Updated upstream
     model: str | None = None,
     custom_llm_provider: str | None = None,
     url_route: str | None = None,
-=======
-    model: Optional[str] = None,
-    custom_llm_provider: Optional[str] = None,
-    url_route: Optional[str] = None,
->>>>>>> Stashed changes
 ) -> str:
     """Pick the provider to price an OpenAI-compatible pass-through call with.
 
