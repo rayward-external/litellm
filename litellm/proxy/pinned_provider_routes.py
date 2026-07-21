@@ -106,6 +106,25 @@ def get_pin_tag(provider: str) -> str:
     return PIN_TAG_PREFIX + PINNED_TAG_ALIASES.get(provider, provider)
 
 
+def _pinned_route_registry(app: "FastAPI") -> dict[int, tuple[str, APIRoute]]:
+    """This module's app-scoped registry of the route OBJECTS it registered:
+    ``id(route) -> (provider, route)``.
+
+    Living on ``app.state`` keeps the registry per-app (no cross-app module
+    state — two FastAPI instances each get their own ``State``), and holding
+    the route object itself keeps a strong reference, so an id key can never
+    be silently reused by a different live object while its entry exists.
+    Starlette's ``State`` raises ``AttributeError`` for missing attributes,
+    so first access creates the dict.
+    """
+    try:
+        return app.state.pinned_provider_route_objects
+    except AttributeError:
+        registry: dict[int, tuple[str, APIRoute]] = {}
+        app.state.pinned_provider_route_objects = registry
+        return registry
+
+
 def _known_provider_prefixes() -> frozenset[str]:
     provider_names = {str(getattr(p, "value", p)) for p in litellm.provider_list}
     return frozenset(provider_names | _EXTRA_ALLOWED_PREFIXES | set(PINNED_TAG_ALIASES))
@@ -138,7 +157,7 @@ async def _inject_pin_tag(request: Request, pin_tag: str) -> None:
     _safe_set_request_parsed_body(request=request, parsed_body=data)
 
 
-def _make_pinned_chat_completion_handler(provider: str, pin_tag: str) -> Callable:
+def _make_pinned_chat_completion_handler(pin_tag: str) -> Callable:
     async def pinned_chat_completion(
         request: Request,
         fastapi_response: Response,
@@ -156,14 +175,10 @@ def _make_pinned_chat_completion_handler(provider: str, pin_tag: str) -> Callabl
             user_api_key_dict=user_api_key_dict,
         )
 
-    # setattr, not direct assignment: functions accept dynamic attributes at
-    # runtime but not in the type system, and the marker must live on the
-    # endpoint so stale-route removal stays app-scoped.
-    setattr(pinned_chat_completion, "_pinned_provider_route", provider)
     return pinned_chat_completion
 
 
-def _make_pinned_anthropic_messages_handler(provider: str, pin_tag: str) -> Callable:
+def _make_pinned_anthropic_messages_handler(pin_tag: str) -> Callable:
     async def pinned_anthropic_messages(
         request: Request,
         fastapi_response: Response,
@@ -187,10 +202,6 @@ def _make_pinned_anthropic_messages_handler(provider: str, pin_tag: str) -> Call
             user_api_key_dict=user_api_key_dict,
         )
 
-    # setattr, not direct assignment: functions accept dynamic attributes at
-    # runtime but not in the type system, and the marker must live on the
-    # endpoint so stale-route removal stays app-scoped.
-    setattr(pinned_anthropic_messages, "_pinned_provider_route", provider)
     return pinned_anthropic_messages
 
 
@@ -246,26 +257,32 @@ def _schedule_messages_dialect_warmup() -> None:
 def _remove_stale_pinned_routes(app: "FastAPI", desired_paths: set[str]) -> list[str]:
     """Drop previously-registered pinned routes that are no longer configured.
 
-    Re-init hygiene for config reloads: pinned routes are identified by the
-    ``_pinned_provider_route`` marker their handlers carry (app-scoped — no
-    cross-app module state), and any marked route whose path is not in
-    ``desired_paths`` is removed. Returns the removed paths.
+    Re-init hygiene for config reloads: pinned routes are identified by
+    OBJECT IDENTITY against the app-scoped ``app.state`` registry, so only
+    routes THIS module registered on THIS app are ever removed — a user
+    route mounted at the same path is never touched. Registry entries whose
+    route object is no longer in ``app.router.routes`` (removed by someone
+    else) are pruned. Returns the removed paths.
     """
+    registry = _pinned_route_registry(app)
     removed: list[str] = []
     kept: list = []
     for route in app.router.routes:
-        if (
-            isinstance(route, APIRoute)
-            and getattr(route.endpoint, "_pinned_provider_route", None) is not None
-            and route.path not in desired_paths
-        ):
-            removed.append(route.path)
+        entry = registry.get(id(route))
+        if entry is not None and entry[1].path not in desired_paths:
+            removed.append(entry[1].path)
+            del registry[id(route)]
             continue
         kept.append(route)
     if removed:
         app.router.routes[:] = kept
         app.openapi_schema = None  # rebuilt on next /openapi.json request
         verbose_proxy_logger.info("pinned_provider_routes: removed stale routes %s", removed)
+    # Prune entries whose route object has left the route table entirely, so
+    # the registry never keeps dead route objects (and their ids) alive.
+    live_route_ids = {id(route) for route in app.router.routes}
+    for stale_id in [route_id for route_id in registry if route_id not in live_route_ids]:
+        del registry[stale_id]
     return removed
 
 
@@ -298,6 +315,7 @@ def initialize_pinned_provider_routes(
     pinned_router = APIRouter()
     registered_paths: list[str] = []
     desired_paths: set[str] = set()
+    provider_by_path: dict[str, str] = {}
     seen: set[str] = set()
 
     for provider in configured:
@@ -331,23 +349,25 @@ def initialize_pinned_provider_routes(
         if not _existing_literal_post_route(app, chat_path):
             pinned_router.add_api_route(
                 chat_path,
-                _make_pinned_chat_completion_handler(provider, pin_tag),
+                _make_pinned_chat_completion_handler(pin_tag),
                 methods=["POST"],
                 name=f"pinned_{provider}_chat_completion",
                 dependencies=[Depends(user_api_key_auth)],
                 tags=["provider-pinned routes"],
             )
             registered_paths.append(chat_path)
+            provider_by_path[chat_path] = provider
         if not _existing_literal_post_route(app, messages_path):
             pinned_router.add_api_route(
                 messages_path,
-                _make_pinned_anthropic_messages_handler(provider, pin_tag),
+                _make_pinned_anthropic_messages_handler(pin_tag),
                 methods=["POST"],
                 name=f"pinned_{provider}_messages",
                 dependencies=[Depends(user_api_key_auth)],
                 tags=["provider-pinned routes"],
             )
             registered_paths.append(messages_path)
+            provider_by_path[messages_path] = provider
 
     # Config-reload hygiene: drop pinned routes from a previous call that are
     # no longer configured, BEFORE splicing in the new ones.
@@ -366,6 +386,13 @@ def initialize_pinned_provider_routes(
     del app.router.routes[start:]
     app.router.routes[insert_at:insert_at] = new_routes
     app.openapi_schema = None  # rebuilt on next /openapi.json request
+
+    # Record the actual mounted route objects in the app-scoped registry so
+    # stale-route removal can later match them by object identity.
+    registry = _pinned_route_registry(app)
+    for route in new_routes:
+        if isinstance(route, APIRoute):
+            registry[id(route)] = (provider_by_path[route.path], route)
 
     if any(path.endswith("/v1/messages") for path in registered_paths):
         # Cold-start hygiene: pre-import the heavy messages-dialect delegate

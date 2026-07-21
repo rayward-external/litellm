@@ -80,12 +80,31 @@ CHAT_STUB_SENTINEL = {"handler": "pinned-chat-stub"}
 MESSAGES_STUB_SENTINEL = {"handler": "pinned-messages-stub"}
 
 
+def _pinned_route_registry(app) -> dict:
+    """The module's app-scoped registry (``id(route) -> (provider, route)``
+    on ``app.state``), or {} when this app never had pinned routes."""
+    try:
+        return app.state.pinned_provider_route_objects
+    except AttributeError:
+        return {}
+
+
+def _pinned_provider_of(app, route):
+    """The provider a mounted route was pinned for, or None if the route was
+    not registered by pinned_provider_routes on this app."""
+    entry = _pinned_route_registry(app).get(id(route))
+    return entry[0] if entry is not None else None
+
+
+def _pinned_paths_of(app) -> set:
+    registry = _pinned_route_registry(app)
+    return {r.path for r in app.router.routes if id(r) in registry}
+
+
 def _remove_pinned_routes(app) -> None:
-    app.router.routes[:] = [
-        r
-        for r in app.router.routes
-        if not (isinstance(r, APIRoute) and getattr(r.endpoint, "_pinned_provider_route", None) is not None)
-    ]
+    registry = _pinned_route_registry(app)
+    app.router.routes[:] = [r for r in app.router.routes if id(r) not in registry]
+    registry.clear()
 
 
 @pytest.fixture
@@ -306,7 +325,7 @@ class TestRoutePrecedence:
         path = f"/{provider}{suffix}"
         route = _first_full_match_route(pinned_app, path)
         assert route is not None, f"no route resolves {path}"
-        assert getattr(route.endpoint, "_pinned_provider_route", None) == provider, (
+        assert _pinned_provider_of(pinned_app, route) == provider, (
             f"{path} resolves to {route.path!r} (endpoint {route.name!r}), not the pinned handler"
         )
         assert route.path == path  # literal, not {endpoint:path}
@@ -319,11 +338,7 @@ class TestRoutePrecedence:
         catch_all_path = f"/{provider}/{{endpoint:path}}"
         catch_all_idx = [i for i, r in enumerate(routes) if getattr(r, "path", None) == catch_all_path]
         assert catch_all_idx, f"expected the {catch_all_path} pass-through catch-all to exist"
-        pinned_idx = [
-            i
-            for i, r in enumerate(routes)
-            if isinstance(r, APIRoute) and getattr(r.endpoint, "_pinned_provider_route", None) == provider
-        ]
+        pinned_idx = [i for i, r in enumerate(routes) if _pinned_provider_of(pinned_app, r) == provider]
         assert pinned_idx, f"pinned routes for {provider} missing"
         assert max(pinned_idx) < min(catch_all_idx), (
             f"pinned routes for {provider} are registered AFTER its catch-all — "
@@ -365,10 +380,7 @@ class TestRegistrationGating:
         not carry any pinned route."""
         from litellm.proxy.proxy_server import app
 
-        assert not any(
-            isinstance(r, APIRoute) and getattr(r.endpoint, "_pinned_provider_route", None) is not None
-            for r in app.router.routes
-        )
+        assert _pinned_paths_of(app) == set()
 
     def test_non_list_setting_ignored(self):
         app = FastAPI()
@@ -412,12 +424,7 @@ async def test_load_config_seam_registers_pinned_routes(tmp_path, monkeypatch):
     _remove_pinned_routes(app)
     try:
         await ProxyConfig().load_config(router=None, config_file_path=str(f))
-        pinned_paths = {
-            r.path
-            for r in app.router.routes
-            if isinstance(r, APIRoute) and getattr(r.endpoint, "_pinned_provider_route", None) is not None
-        }
-        assert pinned_paths == {"/baseten/v1/chat/completions", "/baseten/v1/messages"}
+        assert _pinned_paths_of(app) == {"/baseten/v1/chat/completions", "/baseten/v1/messages"}
     finally:
         _remove_pinned_routes(app)
 
@@ -583,11 +590,7 @@ class TestReinitializeRemovesStaleRoutes:
 
     @staticmethod
     def _pinned_paths(app) -> set:
-        return {
-            r.path
-            for r in app.router.routes
-            if isinstance(r, APIRoute) and getattr(r.endpoint, "_pinned_provider_route", None) is not None
-        }
+        return _pinned_paths_of(app)
 
     def test_add_then_remove_then_reload_drops_stale_route(self):
         app = FastAPI()
@@ -630,3 +633,75 @@ class TestReinitializeRemovesStaleRoutes:
             "/baseten/v1/chat/completions",
             "/baseten/v1/messages",
         }
+
+
+class TestAppScopedRouteRegistry:
+    """The pinned-route bookkeeping lives on ``app.state`` as a registry of
+    the actual route OBJECTS (identity-based). These guard the properties the
+    old per-endpoint marker existed for: only routes the module itself
+    registered are ever removed, and two apps never contaminate each other."""
+
+    def test_user_route_at_same_path_is_never_removed(self):
+        """Round-2-verified property: a USER route mounted at a pinned path
+        is never touched — not shadowed at registration (idempotency check)
+        and not removed by reload hygiene (identity check)."""
+        app = FastAPI()
+
+        async def user_handler():
+            return {"who": "user"}
+
+        app.post("/bedrock/v1/chat/completions")(user_handler)
+
+        registered = initialize_pinned_provider_routes(
+            app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]}
+        )
+        # The chat path is already taken by the user's literal route ->
+        # only the messages route is registered.
+        assert registered == ["/bedrock/v1/messages"]
+
+        # Reload with the setting dropped: removes ONLY the module's route.
+        assert initialize_pinned_provider_routes(app=app, general_settings={}) == []
+        user_routes = [r for r in app.router.routes if getattr(r, "path", None) == "/bedrock/v1/chat/completions"]
+        assert len(user_routes) == 1
+        assert isinstance(user_routes[0], APIRoute) and user_routes[0].endpoint is user_handler
+        assert not any(getattr(r, "path", None) == "/bedrock/v1/messages" for r in app.router.routes)
+
+    def test_two_apps_have_independent_registries(self):
+        """No cross-app contamination: two FastAPI() instances each get their
+        own ``app.state`` registry, so a reload on one cannot see (or remove)
+        the other's pinned routes."""
+        app_a = FastAPI()
+        app_b = FastAPI()
+        initialize_pinned_provider_routes(app=app_a, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]})
+        initialize_pinned_provider_routes(
+            app=app_b, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock", "baseten"]}
+        )
+        assert _pinned_route_registry(app_a) is not _pinned_route_registry(app_b)
+
+        # Dropping app_a's routes must not touch app_b.
+        assert initialize_pinned_provider_routes(app=app_a, general_settings={}) == []
+        assert _pinned_paths_of(app_a) == set()
+        assert _pinned_route_registry(app_a) == {}
+        assert _pinned_paths_of(app_b) == {
+            "/bedrock/v1/chat/completions",
+            "/bedrock/v1/messages",
+            "/baseten/v1/chat/completions",
+            "/baseten/v1/messages",
+        }
+
+    def test_registry_prunes_externally_removed_routes(self):
+        """A pinned route someone else stripped from app.router.routes must
+        be pruned from the registry on the next init — and the path becomes
+        registrable again."""
+        app = FastAPI()
+        initialize_pinned_provider_routes(app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]})
+        app.router.routes[:] = [r for r in app.router.routes if getattr(r, "path", None) != "/bedrock/v1/messages"]
+
+        registered = initialize_pinned_provider_routes(
+            app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]}
+        )
+        assert registered == ["/bedrock/v1/messages"]
+        assert _pinned_paths_of(app) == {"/bedrock/v1/chat/completions", "/bedrock/v1/messages"}
+        # Every registry entry refers to a live, mounted route object.
+        live_ids = {id(r) for r in app.router.routes}
+        assert set(_pinned_route_registry(app)) <= live_ids
