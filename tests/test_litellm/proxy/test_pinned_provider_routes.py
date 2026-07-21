@@ -1,0 +1,1404 @@
+"""
+Tests for the provider-pinned standard routes module
+(litellm/proxy/pinned_provider_routes.py).
+
+Covers, per the 2026-07-21 provider-pinned-routes design:
+- pin-tag injection on both dialects, including the router-visible metadata
+  field (metadata vs litellm_metadata per LITELLM_METADATA_ROUTES);
+- the routing tag set is REPLACED with exactly the pin (client-supplied tags
+  are dropped from the routing decision), so an extra client tag can never
+  make the request not-a-subset of the pinned deployment and fall through to
+  the tag router's `default` pool, and a conflicting `pin:*` tag can never
+  widen or redirect — asserted through the real add_litellm_data_to_request;
+- route precedence over the four provider pass-through catch-alls
+  (/gemini, /bedrock, /azure, /vertex_ai {endpoint:path}) plus resolution
+  for fireworks/baseten which have no catch-all (the R4 regression guard);
+- unknown providers register nothing;
+- disabled by default: no general_settings entry -> no routes;
+- the REAL auth seam: every pinned path is an LLM API route and passes
+  non_proxy_admin_allowed_routes_check for a plain non-admin key (round-1 P1:
+  /fireworks and /baseten were 403-dead for non-admin keys);
+- unmatched pin surfaces fast as a 400 naming the model and the pin tag
+  (round-1 P2: it was a retried, seconds-late 401);
+- openai/anthropic are denylisted as pinned prefixes (round-1 P2);
+- messages-dialect registration schedules the heavy anthropic_endpoints
+  import off the event loop, and re-init removes stale routes (round-1 P3s).
+"""
+
+import asyncio
+import importlib
+import json
+import os
+import sys
+import time
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+from fastapi import FastAPI, Request
+from fastapi.routing import APIRoute
+from fastapi.testclient import TestClient
+from starlette.routing import Match
+
+sys.path.insert(0, os.path.abspath("../../.."))  # Adds the parent directory to the system path
+
+import litellm
+from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
+from litellm.proxy.pinned_provider_routes import (
+    PINNED_PROVIDER_ROUTES_SETTING,
+    get_pin_tag,
+    initialize_pinned_provider_routes,
+)
+
+PINNED_PROVIDERS = [
+    "azure",
+    "azure_ai",
+    "bedrock",
+    "vertex_ai",
+    "gemini",
+    "fireworks",
+    "baseten",
+]
+
+# All 14 pinned literal paths (7 providers x 2 dialects).
+ALL_PINNED_PATHS = [
+    f"/{provider}{suffix}" for provider in PINNED_PROVIDERS for suffix in ("/v1/chat/completions", "/v1/messages")
+]
+
+# Providers whose pass-through catch-all (/{p}/{endpoint:path}) overlaps the
+# pinned literal paths — precedence over these is load-bearing (design R4).
+CATCH_ALL_PROVIDERS = ["azure", "bedrock", "gemini", "vertex_ai"]
+
+EXPECTED_PIN_TAGS = {
+    "azure": "pin:azure",
+    "azure_ai": "pin:azure_ai",
+    "bedrock": "pin:bedrock",
+    "vertex_ai": "pin:vertex_ai",
+    "gemini": "pin:vertex_ai",  # alias: /gemini pins the vertex_ai backend
+    "fireworks": "pin:fireworks",
+    "baseten": "pin:baseten",
+}
+
+CHAT_STUB_SENTINEL = {"handler": "pinned-chat-stub"}
+MESSAGES_STUB_SENTINEL = {"handler": "pinned-messages-stub"}
+
+
+def _pinned_route_registry(app) -> dict:
+    """The module's app-scoped registry (``id(route) -> (provider, route)``
+    on ``app.state``), or {} when this app never had pinned routes."""
+    try:
+        return app.state.pinned_provider_route_objects
+    except AttributeError:
+        return {}
+
+
+def _pinned_provider_of(app, route):
+    """The provider a mounted route was pinned for, or None if the route was
+    not registered by pinned_provider_routes on this app."""
+    entry = _pinned_route_registry(app).get(id(route))
+    return entry[0] if entry is not None else None
+
+
+def _pinned_paths_of(app) -> set:
+    registry = _pinned_route_registry(app)
+    return {r.path for r in app.router.routes if id(r) in registry}
+
+
+def _remove_pinned_routes(app) -> None:
+    registry = _pinned_route_registry(app)
+    app.router.routes[:] = [r for r in app.router.routes if id(r) not in registry]
+    registry.clear()
+
+
+@pytest.fixture
+def pinned_app():
+    """The real proxy app with all seven pinned providers registered and
+    auth overridden; pinned routes and overrides are removed on teardown."""
+    from litellm.proxy.proxy_server import app
+
+    _remove_pinned_routes(app)  # tolerate leftovers from an aborted run
+    registered = initialize_pinned_provider_routes(
+        app=app,
+        general_settings={PINNED_PROVIDER_ROUTES_SETTING: list(PINNED_PROVIDERS)},
+    )
+    assert len(registered) == 2 * len(PINNED_PROVIDERS)
+    app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(api_key="hashed-test-key")
+    try:
+        yield app
+    finally:
+        app.dependency_overrides.pop(user_api_key_auth, None)
+        _remove_pinned_routes(app)
+
+
+@pytest.fixture
+def capture(monkeypatch):
+    """Stub both delegated endpoint functions; capture the (post-injection)
+    parsed request body each one receives."""
+    import litellm.proxy.anthropic_endpoints.endpoints as anthropic_endpoints_module
+    import litellm.proxy.proxy_server as proxy_server_module
+
+    captured = {}
+
+    async def chat_stub(request, fastapi_response, model=None, user_api_key_dict=None):
+        captured["body"] = await _read_request_body(request=request)
+        captured["path"] = request.scope["path"]
+        return CHAT_STUB_SENTINEL
+
+    async def messages_stub(fastapi_response=None, request=None, user_api_key_dict=None):
+        captured["body"] = await _read_request_body(request=request)
+        captured["path"] = request.scope["path"]
+        return MESSAGES_STUB_SENTINEL
+
+    monkeypatch.setattr(proxy_server_module, "chat_completion", chat_stub)
+    monkeypatch.setattr(anthropic_endpoints_module, "anthropic_response", messages_stub)
+    return captured
+
+
+def _post(app, path: str, body: dict):
+    client = TestClient(app)
+    return client.post(path, json=body, headers={"Authorization": "Bearer sk-test"})
+
+
+def _run_add_litellm_data(body: dict, path: str) -> dict:
+    """Run the captured (post-injection) body through the REAL
+    add_litellm_data_to_request for ``path`` and return the resulting data."""
+    from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request
+
+    request_mock = MagicMock(spec=Request)
+    request_mock.scope = {"path": path, "root_path": ""}
+    request_mock.method = "POST"
+    request_mock.query_params = {}
+    request_mock.headers = {"content-type": "application/json"}
+    request_mock.url = MagicMock()
+    request_mock.url.path = path
+    request_mock.url.__str__.return_value = f"http://localhost{path}"
+    request_mock.client = MagicMock()
+    request_mock.client.host = "127.0.0.1"
+
+    return asyncio.run(
+        add_litellm_data_to_request(
+            data=dict(body),
+            request=request_mock,
+            user_api_key_dict=UserAPIKeyAuth(api_key="hashed-test-key"),
+            proxy_config=MagicMock(),
+            general_settings={},
+            version="test-version",
+        )
+    )
+
+
+def _router_visible_tags(body: dict, path: str, expected_field: str):
+    """Run the captured (post-injection) body through the real
+    add_litellm_data_to_request and return the tag list the router sees."""
+    updated = _run_add_litellm_data(body, path)
+    other_field = "litellm_metadata" if expected_field == "metadata" else "metadata"
+    assert not (updated.get(other_field) or {}).get("tags"), f"tags leaked into {other_field} for path {path}"
+    return (updated.get(expected_field) or {}).get("tags")
+
+
+def _tags_the_router_reads(body: dict, path: str):
+    """The routing tags the ROUTER actually reads — selecting the bucket with
+    its OWN presence-based selector (``get_metadata_variable_name_from_kwargs``,
+    ``litellm_metadata`` if that key exists else ``metadata``), NOT the
+    processor's path-based selection. This is the seam the round-3 P1 bypass
+    exploited: a client-injected empty decoy bucket could steer this selector
+    onto an untagged bucket. Reads the tags exactly as the tag router does
+    (``_resolve_request_tags``)."""
+    from litellm.litellm_core_utils.core_helpers import get_metadata_variable_name_from_kwargs
+    from litellm.router_strategy.tag_based_routing import _resolve_request_tags
+
+    updated = _run_add_litellm_data(body, path)
+    router_field = get_metadata_variable_name_from_kwargs(updated)
+    return _resolve_request_tags(updated.get(router_field) or {})
+
+
+def _aliased_provider(provider: str) -> str:
+    """The provider name a pinned route stashes as the trusted routing signal
+    (alias-resolved): ``gemini`` -> ``vertex_ai``."""
+    return EXPECTED_PIN_TAGS[provider][len("pin:") :]
+
+
+# The attribution team tag the authenticated key carries. add_litellm_data_to_
+# request appends it to metadata["tags"], which — WITHOUT the trusted signal —
+# would re-enter the routing snapshot and break the pin's subset match (the P2
+# 400). Threading it through every matrix cell makes the matrix a TIGHT proof of
+# the signal: remove the PINNED_PROVIDER_ROUTE_KEY branch and every cell fails.
+_ATTRIBUTION_TEAM_TAG = "team:attr"
+
+
+def _run_add_litellm_data_pinned(body: dict, path: str, pinned_provider: str) -> dict:
+    """Run the (post-pinned-handler) body through the REAL
+    add_litellm_data_to_request with ``request.state`` carrying the trusted pin —
+    exactly as the pinned handler sets it on the live request object — and using a
+    key that carries a configured team tag (so metadata["tags"] is polluted with
+    ``team:attr``, as in production). Exercises the full production pin path: the
+    base processor strips any client ``_pinned_provider_route``, appends the team
+    tag for attribution, and re-asserts the trusted pin from ``request.state``
+    last."""
+    from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request
+
+    request_mock = MagicMock(spec=Request)
+    request_mock.scope = {"path": path, "root_path": ""}
+    request_mock.method = "POST"
+    request_mock.query_params = {}
+    request_mock.headers = {"content-type": "application/json"}
+    request_mock.url = MagicMock()
+    request_mock.url.path = path
+    request_mock.url.__str__.return_value = f"http://localhost{path}"
+    request_mock.client = MagicMock()
+    request_mock.client.host = "127.0.0.1"
+    request_mock.state = SimpleNamespace(_pinned_provider_route=pinned_provider)
+
+    return asyncio.run(
+        add_litellm_data_to_request(
+            data=dict(body),
+            request=request_mock,
+            user_api_key_dict=UserAPIKeyAuth(
+                api_key="hashed-test-key",
+                team_metadata={"tags": [_ATTRIBUTION_TEAM_TAG]},
+            ),
+            proxy_config=MagicMock(),
+            general_settings={},
+            version="test-version",
+        )
+    )
+
+
+def _router_pinned_tags(body: dict, path: str, pinned_provider: str):
+    """The routing tags the tag router uses for a pinned request, through the
+    full production flow (``request.state`` trusted pin -> add_litellm_data ->
+    ``_resolve_request_tags`` on the router's presence-selected bucket)."""
+    from litellm.litellm_core_utils.core_helpers import get_metadata_variable_name_from_kwargs
+    from litellm.router_strategy.tag_based_routing import _resolve_request_tags
+
+    updated = _run_add_litellm_data_pinned(body, path, pinned_provider)
+    router_field = get_metadata_variable_name_from_kwargs(updated)
+    return _resolve_request_tags(updated.get(router_field) or {}), updated
+
+
+class TestTagInjectionChatDialect:
+    @pytest.mark.parametrize("provider", PINNED_PROVIDERS)
+    def test_pin_preserves_client_attribution_tags(self, pinned_app, capture, provider):
+        """The pin PRESERVES the client's legitimate body-root attribution tags
+        and appends the pin tag (finding 3): routing reads the trusted signal —
+        not ``tags`` — so an extra client attribution tag can no longer break a
+        subset match; it survives to SPEND ATTRIBUTION instead of being discarded.
+        Mutation-verify: revert ``_pin_request_tags`` to ``data["tags"] = [pin_tag]``
+        and ``client-tag`` disappears here."""
+        resp = _post(
+            pinned_app,
+            f"/{provider}/v1/chat/completions",
+            {"model": "some-model", "messages": [{"role": "user", "content": "hi"}], "tags": ["client-tag"]},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == CHAT_STUB_SENTINEL
+        assert capture["body"]["tags"] == ["client-tag", EXPECTED_PIN_TAGS[provider]]
+
+    def test_pin_alone_when_no_client_tags(self, pinned_app, capture):
+        resp = _post(
+            pinned_app,
+            "/fireworks/v1/chat/completions",
+            {"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 200
+        assert capture["body"]["tags"] == ["pin:fireworks"]
+
+    def test_tag_reaches_router_visible_metadata_plain_route(self, pinned_app, capture):
+        """/azure/... does not match LITELLM_METADATA_ROUTES -> tags must land in
+        `metadata` (the field tag-based routing reads for chat routes). The pin is
+        present for attribution and the client tag is PRESERVED alongside it
+        (finding 3), while the ROUTING decision comes from the trusted signal."""
+        path = "/azure/v1/chat/completions"
+        resp = _post(pinned_app, path, {"model": "gpt-5.4-nano", "messages": [], "tags": ["client-tag"]})
+        assert resp.status_code == 200
+        tags = _router_visible_tags(capture["body"], path, expected_field="metadata")
+        assert tags == ["client-tag", "pin:azure"]
+        # Routing still resolves to EXACTLY the pin via the trusted signal.
+        routing_tags, _ = _router_pinned_tags(capture["body"], path, "azure")
+        assert routing_tags == ["pin:azure"]
+
+    def test_tag_reaches_router_visible_metadata_litellm_metadata_route(self, pinned_app, capture):
+        """/bedrock/... contains "bedrock", a LITELLM_METADATA_ROUTES entry ->
+        tags must land in `litellm_metadata`."""
+        path = "/bedrock/v1/chat/completions"
+        resp = _post(pinned_app, path, {"model": "claude-haiku-4-5", "messages": []})
+        assert resp.status_code == 200
+        tags = _router_visible_tags(capture["body"], path, expected_field="litellm_metadata")
+        assert tags is not None and "pin:bedrock" in tags
+
+
+class TestTagInjectionMessagesDialect:
+    @pytest.mark.parametrize("provider", PINNED_PROVIDERS)
+    def test_pin_preserves_client_attribution_tags(self, pinned_app, capture, provider):
+        """Messages dialect: client attribution tags survive, pin appended (finding 3)."""
+        resp = _post(
+            pinned_app,
+            f"/{provider}/v1/messages",
+            {
+                "model": "some-model",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 16,
+                "tags": ["client-tag"],
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json() == MESSAGES_STUB_SENTINEL
+        assert capture["body"]["tags"] == ["client-tag", EXPECTED_PIN_TAGS[provider]]
+
+    def test_tag_reaches_litellm_metadata(self, pinned_app, capture):
+        """Every pinned messages path contains "/v1/messages", a
+        LITELLM_METADATA_ROUTES entry -> tags land in `litellm_metadata`."""
+        path = "/azure/v1/messages"
+        resp = _post(pinned_app, path, {"model": "gpt-5.4-nano", "messages": [], "max_tokens": 16})
+        assert resp.status_code == 200
+        tags = _router_visible_tags(capture["body"], path, expected_field="litellm_metadata")
+        assert tags is not None and "pin:azure" in tags
+
+    def test_messages_paths_match_litellm_metadata_routes(self, pinned_app):
+        from litellm.proxy.litellm_pre_call_utils import LITELLM_METADATA_ROUTES
+
+        for provider in PINNED_PROVIDERS:
+            path = f"/{provider}/v1/messages"
+            assert any(route in path for route in LITELLM_METADATA_ROUTES)
+
+
+class TestClientTagsCannotEscapeThePin:
+    def test_client_pin_tag_for_other_provider_is_dropped(self, pinned_app, capture):
+        """A client sending its own conflicting pin: tag can neither replace
+        nor widen the server-side pin — the routing tag set is REPLACED with
+        exactly the pinned provider's tag, so the client's pin:azure is gone."""
+        resp = _post(
+            pinned_app,
+            "/bedrock/v1/chat/completions",
+            {"model": "claude-haiku-4-5", "messages": [], "tags": ["pin:azure"]},
+        )
+        assert resp.status_code == 200
+        assert capture["body"]["tags"] == ["pin:bedrock"]
+
+    def test_duplicate_pin_not_doubled(self, pinned_app, capture):
+        resp = _post(
+            pinned_app,
+            "/bedrock/v1/chat/completions",
+            {"model": "claude-haiku-4-5", "messages": [], "tags": ["pin:bedrock"]},
+        )
+        assert resp.status_code == 200
+        assert capture["body"]["tags"] == ["pin:bedrock"]
+
+    def test_non_list_tags_replaced_by_pin(self, pinned_app, capture):
+        """Malformed (non-list) client tags are ignored downstream anyway;
+        the wrapper must still guarantee the pin applies."""
+        resp = _post(
+            pinned_app,
+            "/bedrock/v1/chat/completions",
+            {"model": "claude-haiku-4-5", "messages": [], "tags": "not-a-list"},
+        )
+        assert resp.status_code == 200
+        assert capture["body"]["tags"] == ["pin:bedrock"]
+
+    @pytest.mark.parametrize(
+        "suffix, expected_field",
+        [("/v1/chat/completions", "litellm_metadata"), ("/v1/messages", "litellm_metadata")],
+    )
+    def test_extra_client_tags_cannot_escape_pin_end_to_end(self, pinned_app, capture, suffix, expected_field):
+        """P1 escape guard, asserted through the REAL add_litellm_data_to_request:
+        a client sending a conflicting pin plus an unrelated tag to /bedrock/*
+        can NOT change the ROUTING decision — the signal-based routing tag set is
+        EXACTLY ["pin:bedrock"], so nothing falls through to the tag router's
+        `default`-deployment pool. The client's ``pin:openai`` is dropped from
+        attribution (server owns pinning) but its legitimate ``team:x`` survives
+        (finding 3). /bedrock/* is a LITELLM_METADATA_ROUTES prefix, so the pin
+        lands in litellm_metadata for both dialects."""
+        path = f"/bedrock{suffix}"
+        body = {"model": "claude-haiku-4-5", "messages": [], "tags": ["pin:openai", "team:x"]}
+        if suffix == "/v1/messages":
+            body["max_tokens"] = 16
+        resp = _post(pinned_app, path, body)
+        assert resp.status_code == 200
+        # Routing (signal-based) is EXACTLY the pin regardless of client tags.
+        routing_tags, _ = _router_pinned_tags(capture["body"], path, "bedrock")
+        assert routing_tags == ["pin:bedrock"]
+        # Attribution: client's forged pin dropped, legitimate team:x preserved + pin.
+        attribution = _router_visible_tags(capture["body"], path, expected_field=expected_field)
+        assert "pin:openai" not in attribution
+        assert "team:x" in attribution
+        assert "pin:bedrock" in attribution
+
+    def test_client_metadata_tags_cannot_escape_pin(self, pinned_app, capture):
+        """Client tags planted in the body `metadata`/`litellm_metadata` dict
+        (the other sources add_request_tag_to_metadata merges from) are stripped
+        too, so they can't reintroduce an escaping tag after the replace."""
+        path = "/bedrock/v1/chat/completions"
+        resp = _post(
+            pinned_app,
+            path,
+            {
+                "model": "claude-haiku-4-5",
+                "messages": [],
+                "metadata": {"tags": ["pin:openai"]},
+                "litellm_metadata": {"tags": ["team:evil"]},
+            },
+        )
+        assert resp.status_code == 200
+        tags = _router_visible_tags(capture["body"], path, expected_field="litellm_metadata")
+        assert tags == ["pin:bedrock"]
+
+    def test_client_attribution_tags_survive_without_changing_routing(self, pinned_app, capture):
+        """Finding 3 (requirement 5): a client spend-attribution tag
+        (``cost-center:42``) on a pinned route is PRESENT in the attribution
+        snapshot the router will read for SpendLogs, AND does NOT change the
+        selected provider — the trusted signal still wins with absolute priority.
+        Mutation-verify: revert ``_pin_request_tags`` to ``data["tags"] = [pin_tag]``
+        and the ``cost-center:42`` assertion fails."""
+        path = "/bedrock/v1/chat/completions"
+        resp = _post(
+            pinned_app,
+            path,
+            {"model": "claude-haiku-4-5", "messages": [], "tags": ["cost-center:42", "customer:t1"]},
+        )
+        assert resp.status_code == 200
+        # (a) Attribution: client tags survive into the router-visible bucket.
+        attribution = _router_visible_tags(capture["body"], path, expected_field="litellm_metadata")
+        assert "cost-center:42" in attribution
+        assert "customer:t1" in attribution
+        assert "pin:bedrock" in attribution
+        # (b) Routing: the signal still wins — exactly the pin, client tags ignored.
+        routing_tags, _ = _router_pinned_tags(capture["body"], path, "bedrock")
+        assert routing_tags == ["pin:bedrock"]
+
+    def test_client_original_request_tags_snapshot_is_stripped(self, pinned_app, capture):
+        """Codex re-review P1-A (part 1): a client cannot smuggle the router's
+        internal pre-merge tag SNAPSHOT (``_original_request_tags``) to re-open
+        the pin. The tag router PREFERS that snapshot over the live ``tags``
+        (``_resolve_request_tags``), so a surviving ``_original_request_tags:
+        [pin:openai]`` on a ``/bedrock`` request would route to OpenAI. The
+        pinned handler strips it from the body root AND from every client
+        metadata field, so it never reaches the router. Mutation-verify: revert
+        the strip in ``_pin_request_tags`` and the smuggled key survives here."""
+        path = "/bedrock/v1/chat/completions"
+        resp = _post(
+            pinned_app,
+            path,
+            {
+                "model": "claude-haiku-4-5",
+                "messages": [],
+                "_original_request_tags": ["pin:openai"],
+                "metadata": {"_original_request_tags": ["pin:openai"]},
+                "litellm_metadata": {"_original_request_tags": ["pin:openai"]},
+            },
+        )
+        assert resp.status_code == 200
+        body = capture["body"]
+        # Stripped from the body root and from every client metadata field, so
+        # nothing can survive into the router's routing snapshot.
+        assert "_original_request_tags" not in body
+        for field in ("metadata", "litellm_metadata"):
+            assert "_original_request_tags" not in (body.get(field) or {})
+        # And the routing tag set the router will snapshot is exactly the pin.
+        tags = _router_visible_tags(body, path, expected_field="litellm_metadata")
+        assert tags == ["pin:bedrock"]
+
+
+class TestDecoyMetadataBucketCannotEscapeThePin:
+    """Codex round-3 P1 regression guard, asserted through the ROUTER's OWN
+    presence-based bucket selector (``get_metadata_variable_name_from_kwargs``).
+
+    The processor writes the pin into the PATH-selected bucket; the router
+    reads the PRESENCE-selected bucket. A client can inject an EMPTY decoy
+    bucket the path-writer never touches (e.g. ``litellm_metadata: {}`` on an
+    azure chat route whose authoritative bucket is ``metadata``) to steer the
+    presence-selector onto the untagged decoy → the request looks UNTAGGED and
+    escapes the pin to the default pool. ``_pin_request_tags`` removes the
+    non-authoritative decoy so pin and router always agree.
+
+    Mutation-verify: restore the empty decoy bucket (delete the
+    ``data.pop(metadata_field, None)`` branch in ``_pin_request_tags`` so the
+    empty ``litellm_metadata: {}`` survives) and
+    ``test_azure_chat_empty_litellm_metadata_decoy_cannot_escape`` fails —
+    the router reads the empty decoy and sees no pin.
+    """
+
+    def test_azure_chat_empty_litellm_metadata_decoy_cannot_escape(self, pinned_app, capture):
+        """The exploit: azure chat (authoritative bucket = ``metadata``) with a
+        client-injected empty ``litellm_metadata: {}``. The router's
+        presence-selector must NOT be steered onto the empty decoy."""
+        path = "/azure/v1/chat/completions"
+        resp = _post(pinned_app, path, {"model": "gpt-5.4-nano", "messages": [], "litellm_metadata": {}})
+        assert resp.status_code == 200
+        assert _tags_the_router_reads(capture["body"], path) == ["pin:azure"]
+
+    @pytest.mark.parametrize("provider", PINNED_PROVIDERS)
+    @pytest.mark.parametrize("suffix", ["/v1/chat/completions", "/v1/messages"])
+    @pytest.mark.parametrize(
+        "decoy",
+        [
+            {"litellm_metadata": {}},
+            {"metadata": {}},
+            {"litellm_metadata": {}, "metadata": {}},
+            {"litellm_metadata": {"tags": ["pin:openai", "team:x"]}},
+            {"metadata": {"tags": ["pin:openai"]}},
+            {"litellm_metadata": {"tags": ["team:x"]}, "metadata": {"tags": ["pin:openai"]}},
+        ],
+    )
+    def test_router_reads_exactly_the_pin_for_every_pinned_path(self, pinned_app, capture, provider, suffix, decoy):
+        """For all 7 providers x both dialects, whichever bucket(s) the client
+        injects (empty or populated), the tag set the ROUTER reads via its own
+        presence-based selector is EXACTLY the provider's pin — no empty-decoy
+        escape, no client tag leaking through."""
+        path = f"/{provider}{suffix}"
+        body = {"model": "some-model", "messages": [{"role": "user", "content": "hi"}], **decoy}
+        if suffix == "/v1/messages":
+            body["max_tokens"] = 16
+        resp = _post(pinned_app, path, body)
+        assert resp.status_code == 200
+        assert _tags_the_router_reads(capture["body"], path) == [EXPECTED_PIN_TAGS[provider]]
+
+    def test_non_authoritative_bucket_handled_surgically(self, pinned_app, capture):
+        """Structural proof of the surgical decoy handling (Codex R4 P2): the
+        handler no longer drops the alternate bucket wholesale.
+
+        - On an azure CHAT route (authoritative = ``metadata``) the
+          ``litellm_metadata`` decoy is litellm-internal: its non-routing fields
+          are MERGED into ``metadata`` and the decoy is then removed (so the
+          router's presence-selector cannot land on it).
+        - On a MESSAGES route (authoritative = ``litellm_metadata``) the
+          ``metadata`` bucket is the provider-facing Anthropic field: it is KEPT
+          (with routing controls stripped), so ``metadata.user_id`` survives."""
+        chat_resp = _post(
+            pinned_app,
+            "/azure/v1/chat/completions",
+            {"model": "m", "messages": [], "litellm_metadata": {"foo": "bar"}},
+        )
+        assert chat_resp.status_code == 200
+        body = capture["body"]
+        # Decoy removed, its non-routing field merged into the authoritative bucket.
+        assert "litellm_metadata" not in body
+        assert body["metadata"]["foo"] == "bar"
+
+        msg_resp = _post(
+            pinned_app,
+            "/azure/v1/messages",
+            {"model": "m", "messages": [], "max_tokens": 16, "metadata": {"user_id": "u-1", "tags": ["x"]}},
+        )
+        assert msg_resp.status_code == 200
+        body = capture["body"]
+        # Provider-facing metadata KEPT (user_id survives), routing controls stripped.
+        assert body["metadata"]["user_id"] == "u-1"
+        assert "tags" not in body["metadata"]
+        # The trusted signal lands in the authoritative litellm_metadata bucket.
+        assert body["litellm_metadata"]["_pinned_provider_route"] == "azure"
+
+
+def _first_full_match_route(app, path: str):
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": path,
+        "root_path": "",
+        "headers": [],
+        "query_string": b"",
+        "path_params": {},
+    }
+    for route in app.router.routes:
+        try:
+            match, _ = route.matches(scope)
+        except Exception:
+            continue
+        if match is Match.FULL:
+            return route
+    return None
+
+
+class TestRoutePrecedence:
+    """The R4 regression guard: the pinned literal routes must win over the
+    provider pass-through catch-alls in FastAPI's in-order route matching."""
+
+    @pytest.mark.parametrize("provider", PINNED_PROVIDERS)
+    @pytest.mark.parametrize("suffix", ["/v1/chat/completions", "/v1/messages"])
+    def test_route_table_resolves_to_pinned_handler(self, pinned_app, provider, suffix):
+        path = f"/{provider}{suffix}"
+        route = _first_full_match_route(pinned_app, path)
+        assert route is not None, f"no route resolves {path}"
+        assert _pinned_provider_of(pinned_app, route) == provider, (
+            f"{path} resolves to {route.path!r} (endpoint {route.name!r}), not the pinned handler"
+        )
+        assert route.path == path  # literal, not {endpoint:path}
+
+    @pytest.mark.parametrize("provider", CATCH_ALL_PROVIDERS)
+    def test_pinned_routes_precede_the_catch_all(self, pinned_app, provider):
+        """The catch-all must still exist AND sit after the pinned routes —
+        proves the pinned routes actually beat a live overlapping route."""
+        routes = pinned_app.router.routes
+        catch_all_path = f"/{provider}/{{endpoint:path}}"
+        catch_all_idx = [i for i, r in enumerate(routes) if getattr(r, "path", None) == catch_all_path]
+        assert catch_all_idx, f"expected the {catch_all_path} pass-through catch-all to exist"
+        pinned_idx = [i for i, r in enumerate(routes) if _pinned_provider_of(pinned_app, r) == provider]
+        assert pinned_idx, f"pinned routes for {provider} missing"
+        assert max(pinned_idx) < min(catch_all_idx), (
+            f"pinned routes for {provider} are registered AFTER its catch-all — "
+            "they would be swallowed by the pass-through route"
+        )
+
+    @pytest.mark.parametrize("provider", PINNED_PROVIDERS)
+    def test_request_level_resolution(self, pinned_app, capture, provider):
+        """Request-level proof (covers fireworks/baseten too, which have no
+        catch-all): a POST reaches the pinned handler, not a pass-through."""
+        chat = _post(pinned_app, f"/{provider}/v1/chat/completions", {"model": "m", "messages": []})
+        assert chat.status_code == 200
+        assert chat.json() == CHAT_STUB_SENTINEL
+        messages = _post(pinned_app, f"/{provider}/v1/messages", {"model": "m", "messages": [], "max_tokens": 16})
+        assert messages.status_code == 200
+        assert messages.json() == MESSAGES_STUB_SENTINEL
+
+
+class TestRegistrationGating:
+    def test_unknown_provider_not_registered(self):
+        app = FastAPI()
+        registered = initialize_pinned_provider_routes(
+            app=app,
+            general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock", "definitely_not_a_provider"]},
+        )
+        assert registered == ["/bedrock/v1/chat/completions", "/bedrock/v1/messages"]
+        assert not any("definitely_not_a_provider" in getattr(r, "path", "") for r in app.router.routes)
+
+    def test_disabled_by_default_no_general_settings_entry(self):
+        app = FastAPI()
+        n_routes = len(app.router.routes)
+        assert initialize_pinned_provider_routes(app=app, general_settings={}) == []
+        assert initialize_pinned_provider_routes(app=app, general_settings=None) == []
+        assert initialize_pinned_provider_routes(app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: []}) == []
+        assert len(app.router.routes) == n_routes
+
+    def test_disabled_by_default_on_the_real_proxy_app(self):
+        """The real app, as imported (no pinned_provider_routes config), must
+        not carry any pinned route."""
+        from litellm.proxy.proxy_server import app
+
+        assert _pinned_paths_of(app) == set()
+
+    def test_non_list_setting_ignored(self):
+        app = FastAPI()
+        assert (
+            initialize_pinned_provider_routes(app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: "bedrock"})
+            == []
+        )
+
+    def test_reinitialize_is_idempotent(self):
+        app = FastAPI()
+        first = initialize_pinned_provider_routes(
+            app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]}
+        )
+        assert len(first) == 2
+        n_routes = len(app.router.routes)
+        second = initialize_pinned_provider_routes(
+            app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]}
+        )
+        assert second == []
+        assert len(app.router.routes) == n_routes
+
+    def test_gemini_alias_maps_to_vertex_ai_tag(self):
+        assert get_pin_tag("gemini") == "pin:vertex_ai"
+        assert get_pin_tag("bedrock") == "pin:bedrock"
+        assert get_pin_tag("fireworks") == "pin:fireworks"
+
+
+@pytest.mark.asyncio
+async def test_load_config_seam_registers_pinned_routes(tmp_path, monkeypatch):
+    """The ProxyConfig.load_config hook is the only production caller of
+    initialize_pinned_provider_routes — guard the seam so an upstream sync
+    cannot silently drop it (per-stage-green/feature-dead prevention)."""
+    from litellm.proxy.proxy_server import ProxyConfig, app
+
+    f = tmp_path / "c.yaml"
+    f.write_text(
+        "model_list: []\nlitellm_settings: {}\nrouter_settings:\n  enable_tag_filtering: true\n"
+        "general_settings:\n  pinned_provider_routes: [baseten]\n"
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.store_model_in_db", False)
+    monkeypatch.delenv("LITELLM_CONFIG_BUCKET_NAME", raising=False)
+
+    _remove_pinned_routes(app)
+    try:
+        await ProxyConfig().load_config(router=None, config_file_path=str(f))
+        assert _pinned_paths_of(app) == {"/baseten/v1/chat/completions", "/baseten/v1/messages"}
+    finally:
+        _remove_pinned_routes(app)
+
+
+@pytest.mark.asyncio
+async def test_load_config_seam_removes_routes_when_setting_deleted(tmp_path, monkeypatch):
+    """P2 regression guard, at the proxy_server load-config seam: DELETING the
+    pinned_provider_routes key entirely (not setting it to []) must still run
+    the initializer so previously-registered routes are cleaned up. Gating on
+    `setting is not None` alone skipped the initializer on key removal and left
+    stale pinned routes live."""
+    from litellm.proxy.proxy_server import ProxyConfig, app
+
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.store_model_in_db", False)
+    monkeypatch.delenv("LITELLM_CONFIG_BUCKET_NAME", raising=False)
+
+    with_pin = tmp_path / "with.yaml"
+    with_pin.write_text(
+        "model_list: []\nlitellm_settings: {}\nrouter_settings:\n  enable_tag_filtering: true\n"
+        "general_settings:\n  pinned_provider_routes: [bedrock]\n"
+    )
+    # The reload config omits the key ENTIRELY (not `pinned_provider_routes: []`).
+    without_pin = tmp_path / "without.yaml"
+    without_pin.write_text("model_list: []\nlitellm_settings: {}\ngeneral_settings: {}\n")
+
+    _remove_pinned_routes(app)
+    try:
+        await ProxyConfig().load_config(router=None, config_file_path=str(with_pin))
+        assert _pinned_paths_of(app) == {"/bedrock/v1/chat/completions", "/bedrock/v1/messages"}
+
+        await ProxyConfig().load_config(router=None, config_file_path=str(without_pin))
+        assert _pinned_paths_of(app) == set(), "stale pinned routes survived key deletion"
+    finally:
+        _remove_pinned_routes(app)
+
+
+@pytest.mark.asyncio
+async def test_load_config_seam_vanilla_never_calls_initializer(tmp_path, monkeypatch):
+    """Vanilla posture: a config that never configured pinned routes — and no
+    prior registration on this app — must not even CALL (hence not import)
+    the initializer. The prior-registration probe must read app.state without
+    importing the module."""
+    import litellm.proxy.pinned_provider_routes as pinned_module
+    from litellm.proxy.proxy_server import ProxyConfig, app
+
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.store_model_in_db", False)
+    monkeypatch.delenv("LITELLM_CONFIG_BUCKET_NAME", raising=False)
+
+    spy = MagicMock(wraps=pinned_module.initialize_pinned_provider_routes)
+    monkeypatch.setattr(pinned_module, "initialize_pinned_provider_routes", spy)
+
+    f = tmp_path / "vanilla.yaml"
+    f.write_text("model_list: []\nlitellm_settings: {}\ngeneral_settings: {}\n")
+
+    # Ensure no leftover registration makes the app look "previously configured".
+    _remove_pinned_routes(app)
+    try:
+        await ProxyConfig().load_config(router=None, config_file_path=str(f))
+        spy.assert_not_called()
+        assert _pinned_paths_of(app) == set()
+    finally:
+        _remove_pinned_routes(app)
+
+
+class TestStartupTagFilteringGuard:
+    """P1 startup guard: pinned routes configured while router tag filtering is
+    off must FAIL LOUD at boot, naming the missing setting — a pin must never
+    silently reroute to another provider. Complements the request-time
+    enforcement in get_deployments_for_tag."""
+
+    def test_raises_when_pinned_but_tag_filtering_off(self):
+        from litellm.proxy.pinned_provider_routes import (
+            assert_tag_filtering_enabled_for_pinned_routes,
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            assert_tag_filtering_enabled_for_pinned_routes(
+                general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]},
+                router_settings={},  # enable_tag_filtering missing -> off
+            )
+        msg = str(exc_info.value)
+        assert PINNED_PROVIDER_ROUTES_SETTING in msg
+        assert "enable_tag_filtering" in msg
+
+    def test_raises_when_tag_filtering_explicitly_false(self):
+        from litellm.proxy.pinned_provider_routes import (
+            assert_tag_filtering_enabled_for_pinned_routes,
+        )
+
+        with pytest.raises(ValueError):
+            assert_tag_filtering_enabled_for_pinned_routes(
+                general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]},
+                router_settings={"enable_tag_filtering": False},
+            )
+
+    def test_ok_when_tag_filtering_enabled(self):
+        from litellm.proxy.pinned_provider_routes import (
+            assert_tag_filtering_enabled_for_pinned_routes,
+        )
+
+        # Must not raise.
+        assert_tag_filtering_enabled_for_pinned_routes(
+            general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]},
+            router_settings={"enable_tag_filtering": True},
+        )
+
+    @pytest.mark.parametrize(
+        "gs", [None, {}, {PINNED_PROVIDER_ROUTES_SETTING: []}, {PINNED_PROVIDER_ROUTES_SETTING: "x"}]
+    )
+    def test_noop_when_pinned_routes_not_configured(self, gs):
+        from litellm.proxy.pinned_provider_routes import (
+            assert_tag_filtering_enabled_for_pinned_routes,
+        )
+
+        # No valid pinned routes -> never guards, regardless of tag filtering.
+        assert_tag_filtering_enabled_for_pinned_routes(general_settings=gs, router_settings={})
+
+    @pytest.mark.parametrize("bad_value", ["false", "true", "0", "1", 1, 0])
+    def test_raises_when_tag_filtering_is_not_the_boolean_true(self, bad_value):
+        """Finding 4: the router enables tag filtering only for the genuine
+        boolean ``True`` (strict ``is True``). A quoted ``enable_tag_filtering:
+        "false"`` (or "true"/"0"/1) is DISABLED at the router but would pass a
+        truthiness check — the boot guard must reject anything that is not
+        literally ``True`` so a string can never sneak past it.
+        Mutation-verify: change the guard to ``bool(enable_tag_filtering)`` and
+        the ``"false"`` / ``"true"`` / ``1`` cases stop raising."""
+        from litellm.proxy.pinned_provider_routes import (
+            assert_tag_filtering_enabled_for_pinned_routes,
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            assert_tag_filtering_enabled_for_pinned_routes(
+                general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]},
+                router_settings={"enable_tag_filtering": bad_value},
+            )
+        assert "enable_tag_filtering" in str(exc_info.value)
+
+    def test_raises_when_pinned_and_pass_through_all_models(self):
+        """Finding 1: a pinned request must never take the pass_through_all_models
+        direct-call branch (which bypasses the router and thus the pin). Configuring
+        the two together must FAIL LOUD at boot naming the conflict.
+        Mutation-verify: drop the pass_through_all_models check in the guard and
+        this stops raising."""
+        from litellm.proxy.pinned_provider_routes import (
+            assert_tag_filtering_enabled_for_pinned_routes,
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            assert_tag_filtering_enabled_for_pinned_routes(
+                general_settings={
+                    PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"],
+                    "pass_through_all_models": True,
+                },
+                router_settings={"enable_tag_filtering": True},
+            )
+        assert "pass_through_all_models" in str(exc_info.value)
+
+    def test_pass_through_all_models_ok_without_pinned_routes(self):
+        """pass_through_all_models is only forbidden alongside pinned routes; on a
+        vanilla config (no pinned routes) it must not trip the guard."""
+        from litellm.proxy.pinned_provider_routes import (
+            assert_tag_filtering_enabled_for_pinned_routes,
+        )
+
+        # Must not raise: no pinned routes configured.
+        assert_tag_filtering_enabled_for_pinned_routes(
+            general_settings={"pass_through_all_models": True},
+            router_settings={},
+        )
+
+    @pytest.mark.asyncio
+    async def test_load_config_seam_fails_loud_when_tag_filtering_off(self, tmp_path, monkeypatch):
+        """End-to-end at the proxy_server load-config seam: booting with pinned
+        routes but no enable_tag_filtering must raise, not register routes."""
+        from litellm.proxy.proxy_server import ProxyConfig, app
+
+        monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+        monkeypatch.setattr("litellm.proxy.proxy_server.store_model_in_db", False)
+        monkeypatch.delenv("LITELLM_CONFIG_BUCKET_NAME", raising=False)
+
+        f = tmp_path / "bad.yaml"
+        f.write_text("model_list: []\nlitellm_settings: {}\ngeneral_settings:\n  pinned_provider_routes: [bedrock]\n")
+
+        _remove_pinned_routes(app)
+        try:
+            with pytest.raises(ValueError):
+                await ProxyConfig().load_config(router=None, config_file_path=str(f))
+            assert _pinned_paths_of(app) == set()
+        finally:
+            _remove_pinned_routes(app)
+
+
+class TestUnifiedRouteStripsInternalSnapshotFields:
+    """P1 (unified path): the internal pre-merge tag snapshot fields
+    (``_original_request_tags`` + the ``..._snapshotted`` sentinel) must be
+    stripped from ALL client-supplied metadata GLOBALLY — every route, both
+    buckets, dict AND JSON-string form. Otherwise a client could plant a spoofed
+    snapshot (preferred by _resolve_request_tags) or pre-set the sentinel to
+    BLOCK the router's trusted snapshot overwrite, letting client input steer
+    routing on a plain /v1/chat/completions request.
+
+    Mutation-verify: remove ORIGINAL_REQUEST_TAGS_KEY /
+    ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY from _UNTRUSTED_METADATA_CONTROL_
+    FIELDS -> the smuggled fields survive here.
+    """
+
+    @pytest.mark.parametrize("bucket", ["metadata", "litellm_metadata"])
+    @pytest.mark.parametrize("as_string", [False, True], ids=["dict", "jsonstring"])
+    def test_snapshot_fields_stripped_on_unified_route(self, bucket, as_string):
+        path = "/v1/chat/completions"  # no provider prefix -> unified, no pin
+        payload = {
+            "_original_request_tags": ["pin:openai"],
+            "_original_request_tags_snapshotted": True,
+            "tags": ["team:x"],
+        }
+        body = {
+            "model": "m",
+            "messages": [],
+            bucket: json.dumps(payload) if as_string else payload,
+        }
+        updated = _run_add_litellm_data(body, path)
+        for field in ("metadata", "litellm_metadata"):
+            meta = updated.get(field) or {}
+            assert "_original_request_tags" not in meta
+            assert "_original_request_tags_snapshotted" not in meta
+
+    def test_spoofed_snapshot_does_not_steer_unified_routing(self):
+        """The router snapshot the tag router would read must NOT be the client's
+        spoofed value — proving the strip closes the routing-steer, not just the
+        presence of the key."""
+        from litellm.litellm_core_utils.core_helpers import get_metadata_variable_name_from_kwargs
+        from litellm.router_strategy.tag_based_routing import _resolve_request_tags
+
+        path = "/v1/chat/completions"
+        body = {
+            "model": "m",
+            "messages": [],
+            "metadata": {
+                "tags": ["team:x"],
+                "_original_request_tags": ["pin:openai"],
+                "_original_request_tags_snapshotted": True,
+            },
+        }
+        updated = _run_add_litellm_data(body, path)
+        router_field = get_metadata_variable_name_from_kwargs(updated)
+        # With the spoof stripped, _resolve_request_tags falls to the live tags
+        # (no _original_request_tags key present), never the spoofed pin:openai.
+        assert _resolve_request_tags(updated.get(router_field) or {}) != ["pin:openai"]
+
+
+class TestAuthSeamNonAdminAccess:
+    """Round-1 P1 regression guard, exercised at the REAL auth seam (no
+    dependency_overrides): every pinned path must be recognized as an LLM API
+    route, and non_proxy_admin_allowed_routes_check must not raise for a
+    plain non-admin key. Before the fix, /fireworks/* and /baseten/* were
+    missing from LiteLLMRoutes.mapped_pass_through_routes, so both checks
+    failed and non-admin keys got the admin-only 403."""
+
+    @pytest.mark.parametrize("path", ALL_PINNED_PATHS)
+    def test_is_llm_api_route(self, path):
+        from litellm.proxy.auth.route_checks import RouteChecks
+
+        assert RouteChecks.is_llm_api_route(route=path) is True
+
+    @pytest.mark.parametrize("path", ALL_PINNED_PATHS)
+    def test_non_admin_key_passes_route_check(self, path):
+        from litellm.proxy.auth.route_checks import RouteChecks
+
+        request = MagicMock(spec=Request)
+        request.method = "POST"
+        request.query_params = {}
+
+        # Must not raise for a plain, role-less, non-admin key.
+        RouteChecks.non_proxy_admin_allowed_routes_check(
+            user_obj=None,
+            _user_role=None,
+            route=path,
+            request=request,
+            valid_token=UserAPIKeyAuth(api_key="hashed-non-admin-key"),
+            request_data={},
+        )
+
+
+class TestUnmatchedPinFailsFastAs400:
+    """Round-1 P2 regression guard: a pin tag that matches no deployment must
+    surface immediately (no retry burn) as a 400 naming the model and the
+    pin tag — not a seconds-late 401."""
+
+    @staticmethod
+    def _unmatched_router() -> "litellm.Router":
+        return litellm.Router(
+            model_list=[
+                {
+                    "model_name": "deepseek-v4",
+                    "litellm_params": {
+                        "model": "openai/deepseek-v4",
+                        "api_key": "sk-fake",
+                        "api_base": "http://127.0.0.1:1/nope",
+                        "tags": ["pin:baseten"],
+                    },
+                }
+            ],
+            enable_tag_filtering=True,
+            tag_filtering_match_any=False,
+            num_retries=2,
+        )
+
+    @pytest.mark.asyncio
+    async def test_router_raises_non_retryable_400_fast(self):
+        """Reviewer repro: num_retries=2, tag filtering on, no matching
+        deployment. Before the fix this was a plain ValueError retried for
+        ~5s; it must now be a BadRequestError(400) in well under a second
+        (loose <2s bound to stay CI-safe while still failing the retried
+        path, which cannot finish that fast)."""
+        router = self._unmatched_router()
+        start = time.perf_counter()
+        with pytest.raises(litellm.BadRequestError) as exc_info:
+            await router.acompletion(
+                model="deepseek-v4",
+                messages=[{"role": "user", "content": "hi"}],
+                metadata={"tags": ["pin:fireworks"]},
+            )
+        elapsed = time.perf_counter() - start
+        assert elapsed < 2.0, f"unmatched pin took {elapsed:.2f}s to surface — retries are burning again"
+        assert exc_info.value.status_code == 400
+        assert "deepseek-v4" in str(exc_info.value)
+        assert "pin:fireworks" in str(exc_info.value)
+
+    def test_proxy_exception_maps_tag_routing_to_400_not_401(self):
+        from litellm.proxy._types import ProxyException
+        from litellm.types.router import RouterErrors
+
+        exc = ProxyException(
+            message=f"{RouterErrors.no_deployments_with_tag_routing.value}. Passed model=m and tags=['pin:x']",
+            type="bad_request_error",
+            param=None,
+            code=400,
+        )
+        assert exc.code == "400"
+
+    def test_proxy_surfaces_400_with_model_and_pin_tag(self, pinned_app, monkeypatch):
+        """Proxy-level: POST to a pinned route whose pin matches no
+        deployment must return HTTP 400 (not 401), and the body must name
+        the model and the pin tag."""
+        import litellm.proxy.proxy_server as proxy_server_module
+
+        monkeypatch.setattr(proxy_server_module, "llm_router", self._unmatched_router())
+        start = time.perf_counter()
+        resp = _post(
+            pinned_app,
+            "/fireworks/v1/chat/completions",
+            {"model": "deepseek-v4", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        elapsed = time.perf_counter() - start
+        assert resp.status_code == 400, f"expected 400, got {resp.status_code}: {resp.text}"
+        assert "deepseek-v4" in resp.text
+        assert "pin:fireworks" in resp.text
+        assert elapsed < 2.0, f"unmatched pin took {elapsed:.2f}s to surface at the proxy"
+
+
+class TestPinnedPrefixDenylist:
+    """Round-1 P2 regression guard: openai/anthropic are real litellm
+    provider names, but /openai/* and /anthropic/* are live credentialed
+    pass-through surfaces — pinning them would shadow those trees, so they
+    are warn+skipped even when configured."""
+
+    @pytest.mark.parametrize("denied", ["openai", "anthropic"])
+    def test_denylisted_prefix_skipped(self, denied):
+        app = FastAPI()
+        registered = initialize_pinned_provider_routes(
+            app=app,
+            general_settings={PINNED_PROVIDER_ROUTES_SETTING: [denied, "bedrock"]},
+        )
+        assert registered == ["/bedrock/v1/chat/completions", "/bedrock/v1/messages"]
+        assert not any(getattr(r, "path", "").startswith(f"/{denied}/") for r in app.router.routes)
+
+
+class TestMessagesDialectWarmup:
+    """Round-1 P3(a) regression guard: registering any messages-dialect
+    route must schedule the heavy anthropic_endpoints import on the default
+    executor (off the event loop), mirroring _lazy_features._force_load."""
+
+    def test_registration_schedules_executor_warmup(self, monkeypatch):
+        fake_loop = MagicMock()
+        monkeypatch.setattr(asyncio, "get_running_loop", lambda: fake_loop)
+
+        app = FastAPI()
+        registered = initialize_pinned_provider_routes(
+            app=app,
+            general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]},
+        )
+        assert "/bedrock/v1/messages" in registered
+        fake_loop.run_in_executor.assert_called_once_with(
+            None, importlib.import_module, "litellm.proxy.anthropic_endpoints.endpoints"
+        )
+
+    def test_no_warmup_when_nothing_registered(self, monkeypatch):
+        fake_loop = MagicMock()
+        monkeypatch.setattr(asyncio, "get_running_loop", lambda: fake_loop)
+
+        app = FastAPI()
+        assert initialize_pinned_provider_routes(app=app, general_settings={}) == []
+        fake_loop.run_in_executor.assert_not_called()
+
+
+class TestReinitializeRemovesStaleRoutes:
+    """Round-1 P3(b) regression guard: a config reload that drops a provider
+    (or the whole setting) must remove its previously-registered routes."""
+
+    @staticmethod
+    def _pinned_paths(app) -> set:
+        return _pinned_paths_of(app)
+
+    def test_add_then_remove_then_reload_drops_stale_route(self):
+        app = FastAPI()
+        first = initialize_pinned_provider_routes(
+            app=app,
+            general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock", "baseten"]},
+        )
+        assert len(first) == 4
+
+        second = initialize_pinned_provider_routes(
+            app=app,
+            general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]},
+        )
+        assert second == []  # bedrock already registered; nothing new
+        assert self._pinned_paths(app) == {"/bedrock/v1/chat/completions", "/bedrock/v1/messages"}
+
+    def test_reload_without_setting_drops_all_pinned_routes(self):
+        app = FastAPI()
+        initialize_pinned_provider_routes(
+            app=app,
+            general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]},
+        )
+        assert self._pinned_paths(app)
+        assert initialize_pinned_provider_routes(app=app, general_settings={}) == []
+        assert self._pinned_paths(app) == set()
+
+    def test_invalid_reload_value_still_removes_stale_routes(self):
+        """Codex re-review P2-C: a hot reload whose ``pinned_provider_routes`` is
+        a non-list (rejected config) must STILL drop previously-registered
+        routes — not leave stale endpoints live behind the rejected value.
+        Mutation-verify: restore the early ``return []`` before cleanup and the
+        stale routes survive the rejected reload."""
+        app = FastAPI()
+        initialize_pinned_provider_routes(app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]})
+        assert self._pinned_paths(app) == {"/bedrock/v1/chat/completions", "/bedrock/v1/messages"}
+
+        # Reload with a malformed non-list string value -> rejected, cleanup runs.
+        assert (
+            initialize_pinned_provider_routes(app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: "bedrock"})
+            == []
+        )
+        assert self._pinned_paths(app) == set(), "stale routes survived a rejected non-list (str) reload"
+
+        # Also robust for a non-string non-list value (e.g. int).
+        initialize_pinned_provider_routes(app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["baseten"]})
+        assert self._pinned_paths(app)
+        assert initialize_pinned_provider_routes(app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: 5}) == []
+        assert self._pinned_paths(app) == set(), "stale routes survived a rejected non-list (int) reload"
+
+    def test_reload_can_reregister_a_removed_provider(self):
+        app = FastAPI()
+        initialize_pinned_provider_routes(
+            app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock", "baseten"]}
+        )
+        initialize_pinned_provider_routes(app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]})
+        third = initialize_pinned_provider_routes(
+            app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock", "baseten"]}
+        )
+        assert third == ["/baseten/v1/chat/completions", "/baseten/v1/messages"]
+        assert self._pinned_paths(app) == {
+            "/bedrock/v1/chat/completions",
+            "/bedrock/v1/messages",
+            "/baseten/v1/chat/completions",
+            "/baseten/v1/messages",
+        }
+
+
+class TestAppScopedRouteRegistry:
+    """The pinned-route bookkeeping lives on ``app.state`` as a registry of
+    the actual route OBJECTS (identity-based). These guard the properties the
+    old per-endpoint marker existed for: only routes the module itself
+    registered are ever removed, and two apps never contaminate each other."""
+
+    def test_user_route_at_same_path_is_never_removed(self):
+        """Round-2-verified property: a USER route mounted at a pinned path
+        is never touched — not shadowed at registration (idempotency check)
+        and not removed by reload hygiene (identity check)."""
+        app = FastAPI()
+
+        async def user_handler():
+            return {"who": "user"}
+
+        app.post("/bedrock/v1/chat/completions")(user_handler)
+
+        registered = initialize_pinned_provider_routes(
+            app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]}
+        )
+        # The chat path is already taken by the user's literal route ->
+        # only the messages route is registered.
+        assert registered == ["/bedrock/v1/messages"]
+
+        # Reload with the setting dropped: removes ONLY the module's route.
+        assert initialize_pinned_provider_routes(app=app, general_settings={}) == []
+        user_routes = [r for r in app.router.routes if getattr(r, "path", None) == "/bedrock/v1/chat/completions"]
+        assert len(user_routes) == 1
+        assert isinstance(user_routes[0], APIRoute) and user_routes[0].endpoint is user_handler
+        assert not any(getattr(r, "path", None) == "/bedrock/v1/messages" for r in app.router.routes)
+
+    def test_two_apps_have_independent_registries(self):
+        """No cross-app contamination: two FastAPI() instances each get their
+        own ``app.state`` registry, so a reload on one cannot see (or remove)
+        the other's pinned routes."""
+        app_a = FastAPI()
+        app_b = FastAPI()
+        initialize_pinned_provider_routes(app=app_a, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]})
+        initialize_pinned_provider_routes(
+            app=app_b, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock", "baseten"]}
+        )
+        assert _pinned_route_registry(app_a) is not _pinned_route_registry(app_b)
+
+        # Dropping app_a's routes must not touch app_b.
+        assert initialize_pinned_provider_routes(app=app_a, general_settings={}) == []
+        assert _pinned_paths_of(app_a) == set()
+        assert _pinned_route_registry(app_a) == {}
+        assert _pinned_paths_of(app_b) == {
+            "/bedrock/v1/chat/completions",
+            "/bedrock/v1/messages",
+            "/baseten/v1/chat/completions",
+            "/baseten/v1/messages",
+        }
+
+    def test_registry_prunes_externally_removed_routes(self):
+        """A pinned route someone else stripped from app.router.routes must
+        be pruned from the registry on the next init — and the path becomes
+        registrable again."""
+        app = FastAPI()
+        initialize_pinned_provider_routes(app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]})
+        app.router.routes[:] = [r for r in app.router.routes if getattr(r, "path", None) != "/bedrock/v1/messages"]
+
+        registered = initialize_pinned_provider_routes(
+            app=app, general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]}
+        )
+        assert registered == ["/bedrock/v1/messages"]
+        assert _pinned_paths_of(app) == {"/bedrock/v1/chat/completions", "/bedrock/v1/messages"}
+        # Every registry entry refers to a live, mounted route object.
+        live_ids = {id(r) for r in app.router.routes}
+        assert set(_pinned_route_registry(app)) <= live_ids
+
+
+# ---------------------------------------------------------------------------
+# Codex R4 CONVERGENCE MATRIX. The pinned routing decision derives SOLELY from
+# one server-authoritative signal (the provider from the URL), read by the tag
+# router with absolute priority. This exhaustive adversarial matrix is the
+# convergence proof: for every provider x dialect x metadata-encoding (dict AND
+# JSON-string) x decoy-bucket-placement, a client sending EVERY hostile field
+# (pin:otherprovider, _original_request_tags, a forged _pinned_provider_route,
+# team:x, spend_logs_metadata, user_id) still yields a router-visible pinned
+# routing tag of EXACTLY [pin:<url-provider>], while legitimate non-routing
+# fields (user_id / spend_logs_metadata) survive to a real bucket.
+#
+# Mutation-verify the trusted-signal override two ways:
+#   1. In tag_based_routing._resolve_request_tags, drop the PINNED_PROVIDER_ROUTE
+#      _KEY branch -> the forged pin/tags leak into routing and the string-encoded
+#      + team-tag cells fail.
+#   2. In add_litellm_data_to_request, delete the request.state re-assert -> the
+#      signal is absent and forged client fields drive routing again.
+# ---------------------------------------------------------------------------
+
+
+# Every hostile control a client could plant to try to redirect a pinned request.
+_ADVERSARIAL_META = {
+    "tags": ["pin:otherprovider", "team:x"],
+    "_original_request_tags": ["pin:otherprovider"],
+    "_original_request_tags_snapshotted": True,
+    "_pinned_provider_route": "otherprovider",
+    "spend_logs_metadata": {"trace": "adv"},
+    "user_id": "u-adv",
+}
+
+
+def _encode_bucket(as_string: bool):
+    payload = dict(_ADVERSARIAL_META)
+    return json.dumps(payload) if as_string else payload
+
+
+class TestConvergenceMatrixNoClientInputChangesPinnedRouting:
+    @pytest.mark.parametrize("provider", PINNED_PROVIDERS)
+    @pytest.mark.parametrize("suffix", ["/v1/chat/completions", "/v1/messages"])
+    @pytest.mark.parametrize("as_string", [False, True], ids=["dict", "jsonstring"])
+    @pytest.mark.parametrize("decoy_buckets", [("metadata",), ("litellm_metadata",), ("metadata", "litellm_metadata")])
+    def test_router_sees_exactly_the_url_pin_and_fields_survive(
+        self, pinned_app, capture, provider, suffix, as_string, decoy_buckets
+    ):
+        path = f"/{provider}{suffix}"
+        body = {"model": "some-model", "messages": [{"role": "user", "content": "hi"}]}
+        if suffix == "/v1/messages":
+            body["max_tokens"] = 16
+        # Plant every hostile control at the body root AND in the chosen bucket(s),
+        # in the chosen encoding (dict or JSON-string).
+        body["tags"] = ["pin:otherprovider", "team:x"]
+        body["_original_request_tags"] = ["pin:otherprovider"]
+        body["_pinned_provider_route"] = "otherprovider"
+        for bucket in decoy_buckets:
+            body[bucket] = _encode_bucket(as_string)
+
+        resp = _post(pinned_app, path, body)
+        assert resp.status_code == 200, resp.text
+
+        routing_tags, updated = _router_pinned_tags(capture["body"], path, _aliased_provider(provider))
+
+        # (1) NO client input changed the pinned routing decision.
+        assert routing_tags == [EXPECTED_PIN_TAGS[provider]], (
+            f"{path} enc={'str' if as_string else 'dict'} decoy={decoy_buckets}: "
+            f"router saw {routing_tags}, expected [{EXPECTED_PIN_TAGS[provider]}]"
+        )
+
+        # (2) The trusted signal in the router's bucket is the URL provider, never
+        # the client's forged "otherprovider".
+        from litellm.litellm_core_utils.core_helpers import get_metadata_variable_name_from_kwargs
+
+        router_field = get_metadata_variable_name_from_kwargs(updated)
+        assert updated[router_field]["_pinned_provider_route"] == _aliased_provider(provider)
+
+        # (3) No client routing control leaked into either final bucket.
+        both = {**(updated.get("metadata") or {}), **(updated.get("litellm_metadata") or {})}
+        assert "_original_request_tags" not in both
+        assert "_original_request_tags_snapshotted" not in both
+
+        # (4) Legitimate non-routing fields survive to a real bucket.
+        assert both.get("user_id") == "u-adv"
+        assert both.get("spend_logs_metadata") == {"trace": "adv"}
+
+        # (5) The key's team tag reached the router-visible bucket for SPEND
+        # ATTRIBUTION (and the forged client "pin:otherprovider" did not) —
+        # proving attribution is intact even though routing ignored the tag.
+        attribution_tags = updated[router_field].get("tags") or []
+        assert _ATTRIBUTION_TEAM_TAG in attribution_tags
+        assert "pin:otherprovider" not in attribution_tags
+
+    def test_body_root_only_forged_signal_is_ignored(self, pinned_app, capture):
+        """Even with the forged signal ONLY at the body root (no metadata bucket),
+        routing is the URL pin — the router reads the metadata bucket, never root."""
+        path = "/fireworks/v1/chat/completions"
+        body = {
+            "model": "m",
+            "messages": [],
+            "_pinned_provider_route": "bedrock",
+            "_original_request_tags": ["pin:bedrock"],
+            "tags": ["pin:bedrock"],
+        }
+        resp = _post(pinned_app, path, body)
+        assert resp.status_code == 200
+        routing_tags, _ = _router_pinned_tags(capture["body"], path, _aliased_provider("fireworks"))
+        assert routing_tags == ["pin:fireworks"]
+
+    @pytest.mark.parametrize("bucket", ["metadata", "litellm_metadata"])
+    def test_unified_route_strips_client_forged_signal(self, bucket):
+        """Requirement 4 defense: on a UNIFIED route (no pinned handler, no
+        request.state pin) a client-planted ``_pinned_provider_route`` in either
+        metadata bucket must be STRIPPED by add_litellm_data_to_request, so it can
+        never forge a pin and hijack normal tag routing.
+
+        Mutation-verify: remove PINNED_PROVIDER_ROUTE_KEY from
+        ``_UNTRUSTED_METADATA_CONTROL_FIELDS`` -> the forged signal survives and
+        the router would route to the client's ``bedrock`` pin."""
+        from litellm.litellm_core_utils.core_helpers import get_metadata_variable_name_from_kwargs
+        from litellm.router_strategy.tag_based_routing import _resolve_request_tags
+
+        path = "/v1/chat/completions"  # no provider prefix -> unified, no pin
+        body = {"model": "m", "messages": [], bucket: {"_pinned_provider_route": "bedrock", "tags": ["team:x"]}}
+        updated = _run_add_litellm_data(body, path)
+        for field in ("metadata", "litellm_metadata"):
+            assert "_pinned_provider_route" not in (updated.get(field) or {})
+        router_field = get_metadata_variable_name_from_kwargs(updated)
+        assert _resolve_request_tags(updated.get(router_field) or {}) != ["pin:bedrock"]
