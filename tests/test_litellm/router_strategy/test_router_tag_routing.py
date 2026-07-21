@@ -1115,3 +1115,156 @@ async def test_request_level_enable_tag_filtering_false_cannot_disable_global():
             mock_response="hi",
         )
         assert response._hidden_params["model_id"] == "team-a-deployment"
+
+
+# ---------------------------------------------------------------------------
+# Regression: a SELECTED deployment's own tags must never leak into the routing
+# decision on a later attempt.
+#
+# Upstream (PR #20769) merges the selected deployment's litellm_params["tags"]
+# into metadata["tags"] for spend attribution, in _update_kwargs_with_deployment.
+# That kwargs dict is REUSED across retries and fallbacks, so on the next attempt
+# get_deployments_for_tag would re-read the leaked deployment tag as if the caller
+# had sent it — filtering an untagged request down to just the failing provider
+# and breaking cross-provider fallback / same-group weighted retry.
+#
+# The fix snapshots the caller's ORIGINAL request tags once, before any
+# per-deployment merge (Router._update_kwargs_before_fallbacks), into
+# ORIGINAL_REQUEST_TAGS_KEY; get_deployments_for_tag prefers that snapshot.
+# Reverting the snapshot-preference in get_deployments_for_tag makes
+# test_deployment_tags_do_not_leak_into_cross_provider_fallback fail.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio()
+async def test_deployment_tags_do_not_leak_into_cross_provider_fallback():
+    """UNTAGGED request whose tagged primary group fails must fall back across
+    providers. Before the fix, the primary deployment's `pin:azure` tag leaked
+    into metadata["tags"] and the fallback group (tagged `pin:openai`) was
+    rejected as not-a-subset, so the untagged request failed instead of failing
+    over. This is the MUTATION-sensitive test."""
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "primary",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["pin:azure"],
+                    "mock_response": Exception("simulated azure failure"),
+                },
+                "model_info": {"id": "azure-dep"},
+            },
+            {
+                "model_name": "secondary",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["pin:openai"],
+                    "mock_response": "OK-FROM-OPENAI",
+                },
+                "model_info": {"id": "openai-dep"},
+            },
+        ],
+        fallbacks=[{"primary": ["secondary"]}],
+        enable_tag_filtering=True,
+        tag_filtering_match_any=False,
+        num_retries=0,
+    )
+
+    # No tags in the request: the pin tags belong to the DEPLOYMENTS, not the
+    # caller. The untagged request must be free to fall back to `secondary`.
+    response = await router.acompletion(
+        model="primary",
+        messages=[{"role": "user", "content": "hi"}],
+        metadata={},
+    )
+    assert response._hidden_params["model_id"] == "openai-dep"
+
+
+@pytest.mark.asyncio()
+async def test_deployment_tags_do_not_leak_into_same_group_weighted_retry():
+    """UNTAGGED request in a single model group whose weight-forced primary leg
+    always fails must retry onto the healthy other-provider leg. Before the fix
+    the failing leg's `pin:azure` tag leaked and filtered the retry down to just
+    that leg, so the healthy `pin:openai` leg became unreachable."""
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["pin:azure"],
+                    "weight": 1000,
+                    "mock_response": Exception("fail azure"),
+                },
+                "model_info": {"id": "azure-dep"},
+            },
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["pin:openai"],
+                    "weight": 1,
+                    "mock_response": "OK-RETRY-OPENAI",
+                },
+                "model_info": {"id": "openai-dep"},
+            },
+        ],
+        enable_tag_filtering=True,
+        tag_filtering_match_any=False,
+        num_retries=3,
+        routing_strategy="simple-shuffle",
+        # Weighted intra-group failover excludes the just-failed deployment on
+        # retry; that exclusion re-selects through get_deployments_for_tag, so it
+        # only reaches the healthy leg once the leaked tag no longer filters it out.
+        enable_weighted_failover=True,
+    )
+
+    response = await router.acompletion(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        metadata={},
+    )
+    assert response._hidden_params["model_id"] == "openai-dep"
+
+
+@pytest.mark.asyncio()
+async def test_genuine_pin_still_enforced_and_fails_loud_when_no_matching_leg():
+    """The snapshot must NOT weaken a genuine pin. A request whose ORIGINAL tags
+    are `[pin:bedrock]` (as the proxy's pinned route sets pre-routing) must still
+    filter strictly to a bedrock leg — and, when no bedrock leg exists, fail loud
+    with the tag-routing error rather than silently spilling to another provider."""
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["pin:azure"],
+                    "mock_response": "should-never-be-reached",
+                },
+                "model_info": {"id": "azure-dep"},
+            },
+        ],
+        enable_tag_filtering=True,
+        tag_filtering_match_any=False,
+        num_retries=0,
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await router.acompletion(
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            # The pin tag is present in metadata pre-routing, exactly as the
+            # proxy's pinned handler sets it; the snapshot must capture it so
+            # strict subset matching still applies.
+            metadata={"tags": ["pin:bedrock"]},
+        )
+
+    from litellm.types.router import RouterErrors
+
+    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)

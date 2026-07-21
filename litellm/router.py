@@ -90,6 +90,7 @@ from litellm.router_strategy.lowest_tpm_rpm import LowestTPMLoggingHandler
 from litellm.router_strategy.lowest_tpm_rpm_v2 import LowestTPMLoggingHandler_v2
 from litellm.router_strategy.simple_shuffle import simple_shuffle
 from litellm.router_strategy.tag_based_routing import (
+    ORIGINAL_REQUEST_TAGS_KEY,
     _get_tags_from_request_kwargs,
     get_deployments_for_tag,
     is_valid_deployment_tag,
@@ -428,12 +429,8 @@ class _RefusalStreamHold:
         content = getattr(delta, "content", None)
         refusal = getattr(delta, "refusal", None)
         reasoning = getattr(delta, "reasoning_content", None)
-        text = (content if isinstance(content, str) else "") + (
-            refusal if isinstance(refusal, str) else ""
-        )
-        saw_tool_call = bool(getattr(delta, "tool_calls", None)) or bool(
-            getattr(delta, "function_call", None)
-        )
+        text = (content if isinstance(content, str) else "") + (refusal if isinstance(refusal, str) else "")
+        saw_tool_call = bool(getattr(delta, "tool_calls", None)) or bool(getattr(delta, "function_call", None))
         return text, len(reasoning) if isinstance(reasoning, str) else 0, saw_tool_call
 
     @staticmethod
@@ -531,9 +528,7 @@ async def _maybe_abandon_refused_stream_source(e: Any, source: Any, log_label: s
             try:
                 await source.aclose()
             except BaseException as close_err:  # noqa: BLE001 — shielded cleanup must never raise
-                verbose_router_logger.debug(
-                    "%s: error closing refused source: %s", log_label, close_err
-                )
+                verbose_router_logger.debug("%s: error closing refused source: %s", log_label, close_err)
     try:
         source.completed_response = None
     except (AttributeError, TypeError):
@@ -1320,9 +1315,7 @@ class Router:
                 )
             return self._override_selectors[strategy]
 
-    def _get_routing_context(
-        self, model: str, request_kwargs: dict | None = None
-    ) -> tuple[str | None, Any | None]:
+    def _get_routing_context(self, model: str, request_kwargs: dict | None = None) -> tuple[str | None, Any | None]:
         """
         Resolves the routing strategy and selector to use for the given model.
 
@@ -2792,9 +2785,7 @@ class Router:
 
         async def stream_with_fallbacks():
             fallback_response = None
-            refusal_hold = self._refusal_stream_hold_for_call(
-                initial_kwargs, hold_cls=_ResponsesRefusalStreamHold
-            )
+            refusal_hold = self._refusal_stream_hold_for_call(initial_kwargs, hold_cls=_ResponsesRefusalStreamHold)
             try:
                 async for item in source_iterator:
                     for released_item in refusal_hold.process(item):
@@ -3238,9 +3229,20 @@ class Router:
         model_group_alias: Optional[str] = None
         if self._get_model_from_alias(model=model):
             model_group_alias = model
-        kwargs.setdefault(metadata_variable_name, {}).update(
-            {"model_group": model, "model_group_alias": model_group_alias}
-        )
+        _metadata = kwargs.setdefault(metadata_variable_name, {})
+        _metadata.update({"model_group": model, "model_group_alias": model_group_alias})
+        # Snapshot the caller's ORIGINAL request tags exactly once, before the
+        # first deployment is selected and before _update_kwargs_with_deployment
+        # merges the selected deployment's own tags into metadata["tags"] for
+        # spend attribution. This hook runs once per request at the model-group
+        # level, ahead of every _update_kwargs_with_deployment call site (see
+        # _acompletion / completion / *_with_fallbacks), so the tags read here are
+        # still exactly what the caller sent — the pin tag for a pinned request,
+        # nothing for an untagged one. setdefault makes it idempotent: the capture
+        # survives kwargs reuse across retries/fallbacks and is never overwritten
+        # by a leaked deployment tag. Tag-based routing reads this in preference to
+        # the live metadata["tags"] (see get_deployments_for_tag).
+        _metadata.setdefault(ORIGINAL_REQUEST_TAGS_KEY, list(_metadata.get("tags") or []))
 
     def _set_deployment_num_retries_on_exception(self, exception: Exception, deployment: dict) -> None:
         """
@@ -7520,9 +7522,7 @@ class Router:
             # of half-working detection.
             patterns = []
         if patterns and isinstance(model_group, str):
-            content_policy_fallbacks = initial_kwargs.get(
-                "content_policy_fallbacks", self.content_policy_fallbacks
-            )
+            content_policy_fallbacks = initial_kwargs.get("content_policy_fallbacks", self.content_policy_fallbacks)
             if content_policy_fallbacks and self._get_fallback_model_group_from_fallbacks(
                 fallbacks=content_policy_fallbacks, model_group=model_group
             ):
@@ -7542,9 +7542,8 @@ class Router:
         Else, original response is returned.
         """
         if response.choices and len(response.choices) > 0:
-            if (
-                response.choices[0].finish_reason != "content_filter"
-                and not _completion_matches_refusal_patterns(response)
+            if response.choices[0].finish_reason != "content_filter" and not _completion_matches_refusal_patterns(
+                response
             ):
                 return False
 
@@ -9171,9 +9170,7 @@ class Router:
         # to the right one. Without this hint, get_model_info() silently returns
         # whichever entry it finds first for the bare name.
         deployment = self.get_deployment(model_id=model_id) if model_id else None
-        custom_llm_provider = (
-            deployment.litellm_params.custom_llm_provider if deployment is not None else None
-        )
+        custom_llm_provider = deployment.litellm_params.custom_llm_provider if deployment is not None else None
 
         try:
             litellm_model_name_model_info = litellm.get_model_info(

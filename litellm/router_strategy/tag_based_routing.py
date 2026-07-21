@@ -13,6 +13,15 @@ import litellm
 from litellm._logging import verbose_logger
 from litellm.types.router import RouterErrors
 
+# Neutral internal metadata key holding a snapshot of the CALLER's original
+# request tags, captured once per request (before any per-deployment tag merge)
+# by ``Router._update_kwargs_before_fallbacks``. Tag-based routing prefers this
+# snapshot over the live ``metadata["tags"]`` so a selected deployment's tags —
+# merged into ``metadata["tags"]`` by ``_update_kwargs_with_deployment`` for
+# spend attribution, then reused across retries/fallbacks — can never leak back
+# in as routing input on a later attempt (see get_deployments_for_tag).
+ORIGINAL_REQUEST_TAGS_KEY = "_original_request_tags"
+
 if TYPE_CHECKING:
     from litellm.router import Router as _Router
 
@@ -169,6 +178,25 @@ def _ban_only_base_pool(
     return defaults if defaults else list(deployments)
 
 
+def _resolve_request_tags(metadata: dict[Any, Any]) -> Any:
+    """Return the caller's ORIGINAL request tags to route on.
+
+    Prefers the pre-merge snapshot (``ORIGINAL_REQUEST_TAGS_KEY``) captured once
+    per request by ``Router._update_kwargs_before_fallbacks``, so a selected
+    deployment's own tags — merged into ``metadata["tags"]`` by
+    ``_update_kwargs_with_deployment`` for spend attribution, then reused as the
+    kwargs dict is reused across retries/fallbacks — can never leak back in as
+    routing input on a later attempt (which would reject every other-provider
+    deployment). The snapshot is the request as the caller sent it: the pin tag
+    for a pinned request, ``[]`` for an untagged one. Falls back to the live
+    ``metadata["tags"]`` for back-compat when no snapshot was taken (e.g. direct
+    router use in tests that bypasses ``_update_kwargs_before_fallbacks``).
+    """
+    if ORIGINAL_REQUEST_TAGS_KEY in metadata:
+        return metadata.get(ORIGINAL_REQUEST_TAGS_KEY)
+    return metadata.get("tags")
+
+
 async def get_deployments_for_tag(
     llm_router_instance: LitellmRouter,
     model: str,  # used to raise the correct error
@@ -204,7 +232,7 @@ async def get_deployments_for_tag(
     verbose_logger.debug("request metadata: %s", request_kwargs.get(metadata_variable_name))
     if metadata_variable_name in request_kwargs:
         metadata = request_kwargs[metadata_variable_name]
-        request_tags = metadata.get("tags")
+        request_tags = _resolve_request_tags(metadata)
         match_any = llm_router_instance.tag_filtering_match_any
 
         # Build header strings for regex matching from what the proxy already stores.
