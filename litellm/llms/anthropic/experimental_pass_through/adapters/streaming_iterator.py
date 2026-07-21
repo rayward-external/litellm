@@ -413,6 +413,22 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                 if should_start_new_block:
                     self._increment_content_block_index()
 
+                # Azure OpenAI emits chunks with an EMPTY ``choices`` list
+                # (content-filter / prompt-annotations chunks, and the usage-only
+                # final chunk). They start no content block and must not be fed to
+                # the translate layer or ``chunk.choices[0]`` below (IndexError). If
+                # such a chunk carries usage and we are holding the final
+                # ``message_delta``, merge the usage in so it still reaches the
+                # client; otherwise skip it without disturbing the terminal sequence.
+                if not chunk.choices:
+                    if self.holding_stop_reason_chunk is not None and getattr(chunk, "usage", None) is not None:
+                        merged_chunk = self._merge_usage_into_held_stop_reason_chunk(chunk)
+                        self.chunk_queue.append(merged_chunk)
+                        self.queued_usage_chunk = True
+                        self.holding_stop_reason_chunk = None
+                        return self.chunk_queue.popleft()
+                    continue
+
                 # applied_edits only needs to flow to the final message_delta
                 # (when finish_reason is set); skip threading it through every
                 # intermediate chunk. For the hold-and-merge path below,
@@ -635,6 +651,22 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                 should_start_new_block = self._should_start_new_content_block(chunk)
                 if should_start_new_block:
                     self._increment_content_block_index()
+
+                # Azure OpenAI emits chunks with an EMPTY ``choices`` list
+                # (content-filter / prompt-annotations chunks, and the usage-only
+                # final chunk). They start no content block and must not be fed to
+                # the translate layer or ``chunk.choices[0]`` below (IndexError). If
+                # such a chunk carries usage and we are holding the final
+                # ``message_delta``, merge the usage in so it still reaches the
+                # client; otherwise skip it without disturbing the terminal sequence.
+                if not chunk.choices:
+                    if self.holding_stop_reason_chunk is not None and getattr(chunk, "usage", None) is not None:
+                        merged_chunk = self._merge_usage_into_held_stop_reason_chunk(chunk)
+                        self.chunk_queue.append(merged_chunk)
+                        self.queued_usage_chunk = True
+                        self.holding_stop_reason_chunk = None
+                        return self.chunk_queue.popleft()
+                    continue
 
                 # applied_edits only needs to flow to the final message_delta
                 # (when finish_reason is set); skip threading it through every
@@ -886,6 +918,13 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
         - Specific markers in the content
         """
         from .transformation import LiteLLMAnthropicMessagesAdapter
+
+        # Azure OpenAI streams can emit chunks with an EMPTY ``choices`` list
+        # (content-filter / prompt-annotations chunks, and the usage-only final
+        # chunk). Such a chunk starts no content block — bail before touching
+        # ``chunk.choices[0]``, which would otherwise raise IndexError.
+        if not chunk.choices:
+            return False
 
         # Example logic - customize based on your needs:
         # If chunk indicates a tool call
