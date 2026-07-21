@@ -2204,6 +2204,32 @@ class Router:
             _is_prompt_management_model = self._is_prompt_management_model(model)
 
             if _is_prompt_management_model:
+                # HARD PROVIDER-PIN vs PROMPT-MANAGEMENT (P1 + P2 @ descriptor commit).
+                # A hard provider pin and prompt-managed model resolution are
+                # incompatible, and we do not use prompt management on pinned routes.
+                # Prompt management (a) can resolve to a DIFFERENT, potentially
+                # cross-provider model, and (b) lets the prompt manager's
+                # optional_params overwrite kwargs["metadata"] in
+                # _prompt_management_factory — ERASING the trusted pin signal and
+                # defeating BOTH the in-factory guard and the deployment chokepoint.
+                # It also commits a prompt-management DESCRIPTOR deployment (config used
+                # to RESOLVE a prompt, not the upstream LLM leg) to the chokepoint,
+                # which would false-positive when that descriptor lacks pin:<provider>.
+                # Close the whole class at the ENTRY — before the factory runs, before
+                # any optional_params merge, and before the descriptor is committed — by
+                # refusing a pinned request to a prompt-managed model with the SAME
+                # non-retryable 400 the chokepoint raises. Reading the pin here (before
+                # the factory's merge) cannot be evaded by optional_params. NON-pinned
+                # prompt management is a pure no-op (guard fires only when a trusted pin
+                # is present), so unified behaviour is byte-for-byte unchanged.
+                pinned_provider = _pinned_provider_from_kwargs(kwargs, "metadata") or _pinned_provider_from_kwargs(
+                    kwargs, "litellm_metadata"
+                )
+                if pinned_provider is not None:
+                    _raise_no_deployments_for_tags(
+                        model=(f"pinned provider {pinned_provider} does not support prompt-managed model {model}"),
+                        request_tags=[PIN_TAG_PREFIX + pinned_provider],
+                    )
                 return await self._prompt_management_factory(
                     model=model,
                     messages=messages,
@@ -4029,27 +4055,10 @@ class Router:
 
         _model_list = self.get_model_list(model_name=model)
         if _model_list is None or len(_model_list) == 0:  # if direct call to model
-            # HARD PROVIDER-PIN CHOKEPOINT (P1). A prompt-managed request can
-            # resolve to a model that is NOT a router group (served below via a
-            # direct litellm.acompletion), which bypasses
-            # _update_kwargs_with_deployment's pin re-assertion entirely. A
-            # non-router direct model carries no pin:<provider> tag and so cannot
-            # honor the URL-derived pin — serving it would silently reroute a
-            # pinned request off-provider while attribution still says pin:<x>.
-            # When the trusted pin is present, fail loud with the SAME
-            # non-retryable 400 the chokepoint raises; when absent, the direct
-            # call below is byte-for-byte unchanged.
-            pinned_provider = _pinned_provider_from_kwargs(kwargs, "metadata") or _pinned_provider_from_kwargs(
-                kwargs, "litellm_metadata"
-            )
-            if pinned_provider is not None:
-                _raise_no_deployments_for_tags(
-                    model=(
-                        f"pinned provider {pinned_provider} cannot serve prompt-managed "
-                        f"direct model {model} (no router deployment)"
-                    ),
-                    request_tags=[PIN_TAG_PREFIX + pinned_provider],
-                )
+            # A pinned request can never reach here: the acompletion entry guard
+            # rejects a pinned prompt-management model before this factory runs
+            # (see acompletion). So the URL-derived pin cannot be silently dropped
+            # by a direct (non-router) resolution, and this branch stays vanilla.
             kwargs.pop("original_function")
             return await litellm.acompletion(**kwargs)
 

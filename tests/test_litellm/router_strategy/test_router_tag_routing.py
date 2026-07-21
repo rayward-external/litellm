@@ -2149,92 +2149,78 @@ async def test_fallback_winning_row_request_tags_exclude_failed_deployment_tag()
 
 
 # ---------------------------------------------------------------------------
-# PROMPT-MANAGEMENT DIRECT-CALL PIN GUARD (P1).
-# _prompt_management_factory funnels the prompt-management deployment through the
-# _update_kwargs_with_deployment chokepoint, but get_chat_completion_prompt can
-# then resolve a DIFFERENT model. When that resolved model is NOT a router group,
-# the factory used to fall through to a DIRECT litellm.acompletion — bypassing the
-# chokepoint entirely, so a request pinned to <provider> could be served by an
-# off-provider direct model while attribution still carried pin:<provider>. The
-# guard re-asserts the trusted pin at that direct-call branch: pinned -> fail loud
-# with the same non-retryable 400; unpinned -> the direct acompletion is unchanged.
-# Mutation-verify: delete the `if pinned_provider is not None:` guard in the
-# direct-model branch of _prompt_management_factory and the pinned assertion below
-# stops raising (it would be served off-provider instead).
+# PROMPT-MANAGEMENT ENTRY PIN GUARD (P1 + P2 @ descriptor commit).
+# A hard provider pin and prompt-managed (potentially cross-provider) model
+# resolution are incompatible: inside _prompt_management_factory the prompt
+# manager's optional_params can overwrite kwargs["metadata"], ERASING the trusted
+# pin signal (defeating both the in-factory guard and the deployment chokepoint),
+# and the factory commits a prompt-management DESCRIPTOR (config, not the upstream
+# LLM leg) to the chokepoint, which false-positives when the descriptor lacks the
+# pin tag. Router.acompletion closes the whole class at the ENTRY: when a prompt-
+# management model is detected AND a trusted pin is present, it fails loud with
+# the chokepoint's non-retryable 400 BEFORE the factory runs — so the factory,
+# the optional_params merge, the signal erasure, and the descriptor commit never
+# execute for a pinned request. NON-pinned prompt management is untouched.
+# Mutation-verify: delete the `if pinned_provider is not None:` entry guard in
+# acompletion and case (a) stops raising (the factory would run instead).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio()
-async def test_prompt_management_direct_model_fails_loud_when_pinned_and_serves_when_unpinned():
-    """A prompt-managed request whose prompt resolves to an OFF-ROUTER direct model
-    must fail loud (non-retryable 400 naming the model and the pin) when a trusted
-    provider pin is present, and — with NO pin — must still reach the direct
-    litellm.acompletion byte-for-byte unchanged."""
-    from unittest.mock import AsyncMock, MagicMock, patch
+async def test_prompt_management_pinned_fails_loud_at_entry_and_serves_when_unpinned():
+    """A pinned request to a prompt-management model must fail loud (non-retryable
+    400 naming the model and the pin) at the acompletion ENTRY guard — BEFORE
+    _prompt_management_factory runs, so neither the factory/prompt manager nor a
+    direct litellm.acompletion is ever reached. With NO pin the guard is a pure
+    no-op and the factory runs exactly as before."""
+    from unittest.mock import AsyncMock, patch
 
     from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
     from litellm.types.router import RouterErrors
 
-    # A prompt-management deployment that IS a pin:bedrock router leg (so it passes
-    # the chokepoint at the top of the factory), but whose prompt resolves to an
-    # off-router direct model absent from the router's model_list.
-    router = _minimal_router_for_kwargs_merge()
-    pm_dep = {
-        "model_name": "pm-model",
-        "litellm_params": {
-            "model": "bedrock/anthropic.claude",
-            "api_key": "fake",
-            "tags": ["pin:bedrock"],
-            "prompt_id": "pm-prompt",
-        },
-        "model_info": {"id": "pm-dep"},
-    }
-    router.get_available_deployment = MagicMock(return_value=pm_dep)
-
-    resolved_off_router_model = "openai/gpt-4o-direct"
-
-    def _make_logging_obj():
-        logging_obj = MagicMock()
-        logging_obj.get_chat_completion_prompt.return_value = (
-            resolved_off_router_model,
-            [{"role": "user", "content": "hi"}],
-            {},
-        )
-        return logging_obj
+    # A genuine prompt-management model: its single deployment's litellm model
+    # prefix ("langfuse") is a known custom-logger callback, so
+    # _is_prompt_management_model("pm-model") is True and acompletion routes into
+    # the prompt-management branch that carries the entry guard.
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "pm-model",
+                "litellm_params": {"model": "langfuse/my-prompt", "api_key": "fake", "prompt_id": "pm-prompt"},
+                "model_info": {"id": "pm-dep"},
+            }
+        ],
+    )
 
     messages = [{"role": "user", "content": "hi"}]
 
-    # (a) Pinned request: the off-router direct model cannot honor pin:bedrock, so
-    #     the guard fails loud with the chokepoint's non-retryable 400 — and the
-    #     direct litellm.acompletion is NEVER reached.
-    with patch("litellm.acompletion", new_callable=AsyncMock) as mock_acompletion:
-        mock_acompletion.return_value = "OK-FROM-DIRECT"
-        kwargs_pinned = {
-            "litellm_logging_obj": _make_logging_obj(),
-            "original_function": "acompletion",
-            "prompt_id": "pm-prompt",
-            "metadata": {PINNED_PROVIDER_ROUTE_KEY: "bedrock"},
-        }
+    # (a) Pinned request: the entry guard fails loud with the chokepoint's
+    #     non-retryable 400 — and NEITHER the factory NOR litellm.acompletion runs.
+    with (
+        patch.object(router, "_prompt_management_factory", new_callable=AsyncMock) as mock_factory,
+        patch("litellm.acompletion", new_callable=AsyncMock) as mock_acompletion,
+    ):
+        mock_factory.return_value = "SHOULD-NOT-RUN"
+        mock_acompletion.return_value = "SHOULD-NOT-RUN"
         with pytest.raises(litellm.BadRequestError) as exc_info:
-            await router._prompt_management_factory(model="pm-model", messages=messages, kwargs=kwargs_pinned)
+            await router.acompletion(
+                model="pm-model",
+                messages=messages,
+                metadata={PINNED_PROVIDER_ROUTE_KEY: "bedrock"},
+            )
         msg = str(exc_info.value)
         assert RouterErrors.no_deployments_with_tag_routing.value in msg
         assert "pin:bedrock" in msg
-        assert resolved_off_router_model in msg
+        assert "pm-model" in msg
         assert getattr(exc_info.value, "status_code", None) == 400
+        mock_factory.assert_not_awaited()
         mock_acompletion.assert_not_awaited()
 
-    # (b) Unpinned request: the guard is a pure no-op and the direct acompletion is
-    #     reached exactly as before.
-    with patch("litellm.acompletion", new_callable=AsyncMock) as mock_acompletion:
-        mock_acompletion.return_value = "OK-FROM-DIRECT"
-        kwargs_unpinned = {
-            "litellm_logging_obj": _make_logging_obj(),
-            "original_function": "acompletion",
-            "prompt_id": "pm-prompt",
-            "metadata": {},
-        }
-        result = await router._prompt_management_factory(model="pm-model", messages=messages, kwargs=kwargs_unpinned)
-        assert result == "OK-FROM-DIRECT"
-        mock_acompletion.assert_awaited_once()
-        assert mock_acompletion.await_args.kwargs["model"] == resolved_off_router_model
+    # (b) Unpinned request: the guard is a pure no-op and the factory runs exactly
+    #     as before (prompt-management resolution is unchanged).
+    with patch.object(router, "_prompt_management_factory", new_callable=AsyncMock) as mock_factory:
+        mock_factory.return_value = "OK-FROM-FACTORY"
+        result = await router.acompletion(model="pm-model", messages=messages)
+        assert result == "OK-FROM-FACTORY"
+        mock_factory.assert_awaited_once()
+        assert mock_factory.await_args.kwargs["model"] == "pm-model"

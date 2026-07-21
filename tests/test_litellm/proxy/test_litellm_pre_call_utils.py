@@ -226,6 +226,78 @@ async def test_add_litellm_data_to_request_parses_string_metadata():
 
 
 @pytest.mark.asyncio
+async def test_add_litellm_data_to_request_sanitizes_conflicting_pin_tags_on_pinned_route():
+    """P2: a pinned request whose key/team attribution tags carry a NON-authoritative
+    pin:* tag must NOT leave that stray pin in request_tags — it would double-count /
+    misattribute spend under a pin-grouped report. When the trusted pin signal is
+    present (set on request.state by the pinned route), the merged attribution ``tags``
+    are reduced to EXACTLY the one authoritative pin:<provider>, while ALL non-pin
+    attribution tags (cost-center:*, customer:*, …) are preserved. Routing is untouched
+    (it reads the signal, not tags).
+
+    Mutation-verify: delete the sanitize block after the pin re-assertion in
+    add_litellm_data_to_request and this test fails (pin:openai / pin:vertex_ai leak).
+    """
+    from types import SimpleNamespace
+
+    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
+
+    request_mock = MagicMock(spec=Request)
+    request_mock.url = MagicMock()
+    request_mock.url.path = "/bedrock/v1/chat/completions"
+    request_mock.url.__str__.return_value = "http://localhost/bedrock/v1/chat/completions"
+    request_mock.method = "POST"
+    request_mock.query_params = {}
+    request_mock.headers = {"Content-Type": "application/json"}
+    request_mock.client = MagicMock()
+    request_mock.client.host = "127.0.0.1"
+    # request.state is server-only; the pinned route stashed the trusted provider there.
+    request_mock.state = SimpleNamespace()
+    setattr(request_mock.state, PINNED_PROVIDER_ROUTE_KEY, "bedrock")
+
+    # Body-root tags as the pinned route left them: legit attribution + the
+    # authoritative pin. Key + team each carry a STRAY, non-authoritative pin.
+    data = {
+        "model": "claude",
+        "tags": ["cost-center:x", "pin:bedrock"],
+    }
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="hashed-key",
+        metadata={"tags": ["pin:openai", "customer:acme"]},
+        team_metadata={"tags": ["pin:vertex_ai", "team-tag:eng"]},
+        spend=0.0,
+        max_budget=100.0,
+        model_max_budget={},
+        team_spend=0.0,
+        team_max_budget=200.0,
+    )
+
+    updated = await add_litellm_data_to_request(
+        data=data,
+        request=request_mock,
+        user_api_key_dict=user_api_key_dict,
+        proxy_config=MagicMock(),
+        general_settings={},
+        version="test-version",
+    )
+
+    # The pinned /bedrock route selects the litellm_metadata bucket; read whichever
+    # bucket the proxy's own path-based selector picked so the assertion is robust.
+    bucket = _get_metadata_variable_name(request_mock)
+    tags = updated[bucket]["tags"]
+    # Exactly the authoritative pin survives the pin:* namespace.
+    assert [t for t in tags if t.startswith("pin:")] == ["pin:bedrock"]
+    assert "pin:openai" not in tags
+    assert "pin:vertex_ai" not in tags
+    # Non-pin attribution tags are all preserved.
+    assert "cost-center:x" in tags
+    assert "customer:acme" in tags
+    assert "team-tag:eng" in tags
+    # Routing signal itself is set from the trusted source.
+    assert updated[bucket][PINNED_PROVIDER_ROUTE_KEY] == "bedrock"
+
+
+@pytest.mark.asyncio
 async def test_add_litellm_data_to_request_strips_admin_injection_slots():
     """User-supplied user_api_key_metadata / user_api_key_team_metadata /
     _pipeline_managed_guardrails must be stripped from both metadata keys
