@@ -4029,6 +4029,27 @@ class Router:
 
         _model_list = self.get_model_list(model_name=model)
         if _model_list is None or len(_model_list) == 0:  # if direct call to model
+            # HARD PROVIDER-PIN CHOKEPOINT (P1). A prompt-managed request can
+            # resolve to a model that is NOT a router group (served below via a
+            # direct litellm.acompletion), which bypasses
+            # _update_kwargs_with_deployment's pin re-assertion entirely. A
+            # non-router direct model carries no pin:<provider> tag and so cannot
+            # honor the URL-derived pin — serving it would silently reroute a
+            # pinned request off-provider while attribution still says pin:<x>.
+            # When the trusted pin is present, fail loud with the SAME
+            # non-retryable 400 the chokepoint raises; when absent, the direct
+            # call below is byte-for-byte unchanged.
+            pinned_provider = _pinned_provider_from_kwargs(kwargs, "metadata") or _pinned_provider_from_kwargs(
+                kwargs, "litellm_metadata"
+            )
+            if pinned_provider is not None:
+                _raise_no_deployments_for_tags(
+                    model=(
+                        f"pinned provider {pinned_provider} cannot serve prompt-managed "
+                        f"direct model {model} (no router deployment)"
+                    ),
+                    request_tags=[PIN_TAG_PREFIX + pinned_provider],
+                )
             kwargs.pop("original_function")
             return await litellm.acompletion(**kwargs)
 
