@@ -3420,24 +3420,49 @@ class Router:
         refund_stale_reservation_before_retry(self.cache, kwargs)
         set_io_token_rate_limit_request_kwargs(kwargs, store_in_context=deployment_has_io_token_limits(deployment))
 
-        ## DEPLOYMENT-LEVEL TAGS
+        ## DEPLOYMENT-LEVEL ATTRIBUTION TAGS (winning-deployment-only)
+        # This same kwargs dict is REUSED across retries/fallbacks. Appending the
+        # selected deployment's tags to whatever is already in metadata["tags"]
+        # would ACCUMULATE every failed attempt's tags — so the successful
+        # SpendLogs row (request_tags read from metadata["tags"]) would carry
+        # BOTH the failed and the winning provider's tags, double/mis-attributing
+        # the spend. Instead REBUILD the attribution tag list from the caller's
+        # ORIGINAL pre-merge tag snapshot (captured once in
+        # _update_kwargs_before_fallbacks, before any deployment merge) plus ONLY
+        # this (winning) deployment's own tags + credential tag. Falls back to the
+        # live tags when no snapshot was taken (direct router use that bypasses
+        # _update_kwargs_before_fallbacks) to preserve legacy behaviour there.
+        #
+        # Routing SELECTION is unaffected: get_deployments_for_tag routes on the
+        # snapshot / trusted pin, never on this attribution list.
         deployment_tags = deployment.get("litellm_params", {}).get("tags")
-        if deployment_tags:
-            existing_tags = kwargs[metadata_variable_name].get("tags") or []
-            merged_tags = list(existing_tags)
-            for tag in deployment_tags:
+        credential_name = deployment.get("litellm_params", {}).get("litellm_credential_name")
+
+        deployment_attribution_tags: list = list(deployment_tags) if deployment_tags else []
+        if credential_name:
+            credential_tag = f"Credential: {credential_name}"
+            if credential_tag not in deployment_attribution_tags:
+                deployment_attribution_tags.append(credential_tag)
+
+        _original_request_tags = kwargs[metadata_variable_name].get(ORIGINAL_REQUEST_TAGS_KEY)
+        if isinstance(_original_request_tags, list):
+            # Snapshot present: the winning row's tags = caller baseline + this
+            # deployment's tags, discarding any prior attempt's deployment tags.
+            caller_baseline = list(_original_request_tags)
+            merged_tags = list(caller_baseline)
+            for tag in deployment_attribution_tags:
+                if tag not in merged_tags:
+                    merged_tags.append(tag)
+            if merged_tags or "tags" in kwargs[metadata_variable_name]:
+                kwargs[metadata_variable_name]["tags"] = merged_tags
+        elif deployment_attribution_tags:
+            # No snapshot (legacy/direct path): preserve the prior append onto the
+            # live tags rather than fabricating a baseline.
+            merged_tags = list(kwargs[metadata_variable_name].get("tags") or [])
+            for tag in deployment_attribution_tags:
                 if tag not in merged_tags:
                     merged_tags.append(tag)
             kwargs[metadata_variable_name]["tags"] = merged_tags
-
-        ## CREDENTIAL NAME AS TAG
-        credential_name = deployment.get("litellm_params", {}).get("litellm_credential_name")
-        if credential_name:
-            credential_tag = f"Credential: {credential_name}"
-            existing_tags = kwargs[metadata_variable_name].get("tags") or []
-            if credential_tag not in existing_tags:
-                existing_tags.append(credential_tag)
-            kwargs[metadata_variable_name]["tags"] = existing_tags
 
         kwargs["model_info"] = model_info
 

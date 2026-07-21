@@ -20,7 +20,11 @@ from litellm.litellm_core_utils.initialize_dynamic_callback_params import (
 )
 from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
 from litellm.litellm_core_utils.url_utils import is_url_destination_allowed_by_host
-from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
+from litellm.router_strategy.tag_based_routing import (
+    ORIGINAL_REQUEST_TAGS_KEY,
+    ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY,
+    PINNED_PROVIDER_ROUTE_KEY,
+)
 from litellm.proxy._types import (
     AddTeamCallback,
     CommonProxyErrors,
@@ -190,6 +194,17 @@ _UNTRUSTED_METADATA_CONTROL_FIELDS = (
     # route can never carry a forged pin, and a pinned route re-derives it from
     # the trusted request.state.
     PINNED_PROVIDER_ROUTE_KEY,
+    # Internal, server-authoritative pre-merge tag SNAPSHOT + its capture
+    # sentinel. The ONLY legitimate writer is ``Router._update_kwargs_before_
+    # fallbacks`` (which runs AFTER this strip, inside the router). Stripped from
+    # BOTH metadata buckets on EVERY route so a client can never (a) plant a
+    # spoofed ``_original_request_tags`` that ``_resolve_request_tags`` would
+    # prefer over the live tags, nor (b) pre-set the ``..._snapshotted`` sentinel
+    # to BLOCK the router's trusted overwrite of that snapshot — either of which
+    # would let client input steer routing on a UNIFIED route. Parsed-then-
+    # stripped above handles the JSON-string bucket form too.
+    ORIGINAL_REQUEST_TAGS_KEY,
+    ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY,
 )
 
 _UNTRUSTED_REQUEST_HEADER_CONTROL_FIELDS = frozenset(

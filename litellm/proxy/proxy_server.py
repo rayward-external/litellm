@@ -4838,9 +4838,16 @@ class ProxyConfig:
         _pinned_routes_previously_registered = bool(getattr(app.state, "pinned_provider_route_objects", None))
         if general_settings.get("pinned_provider_routes", None) is not None or _pinned_routes_previously_registered:
             from litellm.proxy.pinned_provider_routes import (  # noqa: PLC0415
+                assert_tag_filtering_enabled_for_pinned_routes,
                 initialize_pinned_provider_routes,
             )
 
+            # Fail loud at startup if pinned routes are configured but the router
+            # is not set to tag-filter — a pin must never silently reroute.
+            assert_tag_filtering_enabled_for_pinned_routes(
+                general_settings=general_settings,
+                router_settings=config.get("router_settings"),
+            )
             initialize_pinned_provider_routes(app=app, general_settings=general_settings)
 
         router_params: dict = {

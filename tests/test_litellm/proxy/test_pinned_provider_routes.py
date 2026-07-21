@@ -673,7 +673,10 @@ async def test_load_config_seam_registers_pinned_routes(tmp_path, monkeypatch):
     from litellm.proxy.proxy_server import ProxyConfig, app
 
     f = tmp_path / "c.yaml"
-    f.write_text("model_list: []\nlitellm_settings: {}\ngeneral_settings:\n  pinned_provider_routes: [baseten]\n")
+    f.write_text(
+        "model_list: []\nlitellm_settings: {}\nrouter_settings:\n  enable_tag_filtering: true\n"
+        "general_settings:\n  pinned_provider_routes: [baseten]\n"
+    )
     monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
     monkeypatch.setattr("litellm.proxy.proxy_server.store_model_in_db", False)
     monkeypatch.delenv("LITELLM_CONFIG_BUCKET_NAME", raising=False)
@@ -701,7 +704,8 @@ async def test_load_config_seam_removes_routes_when_setting_deleted(tmp_path, mo
 
     with_pin = tmp_path / "with.yaml"
     with_pin.write_text(
-        "model_list: []\nlitellm_settings: {}\ngeneral_settings:\n  pinned_provider_routes: [bedrock]\n"
+        "model_list: []\nlitellm_settings: {}\nrouter_settings:\n  enable_tag_filtering: true\n"
+        "general_settings:\n  pinned_provider_routes: [bedrock]\n"
     )
     # The reload config omits the key ENTIRELY (not `pinned_provider_routes: []`).
     without_pin = tmp_path / "without.yaml"
@@ -745,6 +749,139 @@ async def test_load_config_seam_vanilla_never_calls_initializer(tmp_path, monkey
         assert _pinned_paths_of(app) == set()
     finally:
         _remove_pinned_routes(app)
+
+
+class TestStartupTagFilteringGuard:
+    """P1 startup guard: pinned routes configured while router tag filtering is
+    off must FAIL LOUD at boot, naming the missing setting — a pin must never
+    silently reroute to another provider. Complements the request-time
+    enforcement in get_deployments_for_tag."""
+
+    def test_raises_when_pinned_but_tag_filtering_off(self):
+        from litellm.proxy.pinned_provider_routes import (
+            assert_tag_filtering_enabled_for_pinned_routes,
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            assert_tag_filtering_enabled_for_pinned_routes(
+                general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]},
+                router_settings={},  # enable_tag_filtering missing -> off
+            )
+        msg = str(exc_info.value)
+        assert PINNED_PROVIDER_ROUTES_SETTING in msg
+        assert "enable_tag_filtering" in msg
+
+    def test_raises_when_tag_filtering_explicitly_false(self):
+        from litellm.proxy.pinned_provider_routes import (
+            assert_tag_filtering_enabled_for_pinned_routes,
+        )
+
+        with pytest.raises(ValueError):
+            assert_tag_filtering_enabled_for_pinned_routes(
+                general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]},
+                router_settings={"enable_tag_filtering": False},
+            )
+
+    def test_ok_when_tag_filtering_enabled(self):
+        from litellm.proxy.pinned_provider_routes import (
+            assert_tag_filtering_enabled_for_pinned_routes,
+        )
+
+        # Must not raise.
+        assert_tag_filtering_enabled_for_pinned_routes(
+            general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]},
+            router_settings={"enable_tag_filtering": True},
+        )
+
+    @pytest.mark.parametrize(
+        "gs", [None, {}, {PINNED_PROVIDER_ROUTES_SETTING: []}, {PINNED_PROVIDER_ROUTES_SETTING: "x"}]
+    )
+    def test_noop_when_pinned_routes_not_configured(self, gs):
+        from litellm.proxy.pinned_provider_routes import (
+            assert_tag_filtering_enabled_for_pinned_routes,
+        )
+
+        # No valid pinned routes -> never guards, regardless of tag filtering.
+        assert_tag_filtering_enabled_for_pinned_routes(general_settings=gs, router_settings={})
+
+    @pytest.mark.asyncio
+    async def test_load_config_seam_fails_loud_when_tag_filtering_off(self, tmp_path, monkeypatch):
+        """End-to-end at the proxy_server load-config seam: booting with pinned
+        routes but no enable_tag_filtering must raise, not register routes."""
+        from litellm.proxy.proxy_server import ProxyConfig, app
+
+        monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+        monkeypatch.setattr("litellm.proxy.proxy_server.store_model_in_db", False)
+        monkeypatch.delenv("LITELLM_CONFIG_BUCKET_NAME", raising=False)
+
+        f = tmp_path / "bad.yaml"
+        f.write_text("model_list: []\nlitellm_settings: {}\ngeneral_settings:\n  pinned_provider_routes: [bedrock]\n")
+
+        _remove_pinned_routes(app)
+        try:
+            with pytest.raises(ValueError):
+                await ProxyConfig().load_config(router=None, config_file_path=str(f))
+            assert _pinned_paths_of(app) == set()
+        finally:
+            _remove_pinned_routes(app)
+
+
+class TestUnifiedRouteStripsInternalSnapshotFields:
+    """P1 (unified path): the internal pre-merge tag snapshot fields
+    (``_original_request_tags`` + the ``..._snapshotted`` sentinel) must be
+    stripped from ALL client-supplied metadata GLOBALLY — every route, both
+    buckets, dict AND JSON-string form. Otherwise a client could plant a spoofed
+    snapshot (preferred by _resolve_request_tags) or pre-set the sentinel to
+    BLOCK the router's trusted snapshot overwrite, letting client input steer
+    routing on a plain /v1/chat/completions request.
+
+    Mutation-verify: remove ORIGINAL_REQUEST_TAGS_KEY /
+    ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY from _UNTRUSTED_METADATA_CONTROL_
+    FIELDS -> the smuggled fields survive here.
+    """
+
+    @pytest.mark.parametrize("bucket", ["metadata", "litellm_metadata"])
+    @pytest.mark.parametrize("as_string", [False, True], ids=["dict", "jsonstring"])
+    def test_snapshot_fields_stripped_on_unified_route(self, bucket, as_string):
+        path = "/v1/chat/completions"  # no provider prefix -> unified, no pin
+        payload = {
+            "_original_request_tags": ["pin:openai"],
+            "_original_request_tags_snapshotted": True,
+            "tags": ["team:x"],
+        }
+        body = {
+            "model": "m",
+            "messages": [],
+            bucket: json.dumps(payload) if as_string else payload,
+        }
+        updated = _run_add_litellm_data(body, path)
+        for field in ("metadata", "litellm_metadata"):
+            meta = updated.get(field) or {}
+            assert "_original_request_tags" not in meta
+            assert "_original_request_tags_snapshotted" not in meta
+
+    def test_spoofed_snapshot_does_not_steer_unified_routing(self):
+        """The router snapshot the tag router would read must NOT be the client's
+        spoofed value — proving the strip closes the routing-steer, not just the
+        presence of the key."""
+        from litellm.litellm_core_utils.core_helpers import get_metadata_variable_name_from_kwargs
+        from litellm.router_strategy.tag_based_routing import _resolve_request_tags
+
+        path = "/v1/chat/completions"
+        body = {
+            "model": "m",
+            "messages": [],
+            "metadata": {
+                "tags": ["team:x"],
+                "_original_request_tags": ["pin:openai"],
+                "_original_request_tags_snapshotted": True,
+            },
+        }
+        updated = _run_add_litellm_data(body, path)
+        router_field = get_metadata_variable_name_from_kwargs(updated)
+        # With the spoof stripped, _resolve_request_tags falls to the live tags
+        # (no _original_request_tags key present), never the spoofed pin:openai.
+        assert _resolve_request_tags(updated.get(router_field) or {}) != ["pin:openai"]
 
 
 class TestAuthSeamNonAdminAccess:

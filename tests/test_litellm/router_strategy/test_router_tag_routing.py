@@ -1643,3 +1643,391 @@ async def test_unified_route_unchanged_without_signal():
         mock_response="ok",
     )
     assert response._hidden_params["model_id"] == "team-dep"
+
+
+# ---------------------------------------------------------------------------
+# P1a: a trusted provider pin must be ENFORCED even when enable_tag_filtering is
+# off. get_deployments_for_tag reads the pin signal BEFORE the enable_tag_
+# filtering early-return, so a pinned request is always restricted to its
+# pin:<provider> legs (or fails loud) — never served by an off-provider leg.
+#
+# Mutation-verify: restore the original early-return
+# (`if request_enable_tag_filtering is not True and llm_router.enable_tag_
+# filtering is not True: return healthy_deployments`, dropping the pinned_provider
+# guard) and test_pin_enforced_with_tag_filtering_disabled would route to the
+# off-provider leg / stop failing loud.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio()
+async def test_pin_enforced_with_tag_filtering_disabled():
+    """enable_tag_filtering=False WITH a trusted pin present: the request must
+    still be restricted to the pin:<provider> leg, never the off-provider one."""
+    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
+
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["pin:bedrock"],
+                },
+                "model_info": {"id": "bedrock-dep"},
+            },
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["pin:openai"],
+                    "mock_response": "should-never-be-reached-openai",
+                },
+                "model_info": {"id": "openai-dep"},
+            },
+        ],
+        enable_tag_filtering=False,  # OFF — the pin must hold anyway
+        tag_filtering_match_any=False,
+        num_retries=0,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["pin:bedrock"], PINNED_PROVIDER_ROUTE_KEY: "bedrock"},
+            mock_response="ok",
+        )
+        assert response._hidden_params["model_id"] == "bedrock-dep"
+
+
+@pytest.mark.asyncio()
+async def test_pin_fails_loud_with_tag_filtering_disabled_and_no_matching_leg():
+    """enable_tag_filtering=False, a trusted bedrock pin, but only an off-provider
+    leg present: must FAIL LOUD, never silently serve the off-provider leg."""
+    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
+    from litellm.types.router import RouterErrors
+
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["pin:openai"],
+                    "mock_response": "should-never-be-reached-openai",
+                },
+                "model_info": {"id": "openai-dep"},
+            },
+        ],
+        enable_tag_filtering=False,
+        tag_filtering_match_any=False,
+        num_retries=0,
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await router.acompletion(
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["pin:bedrock"], PINNED_PROVIDER_ROUTE_KEY: "bedrock"},
+        )
+    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
+
+
+def test_pinned_provider_from_kwargs_only_trusts_the_signal():
+    from litellm.router_strategy.tag_based_routing import (
+        PINNED_PROVIDER_ROUTE_KEY,
+        _pinned_provider_from_kwargs,
+    )
+
+    assert _pinned_provider_from_kwargs({"metadata": {PINNED_PROVIDER_ROUTE_KEY: "bedrock"}}, "metadata") == "bedrock"
+    # A pin: TAG alone (no trusted signal) is NOT the trusted pin signal.
+    assert _pinned_provider_from_kwargs({"metadata": {"tags": ["pin:bedrock"]}}, "metadata") is None
+    assert _pinned_provider_from_kwargs(None, "metadata") is None
+    assert _pinned_provider_from_kwargs({"metadata": None}, "metadata") is None
+    assert _pinned_provider_from_kwargs({"metadata": {PINNED_PROVIDER_ROUTE_KEY: ""}}, "metadata") is None
+    assert (
+        _pinned_provider_from_kwargs({"litellm_metadata": {PINNED_PROVIDER_ROUTE_KEY: "vertex_ai"}}, "litellm_metadata")
+        == "vertex_ai"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P1b: a client-controlled User-Agent (tag_regex) must NEVER select a deployment
+# that lacks the pin tag for a pinned request. _match_deployment disables the
+# regex path when pin_enforced, so the pin tag is the SOLE selector.
+#
+# Mutation-verify: drop the `and not pin_enforced` guard in _match_deployment and
+# test_pin_ignores_tag_regex_user_agent_match routes to / is rescued by the regex
+# deployment.
+# ---------------------------------------------------------------------------
+
+
+def test_match_deployment_pin_enforced_blocks_regex():
+    """Unit: with pin_enforced, a regex-only (no plain tag) deployment whose
+    tag_regex matches the User-Agent must NOT match."""
+    from litellm.router_strategy.tag_based_routing import _match_deployment
+
+    deployment = {
+        "model_name": "m",
+        "litellm_params": {"model": "openai/gpt-4o", "tag_regex": ["^User-Agent: claude-code"]},
+    }
+    # Without the pin, the regex matches (baseline).
+    assert (
+        _match_deployment(
+            deployment=deployment,
+            request_tags=["pin:bedrock"],
+            header_strings=["User-Agent: claude-code/1.2.3"],
+            match_any=True,
+            pin_enforced=False,
+        )
+        is not None
+    )
+    # With the pin enforced, the regex path is disabled -> no match.
+    assert (
+        _match_deployment(
+            deployment=deployment,
+            request_tags=["pin:bedrock"],
+            header_strings=["User-Agent: claude-code/1.2.3"],
+            match_any=True,
+            pin_enforced=True,
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio()
+async def test_pin_ignores_tag_regex_user_agent_match():
+    """A pinned bedrock request whose User-Agent matches an off-provider
+    deployment's tag_regex must route to the pin:bedrock leg, NOT the regex leg."""
+    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
+
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tag_regex": ["^User-Agent: claude-code\\/"],
+                    "mock_response": "should-never-be-reached-regex",
+                },
+                "model_info": {"id": "regex-dep"},
+            },
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tags": ["pin:bedrock"],
+                },
+                "model_info": {"id": "bedrock-dep"},
+            },
+        ],
+        enable_tag_filtering=True,
+        tag_filtering_match_any=True,  # regex would normally be allowed to match
+        num_retries=0,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={
+                "tags": ["pin:bedrock"],
+                PINNED_PROVIDER_ROUTE_KEY: "bedrock",
+                "user_agent": "claude-code/1.2.3",
+            },
+            mock_response="ok",
+        )
+        assert response._hidden_params["model_id"] == "bedrock-dep"
+
+
+@pytest.mark.asyncio()
+async def test_pin_with_only_regex_deployment_fails_loud():
+    """When the ONLY deployment is a regex (User-Agent) leg lacking the pin tag,
+    a pinned request must fail loud — the spoofable User-Agent cannot rescue it."""
+    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
+    from litellm.types.router import RouterErrors
+
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "fake",
+                    "tag_regex": ["^User-Agent: claude-code\\/"],
+                    "mock_response": "should-never-be-reached-regex",
+                },
+                "model_info": {"id": "regex-dep"},
+            },
+        ],
+        enable_tag_filtering=True,
+        tag_filtering_match_any=True,
+        num_retries=0,
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await router.acompletion(
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={
+                "tags": ["pin:bedrock"],
+                PINNED_PROVIDER_ROUTE_KEY: "bedrock",
+                "user_agent": "claude-code/1.2.3",
+            },
+        )
+    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# P2: on a fallback the reused kwargs dict must not ACCUMULATE each attempt's
+# deployment tags in metadata["tags"] — the successful SpendLogs row's
+# request_tags (read from metadata["tags"]) must reflect ONLY the winning
+# deployment's tags + the caller baseline, never a prior failed attempt's tag.
+#
+# Mutation-verify: revert _update_kwargs_with_deployment to append onto the live
+# tags (drop the ORIGINAL_REQUEST_TAGS_KEY baseline rebuild) and the second call
+# yields ["pin:azure", "pin:openai"] instead of ["pin:openai"].
+# ---------------------------------------------------------------------------
+
+
+def _minimal_router_for_kwargs_merge() -> "litellm.Router":
+    return litellm.Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake"},
+                "model_info": {"id": "seed"},
+            }
+        ],
+    )
+
+
+def test_update_kwargs_with_deployment_replaces_prior_attempt_tag_untagged_caller():
+    """UNTAGGED caller, Azure attempt then OpenAI fallback reuse the SAME kwargs:
+    the winning attribution tags must be exactly the winning deployment's tag."""
+    from litellm.router_strategy.tag_based_routing import ORIGINAL_REQUEST_TAGS_KEY
+
+    router = _minimal_router_for_kwargs_merge()
+    azure_dep = {
+        "model_name": "m",
+        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:azure"]},
+        "model_info": {"id": "azure-dep"},
+    }
+    openai_dep = {
+        "model_name": "m",
+        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:openai"]},
+        "model_info": {"id": "openai-dep"},
+    }
+    # Snapshot as _update_kwargs_before_fallbacks would leave it for an untagged caller.
+    kwargs = {"metadata": {ORIGINAL_REQUEST_TAGS_KEY: [], "tags": []}}
+
+    router._update_kwargs_with_deployment(deployment=azure_dep, kwargs=kwargs)
+    assert kwargs["metadata"]["tags"] == ["pin:azure"]
+
+    # Fallback reuses the SAME kwargs dict; must REPLACE, not accumulate.
+    router._update_kwargs_with_deployment(deployment=openai_dep, kwargs=kwargs)
+    assert kwargs["metadata"]["tags"] == ["pin:openai"], (
+        "winning SpendLogs row would carry the failed attempt's tag (double-attribution)"
+    )
+
+
+def test_update_kwargs_with_deployment_keeps_caller_tags_and_swaps_deployment_tag():
+    """Caller/auth tags in the snapshot survive; only the per-deployment tag swaps
+    across attempts."""
+    from litellm.router_strategy.tag_based_routing import ORIGINAL_REQUEST_TAGS_KEY
+
+    router = _minimal_router_for_kwargs_merge()
+    azure_dep = {
+        "model_name": "m",
+        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:azure"]},
+        "model_info": {"id": "azure-dep"},
+    }
+    openai_dep = {
+        "model_name": "m",
+        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:openai"]},
+        "model_info": {"id": "openai-dep"},
+    }
+    kwargs = {"metadata": {ORIGINAL_REQUEST_TAGS_KEY: ["team:x"], "tags": ["team:x"]}}
+
+    router._update_kwargs_with_deployment(deployment=azure_dep, kwargs=kwargs)
+    assert kwargs["metadata"]["tags"] == ["team:x", "pin:azure"]
+
+    router._update_kwargs_with_deployment(deployment=openai_dep, kwargs=kwargs)
+    assert kwargs["metadata"]["tags"] == ["team:x", "pin:openai"]
+
+
+@pytest.mark.asyncio()
+async def test_fallback_winning_row_request_tags_exclude_failed_deployment_tag():
+    """End-to-end: Azure leg fails, OpenAI fallback serves. The successful row's
+    request_tags (captured off the standard logging payload) must contain the
+    winning pin:openai tag and NOT the failed attempt's pin:azure tag."""
+    import asyncio as _asyncio
+
+    from litellm.integrations.custom_logger import CustomLogger
+
+    captured: dict = {}
+
+    class _CaptureLogger(CustomLogger):
+        async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+            slo = kwargs.get("standard_logging_object") or {}
+            captured["request_tags"] = slo.get("request_tags")
+
+    logger = _CaptureLogger()
+    _prev_callbacks = litellm.callbacks
+    litellm.callbacks = [logger]
+    try:
+        router = litellm.Router(
+            model_list=[
+                {
+                    "model_name": "primary",
+                    "litellm_params": {
+                        "model": "openai/gpt-4o",
+                        "api_key": "fake",
+                        "tags": ["pin:azure"],
+                        "mock_response": Exception("simulated azure failure"),
+                    },
+                    "model_info": {"id": "azure-dep"},
+                },
+                {
+                    "model_name": "secondary",
+                    "litellm_params": {
+                        "model": "openai/gpt-4o",
+                        "api_key": "fake",
+                        "tags": ["pin:openai"],
+                        "mock_response": "OK-FROM-OPENAI",
+                    },
+                    "model_info": {"id": "openai-dep"},
+                },
+            ],
+            fallbacks=[{"primary": ["secondary"]}],
+            enable_tag_filtering=True,
+            tag_filtering_match_any=False,
+            num_retries=0,
+        )
+
+        response = await router.acompletion(
+            model="primary",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={},
+        )
+        assert response._hidden_params["model_id"] == "openai-dep"
+
+        # Async success logging is scheduled as a task; poll briefly for it.
+        for _ in range(40):
+            if "request_tags" in captured:
+                break
+            await _asyncio.sleep(0.05)
+
+        assert "request_tags" in captured, "success logging did not fire"
+        request_tags = captured["request_tags"] or []
+        assert "pin:openai" in request_tags, request_tags
+        assert "pin:azure" not in request_tags, (
+            f"failed Azure attempt's tag leaked into the winning row: {request_tags}"
+        )
+    finally:
+        litellm.callbacks = _prev_callbacks

@@ -164,6 +164,42 @@ def get_pin_tag(provider: str) -> str:
     return PIN_TAG_PREFIX + PINNED_TAG_ALIASES.get(provider, provider)
 
 
+def assert_tag_filtering_enabled_for_pinned_routes(
+    general_settings: Optional[dict],
+    router_settings: Optional[dict],
+) -> None:
+    """Fail loud at startup when pinned provider routes are configured but the
+    router's ``enable_tag_filtering`` is not turned on.
+
+    The hard product contract of a pinned route — a pinned request is served
+    ONLY by a ``pin:<provider>`` deployment, or fails loud — is enforced at
+    request time in ``get_deployments_for_tag`` even with tag filtering off (the
+    trusted pin signal forces pin filtering there). This assertion is the
+    complementary STARTUP guard: it refuses to boot a config whose intent (pin
+    the provider) and router policy (tag filtering disabled) contradict each
+    other, rather than depending solely on the request-time enforcement. Names
+    the exact missing setting so the operator can fix it. Prefers failing loud
+    over silently serving unpinned traffic.
+
+    No-ops when pinned routes are not configured (setting absent, empty, or an
+    invalid non-list — the latter is separately rejected by the initializer).
+    """
+    configured = (general_settings or {}).get(PINNED_PROVIDER_ROUTES_SETTING)
+    if not configured or not isinstance(configured, list):
+        return
+    enable_tag_filtering = bool((router_settings or {}).get("enable_tag_filtering"))
+    if enable_tag_filtering:
+        return
+    raise ValueError(
+        f"{PINNED_PROVIDER_ROUTES_SETTING} is configured ({configured!r}) but "
+        "router_settings.enable_tag_filtering is not true. Provider-pinned routes "
+        "require tag filtering so a pinned request is restricted to its "
+        "pin:<provider> deployments (or fails loud) and can never be served by an "
+        "off-provider deployment. Set `router_settings: {enable_tag_filtering: true}` "
+        f"or remove {PINNED_PROVIDER_ROUTES_SETTING}."
+    )
+
+
 def _pinned_route_registry(app: "FastAPI") -> dict[int, tuple[str, APIRoute]]:
     """This module's app-scoped registry of the route OBJECTS it registered:
     ``id(route) -> (provider, route)``.

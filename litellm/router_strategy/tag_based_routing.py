@@ -129,6 +129,8 @@ def _match_deployment(
     request_tags: Optional[list[str]],
     header_strings: list[str],
     match_any: bool,
+    *,
+    pin_enforced: bool = False,
 ) -> Optional[dict[str, str]]:
     """
     Determine whether *deployment* matches the current request.
@@ -140,12 +142,21 @@ def _match_deployment(
       1. Exact tag match (respects match_any semantics).
       2. Regex match — skipped when match_any=False and the tag check already
          ran and failed, so the regex cannot override strict-tag policy.
+
+    ``pin_enforced`` (P1 hard-pin guard): when the request carries a trusted
+    provider pin, the ONLY acceptable match is exact membership of the
+    ``pin:<provider>`` tag in the deployment's ``tags``. The ``tag_regex`` path
+    (which evaluates CLIENT-controlled headers like User-Agent) is disabled
+    entirely, so a deployment lacking the pin tag can never be selected for a
+    pinned request via a spoofable User-Agent — the pin is the SOLE selector.
     """
     litellm_params = deployment.get("litellm_params", {})
     deployment_tags: Optional[list[str]] = litellm_params.get("tags")
     deployment_tag_regex: Optional[list[str]] = litellm_params.get("tag_regex")
 
-    # 1. Exact tag match (existing behaviour).
+    # 1. Exact tag match (existing behaviour). For a pinned request request_tags
+    # is exactly ``[pin:<provider>]``, so this admits ONLY deployments that carry
+    # the pin tag (under both match_any and subset semantics).
     if deployment_tags and request_tags:
         if is_valid_deployment_tag(deployment_tags, request_tags, match_any):
             matched_value = next(
@@ -158,10 +169,12 @@ def _match_deployment(
     # When match_any=False and the deployment has plain tags, the strict tag
     # check either didn't run (no request tags) or failed (step 1 returned
     # None).  Block the regex path so it cannot circumvent the operator's
-    # strict-tag policy.
+    # strict-tag policy. For a pinned request the regex path is blocked
+    # UNCONDITIONALLY: a client-controlled User-Agent must never select a
+    # deployment that lacks the pin tag.
     deployment_has_plain_tags = deployment_tags is not None and len(deployment_tags) > 0
     strict_tag_check_failed = not match_any and deployment_has_plain_tags
-    if deployment_tag_regex and header_strings and not strict_tag_check_failed:
+    if deployment_tag_regex and header_strings and not strict_tag_check_failed and not pin_enforced:
         regex_match = _is_valid_deployment_tag_regex(deployment_tag_regex, header_strings)
         if regex_match is not None:
             return {"matched_via": "tag_regex", "matched_value": regex_match}
@@ -255,6 +268,27 @@ def _resolve_request_tags(metadata: dict[Any, Any]) -> Any:
     return metadata.get("tags")
 
 
+def _pinned_provider_from_kwargs(
+    request_kwargs: Optional[dict[Any, Any]],
+    metadata_variable_name: Literal["metadata", "litellm_metadata"],
+) -> Optional[str]:
+    """Return the trusted, URL-derived provider pin from the routing metadata
+    bucket, or ``None`` when the request is not pinned.
+
+    Only the single server-authoritative ``PINNED_PROVIDER_ROUTE_KEY`` signal
+    counts (set from the URL by the proxy's pinned routes, re-asserted from
+    ``request.state``); a client can never set it. Used to enforce pin filtering
+    even when ``enable_tag_filtering`` is off.
+    """
+    if not request_kwargs:
+        return None
+    metadata = request_kwargs.get(metadata_variable_name)
+    if not isinstance(metadata, dict):
+        return None
+    pinned_provider = metadata.get(PINNED_PROVIDER_ROUTE_KEY)
+    return pinned_provider if isinstance(pinned_provider, str) and pinned_provider else None
+
+
 async def get_deployments_for_tag(
     llm_router_instance: LitellmRouter,
     model: str,  # used to raise the correct error
@@ -271,9 +305,23 @@ async def get_deployments_for_tag(
     `enable_tag_filtering=True` (set from key/team router_settings by the proxy).
     A request-level False never disables a router-level True, so per-request settings
     cannot escape an operator's global tag-routing policy.
+
+    HARD PROVIDER PIN (P1): a trusted, URL-derived ``PINNED_PROVIDER_ROUTE_KEY``
+    signal forces pin filtering REGARDLESS of ``enable_tag_filtering`` — read and
+    applied BEFORE the enable_tag_filtering early-return below. So a pinned request
+    is ALWAYS restricted to its ``pin:<provider>`` deployments (or fails loud),
+    never served by an off-provider deployment just because tag filtering happens
+    to be disabled. The proxy's startup guard
+    (``assert_tag_filtering_enabled_for_pinned_routes``) is the belt; this is the
+    suspenders — the pin holds even if that guard is bypassed.
     """
+    pinned_provider = _pinned_provider_from_kwargs(request_kwargs, metadata_variable_name)
     request_enable_tag_filtering = request_kwargs.get("enable_tag_filtering") if request_kwargs else None
-    if request_enable_tag_filtering is not True and llm_router_instance.enable_tag_filtering is not True:
+    if (
+        pinned_provider is None
+        and request_enable_tag_filtering is not True
+        and llm_router_instance.enable_tag_filtering is not True
+    ):
         return healthy_deployments
 
     if request_kwargs is None:
@@ -334,6 +382,9 @@ async def get_deployments_for_tag(
                     request_tags=positive_tags,
                     header_strings=header_strings,
                     match_any=match_any,
+                    # A hard pin disables tag_regex/User-Agent matching so only
+                    # deployments carrying the pin tag are eligible.
+                    pin_enforced=disable_default_fallback,
                 )
 
                 if match_result is not None:
