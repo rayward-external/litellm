@@ -119,164 +119,6 @@ def get_model_from_json_obj(json_object: dict) -> Optional[str]:
     return model
 
 
-def get_models_from_batch_file(file_source: Union[bytes, BinaryIO]) -> List[str]:
-    """Every distinct `body.model` in a batch JSONL, in first-seen order.
-
-    Reading only the first record is not enough to authorize the upload: a file
-    whose first row names an allowed model and whose later rows name a restricted
-    one is forwarded verbatim to the provider, which would happily execute both.
-
-    Streams the spooled handle line by line rather than reading it in — batch
-    uploads can be gigabytes, and the caller depends on the handle being rewound.
-    """
-    models: List[str] = []
-
-    def _collect(line: bytes) -> None:
-        stripped = line.strip()
-        if not stripped:
-            return
-        try:
-            json_object = json.loads(stripped.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-            return
-        if not isinstance(json_object, dict):
-            return
-        # Type-check rather than reusing get_model_from_json_obj: that helper does
-        # `body.get("model")` after `json_object.get("body", {}) or {}`, which raises
-        # AttributeError for a truthy non-dict body (`{"body": [1]}`, `{"body": "x"}`)
-        # — a 500 on input that deserves a 400. An unparseable row is skipped here and
-        # surfaces as the no-model / mixed-model 400 below.
-        body = json_object.get("body")
-        if not isinstance(body, dict):
-            return
-        model = body.get("model")
-        if not isinstance(model, str) or not model or model in models:
-            return
-        models.append(model)
-
-    try:
-        if isinstance(file_source, (bytes, bytearray)):
-            for line in file_source.split(b"\n"):
-                _collect(line)
-        else:
-            file_source.seek(0)
-            for line in file_source:
-                _collect(line)
-            file_source.seek(0)
-    except (OSError, ValueError):
-        return models
-    return models
-
-
-def router_serves_model(model: str, llm_router: Router) -> bool:
-    """True when the router can serve `model`, including via a wildcard route.
-
-    `is_known_model` tests exact membership in `get_model_names()`, which lists the
-    configured deployment names only. A wildcard deployment such as
-    `model_name: openai/*` is servable for `openai/gpt-4.1` while only `openai/*`
-    appears in that list, so the pattern router has to be consulted too.
-    """
-    if is_known_model(model=model, llm_router=llm_router):
-        return True
-    pattern_router = getattr(llm_router, "pattern_router", None)
-    if pattern_router is None:
-        return False
-    try:
-        return bool(pattern_router.route(model))
-    except Exception:  # a malformed name is simply not routable
-        return False
-
-
-async def resolve_batch_target_model(
-    file_source: Union[bytes, BinaryIO],
-    llm_router: Router,
-    user_api_key_dict: UserAPIKeyAuth,
-) -> str:
-    """Derive the model a batch upload targets from the JSONL it carries.
-
-    OpenAI's Batch API takes no model on the file upload — every line of the JSONL
-    names its own `body.model` instead. Reading it here lets an unmodified OpenAI
-    client route through the router (and so price, rate-limit and log like any
-    other request) rather than having to send a LiteLLM-specific form field.
-
-    Raises a 400 rather than letting the request fall through to the
-    `files_settings` branch, whose ValueError surfaces as a 500 telling the caller
-    to edit a config.yaml they do not own.
-    """
-    from litellm.proxy.auth.auth_checks import can_key_call_resolved_model
-    from litellm.proxy.proxy_server import llm_model_list
-
-    # Off the event loop: the scan is synchronous disk reads + UTF-8 decode + JSON
-    # parse over a file this endpoint explicitly supports at gigabyte scale, so doing
-    # it inline would stall every other request on the worker until it finished.
-    models = await asyncio.to_thread(get_models_from_batch_file, file_source)
-    if not models:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": (
-                    "Could not determine which model this batch targets. Give every "
-                    "line of the JSONL a `body.model`, or name the model explicitly "
-                    "in the `target_model_names` form field on the upload."
-                )
-            },
-        )
-    if len(models) > 1:
-        # OpenAI's Batch API requires every request in a file to use the same model,
-        # and the target is what selects the provider credentials, so a mixed file
-        # has no single correct answer. Refusing is also what keeps authorization
-        # honest: routing on row 1 while row 2 names something else would let a
-        # caller smuggle a model they cannot call.
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": (
-                    "A batch file must target a single model, but this one names "
-                    f"{sorted(models)}. Split it into one file per model."
-                )
-            },
-        )
-    model = models[0]
-    if not router_serves_model(model=model, llm_router=llm_router):
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": (
-                    f"Model '{model}', read from the batch file's `body.model`, is not "
-                    "available on this proxy. Call GET /v1/models for the servable "
-                    "models, or route the upload explicitly with the "
-                    "`target_model_names` form field."
-                )
-            },
-        )
-
-    # The caller never named this model, so `user_api_key_auth` did not see it and
-    # did not model-access-check it: it extracts candidates from `target_model_names`
-    # and friends, none of which are present on a stock batch upload. Without this
-    # check a key restricted to model A could route a batch onto model B's
-    # credentials simply by naming B inside the JSONL — an escalation that the
-    # explicit `target_model_names=B` form of the same request is refused.
-    #
-    # `can_key_call_resolved_model`, not `can_key_call_model`: the latter only reads
-    # the key's own model list, so a key with no key-level restriction whose TEAM is
-    # limited to model A would still pass. The resolved variant layers the team,
-    # member and project scopes on top.
-    try:
-        await can_key_call_resolved_model(
-            model=model,
-            llm_model_list=llm_model_list,
-            valid_token=user_api_key_dict,
-            llm_router=llm_router,
-        )
-    except ProxyException as e:
-        try:
-            status_code = int(e.code)
-        except (TypeError, ValueError):
-            status_code = 401
-        raise HTTPException(status_code=status_code, detail={"error": e.message})
-    return model
-
-
 async def _deprecated_loadbalanced_create_file(
     llm_router: Optional[Router],
     router_model: str,
@@ -412,7 +254,31 @@ async def route_create_file(
         )
     else:
         # get configs for custom_llm_provider
-        llm_provider_config = get_files_provider_config(custom_llm_provider=custom_llm_provider)
+        try:
+            llm_provider_config = get_files_provider_config(custom_llm_provider=custom_llm_provider)
+        except ValueError:
+            # get_files_provider_config's only raise is "files_settings is not set" —
+            # meaning this request supplied none of target_storage/model/
+            # target_model_names AND the admin never configured a default upload
+            # route. Left as a bare ValueError, this becomes a 500 whose message
+            # ("set it on your config.yaml file") is server-config detail the caller
+            # cannot act on and reads as "this proxy has no batch support" — which
+            # is how a stock `client.files.create(file=..., purpose="batch")` call
+            # (no hint by construction) got misdiagnosed. It is a missing-parameter
+            # error on THIS request, so it is the caller's to fix: a 400 naming the
+            # two ways to supply the hint the request is missing.
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": (
+                        f"This proxy has no default upload route for provider "
+                        f"'{custom_llm_provider}'. Name the target model explicitly: "
+                        f"pass `model=<name>` on the upload, or "
+                        f"`target_model_names=<name>` to route through a managed-files "
+                        f"deployment."
+                    )
+                },
+            )
         if llm_provider_config is not None:
             # add llm_provider_config to data
             _create_file_request.update(llm_provider_config)
@@ -506,36 +372,6 @@ async def create_file(
         target_storage = file_params.target_storage
         target_model_names_list = file_params.target_model_names
         model_param = file_params.model
-
-        # A stock OpenAI Batch client — `client.files.create(file=..., purpose="batch")`
-        # — sends no routing hint at all: no `model`, no `target_model_names`, no
-        # `target_storage`. Without a target, route_create_file() falls through to its
-        # `files_settings` branch and 500s with an operator-facing config instruction.
-        # The JSONL already names its model on every line, so route on that and keep
-        # the batch on the router. Explicit hints stay authoritative.
-        #
-        # Only when the managed-files route is actually available: it needs a router
-        # to resolve against AND the (enterprise) managed_files hook to execute.
-        # A proxy missing either one served these uploads through the `files_settings`
-        # provider fallback before this branch existed and must keep doing so — with
-        # no router there is nothing to route to, and with no hook route_create_file()
-        # would raise "Managed files hook not found" as a 500 on a request that used
-        # to succeed.
-        if (
-            purpose == "batch"
-            and llm_router is not None
-            and proxy_logging_obj.get_proxy_hook("managed_files") is not None
-            and not target_model_names_list
-            and model_param is None
-            and target_storage == "default"
-        ):
-            target_model_names_list = [
-                await resolve_batch_target_model(
-                    file_source=file_source,
-                    llm_router=llm_router,
-                    user_api_key_dict=user_api_key_dict,
-                )
-            ]
 
         validate_managed_files_requirement(target_model_names=target_model_names_list, model=model_param)
 
