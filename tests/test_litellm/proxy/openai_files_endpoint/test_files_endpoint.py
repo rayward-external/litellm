@@ -2937,3 +2937,112 @@ def test_stock_batch_upload_accepts_a_wildcard_routed_model(monkeypatch):
         app.dependency_overrides.pop(ps.user_api_key_auth, None)
 
     assert captured["target_model_names_list"] == ["openai/gpt-4.1"]
+
+
+def _multi_model_batch_jsonl(*models: str) -> bytes:
+    """A batch JSONL with one request per named model."""
+    return b"\n".join(_batch_jsonl(model) for model in models)
+
+
+def test_stock_batch_upload_rejects_a_mixed_model_file(monkeypatch, llm_router: Router):
+    """Authorizing row 1 while row 2 names something else would be a smuggling hole.
+
+    The target model selects the provider credentials, and the file is forwarded
+    verbatim — so a file whose first row names an allowed model and whose later rows
+    name another gets those later rows executed too. OpenAI's Batch API requires one
+    model per file anyway, so refusing is both safe and spec-correct.
+    """
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    captured = _install_capturing_managed_files(monkeypatch, llm_router)
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_model_list", llm_router.model_list)
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
+    )
+    try:
+        response = _post_stock_batch_upload(_multi_model_batch_jsonl("gpt-3.5-turbo", "azure-gpt-3-5-turbo"))
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert response.status_code == 400, response.text
+    assert "single model" in response.text
+    assert "target_model_names_list" not in captured, "a mixed-model file must not be routed at all"
+
+
+def test_stock_batch_upload_enforces_team_model_access(monkeypatch, llm_router: Router):
+    """A key with no key-level restriction must still obey its team's allowlist.
+
+    `can_key_call_model` alone reads only the key's model list, so an unrestricted
+    key on a team limited to model A would pass while naming model B in the JSONL.
+    """
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    captured = _install_capturing_managed_files(monkeypatch, llm_router)
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_model_list", llm_router.model_list)
+
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key",
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        models=[],  # no key-level restriction
+        team_id="team-restricted",
+        team_models=["azure-gpt-3-5-turbo"],  # team allows only the azure alias
+    )
+    try:
+        response = _post_stock_batch_upload(_batch_jsonl("gpt-3.5-turbo"))
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert response.status_code in (401, 403), (
+        f"the team allowlist must be enforced, got {response.status_code}: {response.text}"
+    )
+    assert "target_model_names_list" not in captured
+
+
+def test_stock_batch_upload_without_managed_files_hook_keeps_files_settings(monkeypatch, llm_router: Router):
+    """Managed-files routing needs the hook; without it, don't hijack the request.
+
+    A proxy with a model_list AND working files_settings but no enterprise
+    managed_files hook previously uploaded stock batches through the provider
+    fallback. Selecting managed files regardless turns that into a 500
+    "Managed files hook not found".
+    """
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+    from litellm.proxy.openai_files_endpoints import files_endpoints as fe
+
+    proxy_logging_obj = ProxyLogging(user_api_key_cache=DualCache(default_in_memory_ttl=1))
+    proxy_logging_obj._add_proxy_hooks(llm_router)
+    proxy_logging_obj.proxy_hook_mapping.pop("managed_files", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", llm_router)
+    monkeypatch.setattr("litellm.proxy.proxy_server.proxy_logging_obj", proxy_logging_obj)
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+
+    seen: dict = {}
+
+    async def fake_route_create_file(*, target_model_names_list, **kwargs):
+        seen["target_model_names_list"] = target_model_names_list
+        return OpenAIFileObject(
+            id="file-via-files-settings",
+            object="file",
+            bytes=0,
+            created_at=1234567890,
+            filename="batch.jsonl",
+            purpose="batch",
+            status="uploaded",
+        )
+
+    monkeypatch.setattr(fe, "route_create_file", fake_route_create_file)
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
+    )
+    try:
+        response = _post_stock_batch_upload(_batch_jsonl("gpt-3.5-turbo"))
+        assert response.status_code == 200, response.text
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert seen["target_model_names_list"] == [], (
+        "without the managed_files hook the upload must keep the files_settings path"
+    )
