@@ -119,9 +119,29 @@ def get_model_from_json_obj(json_object: dict) -> Optional[str]:
     return model
 
 
-def resolve_batch_target_model(
+def router_serves_model(model: str, llm_router: Router) -> bool:
+    """True when the router can serve `model`, including via a wildcard route.
+
+    `is_known_model` tests exact membership in `get_model_names()`, which lists the
+    configured deployment names only. A wildcard deployment such as
+    `model_name: openai/*` is servable for `openai/gpt-4.1` while only `openai/*`
+    appears in that list, so the pattern router has to be consulted too.
+    """
+    if is_known_model(model=model, llm_router=llm_router):
+        return True
+    pattern_router = getattr(llm_router, "pattern_router", None)
+    if pattern_router is None:
+        return False
+    try:
+        return bool(pattern_router.route(model))
+    except Exception:  # a malformed name is simply not routable
+        return False
+
+
+async def resolve_batch_target_model(
     file_source: Union[bytes, BinaryIO],
-    llm_router: Optional[Router],
+    llm_router: Router,
+    user_api_key_dict: UserAPIKeyAuth,
 ) -> str:
     """Derive the model a batch upload targets from the JSONL it carries.
 
@@ -134,6 +154,9 @@ def resolve_batch_target_model(
     `files_settings` branch, whose ValueError surfaces as a 500 telling the caller
     to edit a config.yaml they do not own.
     """
+    from litellm.proxy.auth.auth_checks import can_key_call_model
+    from litellm.proxy.proxy_server import llm_model_list
+
     json_obj = get_first_json_object(file_source)
     model = get_model_from_json_obj(json_object=json_obj) if json_obj else None
     if model is None:
@@ -147,7 +170,7 @@ def resolve_batch_target_model(
                 )
             },
         )
-    if not is_known_model(model=model, llm_router=llm_router):
+    if not router_serves_model(model=model, llm_router=llm_router):
         raise HTTPException(
             status_code=400,
             detail={
@@ -159,6 +182,26 @@ def resolve_batch_target_model(
                 )
             },
         )
+
+    # The caller never named this model, so `user_api_key_auth` did not see it and
+    # did not model-access-check it: it extracts candidates from `target_model_names`
+    # and friends, none of which are present on a stock batch upload. Without this
+    # check a key restricted to model A could route a batch onto model B's
+    # credentials simply by naming B inside the JSONL — an escalation that the
+    # explicit `target_model_names=B` form of the same request is refused.
+    try:
+        await can_key_call_model(
+            model=model,
+            llm_model_list=llm_model_list,
+            valid_token=user_api_key_dict,
+            llm_router=llm_router,
+        )
+    except ProxyException as e:
+        try:
+            status_code = int(e.code)
+        except (TypeError, ValueError):
+            status_code = 401
+        raise HTTPException(status_code=status_code, detail={"error": e.message})
     return model
 
 
@@ -398,8 +441,24 @@ async def create_file(
         # `files_settings` branch and 500s with an operator-facing config instruction.
         # The JSONL already names its model on every line, so route on that and keep
         # the batch on the router. Explicit hints stay authoritative.
-        if purpose == "batch" and not target_model_names_list and model_param is None and target_storage == "default":
-            target_model_names_list = [resolve_batch_target_model(file_source=file_source, llm_router=llm_router)]
+        #
+        # Only when a router exists. A proxy with no model_list but working
+        # `files_settings` served these uploads through the provider fallback before
+        # this branch existed, and must keep doing so — there is nothing to route to.
+        if (
+            purpose == "batch"
+            and llm_router is not None
+            and not target_model_names_list
+            and model_param is None
+            and target_storage == "default"
+        ):
+            target_model_names_list = [
+                await resolve_batch_target_model(
+                    file_source=file_source,
+                    llm_router=llm_router,
+                    user_api_key_dict=user_api_key_dict,
+                )
+            ]
 
         validate_managed_files_requirement(target_model_names=target_model_names_list, model=model_param)
 

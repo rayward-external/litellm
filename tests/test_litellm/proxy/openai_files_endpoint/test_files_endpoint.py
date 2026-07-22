@@ -2825,3 +2825,115 @@ def test_non_batch_upload_is_untouched_by_batch_inference(monkeypatch, llm_route
 
     assert seen["target_model_names_list"] == [], "a non-batch upload must not be given an inferred target model"
     assert "target_model_names_list" not in captured, "a non-batch upload must not reach the managed-files hook"
+
+
+def test_stock_batch_upload_enforces_the_callers_model_access(monkeypatch, llm_router: Router):
+    """An inferred target must still respect the key's model allowlist.
+
+    `user_api_key_auth` derives the models to access-check from the request —
+    `target_model_names` among them. A stock batch upload names nothing, so the
+    inferred model is invisible to that check. Without an explicit check here, a key
+    scoped to one model could route a batch onto another model's credentials just by
+    naming it inside the JSONL, while the equivalent explicit
+    `target_model_names=<other>` request is refused.
+    """
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    captured = _install_capturing_managed_files(monkeypatch, llm_router)
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_model_list", llm_router.model_list)
+
+    # Key may call the azure alias only; the JSONL names gpt-3.5-turbo.
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key",
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        models=["azure-gpt-3-5-turbo"],
+    )
+    try:
+        response = _post_stock_batch_upload(_batch_jsonl("gpt-3.5-turbo"))
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert response.status_code in (401, 403), (
+        f"a key without access to gpt-3.5-turbo must be refused, got {response.status_code}: {response.text}"
+    )
+    assert "target_model_names_list" not in captured, (
+        "the upload must not reach the managed-files hook when access is denied"
+    )
+
+
+def test_stock_batch_upload_without_a_router_keeps_the_files_settings_path(monkeypatch, llm_router: Router):
+    """No router means nothing to infer against — preserve the pre-existing route.
+
+    A proxy configured with `files_settings` but no `model_list` served stock batch
+    uploads through the provider fallback. Inferring unconditionally would turn those
+    into a 400 before that branch is ever reached.
+    """
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+    from litellm.proxy.openai_files_endpoints import files_endpoints as fe
+
+    _install_capturing_managed_files(monkeypatch, llm_router)
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", None)
+
+    seen: dict = {}
+
+    async def fake_route_create_file(*, target_model_names_list, **kwargs):
+        seen["target_model_names_list"] = target_model_names_list
+        return OpenAIFileObject(
+            id="file-via-files-settings",
+            object="file",
+            bytes=0,
+            created_at=1234567890,
+            filename="batch.jsonl",
+            purpose="batch",
+            status="uploaded",
+        )
+
+    monkeypatch.setattr(fe, "route_create_file", fake_route_create_file)
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
+    )
+    try:
+        response = _post_stock_batch_upload(_batch_jsonl("gpt-3.5-turbo"))
+        assert response.status_code == 200, response.text
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert seen["target_model_names_list"] == [], (
+        "with no router the upload must fall through to the files_settings branch, "
+        "not be rewritten with an inferred target"
+    )
+
+
+def test_stock_batch_upload_accepts_a_wildcard_routed_model(monkeypatch):
+    """A concrete model served by a wildcard deployment is routable, so accept it.
+
+    `get_model_names()` lists `openai/*`, never the concrete `openai/gpt-4.1` it
+    serves, so an exact-membership test would 400 a perfectly routable upload.
+    """
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    wildcard_router = Router(
+        model_list=[
+            {
+                "model_name": "openai/*",
+                "litellm_params": {"model": "openai/*", "api_key": "openai_api_key"},
+                "model_info": {"id": "openai-wildcard-id"},
+            }
+        ]
+    )
+    captured = _install_capturing_managed_files(monkeypatch, wildcard_router)
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_model_list", wildcard_router.model_list)
+
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
+    )
+    try:
+        response = _post_stock_batch_upload(_batch_jsonl("openai/gpt-4.1"))
+        assert response.status_code == 200, response.text
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert captured["target_model_names_list"] == ["openai/gpt-4.1"]
