@@ -3046,3 +3046,37 @@ def test_stock_batch_upload_without_managed_files_hook_keeps_files_settings(monk
     assert seen["target_model_names_list"] == [], (
         "without the managed_files hook the upload must keep the files_settings path"
     )
+
+
+def test_stock_batch_upload_survives_a_malformed_row(monkeypatch, llm_router: Router):
+    """A truthy non-dict `body` must not crash the scan.
+
+    `get_model_from_json_obj` does `body.get("model")` after
+    `json_object.get("body", {}) or {}`, so `{"body": [1]}` / `{"body": "x"}` raise
+    AttributeError (`{"body": []}` does not — an empty list is falsy and collapses to
+    `{}`). Scanning every row would turn that into a 500 on input that deserves a 400.
+    """
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    captured = _install_capturing_managed_files(monkeypatch, llm_router)
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_model_list", llm_router.model_list)
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
+    )
+
+    good = _batch_jsonl("gpt-3.5-turbo")
+    try:
+        # A valid first row followed by malformed ones: the upload still routes on
+        # the one real model, and the junk rows are skipped rather than raising.
+        for junk in (b'{"body": [1]}', b'{"body": "x"}', b'{"body": []}', b"not json"):
+            captured.clear()
+            response = _post_stock_batch_upload(good + b"\n" + junk)
+            assert response.status_code == 200, f"{junk!r} -> {response.text}"
+            assert captured["target_model_names_list"] == ["gpt-3.5-turbo"]
+
+        # A file with nothing but malformed rows has no target at all -> 400, not 500.
+        response = _post_stock_batch_upload(b'{"body": [1]}\n{"body": "x"}')
+        assert response.status_code == 400, response.text
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)

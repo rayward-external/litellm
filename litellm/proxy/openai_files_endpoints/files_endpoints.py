@@ -141,9 +141,18 @@ def get_models_from_batch_file(file_source: Union[bytes, BinaryIO]) -> List[str]
             return
         if not isinstance(json_object, dict):
             return
-        model = get_model_from_json_obj(json_object=json_object)
-        if model is not None and model not in models:
-            models.append(model)
+        # Type-check rather than reusing get_model_from_json_obj: that helper does
+        # `body.get("model")` after `json_object.get("body", {}) or {}`, which raises
+        # AttributeError for a truthy non-dict body (`{"body": [1]}`, `{"body": "x"}`)
+        # — a 500 on input that deserves a 400. An unparseable row is skipped here and
+        # surfaces as the no-model / mixed-model 400 below.
+        body = json_object.get("body")
+        if not isinstance(body, dict):
+            return
+        model = body.get("model")
+        if not isinstance(model, str) or not model or model in models:
+            return
+        models.append(model)
 
     try:
         if isinstance(file_source, (bytes, bytearray)):
@@ -197,7 +206,10 @@ async def resolve_batch_target_model(
     from litellm.proxy.auth.auth_checks import can_key_call_resolved_model
     from litellm.proxy.proxy_server import llm_model_list
 
-    models = get_models_from_batch_file(file_source)
+    # Off the event loop: the scan is synchronous disk reads + UTF-8 decode + JSON
+    # parse over a file this endpoint explicitly supports at gigabyte scale, so doing
+    # it inline would stall every other request on the worker until it finished.
+    models = await asyncio.to_thread(get_models_from_batch_file, file_source)
     if not models:
         raise HTTPException(
             status_code=400,
