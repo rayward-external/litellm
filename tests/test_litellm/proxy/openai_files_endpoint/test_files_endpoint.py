@@ -2610,3 +2610,218 @@ def test_list_files_with_all_proxy_models_team_uses_openai_deployment(
     assert captured_kwargs.get("api_key") == "team-openai-key"
     assert captured_kwargs.get("custom_llm_provider") == "openai"
     proxy_logging_obj.post_call_failure_hook.assert_not_called()
+# ---------------------------------------------------------------------------
+# Stock OpenAI Batch flow: `client.files.create(file=..., purpose="batch")`
+#
+# The OpenAI SDK sends no routing hint on a file upload — no `model`, no
+# `target_model_names`, no `target_storage`. Before these tests that request fell
+# through to the `files_settings` branch of route_create_file(), which raises
+# ValueError("files_settings is not set, set it on your config.yaml file.") and
+# surfaces to the caller as an HTTP 500 telling *them* to edit a config.yaml they
+# do not own. A batch JSONL already names its model on every line, so the proxy
+# can route it without asking the client for a non-standard field.
+# ---------------------------------------------------------------------------
+
+
+def _batch_jsonl(model: str | None) -> bytes:
+    """One-line batch JSONL, optionally without the `body.model` key."""
+    body: dict = {"messages": [{"role": "user", "content": "Hello"}]}
+    if model is not None:
+        body["model"] = model
+    return json.dumps(
+        {
+            "custom_id": "request-1",
+            "method": "POST",
+            "url": "/v1/chat/completions",
+            "body": body,
+        }
+    ).encode()
+
+
+def _install_capturing_managed_files(monkeypatch, llm_router: Router):
+    """Wire a managed-files hook that records the target models it was routed to."""
+    from litellm.llms.base_llm.files.transformation import BaseFileEndpoints
+
+    captured: dict = {}
+
+    class RecordingManagedFiles(BaseFileEndpoints):
+        async def acreate_file(
+            self,
+            llm_router,
+            create_file_request,
+            target_model_names_list,
+            litellm_parent_otel_span,
+            user_api_key_dict,
+        ):
+            captured["target_model_names_list"] = target_model_names_list
+            return OpenAIFileObject(
+                id="litellm_managed_file_abc123",
+                object="file",
+                bytes=100,
+                created_at=1234567890,
+                filename="batch.jsonl",
+                purpose="batch",
+                status="uploaded",
+            )
+
+        async def afile_retrieve(self, file_id, litellm_parent_otel_span, llm_router):
+            raise NotImplementedError
+
+        async def afile_list(self, purpose, litellm_parent_otel_span):
+            raise NotImplementedError
+
+        async def afile_delete(self, file_id, litellm_parent_otel_span, llm_router, **data):
+            raise NotImplementedError
+
+        async def afile_content(self, file_id, litellm_parent_otel_span, llm_router, **data):
+            raise NotImplementedError
+
+    proxy_logging_obj = ProxyLogging(user_api_key_cache=DualCache(default_in_memory_ttl=1))
+    proxy_logging_obj._add_proxy_hooks(llm_router)
+    proxy_logging_obj.proxy_hook_mapping["managed_files"] = RecordingManagedFiles()
+
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", llm_router)
+    monkeypatch.setattr("litellm.proxy.proxy_server.proxy_logging_obj", proxy_logging_obj)
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+    return captured
+
+
+def _post_stock_batch_upload(content: bytes, **extra_form):
+    """POST /v1/files exactly as the OpenAI SDK does, plus any extra form fields."""
+    return client.post(
+        "/v1/files",
+        files={"file": ("batch.jsonl", content, "application/jsonl")},
+        data={"purpose": "batch", **extra_form},
+        headers={"Authorization": "Bearer test-key"},
+    )
+
+
+def test_stock_batch_upload_infers_target_model_from_jsonl(monkeypatch, llm_router: Router):
+    """
+    No routing hint + a batch JSONL naming a known model => managed-files routing.
+
+    This is the flow every stock OpenAI SDK client produces. It must route on the
+    model named inside the JSONL, not 500 about `files_settings`.
+    """
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    captured = _install_capturing_managed_files(monkeypatch, llm_router)
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
+    )
+    try:
+        response = _post_stock_batch_upload(_batch_jsonl("gpt-3.5-turbo"))
+        assert response.status_code == 200, response.text
+        assert response.json()["id"] == "litellm_managed_file_abc123"
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert captured["target_model_names_list"] == ["gpt-3.5-turbo"], (
+        "the upload must be routed on the model named in the JSONL body"
+    )
+
+
+def test_stock_batch_upload_unknown_model_is_a_400_not_a_config_500(monkeypatch, llm_router: Router):
+    """A model the router doesn't serve is a client error, not a server misconfig."""
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    _install_capturing_managed_files(monkeypatch, llm_router)
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
+    )
+    try:
+        response = _post_stock_batch_upload(_batch_jsonl("no-such-model"))
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert response.status_code == 400, response.text
+    body = response.text
+    assert "no-such-model" in body, "the error must name the offending model"
+    assert "files_settings" not in body, "server config internals must never reach the client"
+
+
+def test_stock_batch_upload_without_model_in_jsonl_is_a_400(monkeypatch, llm_router: Router):
+    """A JSONL with no `body.model` cannot be routed — say so actionably."""
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    _install_capturing_managed_files(monkeypatch, llm_router)
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
+    )
+    try:
+        response = _post_stock_batch_upload(_batch_jsonl(None))
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert response.status_code == 400, response.text
+    assert "files_settings" not in response.text
+    assert "target_model_names" in response.text, "the error must tell the caller how to route the upload"
+
+
+def test_explicit_target_model_names_still_wins_over_inference(monkeypatch, llm_router: Router):
+    """Regression guard: an explicit hint is authoritative, inference must not override it."""
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    captured = _install_capturing_managed_files(monkeypatch, llm_router)
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
+    )
+    try:
+        # JSONL says gpt-3.5-turbo; the caller explicitly asks for the azure alias.
+        response = _post_stock_batch_upload(
+            _batch_jsonl("gpt-3.5-turbo"),
+            target_model_names="azure-gpt-3-5-turbo",
+        )
+        assert response.status_code == 200, response.text
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert captured["target_model_names_list"] == ["azure-gpt-3-5-turbo"]
+
+
+def test_non_batch_upload_is_untouched_by_batch_inference(monkeypatch, llm_router: Router):
+    """
+    Only `purpose=batch` infers a target. Other purposes (assistants, user_data,
+    fine-tune) have no per-line model and must keep the existing `files_settings`
+    behaviour rather than being rerouted or newly rejected.
+    """
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+    from litellm.proxy.openai_files_endpoints import files_endpoints as fe
+
+    captured = _install_capturing_managed_files(monkeypatch, llm_router)
+    seen: dict = {}
+
+    async def fake_route_create_file(*, target_model_names_list, **kwargs):
+        seen["target_model_names_list"] = target_model_names_list
+        return OpenAIFileObject(
+            id="file-plain",
+            object="file",
+            bytes=0,
+            created_at=1234567890,
+            filename="data.jsonl",
+            purpose="user_data",
+            status="uploaded",
+        )
+
+    monkeypatch.setattr(fe, "route_create_file", fake_route_create_file)
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
+    )
+    try:
+        response = client.post(
+            "/v1/files",
+            files={"file": ("data.jsonl", _batch_jsonl("gpt-3.5-turbo"), "application/jsonl")},
+            data={"purpose": "user_data"},
+            headers={"Authorization": "Bearer test-key"},
+        )
+        assert response.status_code == 200, response.text
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert seen["target_model_names_list"] == [], "a non-batch upload must not be given an inferred target model"
+    assert "target_model_names_list" not in captured, "a non-batch upload must not reach the managed-files hook"

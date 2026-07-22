@@ -119,6 +119,49 @@ def get_model_from_json_obj(json_object: dict) -> Optional[str]:
     return model
 
 
+def resolve_batch_target_model(
+    file_source: Union[bytes, BinaryIO],
+    llm_router: Optional[Router],
+) -> str:
+    """Derive the model a batch upload targets from the JSONL it carries.
+
+    OpenAI's Batch API takes no model on the file upload — every line of the JSONL
+    names its own `body.model` instead. Reading it here lets an unmodified OpenAI
+    client route through the router (and so price, rate-limit and log like any
+    other request) rather than having to send a LiteLLM-specific form field.
+
+    Raises a 400 rather than letting the request fall through to the
+    `files_settings` branch, whose ValueError surfaces as a 500 telling the caller
+    to edit a config.yaml they do not own.
+    """
+    json_obj = get_first_json_object(file_source)
+    model = get_model_from_json_obj(json_object=json_obj) if json_obj else None
+    if model is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": (
+                    "Could not determine which model this batch targets. Give every "
+                    "line of the JSONL a `body.model`, or name the model explicitly "
+                    "in the `target_model_names` form field on the upload."
+                )
+            },
+        )
+    if not is_known_model(model=model, llm_router=llm_router):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": (
+                    f"Model '{model}', read from the batch file's `body.model`, is not "
+                    "available on this proxy. Call GET /v1/models for the servable "
+                    "models, or route the upload explicitly with the "
+                    "`target_model_names` form field."
+                )
+            },
+        )
+    return model
+
+
 async def _deprecated_loadbalanced_create_file(
     llm_router: Optional[Router],
     router_model: str,
@@ -348,6 +391,15 @@ async def create_file(
         target_storage = file_params.target_storage
         target_model_names_list = file_params.target_model_names
         model_param = file_params.model
+
+        # A stock OpenAI Batch client — `client.files.create(file=..., purpose="batch")`
+        # — sends no routing hint at all: no `model`, no `target_model_names`, no
+        # `target_storage`. Without a target, route_create_file() falls through to its
+        # `files_settings` branch and 500s with an operator-facing config instruction.
+        # The JSONL already names its model on every line, so route on that and keep
+        # the batch on the router. Explicit hints stay authoritative.
+        if purpose == "batch" and not target_model_names_list and model_param is None and target_storage == "default":
+            target_model_names_list = [resolve_batch_target_model(file_source=file_source, llm_router=llm_router)]
 
         validate_managed_files_requirement(target_model_names=target_model_names_list, model=model_param)
 
