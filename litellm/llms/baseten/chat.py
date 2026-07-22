@@ -48,7 +48,18 @@ class BasetenConfig(OpenAIGPTConfig):
 
     def get_supported_openai_params(self, model: str) -> list:
         """
-        Get the supported OpenAI params for the given model
+        Get the supported OpenAI params for the given model.
+
+        ``reasoning_effort`` is declared unconditionally, like every other
+        parameter here: Baseten hosts arbitrary, user-supplied deployments
+        (there is no enumerable Baseten catalog in litellm's cost map the way
+        there is for a curated provider), so litellm cannot know in advance
+        which deployed model supports it -- the deployment itself is the only
+        real source of truth on capability, exactly as already true for
+        ``temperature``, ``tools``, etc. above. map_openai_params below is a
+        pure allow-list passthrough with no value translation, so this is the
+        whole fix -- previously reasoning_effort was silently stripped by
+        drop_params before ever reaching a deployment that may well accept it.
         """
         return [
             "max_tokens",
@@ -65,6 +76,7 @@ class BasetenConfig(OpenAIGPTConfig):
             "presence_penalty",
             "frequency_penalty",
             "stream_options",
+            "reasoning_effort",
         ]
 
     def map_openai_params(

@@ -262,3 +262,78 @@ def test_drop_tool_level_extra_fields_strips_copilot_mcp_server_name():
         assert "copilot_mcp_server_name" not in tool
     assert result["tools"][0]["type"] == "function"
     assert result["tools"][1]["function"]["name"] == "read_file"
+
+
+def test_azure_ai_reasoning_effort_declared_via_supports_reasoning():
+    """
+    reasoning_effort was being silently stripped by litellm's own drop_params
+    for every azure_ai-routed model, including ones litellm's own cost map
+    already marks supports_reasoning=True (azure_ai/kimi-k2.6,
+    azure_ai/deepseek-v4-pro) -- get_supported_openai_params never consulted
+    that flag at all, so map_openai_params (a pure allow-list passthrough,
+    see _map_openai_params in llms/openai/openai.py) never let the caller's
+    value through to the wire. Verified live against a production gateway
+    fronting both LiteLLM and Bifrost: Bifrost forwards reasoning_effort to
+    these same Azure AI Foundry deployments and the upstream endpoints
+    genuinely honor it (rayward-internal/llm-gateway-infra#290).
+
+    grok models resolve through the "xai" provider's cost-map entries, not
+    "azure_ai" -- those are better-maintained (xai/grok-4.3 -> True vs.
+    azure_ai/grok-4.3 -> False in the current cost map) and this file already
+    delegates grok's stop-token capability to XAIChatConfig for the same
+    reason (see _supports_stop_reason above); reasoning follows the same
+    delegation.
+    """
+    config = AzureAIStudioConfig()
+
+    # Cost map already says these support reasoning -- the gate must actually
+    # look, not just always omit the param.
+    assert "reasoning_effort" in config.get_supported_openai_params("kimi-k2.6")
+    assert "reasoning_effort" in config.get_supported_openai_params("deepseek-v4-pro")
+
+    # grok resolves via the xai/ cost-map entries (delegated, like stop-token
+    # support above), not the azure_ai/ ones.
+    assert "reasoning_effort" in config.get_supported_openai_params("grok-4.3")
+
+    # A model with no reasoning capability anywhere in the cost map must not
+    # get the param -- this isn't "always allow", it's "declare what's true".
+    assert "reasoning_effort" not in config.get_supported_openai_params("gpt-4")
+
+
+def test_azure_ai_reasoning_effort_flows_through_as_a_plain_value():
+    """map_openai_params for azure_ai is inherited, unmodified, from
+    OpenAIConfig._map_openai_params -- a pure allow-list passthrough with no
+    value translation (`if param in supported_openai_params: optional_params[param] = value`).
+    Once declared supported, the value must reach optional_params UNCHANGED --
+    there is deliberately no new mapping logic for this, since the upstream
+    Azure AI Foundry endpoints already accept the literal OpenAI-style string
+    (confirmed live via Bifrost, which forwards it as-is)."""
+    config = AzureAIStudioConfig()
+    optional_params = config.map_openai_params(
+        non_default_params={"reasoning_effort": "high"},
+        optional_params={},
+        model="kimi-k2.6",
+        drop_params=False,
+    )
+    assert optional_params == {"reasoning_effort": "high"}
+
+
+def test_azure_ai_reasoning_check_is_additive_not_exclusive_for_grok():
+    """codex review, PR #150: the xai/ delegation was written as EXCLUSIVE
+    ("if grok in model, ONLY check xai/") rather than additive, which
+    regressed a real deployment: azure_ai/global/grok-3-mini has
+    supports_reasoning=true in litellm's own cost map with no corresponding
+    xai/global/grok-3-mini entry to fall back to, so forcing the xai/ lookup
+    for any "grok" in the model name lost data the azure_ai/ entry already
+    had. The check must consult azure_ai/ first and only reach for xai/ as an
+    additional (not replacement) signal.
+    """
+    config = AzureAIStudioConfig()
+
+    # Azure's own cost-map entry already knows this one -- must not be
+    # thrown away by forcing an xai/ lookup that doesn't exist for it.
+    assert "reasoning_effort" in config.get_supported_openai_params("global/grok-3-mini")
+
+    # The original working case must still work: azure_ai/grok-4.3 has no
+    # entry, xai/grok-4.3 does.
+    assert "reasoning_effort" in config.get_supported_openai_params("grok-4.3")

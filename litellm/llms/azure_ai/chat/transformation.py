@@ -45,6 +45,25 @@ class AzureAIStudioConfig(OpenAIConfig):
         if not self._supports_stop_reason(model):
             supported_params = [param for param in supported_params if param != "stop"]
 
+        #########################################################
+        # reasoning check
+        #########################################################
+        # get_supported_openai_params never consulted litellm's own
+        # supports_reasoning() flag, so reasoning_effort was silently stripped
+        # by drop_params for every azure_ai-routed model -- including ones the
+        # cost map already marks reasoning-capable (azure_ai/kimi-k2.6,
+        # azure_ai/deepseek-v4-pro). Declaring it here alone is NOT enough,
+        # though: map_openai_params is inherited from OpenAIConfig, which
+        # dispatches any non-OpenAI-shaped model name to a separate object
+        # (litellm.openAIGPTConfig) that recomputes its own supported-param
+        # list from scratch and has no knowledge of this check -- see the
+        # map_openai_params override below, which is the other half of this
+        # fix. supports_reasoning() catches its own lookup failures
+        # internally and always returns a bool, so no try/except is needed
+        # here.
+        if self._supports_reasoning(model):
+            supported_params.append("reasoning_effort")
+
         return supported_params
 
     def _supports_stop_reason(self, model: str) -> bool:
@@ -56,6 +75,58 @@ class AzureAIStudioConfig(OpenAIConfig):
             xai_config = XAIChatConfig()
             return xai_config._supports_stop_reason(model)
         return True
+
+    def map_openai_params(
+        self,
+        non_default_params: dict,
+        optional_params: dict,
+        model: str,
+        drop_params: bool,
+    ) -> dict:
+        optional_params = super().map_openai_params(
+            non_default_params=non_default_params,
+            optional_params=optional_params,
+            model=model,
+            drop_params=drop_params,
+        )
+        # super().map_openai_params() (OpenAIConfig) dispatches, for any model
+        # name that isn't OpenAI's own o-series/gpt-5/gpt-audio pattern, to
+        # litellm.openAIGPTConfig -- a separate object with NO knowledge of
+        # get_supported_openai_params() above, since it recomputes its own
+        # supported-param list from scratch (and that list never includes
+        # reasoning_effort for a non-OpenAI-shaped model name like
+        # "kimi-k2.6" or "grok-4.3"). Without this, get_supported_openai_params
+        # would correctly ADVERTISE reasoning_effort as supported while the
+        # value was still silently dropped at request-build time -- forward it
+        # explicitly here, gated by the same capability check.
+        if "reasoning_effort" in non_default_params and self._supports_reasoning(model):
+            optional_params["reasoning_effort"] = non_default_params["reasoning_effort"]
+        return optional_params
+
+    def _supports_reasoning(self, model: str) -> bool:
+        """
+        Check if the model supports reasoning_effort.
+
+        Additive, never exclusive: check the model's own ``azure_ai/`` entry
+        first, since that is the deployment actually being called and is
+        sometimes already correct on its own (e.g. Azure's "global" routing
+        tier -- ``azure_ai/global/grok-3-mini`` has ``supports_reasoning=true``
+        with no corresponding ``xai/global/grok-3-mini`` entry to fall back
+        to). Only fall through to XAIChatConfig's own check for Grok models
+        the azure_ai/ lookup doesn't already recognize -- that data is
+        maintained under the native ``xai/`` provider prefix and is more
+        current for several models (e.g. ``xai/grok-4.3`` is populated while
+        ``azure_ai/grok-4.3`` is not), matching the existing
+        _supports_stop_reason delegation above for the same reason. An
+        earlier version of this check forced the xai/ lookup for ANY "grok" in
+        model, which regressed the global/grok-3-mini case above (codex
+        review) -- the fix is to make xai/ additive rather than the sole path.
+        """
+        if litellm.supports_reasoning(model=model, custom_llm_provider="azure_ai"):
+            return True
+        if "grok" in model:
+            return litellm.supports_reasoning(model=model, custom_llm_provider="xai")
+        return False
 
     def validate_environment(
         self,
