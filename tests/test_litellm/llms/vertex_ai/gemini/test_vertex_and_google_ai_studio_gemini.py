@@ -5404,3 +5404,58 @@ def test_process_candidates_merges_thought_signatures_and_server_side_tools():
     fields = model_response.choices[-1].message.provider_specific_fields
     assert fields["thought_signatures"] == ["sig-text"]
     assert fields["server_side_tool_invocations"][0]["id"] == "tool-1"
+
+
+# ---------------------------------------------------------------------------
+# Unsupported `reasoning_effort` must be a 400, not a bare ValueError that
+# get_optional_params() re-wraps into a 500 APIConnectionError + traceback.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("reasoning_effort", ["xhigh", "max", "banana"])
+def test_thinking_budget_unsupported_reasoning_effort_raises_bad_request(
+    reasoning_effort,
+):
+    with pytest.raises(litellm.exceptions.BadRequestError) as exc_info:
+        VertexGeminiConfig._map_reasoning_effort_to_thinking_budget(
+            reasoning_effort=reasoning_effort,
+            model="gemini-2.5-pro",
+        )
+
+    message = str(exc_info.value)
+    assert reasoning_effort in message
+    assert "Supported values are:" in message
+    assert "'high'" in message
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.parametrize("reasoning_effort", ["xhigh", "max", "banana"])
+def test_thinking_level_unsupported_reasoning_effort_raises_bad_request(
+    reasoning_effort,
+):
+    with pytest.raises(litellm.exceptions.BadRequestError) as exc_info:
+        VertexGeminiConfig._map_reasoning_effort_to_thinking_level(
+            reasoning_effort=reasoning_effort,
+            model="gemini-3-pro-preview",
+        )
+
+    message = str(exc_info.value)
+    assert reasoning_effort in message
+    assert "Supported values are:" in message
+    assert "'high'" in message
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.parametrize("reasoning_effort", ["xhigh", "max"])
+def test_get_optional_params_unsupported_reasoning_effort_is_a_client_error(
+    reasoning_effort,
+):
+    """Regression: a ValueError here escapes get_optional_params() and
+    exception_type() falls through to APIConnectionError -> HTTP 500 with a
+    Python traceback in the response body."""
+    with pytest.raises(litellm.exceptions.BadRequestError):
+        litellm.get_optional_params(
+            model="gemini-2.5-pro",
+            custom_llm_provider="vertex_ai",
+            reasoning_effort=reasoning_effort,
+        )

@@ -6,6 +6,7 @@ from typing import (
     Any,
     Dict,
     List,
+    Mapping,
     NoReturn,
     Optional,
     Tuple,
@@ -214,6 +215,17 @@ def _build_anthropic_tool_name_maps(
     return forward, reverse
 
 
+# Every ``output_config.effort`` level, ascending.
+ALL_EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+
+# Levels checked against model capabilities. low/medium/high are accepted by every
+# effort-capable Claude model, so gating them would only produce false rejections.
+GATED_EFFORT_LEVELS: tuple[str, ...] = ("xhigh", "max")
+
+# The effort ladder an adaptive-thinking model gets by virtue of being adaptive.
+# ``xhigh`` is not on it -- see ``AnthropicConfig._is_effort_level_allowed``.
+ADAPTIVE_THINKING_BASE_EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "max")
+
 REASONING_EFFORT_TO_OUTPUT_CONFIG_EFFORT: Dict[str, str] = {
     "low": "low",
     "minimal": "low",
@@ -352,16 +364,52 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         )
 
     @staticmethod
+    def _is_effort_level_allowed(model: str, level: str, custom_llm_provider: str) -> bool:
+        """One rule, applied identically to every gated effort level.
+
+        A gated level is allowed when either:
+          1. the model map advertises ``supports_{level}_reasoning_effort``, or
+          2. the level belongs to the adaptive-thinking base ladder
+             (``ADAPTIVE_THINKING_BASE_EFFORT_LEVELS``) and the model uses
+             adaptive thinking.
+
+        ``xhigh`` is deliberately absent from that base ladder: it is a per-model
+        extension (Sonnet 5, Opus 4.7+), not part of the ladder every adaptive
+        model gets. That is why Sonnet 4.6 accepts ``max`` and refuses ``xhigh``
+        -- an apparent "inverted ceiling", but the model's real vocabulary rather
+        than an implementation asymmetry (Bifrost independently reports the same
+        set for that model: high, low, max, medium). Both levels are therefore
+        rejected strictly and by the same predicate; neither is silently degraded
+        here. Provider subclasses that *do* have a narrower ceiling clamp before
+        this runs (see the Bedrock invoke transformation).
+        """
+        if level not in GATED_EFFORT_LEVELS:
+            return True
+        if AnthropicConfig._supports_effort_level(model, level, custom_llm_provider):
+            return True
+        return level in ADAPTIVE_THINKING_BASE_EFFORT_LEVELS and AnthropicConfig._is_adaptive_thinking_model(
+            model, custom_llm_provider
+        )
+
+    @staticmethod
+    def _supported_effort_levels(model: str, custom_llm_provider: str) -> list[str]:
+        """The effort levels ``model`` accepts, in ascending order."""
+        return [
+            level
+            for level in ALL_EFFORT_LEVELS
+            if AnthropicConfig._is_effort_level_allowed(model, level, custom_llm_provider)
+        ]
+
+    @staticmethod
     def _validate_effort_for_model(model: str, effort: Optional[str], custom_llm_provider: str) -> Optional[str]:
         """Return ``None`` if ``effort`` is allowed on ``model``, else an error message."""
-        if effort == "max" and not (
-            AnthropicConfig._is_adaptive_thinking_model(model, custom_llm_provider)
-            or AnthropicConfig._supports_effort_level(model, "max", custom_llm_provider)
-        ):
-            return f"effort='max' is not supported by this model. Got model: {model}"
-        if effort == "xhigh" and not AnthropicConfig._supports_effort_level(model, "xhigh", custom_llm_provider):
-            return f"effort='xhigh' is not supported by this model. Got model: {model}"
-        return None
+        if effort is None or AnthropicConfig._is_effort_level_allowed(model, effort, custom_llm_provider):
+            return None
+        supported = AnthropicConfig._supported_effort_levels(model, custom_llm_provider)
+        return (
+            f"effort={effort!r} is not supported by this model. Got model: {model}. "
+            f"Supported values are: {', '.join(repr(level) for level in supported)}."
+        )
 
     @staticmethod
     def _model_supports_effort_param(model: str, custom_llm_provider: str) -> bool:
@@ -1268,6 +1316,13 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             return None
 
     @staticmethod
+    def _requested_max_tokens(non_default_params: Mapping[str, Any]) -> Optional[int]:
+        """The caller's output-token ceiling, whichever alias they sent it under."""
+        return AnthropicConfig._coerce_optional_int(
+            non_default_params.get("max_completion_tokens") or non_default_params.get("max_tokens")
+        )
+
+    @staticmethod
     def _cap_thinking_budget_to_max_tokens(
         thinking: AnthropicThinkingParam, max_tokens: Optional[int]
     ) -> Optional[AnthropicThinkingParam]:
@@ -1523,7 +1578,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                     # `thinking={type: enabled, budget_tokens}` interface a
                     # pre-4.6 model actually supports instead of forwarding a
                     # shape the model will reject.
-                    max_tokens = non_default_params.get("max_completion_tokens") or non_default_params.get("max_tokens")
+                    max_tokens = AnthropicConfig._requested_max_tokens(non_default_params)
                     legacy_thinking = AnthropicConfig._map_reasoning_effort(
                         reasoning_effort="medium",
                         model=model,
@@ -1568,6 +1623,35 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                     optional_params.pop("thinking", None)
                     optional_params.pop("output_config", None)
                 else:
+                    # Anthropic rejects `max_tokens <= thinking.budget_tokens`. The
+                    # budget derived from the effort level is a fixed constant and
+                    # ignored the caller's max_tokens, so an ordinary small-max_tokens
+                    # request went upstream guaranteed-invalid ("`max_tokens` must be
+                    # greater than `thinking.budget_tokens`"). Clamp it here, the same
+                    # way the adaptive-thinking translation above already does.
+                    # Adaptive models carry no budget_tokens and are left alone.
+                    effort_max_tokens = AnthropicConfig._requested_max_tokens(non_default_params)
+                    capped_thinking = AnthropicConfig._cap_thinking_budget_to_max_tokens(
+                        mapped_thinking, effort_max_tokens
+                    )
+                    if capped_thinking is None:
+                        # max_tokens can't fit even the minimum budget, so no clamp
+                        # produces a valid request. Say so in LiteLLM's own words
+                        # rather than forwarding a request Anthropic will refuse --
+                        # and rather than silently dropping the thinking the caller
+                        # explicitly asked for.
+                        raise litellm.exceptions.BadRequestError(
+                            message=(
+                                f"reasoning_effort={effort_value!r} requires max_tokens greater than "
+                                f"{ANTHROPIC_MIN_THINKING_BUDGET_TOKENS}: Anthropic requires "
+                                f"max_tokens > thinking.budget_tokens and a minimum budget of "
+                                f"{ANTHROPIC_MIN_THINKING_BUDGET_TOKENS} tokens. "
+                                f"Got max_tokens={effort_max_tokens}."
+                            ),
+                            model=model,
+                            llm_provider=self._resolved_provider,
+                        )
+                    mapped_thinking = capped_thinking
                     optional_params["thinking"] = mapped_thinking
                     if AnthropicConfig._is_adaptive_thinking_model(model, self._resolved_provider):
                         mapped_effort = REASONING_EFFORT_TO_OUTPUT_CONFIG_EFFORT.get(effort_value)

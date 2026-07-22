@@ -13,6 +13,7 @@ from typing import (
     List,
     Literal,
     Mapping,
+    NoReturn,
     Optional,
     Tuple,
     Type,
@@ -166,6 +167,19 @@ class VertexAIBaseConfig:
             "us-west4",
             "us-west5",
         ]
+
+
+# `reasoning_effort` levels Gemini can express, via either thinkingBudget (2.5) or
+# thinkingLevel (3+). Anything outside this set is a client error -- notably `xhigh`
+# and `max`, which exist on the OpenAI/Anthropic ladders but have no Gemini mapping.
+SUPPORTED_GEMINI_REASONING_EFFORTS: tuple[str, ...] = (
+    "none",
+    "disable",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+)
 
 
 class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
@@ -816,6 +830,27 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
                 optional_params["response_schema"] = self._map_response_schema(value=schema)
 
     @staticmethod
+    def _raise_invalid_reasoning_effort(reasoning_effort: str, model: Optional[str]) -> NoReturn:
+        """Reject an unsupported ``reasoning_effort`` as a client error.
+
+        Both effort mappers below used to raise a bare ``ValueError``. That escapes
+        ``get_optional_params()``, and ``exception_type()`` has no mapping for it, so it
+        fell through to ``APIConnectionError`` -- an HTTP 500 whose body carried a Python
+        traceback (container paths included) for what is unambiguously a bad request.
+        ``UnsupportedParamsError`` is a ``BadRequestError`` subclass, so it is re-raised
+        unchanged as a 400. The message enumerates the accepted levels, matching the
+        wording OpenAI/Azure use for the same rejection.
+        """
+        raise litellm.utils.UnsupportedParamsError(
+            message=(
+                f"Invalid reasoning_effort: {reasoning_effort!r} for model={model}. "
+                f"Supported values are: "
+                f"{', '.join(repr(level) for level in SUPPORTED_GEMINI_REASONING_EFFORTS)}."
+            ),
+            status_code=400,
+        )
+
+    @staticmethod
     def _map_reasoning_effort_to_thinking_budget(
         reasoning_effort: str,
         model: Optional[str] = None,
@@ -862,7 +897,7 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
                 "includeThoughts": False,
             }
         else:
-            raise ValueError(f"Invalid reasoning effort: {reasoning_effort}")
+            VertexGeminiConfig._raise_invalid_reasoning_effort(reasoning_effort, model)
 
     @staticmethod
     def _map_reasoning_effort_to_thinking_level(
@@ -910,7 +945,7 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
             else:
                 return {"thinkingLevel": "low", "includeThoughts": False}
         else:
-            raise ValueError(f"Invalid reasoning effort: {reasoning_effort}")
+            VertexGeminiConfig._raise_invalid_reasoning_effort(reasoning_effort, model)
 
     @staticmethod
     def _is_thinking_budget_zero(thinking_budget: Optional[int]) -> bool:
