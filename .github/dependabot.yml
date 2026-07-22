@@ -65,3 +65,17 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
+
+  - package-ecosystem: "gomod"
+    directory: "/terraform/provider"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: "gomod"
+    directory: "/cookbook/gollem_go_agent_framework"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
