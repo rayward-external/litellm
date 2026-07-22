@@ -254,7 +254,31 @@ async def route_create_file(
         )
     else:
         # get configs for custom_llm_provider
-        llm_provider_config = get_files_provider_config(custom_llm_provider=custom_llm_provider)
+        try:
+            llm_provider_config = get_files_provider_config(custom_llm_provider=custom_llm_provider)
+        except ValueError:
+            # get_files_provider_config's only raise is "files_settings is not set" —
+            # meaning this request supplied none of target_storage/model/
+            # target_model_names AND the admin never configured a default upload
+            # route. Left as a bare ValueError, this becomes a 500 whose message
+            # ("set it on your config.yaml file") is server-config detail the caller
+            # cannot act on and reads as "this proxy has no batch support" — which
+            # is how a stock `client.files.create(file=..., purpose="batch")` call
+            # (no hint by construction) got misdiagnosed. It is a missing-parameter
+            # error on THIS request, so it is the caller's to fix: a 400 naming the
+            # two ways to supply the hint the request is missing.
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": (
+                        f"This proxy has no default upload route for provider "
+                        f"'{custom_llm_provider}'. Name the target model explicitly: "
+                        f"pass `model=<name>` on the upload, or "
+                        f"`target_model_names=<name>` to route through a managed-files "
+                        f"deployment."
+                    )
+                },
+            )
         if llm_provider_config is not None:
             # add llm_provider_config to data
             _create_file_request.update(llm_provider_config)

@@ -378,9 +378,9 @@ def test_mock_create_audio_file(mocker: MockerFixture, monkeypatch, llm_router: 
             ):
                 azure_call_found = True
                 break
-        assert (
-            azure_call_found
-        ), f"Azure call not found with expected parameters. Calls: {calls}"
+        assert azure_call_found, (
+            f"Azure call not found with expected parameters. Calls: {calls}"
+        )
 
         # Check for OpenAI call
         openai_call_found = False
@@ -450,15 +450,15 @@ def test_create_file_batch_streams_from_upload_spool(monkeypatch, llm_router: Ro
         )
         assert resp.status_code == 200, resp.text
         file_elem = captured["file_elem"]
-        assert not isinstance(
-            file_elem, (bytes, bytearray)
-        ), "batch upload must be a streamable handle, not in-memory bytes"
-        assert hasattr(file_elem, "read") and hasattr(
-            file_elem, "seek"
-        ), "batch upload must be a seekable file handle"
-        assert (
-            captured["streamed_content"] == content
-        ), "the handle must stream the uploaded bytes"
+        assert not isinstance(file_elem, (bytes, bytearray)), (
+            "batch upload must be a streamable handle, not in-memory bytes"
+        )
+        assert hasattr(file_elem, "read") and hasattr(file_elem, "seek"), (
+            "batch upload must be a seekable file handle"
+        )
+        assert captured["streamed_content"] == content, (
+            "the handle must stream the uploaded bytes"
+        )
 
         captured.clear()
         resp = client.post(
@@ -468,9 +468,9 @@ def test_create_file_batch_streams_from_upload_spool(monkeypatch, llm_router: Ro
             headers={"Authorization": "Bearer test-key"},
         )
         assert resp.status_code == 200, resp.text
-        assert isinstance(
-            captured["file_elem"], (bytes, bytearray)
-        ), "non-batch upload must stay in-memory bytes"
+        assert isinstance(captured["file_elem"], (bytes, bytearray)), (
+            "non-batch upload must stay in-memory bytes"
+        )
     finally:
         app.dependency_overrides.pop(ps.user_api_key_auth, None)
 
@@ -1130,9 +1130,9 @@ def test_create_file_without_expires_after(
                 expires_after = getattr(create_file_request, "expires_after", None)
 
             # expires_after should be None when not provided
-            assert (
-                expires_after is None
-            ), "expires_after should be None when not provided"
+            assert expires_after is None, (
+                "expires_after should be None when not provided"
+            )
 
             return OpenAIFileObject(
                 id="file-abc123",
@@ -1221,9 +1221,9 @@ def test_managed_files_with_loadbalancing(
             user_api_key_dict,
         ):
             # Verify we receive the target model names
-            assert (
-                len(target_model_names_list) > 0
-            ), "Should have target_model_names_list"
+            assert len(target_model_names_list) > 0, (
+                "Should have target_model_names_list"
+            )
 
             # Simulate what managed files does - call llm_router.acreate_file for each model
             # This is where loadbalancing happens internally
@@ -1300,14 +1300,14 @@ def test_managed_files_with_loadbalancing(
 
     # Verify that managed files was called (via router for loadbalancing)
     # This proves that managed files took precedence over deprecated loadbalancing
-    assert (
-        len(router_acreate_file_calls) == 2
-    ), "Should have called router for both models"
+    assert len(router_acreate_file_calls) == 2, (
+        "Should have called router for both models"
+    )
     assert router_acreate_file_calls[0]["model"] == "azure-gpt-3-5-turbo"
     assert router_acreate_file_calls[1]["model"] == "gpt-3.5-turbo"
-    assert all(
-        call["via_router"] for call in router_acreate_file_calls
-    ), "All calls should go through router"
+    assert all(call["via_router"] for call in router_acreate_file_calls), (
+        "All calls should go through router"
+    )
 
 
 def test_create_file_with_nested_litellm_metadata(
@@ -2610,3 +2610,144 @@ def test_list_files_with_all_proxy_models_team_uses_openai_deployment(
     assert captured_kwargs.get("api_key") == "team-openai-key"
     assert captured_kwargs.get("custom_llm_provider") == "openai"
     proxy_logging_obj.post_call_failure_hook.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# `POST /v1/files` with `purpose=batch` and no routing hint (`model`,
+# `target_model_names`, `target_storage` all absent — exactly what a stock
+# `client.files.create(file=..., purpose="batch")` sends). This used to fall
+# through to route_create_file()'s `files_settings` branch, whose bare
+# ValueError("files_settings is not set, set it on your config.yaml file.")
+# was wrapped into an HTTP 500 that hands the caller a server-config
+# instruction they cannot act on, and reads as "this proxy supports no
+# batching" — which is how it got misdiagnosed as exactly that. The fix
+# below only changes what happens when that branch is about to fail: same
+# route, no new inference, no new routing, no new authorization surface —
+# just a 400 that says which two form fields would fix the request.
+# ---------------------------------------------------------------------------
+
+
+def _post_stock_batch_upload(**extra_form):
+    """POST /v1/files exactly as the OpenAI SDK does, plus any extra form fields."""
+    content = (
+        b'{"custom_id":"r-0","method":"POST","url":"/v1/chat/completions",'
+        b'"body":{"model":"gpt-3.5-turbo","messages":[{"role":"user","content":"hi"}]}}\n'
+    )
+    return client.post(
+        "/v1/files",
+        files={"file": ("batch.jsonl", content, "application/jsonl")},
+        data={"purpose": "batch", **extra_form},
+        headers={"Authorization": "Bearer test-key"},
+    )
+
+
+def test_batch_upload_with_no_routing_hint_is_a_400_not_a_500(
+    monkeypatch, llm_router: Router
+):
+    """The exact request a stock OpenAI Batch client sends, with no files_settings
+    configured, must fail as an actionable 400 — not a 500 about server config.
+    """
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+    from litellm.proxy.openai_files_endpoints import files_endpoints as fe
+
+    monkeypatch.setattr(fe, "files_config", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", llm_router)
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
+    )
+    try:
+        response = _post_stock_batch_upload()
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert response.status_code == 400, response.text
+    body = response.text
+    assert "files_settings" not in body, (
+        "server config internals must never reach the client"
+    )
+    assert "config.yaml" not in body
+    assert "model=" in body and "target_model_names=" in body, (
+        "the error must tell the caller how to route the upload"
+    )
+
+
+def test_non_batch_upload_with_no_routing_hint_gets_the_same_fix(
+    monkeypatch, llm_router: Router
+):
+    """The dead-end branch is reachable for any purpose, not just batch — fix it there too."""
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+    from litellm.proxy.openai_files_endpoints import files_endpoints as fe
+
+    monkeypatch.setattr(fe, "files_config", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", llm_router)
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
+    )
+    try:
+        response = client.post(
+            "/v1/files",
+            files={"file": ("data.jsonl", b'{"foo": "bar"}\n', "application/jsonl")},
+            data={"purpose": "user_data"},
+            headers={"Authorization": "Bearer test-key"},
+        )
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert response.status_code == 400, response.text
+    assert "config.yaml" not in response.text
+
+
+def test_files_settings_still_routes_normally_when_configured(
+    monkeypatch, mocker, llm_router: Router
+):
+    """The fix must only fire on the dead end — a real files_settings config is untouched."""
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+    from litellm.proxy.openai_files_endpoints import files_endpoints as fe
+
+    monkeypatch.setattr(
+        fe,
+        "files_config",
+        [{"custom_llm_provider": "openai", "api_key": "configured-openai-key"}],
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", llm_router)
+
+    captured_kwargs = {}
+
+    async def fake_acreate_file(**kwargs):
+        captured_kwargs.update(kwargs)
+        return OpenAIFileObject(
+            id="file-via-files-settings",
+            object="file",
+            bytes=0,
+            created_at=1234567890,
+            filename="batch.jsonl",
+            purpose="batch",
+            status="uploaded",
+        )
+
+    mocker.patch("litellm.acreate_file", side_effect=fake_acreate_file)
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
+    )
+    try:
+        response = _post_stock_batch_upload()
+        assert response.status_code == 200, response.text
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert response.json()["id"] == "file-via-files-settings"
+    assert captured_kwargs.get("api_key") == "configured-openai-key"
+
+
+def test_vertex_ai_provider_is_unaffected_by_the_fix(monkeypatch, llm_router: Router):
+    """`custom_llm_provider == "vertex_ai"` returns None (not a raise) before this
+    branch is reached at all — confirm it still bypasses files_settings entirely.
+    """
+    from litellm.proxy.openai_files_endpoints.files_endpoints import (
+        get_files_provider_config,
+    )
+
+    assert get_files_provider_config(custom_llm_provider="vertex_ai") is None
