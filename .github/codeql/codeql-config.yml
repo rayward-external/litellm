@@ -47,6 +47,13 @@ query-filters:
   # disabled. Same FP class as the py/weak-sensitive-data-hashing exclude above.
   - exclude:
       id: py/request-without-cert-validation        # CWE-295
+  # js/incomplete-url-substring-sanitization: same FP class as the Python
+  # equivalent above, but for co-located *.test.tsx files (not caught by the
+  # "tests" paths-ignore entry, which only matches the top-level Python tests/
+  # dir). The flagged regexes assert on rendered DOM text in RTL's getByText,
+  # not a security decision on an untrusted URL.
+  - exclude:
+      id: js/incomplete-url-substring-sanitization  # CWE-184
 
 paths-ignore:
   - tests

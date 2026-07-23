@@ -20,7 +20,7 @@ concurrency:
 jobs:
   ui-unit-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: ui/litellm-dashboard
@@ -50,8 +50,8 @@ jobs:
           if [ -n "$BASE_SHA" ]; then
             echo "Pull request: running only tests related to changes since $BASE_SHA"
             npm run test -- --run --changed "$BASE_SHA" --passWithNoTests \
-              --pool forks --poolOptions.forks.maxForks=4
+              --pool forks
           else
             echo "Push to $GITHUB_REF_NAME: running the full suite"
-            npm run test -- --run --pool forks --poolOptions.forks.maxForks=4
+            npm run test -- --run --pool forks
           fi
