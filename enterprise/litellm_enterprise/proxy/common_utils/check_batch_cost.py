@@ -126,16 +126,41 @@ class CheckBatchCost:
                 f"CheckBatchCost: failed to release claim on job {job.id}: {release_err}"
             )
 
+    @classmethod
+    def _augment_update_with_owner_key(cls, job: Any, update_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Self-heal the owner_key column (which backs the owner-scoped
+        /v1/messages/batches listing) in the SAME finalization write — no extra
+        query. A row a pre-#335 writer created before the migration backfill, or
+        during a rolling deploy, carries owner_key NULL, and the listing's
+        indexed query needs it. When the column is still NULL and the submitting
+        key hash is recoverable from the attribution stash, fold it into
+        update_data.
+
+        NULL-ONLY and NEVER-OVERWRITE: an existing owner_key is a real value the
+        listing depends on (and that finalization must preserve), so it is left
+        untouched — this only fills a genuine gap, it never changes a set value.
+        Only reached on the modern (batch_processed) schema, which is exactly the
+        schema that has the owner_key column."""
+        if getattr(job, "owner_key", None) is not None:
+            return update_data
+        key_hash = cls._get_job_attribution(job).get("user_api_key")
+        if not isinstance(key_hash, str) or not key_hash:
+            return update_data
+        return {**update_data, "owner_key": key_hash}
+
     async def _finalize_job(self, job: Any, update_data: Dict[str, Any]) -> bool:
         """Write the terminal row state, fenced to the claim this worker
         holds: a slow ex-owner whose claim was reclaimed must not overwrite
         the new owner's finalization (codex P2 round 3). Legacy schemas
         without batch_processed keep the plain unconditional update."""
         if not self._has_batch_processed_column:
+            # Older schema without batch_processed predates the owner_key column
+            # too, so there is nothing to backfill here — plain update.
             await self.prisma_client.db.litellm_managedobjecttable.update(
                 where={"id": job.id}, data=update_data
             )
             return True
+        update_data = self._augment_update_with_owner_key(job, update_data)
         finalized_count = await self.prisma_client.db.litellm_managedobjecttable.update_many(
             where={"id": job.id, "status": "pricing", "batch_processed": True},
             data=update_data,
@@ -253,6 +278,41 @@ class CheckBatchCost:
             verbose_proxy_logger.error(
                 f"CheckBatchCost: abandoned-claim reclaim failed: {reclaim_err}"
             )
+
+    async def _backfill_null_owner_keys(self) -> None:
+        """Self-healing sweep that drains the owner_key IS NULL message-batch
+        slice once per poll cycle, so the read path (owner-scoped
+        /v1/messages/batches listing) needs no key-hash scan at all.
+
+        Sources of a NULL owner_key: a row that predates the migration backfill,
+        and a row a pre-#335 pod writes during a rolling deploy. The per-row
+        _finalize_job fold heals rows the poller finalizes this cycle, but a row
+        an old pod ALREADY finalized (batch_processed=True) is never revisited by
+        the primary query — this sweep is what covers those, so the whole slice
+        drains deterministically with no operator action.
+
+        Idempotent and NEVER-OVERWRITE: it only touches rows still NULL whose
+        attribution yields a key hash (the guard means OpenAI-dialect /v1/batches
+        rows, which carry no attribution, stay NULL and the sweep re-touches
+        nothing once drained). Same double-encoded JSON extraction as the
+        migration backfill. PostgreSQL only — the proxy's sole dialect; gated on
+        the modern schema (owner_key was added after batch_processed, so it is
+        absent wherever that column is) and best-effort via the caller's
+        try/except."""
+        if not self._has_batch_processed_column:
+            return
+        await self.prisma_client.db.execute_raw(
+            """
+            UPDATE "LiteLLM_ManagedObjectTable"
+            SET "owner_key" = CASE WHEN jsonb_typeof("file_object") = 'string'
+               THEN ("file_object" #>> '{}')::jsonb #>> '{litellm_attribution,user_api_key}'
+               ELSE "file_object" #>> '{litellm_attribution,user_api_key}' END
+            WHERE "file_purpose" = 'batch' AND "owner_key" IS NULL
+              AND (CASE WHEN jsonb_typeof("file_object") = 'string'
+                   THEN ("file_object" #>> '{}')::jsonb #>> '{litellm_attribution,user_api_key}'
+                   ELSE "file_object" #>> '{litellm_attribution,user_api_key}' END) IS NOT NULL
+            """
+        )
 
     @staticmethod
     def _finalized_file_object(
@@ -828,6 +888,9 @@ class CheckBatchCost:
             # the delete gate reads as finalized (codex P1 round 3).
             await self._reclaim_abandoned_pricing_claims()
             await self._cleanup_stale_managed_objects()
+            # Self-heal any owner_key IS NULL message batches (pre-migration or
+            # rolling-deploy rows) so the listing read path needs no key-hash scan.
+            await self._backfill_null_owner_keys()
         except Exception as cleanup_err:
             verbose_proxy_logger.warning(
                 f"CheckBatchCost: stale cleanup failed (poll will continue): {cleanup_err}"

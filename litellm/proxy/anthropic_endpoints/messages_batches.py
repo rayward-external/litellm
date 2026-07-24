@@ -60,7 +60,6 @@ poller has recorded, not a live provider poll; RETRIEVE /{id} gives the live
 status.
 """
 
-import collections
 import datetime
 import hashlib
 import json
@@ -571,12 +570,20 @@ async def _record_batch_for_billing(
                     "file_purpose": "batch",
                     "created_by": user_api_key_dict.user_id,
                     "team_id": user_api_key_dict.team_id,
+                    # Indexed owner column: the owner-scoped LIST matches on it in
+                    # SQL (single keyset query) instead of scanning + filtering the
+                    # attribution JSON in Python. Its presence (NOT NULL) is also
+                    # the message-batch route discriminator — OpenAI-dialect
+                    # /v1/batches rows never set it. Same value the attribution
+                    # stash carries: the submitting virtual key's hash.
+                    "owner_key": user_api_key_dict.api_key,
                     "updated_by": user_api_key_dict.user_id,
                     "status": "validating",
                 },
                 "update": {
                     "file_object": json.dumps(file_object),
                     "status": "validating",
+                    "owner_key": user_api_key_dict.api_key,
                     "updated_by": user_api_key_dict.user_id,
                 },
             },
@@ -1198,12 +1205,12 @@ async def cancel_message_batch(
 # their listing is rebuilt from the billing ledger the create legs registered.
 _LIST_DEFAULT_LIMIT = 20
 _LIST_MAX_LIMIT = 100
-_LIST_CHUNK_SIZE = 500  # ledger rows fetched per DB round-trip while streaming
-# Overall rows scanned before giving up. The owner filter (below) can't run in
-# SQL for key-hash-only owners, so we page through the table and stop once the
-# caller's page is filled — this cap only bites a caller whose owned rows are
-# all older than 20k newer foreign rows, and truncation is logged, never silent.
-_LIST_SCAN_HARD_CAP = 20000
+# Take for the TEMPORARY legacy bridge (see _fetch_legacy_owner_batches): a
+# per-owner, column-indexed (created_by / team_id) query over owner_key IS NULL
+# message batches a pre-#335 writer left behind. The CheckBatchCost poller
+# self-heals those NULLs within a poll cycle (owner_key backfill), so this is a
+# small, transient read-time fallback with no scan and no cap.
+_LEGACY_FALLBACK_CAP = 1000
 
 
 def _row_file_object(row: object) -> dict[str, Any]:
@@ -1355,80 +1362,216 @@ def _list_limit(request: Request) -> int:
     return max(1, min(limit, _LIST_MAX_LIMIT))
 
 
-class _OwnerPageBuilder:
-    """Accumulates the caller's owner-scoped page as the keyset scan feeds it
-    owned message-batch rows newest-first. Encapsulates the two cursor modes so
-    the scan loop stays flat:
+def _owner_or_predicate(user_api_key_dict: UserAPIKeyAuth) -> list[dict[str, Any]]:
+    """The SQL OR-branch that matches rows this caller owns, mirroring
+    _row_matches_caller. For rows THIS route created, the attribution stash and
+    the columns agree (owner_key == attribution.user_api_key; team_id/created_by
+    == the submitting key's team/user), so the three column predicates below
+    reproduce all five _row_matches_caller conditions. A caller value that is
+    None is dropped (never matches every-row-with-a-NULL-column)."""
+    owner_or: list[dict[str, Any]] = []
+    if user_api_key_dict.api_key:
+        owner_or.append({"owner_key": user_api_key_dict.api_key})
+    if user_api_key_dict.team_id:
+        owner_or.append({"team_id": user_api_key_dict.team_id})
+    if user_api_key_dict.user_id:
+        owner_or.append({"created_by": user_api_key_dict.user_id})
+    return owner_or
 
-      * after_id — FORWARD cursor: skip owned rows until we pass it, then collect
-        from the next one (an unknown after_id yields an empty page).
-      * before_id — BACKWARD cursor: its page is the `limit` owned rows
-        immediately NEWER than it — in a newest-first scan, the last `limit` rows
-        seen just before the cursor, kept in a sliding window and emitted only
-        once the cursor is found (unknown before_id -> empty page).
 
-    `done` goes True once the page is complete; the scan then stops."""
+def _keyset_seek_predicate(seek: tuple[Any, Any], op: str) -> dict[str, Any]:
+    """Strict keyset seek on (created_at, unified_object_id): rows past the
+    cursor in the given direction. op is "lt" (older, forward/desc paging) or
+    "gt" (newer, backward/asc paging). The unified_object_id tie-breaker is
+    REQUIRED so rows sharing a created_at can't be straddled or duplicated."""
+    seek_created_at, seek_unified_object_id = seek
+    return {
+        "OR": [
+            {"created_at": {op: seek_created_at}},
+            {
+                "AND": [
+                    {"created_at": seek_created_at},
+                    {"unified_object_id": {op: seek_unified_object_id}},
+                ]
+            },
+        ]
+    }
 
-    def __init__(
-        self,
-        *,
-        limit: int,
-        after_id: Optional[str],
-        before_id: Optional[str],
-        results_base_url: str,
-    ) -> None:
-        self._limit = limit
-        self._after_id = after_id
-        self._before_id = before_id
-        self._base = results_base_url
-        self._seeking = after_id is not None
-        self._before_buffer: collections.deque[dict[str, Any]] = collections.deque(maxlen=limit)
-        self._before_seen = 0
-        self.page: list[dict[str, Any]] = []
-        self.has_more = False
-        self.done = False
 
-    def offer(self, row: object, client_id: str) -> None:
-        """Feed one owned message-batch row (newest-first) into the page."""
-        if self._before_id is not None:
-            if client_id == self._before_id:
-                # The buffer holds the `limit` owned rows immediately NEWER than
-                # the cursor (newest-first) — that IS the page. If more owned rows
-                # were seen before the cursor than fit the window (some evicted),
-                # an even-newer page exists.
-                self.page = list(self._before_buffer)
-                self.has_more = self._before_seen > self._limit
-                self.done = True
-                return
-            self._before_buffer.append(_render_ledger_batch(row, self._base, client_id))
-            self._before_seen += 1
-            return
-        if self._seeking:
-            if client_id == self._after_id:
-                self._seeking = False  # collect starting from the row AFTER it
-            return
-        if len(self.page) >= self._limit:
-            self.has_more = True  # at least one owned row beyond this page
-            self.done = True
-            return
-        self.page.append(_render_ledger_batch(row, self._base, client_id))
+async def _cursor_seek_point(cursor_id: str, user_api_key_dict: UserAPIKeyAuth) -> Optional[tuple[Any, Any]]:
+    """Resolve a client-facing cursor id to its (created_at, unified_object_id)
+    keyset point, scoped to the caller's ownership. Inverts the id the same way
+    _get_billing_row does (Bedrock ids match on the jobArn suffix, upstream ids
+    on the raw model_object_id). Returns None — an EMPTY page, matching the old
+    'unknown cursor -> empty' semantics — when no such row exists OR the caller
+    doesn't own it OR it isn't one of this route's message batches. Raises on a
+    DB error so the caller's 503 wrapper fails closed."""
+    from litellm.proxy.proxy_server import prisma_client
+
+    where: dict[str, Any] = {}
+    if cursor_id.startswith(BEDROCK_MSGBATCH_PREFIX):
+        job_id, _owner8 = _split_bedrock_batch_id(cursor_id)
+        where["model_object_id"] = {"endswith": f"/model-invocation-job/{job_id}"}
+    else:
+        where["model_object_id"] = cursor_id
+    row = await prisma_client.db.litellm_managedobjecttable.find_first(where=where)
+    if row is None or _client_batch_id(row) is None or not _row_matches_caller(row, user_api_key_dict):
+        return None
+    created_at = getattr(row, "created_at", None)
+    unified_object_id = getattr(row, "unified_object_id", None)
+    if created_at is None or unified_object_id is None:
+        return None
+    return (created_at, unified_object_id)
+
+
+async def _fetch_legacy_owner_batches(
+    user_api_key_dict: UserAPIKeyAuth,
+    results_base_url: str,
+    *,
+    seek: Optional[tuple[Any, Any]],
+    op: str,
+    order_dir: str,
+) -> list[tuple[Any, Any, dict[str, Any]]]:
+    """TEMPORARY legacy bridge — delete once pre-migration / rolling-deploy rows
+    have drained (TODO(owner_key-backfill); batches expire in 24h). The indexed
+    primary query requires owner_key IS NOT NULL, so a message-batch row a pre-#335
+    writer left with owner_key NULL would be missing until it is healed. The
+    CheckBatchCost poller SELF-HEALS those NULLs each cycle (it derives owner_key
+    from the attribution stash and backfills the column), so there is NO read-time
+    scan and NO cap here — just one cheap INDEXED fallback query:
+
+      Column-scoped (created_by / team_id): an old writer stamps created_by/team_id
+      from the same key, so the column matches the caller's own NULL rows. This
+      covers callers carrying those columns immediately (before the poller runs),
+      and is merged into the keyset window with the primary rows.
+
+    A key-hash-only caller (no user_id AND no team_id) has no column to match, so
+    a NULL row of theirs is served by retrieve-by-id until the poller backfills its
+    owner_key (within a poll cycle), at which point the indexed primary query picks
+    it up — a brief, self-healing gap, by design, not a read-time scan."""
+    if not (user_api_key_dict.user_id or user_api_key_dict.team_id):
+        return []
+    from litellm.proxy.proxy_server import prisma_client
+
+    order = [{"created_at": order_dir}, {"unified_object_id": order_dir}]
+    seek_and: list[dict[str, Any]] = [_keyset_seek_predicate(seek, op)] if seek is not None else []
+    out: list[tuple[Any, Any, dict[str, Any]]] = []
+    seen: set[Any] = set()
+
+    legacy_or: list[dict[str, Any]] = []
+    if user_api_key_dict.user_id:
+        legacy_or.append({"created_by": user_api_key_dict.user_id})
+    if user_api_key_dict.team_id:
+        legacy_or.append({"team_id": user_api_key_dict.team_id})
+    # Scoped to the single owner's columns, so a per-owner take cap is enough.
+    where: dict[str, Any] = {"file_purpose": "batch", "owner_key": None, "AND": [{"OR": legacy_or}, *seek_and]}
+    rows = await prisma_client.db.litellm_managedobjecttable.find_many(
+        where=where, order=order, take=_LEGACY_FALLBACK_CAP
+    )
+    _collect_legacy_rows(rows, user_api_key_dict, results_base_url, out, seen)
+    return out
+
+
+def _collect_legacy_rows(
+    rows: list[Any],
+    user_api_key_dict: UserAPIKeyAuth,
+    results_base_url: str,
+    out: list[tuple[Any, Any, dict[str, Any]]],
+    seen: set[Any],
+) -> None:
+    """Filter a legacy NULL-owner_key result set to this caller's message
+    batches and append (created_at, unified_object_id, rendered) tuples, deduped
+    by unified_object_id. _client_batch_id excludes OpenAI-dialect /v1/batches
+    rows (no message-batch client id); _row_matches_caller re-checks ownership
+    (columns AND the attribution key hash) for the exact pre-#335 semantics."""
+    for row in rows:
+        unified_object_id = getattr(row, "unified_object_id", None)
+        if unified_object_id in seen:
+            continue
+        client_id = _client_batch_id(row)
+        if client_id is None or not _row_matches_caller(row, user_api_key_dict):
+            continue
+        seen.add(unified_object_id)
+        out.append(
+            (
+                getattr(row, "created_at", None),
+                unified_object_id,
+                _render_ledger_batch(row, results_base_url, client_id),
+            )
+        )
+
+
+async def _fetch_owner_page(
+    user_api_key_dict: UserAPIKeyAuth,
+    owner_or: list[dict[str, Any]],
+    results_base_url: str,
+    *,
+    limit: int,
+    seek: Optional[tuple[Any, Any]],
+    forward: bool,
+) -> tuple[list[dict[str, Any]], bool]:
+    """One keyset page of the caller's owned message batches, newest-first.
+
+    forward=True pages toward OLDER rows (no cursor / after_id): seek `lt`,
+    order desc. forward=False pages toward NEWER rows (before_id): seek `gt`,
+    order asc (the `limit` rows immediately newer than the cursor), then the
+    page is reversed back to desc. take = limit + |legacy| + 1 guarantees the
+    bounded legacy rows can interleave without dropping a primary row from the
+    window; the +1 detects has_more."""
+    from litellm.proxy.proxy_server import prisma_client
+
+    op = "lt" if forward else "gt"
+    order_dir = "desc" if forward else "asc"
+    legacy = await _fetch_legacy_owner_batches(
+        user_api_key_dict, results_base_url, seek=seek, op=op, order_dir=order_dir
+    )
+    and_clauses: list[dict[str, Any]] = [{"OR": owner_or}]
+    if seek is not None:
+        and_clauses.append(_keyset_seek_predicate(seek, op))
+    where: dict[str, Any] = {
+        # owner_key IS NOT NULL is the message-batch route discriminator: it
+        # excludes OpenAI-dialect /v1/batches rows (which never set it) even
+        # when they share this owner's created_by/team_id.
+        "file_purpose": "batch",
+        "owner_key": {"not": None},
+        "AND": and_clauses,
+    }
+    rows = await prisma_client.db.litellm_managedobjecttable.find_many(
+        where=where,
+        order=[{"created_at": order_dir}, {"unified_object_id": order_dir}],
+        take=limit + len(legacy) + 1,
+    )
+    candidates: list[tuple[Any, Any, dict[str, Any]]] = []
+    for row in rows:
+        client_id = _client_batch_id(row)
+        if client_id is None:
+            continue  # defensive: owner_key IS NOT NULL should imply one of ours
+        candidates.append(
+            (
+                getattr(row, "created_at", None),
+                getattr(row, "unified_object_id", None),
+                _render_ledger_batch(row, results_base_url, client_id),
+            )
+        )
+    candidates.extend(legacy)  # disjoint from primary (owner_key NULL vs NOT NULL)
+    candidates.sort(key=lambda c: (c[0], c[1]), reverse=forward)
+    has_more = len(candidates) > limit
+    page = [rendered for _ca, _uid, rendered in candidates[:limit]]
+    if not forward:
+        page.reverse()  # backward fetch is ascending; present newest-first
+    return page, has_more
 
 
 async def _list_owner_scoped_batches(request: Request, user_api_key_dict: UserAPIKeyAuth) -> JSONResponse:
-    """Build the caller's owner-scoped message-batch listing from the ledger.
-
-    Ownership is the authoritative _row_matches_caller post-filter — NOT a
-    coarse created_by/team_id WHERE clause, which would wrongly EXCLUDE a
-    key-hash-only owner (a key with no user_id/team_id owns its batches purely
-    via the attribution hash in JSON, not a queryable column). Because that
-    filter can't run in SQL, we STREAM the ledger newest-first in chunks and
-    stop as soon as the caller's page is filled, rather than capping a global
-    window up front — otherwise a caller's rows sitting behind many newer
-    foreign rows would be permanently unreachable (no cursor could get past the
-    cap). Pagination is applied during the stream so both cursors stay correct
-    across chunks."""
-    from litellm.proxy.proxy_server import prisma_client
-
+    """Build the caller's owner-scoped message-batch listing from the ledger
+    with a single INDEXED keyset query (owner_key / team_id / created_by are
+    all indexed), replacing the old chunked full-table scan + Python owner
+    filter. Ownership is expressed in SQL via _owner_or_predicate, which
+    reproduces _row_matches_caller for every row this route created (the
+    backfilled owner_key column carries the key hash the old filter matched in
+    the attribution JSON). owner_key IS NOT NULL is the message-batch route
+    discriminator (OpenAI-dialect /v1/batches rows never set it), replacing the
+    old _client_batch_id-not-None post-filter."""
     limit = _list_limit(request)
     after_id = _list_query_get(request, "after_id")
     before_id = _list_query_get(request, "before_id")
@@ -1442,105 +1585,49 @@ async def _list_owner_scoped_batches(request: Request, user_api_key_dict: UserAP
         )
     base = _results_base_url(request)
 
-    # after_id / before_id cursor handling lives in the page builder so this
-    # scan loop stays flat (and under the complexity budget).
-    builder = _OwnerPageBuilder(limit=limit, after_id=after_id, before_id=before_id, results_base_url=base)
-    scanned = 0
-    truncated = False
-    # KEYSET (seek) cursor, not OFFSET: separate offset queries share no
-    # snapshot, so a concurrent insert/delete into the shared table between
-    # chunks would shift rows and duplicate or skip a boundary row. We instead
-    # seek strictly past the previous chunk's last row on the deterministic
-    # (created_at desc, unified_object_id desc) order — the unified_object_id
-    # tie-breaker is REQUIRED so rows sharing a created_at can't be straddled.
-    seek_created_at: Any = None
-    seek_unified_object_id: Any = None
+    owner_or = _owner_or_predicate(user_api_key_dict)
+    if not owner_or:
+        # A caller with no key hash, user, or team owns nothing (mirrors
+        # _row_matches_caller returning False for every row) — empty page.
+        return _empty_batch_list_response()
 
-    while not builder.done:
-        where: dict[str, Any] = {"file_purpose": "batch"}
-        if seek_created_at is not None:
-            # (created_at < last) OR (created_at == last AND unified_object_id < last)
-            where = {
-                "file_purpose": "batch",
-                "OR": [
-                    {"created_at": {"lt": seek_created_at}},
-                    {
-                        "AND": [
-                            {"created_at": seek_created_at},
-                            {"unified_object_id": {"lt": seek_unified_object_id}},
-                        ]
-                    },
-                ],
-            }
-        try:
-            rows = await prisma_client.db.litellm_managedobjecttable.find_many(
-                where=where,
-                order=[{"created_at": "desc"}, {"unified_object_id": "desc"}],
-                take=_LIST_CHUNK_SIZE,
-            )
-        except Exception:  # noqa: BLE001
-            # Fail CLOSED on ANY DB read failure: a partial/empty result must
-            # never masquerade as "you have no batches", so we catch broadly and
-            # 503 (a raise would 500 raw). Narrowing to prisma.errors.PrismaError
-            # is the codebase convention, but importing prisma here is not viable
-            # — it is generated only at proxy build time and is absent from the
-            # unit-test environment, so a hot-path import would ImportError every
-            # listing test. Blind-but-fail-closed is the correct choice here.
-            verbose_proxy_logger.exception("messages/batches: owner-scoped list query failed")
-            return _anthropic_error(503, "api_error", "batch listing is temporarily unavailable; retry shortly")
-        if not rows:
-            break  # table exhausted
-        scanned += len(rows)
-        for row in rows:
-            client_id = _client_batch_id(row)
-            if client_id is None or not _row_matches_caller(row, user_api_key_dict):
-                continue
-            builder.offer(row, client_id)
-            if builder.done:
-                break
-        if builder.done or len(rows) < _LIST_CHUNK_SIZE:
-            break  # done, or last (short) chunk => table exhausted
-        if scanned >= _LIST_SCAN_HARD_CAP:
-            truncated = True
-            break
-        # Advance the seek cursor to the last (oldest) row of this chunk, using
-        # the row's OWN column values — created_at is a datetime, compared as a
-        # datetime, never a reformatted string. Without both we can't build a
-        # keyset predicate, so stop rather than risk re-scanning from the top.
-        last_row = rows[-1]
-        seek_created_at = getattr(last_row, "created_at", None)
-        seek_unified_object_id = getattr(last_row, "unified_object_id", None)
-        if seek_created_at is None or seek_unified_object_id is None:
-            break
+    cursor_id = after_id or before_id
+    forward = before_id is None  # after_id / no-cursor page toward OLDER rows
 
-    if truncated:
-        # Case (c): the scan gave up at the hard cap BEFORE the caller's page was
-        # satisfied — NOT because the page filled (case a, breaks at `done`) or
-        # the table was exhausted (case b, breaks on an empty/short chunk). In a
-        # large shared ledger, returning a 200 here would falsely tell the caller
-        # "you have no batches / no more". Fail LOUD with a transient error (same
-        # 503 shape this file uses for the DB-read failure above) so the client
-        # narrows the query or retries instead of trusting a truncated success.
-        verbose_proxy_logger.warning(
-            "messages/batches: owner-scoped list hit the %d-row scan cap before the "
-            "caller's page was satisfied; returning a transient error",
-            _LIST_SCAN_HARD_CAP,
+    try:
+        seek: Optional[tuple[Any, Any]] = None
+        if cursor_id is not None:
+            seek = await _cursor_seek_point(cursor_id, user_api_key_dict)
+            if seek is None:
+                return _empty_batch_list_response()  # unknown cursor -> empty page
+        page, has_more = await _fetch_owner_page(
+            user_api_key_dict, owner_or, base, limit=limit, seek=seek, forward=forward
         )
-        return _anthropic_error(
-            503,
-            "api_error",
-            "batch listing could not be completed within the scan budget; narrow the "
-            "query (smaller limit / use after_id) or retry",
-        )
-    page = builder.page
+    except Exception:  # noqa: BLE001
+        # Fail CLOSED on ANY DB read failure: a partial/empty result must never
+        # masquerade as "you have no batches", so we catch broadly and 503 (a
+        # raise would 500 raw). Narrowing to prisma.errors.PrismaError is the
+        # codebase convention, but importing prisma here is not viable — it is
+        # generated only at proxy build time and is absent from the unit-test
+        # environment, so a hot-path import would ImportError every listing test.
+        verbose_proxy_logger.exception("messages/batches: owner-scoped list query failed")
+        return _anthropic_error(503, "api_error", "batch listing is temporarily unavailable; retry shortly")
+
     return JSONResponse(
         status_code=200,
         content={
             "data": page,
-            "has_more": builder.has_more,
+            "has_more": has_more,
             "first_id": page[0]["id"] if page else None,
             "last_id": page[-1]["id"] if page else None,
         },
+    )
+
+
+def _empty_batch_list_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=200,
+        content={"data": [], "has_more": False, "first_id": None, "last_id": None},
     )
 
 

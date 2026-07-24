@@ -128,12 +128,18 @@ async def test_record_batch_upsert_shape(monkeypatch):
     prisma.upsert.assert_awaited_once()
     kwargs = prisma.upsert.await_args.kwargs
     create = kwargs["data"]["create"]
+    update = kwargs["data"]["update"]
     assert kwargs["where"] == {"unified_object_id": mb._unified_batch_object_id("deployment-id-123", JOB_ARN)}
     assert create["model_object_id"] == JOB_ARN
     assert create["file_purpose"] == "batch"
     assert create["status"] == "validating"
     assert create["created_by"] == "user-1"
     assert create["team_id"] == "team-1"
+    # Indexed owner column: the owner-scoped LIST matches on it in SQL. Written
+    # on BOTH the create and update branch of the upsert so a re-registration
+    # never drops it. It is the submitting virtual key's hash.
+    assert create["owner_key"] == "a" * 64
+    assert update["owner_key"] == "a" * 64
     file_object = json.loads(create["file_object"])
     assert file_object["id"] == "msgbatch_bedrock_abc123xyz_deadbeef"
     assert file_object["litellm_attribution"] == {
