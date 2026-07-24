@@ -35,8 +35,11 @@ Authorization model (beyond user_api_key_auth on every route):
     proxy admin. Stateless, so ids stay self-contained.
   * Upstream batches share the proxy's single Anthropic workspace — the same
     visibility semantics Anthropic gives keys within one workspace, and the
-    same posture as the existing /anthropic passthrough. LIST is therefore
-    restricted to proxy-admin keys (it is the enumeration vector).
+    same posture as the existing /anthropic passthrough. LIST must therefore
+    never forward that shared workspace to a non-admin key (it is the
+    enumeration vector). Admin keys get the verbatim upstream forward;
+    non-admin keys get an OWNER-SCOPED listing derived from the billing ledger
+    (see the list route) instead, so the enumeration stays closed.
 
 Spend tracking: every batch this route creates (both legs) is registered in
 LiteLLM_ManagedObjectTable with a unified batch id, so the stock CheckBatchCost
@@ -48,10 +51,16 @@ With ANTHROPIC_BATCHES_REQUIRE_BILLING=true the create is refused (and the
 just-created job stopped/canceled) if the billing row cannot be stored — an
 unbillable batch never runs.
 
-Known MVP gap (documented in the fork PR): list is upstream-only (Bedrock jobs
-don't surface there).
+LIST (GET /v1/messages/batches): admin keys forward upstream (the full shared
+workspace); non-admin keys get an owner-scoped listing rebuilt from the billing
+ledger (LiteLLM_ManagedObjectTable rows this route registered), which — unlike
+the old upstream-only admin view — also surfaces the caller's Bedrock jobs. It
+is a ledger view, so a batch's processing_status reflects what the CheckBatchCost
+poller has recorded, not a live provider poll; RETRIEVE /{id} gives the live
+status.
 """
 
+import collections
 import datetime
 import hashlib
 import json
@@ -524,6 +533,14 @@ async def _record_batch_for_billing(
     unified_object_id = _unified_batch_object_id(router_model_id, provider_batch_id)
     file_object = {
         "id": client_batch_id,
+        # Duplicate of `id`, but under a key CheckBatchCost._finalized_file_object
+        # PRESERVES: at finalization the poller rewrites file_object from the
+        # provider response, overwriting `id` with the provider batch id / ARN
+        # (the owner-tagged Bedrock client id would otherwise be lost). The
+        # owner-scoped LIST reads this to return an id that still works with
+        # GET /v1/messages/batches/{id}, and to positively tag the row as an
+        # Anthropic message batch (vs an OpenAI-dialect /v1/batches Bedrock job).
+        "litellm_client_batch_id": client_batch_id,
         "object": "batch",
         "status": "validating",
         "model": model_name,
@@ -1175,6 +1192,358 @@ async def cancel_message_batch(
     return JSONResponse(status_code=200, content=mapped)
 
 
+# ── Owner-scoped listing (ledger-derived) ────────────────────────────────────
+
+# Non-admins can't be shown the upstream enumeration (shared workspace), so
+# their listing is rebuilt from the billing ledger the create legs registered.
+_LIST_DEFAULT_LIMIT = 20
+_LIST_MAX_LIMIT = 100
+_LIST_CHUNK_SIZE = 500  # ledger rows fetched per DB round-trip while streaming
+# Overall rows scanned before giving up. The owner filter (below) can't run in
+# SQL for key-hash-only owners, so we page through the table and stop once the
+# caller's page is filled — this cap only bites a caller whose owned rows are
+# all older than 20k newer foreign rows, and truncation is logged, never silent.
+_LIST_SCAN_HARD_CAP = 20000
+
+
+def _row_file_object(row: object) -> dict[str, Any]:
+    """The row's file_object as a dict (the write-path stores it JSON-encoded,
+    occasionally double-encoded — tolerate two levels, same as
+    CheckBatchCost._get_job_file_object and _row_attribution)."""
+    file_object = getattr(row, "file_object", None)
+    for _ in range(2):
+        if not isinstance(file_object, str):
+            break
+        try:
+            file_object = json.loads(file_object)
+        except ValueError:
+            return {}
+    return file_object if isinstance(file_object, dict) else {}
+
+
+def _client_batch_id(row: object) -> Optional[str]:
+    """The CLIENT-facing message-batch id for a row THIS route created, or None
+    if the row isn't ours (skip it).
+
+    Must survive CheckBatchCost finalization, which REWRITES file_object from the
+    provider response — overwriting `id` with the provider batch id / ARN and
+    turning created_at into an epoch int (check_batch_cost.py::_finalized_file_object).
+
+    Resolution order:
+      1. `litellm_client_batch_id`, stashed at create and on the finalization
+         preserve-list — authoritative, finalization-proof, and its presence is
+         the POSITIVE marker that distinguishes an Anthropic message batch from
+         an OpenAI-dialect /v1/batches Bedrock job (whose jobArn looks identical
+         but never carries this key). This is the path for every row minted
+         after this fix shipped.
+      2. Back-compat for pre-marker rows: a raw msgbatch_* model_object_id is
+         UNIQUE to this route's upstream leg (Anthropic message batches are
+         created only here) and equals the client id — a column, so it survives
+         finalization.
+      3. A pre-finalization Bedrock row still carries the owner-tagged client id
+         in file_object.id. A FINALIZED pre-marker Bedrock row has lost it, and a
+         bare jobArn cannot be told apart from an OpenAI-dialect Bedrock job, so
+         it is deliberately NOT surfaced — never leak a foreign-dialect job into
+         the Anthropic listing (codex P1)."""
+    file_object = _row_file_object(row)
+    stashed = file_object.get("litellm_client_batch_id")
+    if isinstance(stashed, str) and stashed.startswith("msgbatch_"):
+        return stashed
+    model_object_id = str(getattr(row, "model_object_id", "") or "")
+    if model_object_id.startswith("msgbatch_"):
+        return model_object_id
+    file_object_id = file_object.get("id")
+    if isinstance(file_object_id, str) and file_object_id.startswith(BEDROCK_MSGBATCH_PREFIX):
+        return file_object_id
+    return None
+
+
+def _to_rfc3339(value: object) -> Optional[str]:
+    """Normalize a stored timestamp to RFC3339. Accepts an RFC3339 string (the
+    pre-finalization stash writes created_at that way) OR a Unix epoch int/float
+    (LiteLLMBatch.created_at / .expires_at, written when CheckBatchCost finalizes
+    the row). Returns None when absent/unusable so the caller can fall back —
+    never silently substitutes now() for a real, finalized timestamp (that made
+    completed batches list as newly-created and drift expires_at every request)."""
+    if isinstance(value, str) and value:
+        return value
+    # bool is an int subclass — exclude it explicitly.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return _rfc3339(datetime.datetime.fromtimestamp(value, datetime.timezone.utc))
+        except (ValueError, OverflowError, OSError):
+            return None
+    return None
+
+
+def _list_expires_at(created_at: str) -> str:
+    """created_at + 24h (both the Anthropic batch window and the Bedrock job
+    timeout are 24h), falling back to created_at itself if the stored timestamp
+    doesn't parse — expires_at must stay a valid RFC3339 string, never null."""
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            parsed = datetime.datetime.strptime(created_at, fmt).replace(tzinfo=datetime.timezone.utc)
+            return _rfc3339(parsed + datetime.timedelta(hours=24))
+        except ValueError:
+            continue
+    return created_at
+
+
+def _render_ledger_batch(row: object, results_base_url: str, client_id: str) -> dict[str, Any]:
+    """Render one ledger row as an Anthropic `message_batch`, exposing ONLY
+    non-tenant-identifying fields — litellm_attribution and the row's
+    created_by/team_id never leave the server. `client_id` is resolved by
+    _client_batch_id (finalization-proof), so the returned id always works
+    against GET /v1/messages/batches/{id}.
+
+    processing_status comes from the poller-advanced COLUMN status: `ended`
+    when it is in _FINALIZED_ROW_STATUSES (the same "done" definition the delete
+    gate uses), else `in_progress` — including the transient `pricing` claim.
+    This is a LEDGER view, not a live provider poll: a batch that finished at
+    the provider but whose row the poller hasn't advanced yet still reads
+    in_progress. RETRIEVE /{id} gives the live status; this listing exists to
+    re-identify batch ids."""
+    file_object = _row_file_object(row)
+    ended = str(getattr(row, "status", "") or "") in _FINALIZED_ROW_STATUSES
+    total = int(file_object.get("total_records") or 0)
+    if ended:
+        # The ledger doesn't record the terminal per-record split (succeeded /
+        # errored / …) — RETRIEVE/{id} does. Report zeros rather than fabricate
+        # a breakdown we don't have.
+        counts = {"processing": 0, "succeeded": 0, "errored": 0, "canceled": 0, "expired": 0}
+    else:
+        counts = {"processing": total, "succeeded": 0, "errored": 0, "canceled": 0, "expired": 0}
+    # created_at is an RFC3339 string pre-finalization and an epoch int after —
+    # accept both; only invent now() when the value is genuinely absent.
+    created_at = _to_rfc3339(file_object.get("created_at")) or _rfc3339(datetime.datetime.now(datetime.timezone.utc))
+    # Prefer the finalized provider expires_at (epoch); otherwise derive +24h.
+    # Both are stable across requests (the bug was deriving from a now()-stamped
+    # created_at every call).
+    expires_at = _to_rfc3339(file_object.get("expires_at")) or _list_expires_at(created_at)
+    return {
+        "id": client_id,
+        "type": "message_batch",
+        "processing_status": "ended" if ended else "in_progress",
+        "request_counts": counts,
+        "created_at": created_at,
+        "expires_at": expires_at,
+        # The ledger doesn't store a precise end timestamp; RETRIEVE/{id} does.
+        "ended_at": None,
+        "archived_at": None,
+        "cancel_initiated_at": None,
+        # Gateway base only — never api.anthropic.com — and only once ended, so
+        # the client's gateway key (not the proxy's upstream credential) fetches
+        # results through our own /results route (same rule as _forward_upstream).
+        "results_url": f"{results_base_url}/v1/messages/batches/{client_id}/results" if ended else None,
+    }
+
+
+def _list_query_get(request: Request, key: str) -> Optional[str]:
+    value = request.query_params.get(key)
+    return value if value else None
+
+
+def _list_limit(request: Request) -> int:
+    """Anthropic `limit`: default 20, capped at 100, floored at 1. A malformed
+    value falls back to the default rather than erroring (unknown/garbage query
+    params must not fail the request)."""
+    raw = request.query_params.get("limit")
+    try:
+        limit = int(raw) if raw is not None else _LIST_DEFAULT_LIMIT
+    except (TypeError, ValueError):
+        limit = _LIST_DEFAULT_LIMIT
+    return max(1, min(limit, _LIST_MAX_LIMIT))
+
+
+class _OwnerPageBuilder:
+    """Accumulates the caller's owner-scoped page as the keyset scan feeds it
+    owned message-batch rows newest-first. Encapsulates the two cursor modes so
+    the scan loop stays flat:
+
+      * after_id — FORWARD cursor: skip owned rows until we pass it, then collect
+        from the next one (an unknown after_id yields an empty page).
+      * before_id — BACKWARD cursor: its page is the `limit` owned rows
+        immediately NEWER than it — in a newest-first scan, the last `limit` rows
+        seen just before the cursor, kept in a sliding window and emitted only
+        once the cursor is found (unknown before_id -> empty page).
+
+    `done` goes True once the page is complete; the scan then stops."""
+
+    def __init__(
+        self,
+        *,
+        limit: int,
+        after_id: Optional[str],
+        before_id: Optional[str],
+        results_base_url: str,
+    ) -> None:
+        self._limit = limit
+        self._after_id = after_id
+        self._before_id = before_id
+        self._base = results_base_url
+        self._seeking = after_id is not None
+        self._before_buffer: collections.deque[dict[str, Any]] = collections.deque(maxlen=limit)
+        self._before_seen = 0
+        self.page: list[dict[str, Any]] = []
+        self.has_more = False
+        self.done = False
+
+    def offer(self, row: object, client_id: str) -> None:
+        """Feed one owned message-batch row (newest-first) into the page."""
+        if self._before_id is not None:
+            if client_id == self._before_id:
+                # The buffer holds the `limit` owned rows immediately NEWER than
+                # the cursor (newest-first) — that IS the page. If more owned rows
+                # were seen before the cursor than fit the window (some evicted),
+                # an even-newer page exists.
+                self.page = list(self._before_buffer)
+                self.has_more = self._before_seen > self._limit
+                self.done = True
+                return
+            self._before_buffer.append(_render_ledger_batch(row, self._base, client_id))
+            self._before_seen += 1
+            return
+        if self._seeking:
+            if client_id == self._after_id:
+                self._seeking = False  # collect starting from the row AFTER it
+            return
+        if len(self.page) >= self._limit:
+            self.has_more = True  # at least one owned row beyond this page
+            self.done = True
+            return
+        self.page.append(_render_ledger_batch(row, self._base, client_id))
+
+
+async def _list_owner_scoped_batches(request: Request, user_api_key_dict: UserAPIKeyAuth) -> JSONResponse:
+    """Build the caller's owner-scoped message-batch listing from the ledger.
+
+    Ownership is the authoritative _row_matches_caller post-filter — NOT a
+    coarse created_by/team_id WHERE clause, which would wrongly EXCLUDE a
+    key-hash-only owner (a key with no user_id/team_id owns its batches purely
+    via the attribution hash in JSON, not a queryable column). Because that
+    filter can't run in SQL, we STREAM the ledger newest-first in chunks and
+    stop as soon as the caller's page is filled, rather than capping a global
+    window up front — otherwise a caller's rows sitting behind many newer
+    foreign rows would be permanently unreachable (no cursor could get past the
+    cap). Pagination is applied during the stream so both cursors stay correct
+    across chunks."""
+    from litellm.proxy.proxy_server import prisma_client
+
+    limit = _list_limit(request)
+    after_id = _list_query_get(request, "after_id")
+    before_id = _list_query_get(request, "before_id")
+    if after_id is not None and before_id is not None:
+        # Anthropic treats the two cursors as mutually exclusive (passing both is
+        # a client error upstream); reject rather than silently prefer one.
+        return _anthropic_error(
+            400,
+            "invalid_request_error",
+            "after_id and before_id cannot be used together; pass at most one",
+        )
+    base = _results_base_url(request)
+
+    # after_id / before_id cursor handling lives in the page builder so this
+    # scan loop stays flat (and under the complexity budget).
+    builder = _OwnerPageBuilder(limit=limit, after_id=after_id, before_id=before_id, results_base_url=base)
+    scanned = 0
+    truncated = False
+    # KEYSET (seek) cursor, not OFFSET: separate offset queries share no
+    # snapshot, so a concurrent insert/delete into the shared table between
+    # chunks would shift rows and duplicate or skip a boundary row. We instead
+    # seek strictly past the previous chunk's last row on the deterministic
+    # (created_at desc, unified_object_id desc) order — the unified_object_id
+    # tie-breaker is REQUIRED so rows sharing a created_at can't be straddled.
+    seek_created_at: Any = None
+    seek_unified_object_id: Any = None
+
+    while not builder.done:
+        where: dict[str, Any] = {"file_purpose": "batch"}
+        if seek_created_at is not None:
+            # (created_at < last) OR (created_at == last AND unified_object_id < last)
+            where = {
+                "file_purpose": "batch",
+                "OR": [
+                    {"created_at": {"lt": seek_created_at}},
+                    {
+                        "AND": [
+                            {"created_at": seek_created_at},
+                            {"unified_object_id": {"lt": seek_unified_object_id}},
+                        ]
+                    },
+                ],
+            }
+        try:
+            rows = await prisma_client.db.litellm_managedobjecttable.find_many(
+                where=where,
+                order=[{"created_at": "desc"}, {"unified_object_id": "desc"}],
+                take=_LIST_CHUNK_SIZE,
+            )
+        except Exception:  # noqa: BLE001
+            # Fail CLOSED on ANY DB read failure: a partial/empty result must
+            # never masquerade as "you have no batches", so we catch broadly and
+            # 503 (a raise would 500 raw). Narrowing to prisma.errors.PrismaError
+            # is the codebase convention, but importing prisma here is not viable
+            # — it is generated only at proxy build time and is absent from the
+            # unit-test environment, so a hot-path import would ImportError every
+            # listing test. Blind-but-fail-closed is the correct choice here.
+            verbose_proxy_logger.exception("messages/batches: owner-scoped list query failed")
+            return _anthropic_error(503, "api_error", "batch listing is temporarily unavailable; retry shortly")
+        if not rows:
+            break  # table exhausted
+        scanned += len(rows)
+        for row in rows:
+            client_id = _client_batch_id(row)
+            if client_id is None or not _row_matches_caller(row, user_api_key_dict):
+                continue
+            builder.offer(row, client_id)
+            if builder.done:
+                break
+        if builder.done or len(rows) < _LIST_CHUNK_SIZE:
+            break  # done, or last (short) chunk => table exhausted
+        if scanned >= _LIST_SCAN_HARD_CAP:
+            truncated = True
+            break
+        # Advance the seek cursor to the last (oldest) row of this chunk, using
+        # the row's OWN column values — created_at is a datetime, compared as a
+        # datetime, never a reformatted string. Without both we can't build a
+        # keyset predicate, so stop rather than risk re-scanning from the top.
+        last_row = rows[-1]
+        seek_created_at = getattr(last_row, "created_at", None)
+        seek_unified_object_id = getattr(last_row, "unified_object_id", None)
+        if seek_created_at is None or seek_unified_object_id is None:
+            break
+
+    if truncated:
+        # Case (c): the scan gave up at the hard cap BEFORE the caller's page was
+        # satisfied — NOT because the page filled (case a, breaks at `done`) or
+        # the table was exhausted (case b, breaks on an empty/short chunk). In a
+        # large shared ledger, returning a 200 here would falsely tell the caller
+        # "you have no batches / no more". Fail LOUD with a transient error (same
+        # 503 shape this file uses for the DB-read failure above) so the client
+        # narrows the query or retries instead of trusting a truncated success.
+        verbose_proxy_logger.warning(
+            "messages/batches: owner-scoped list hit the %d-row scan cap before the "
+            "caller's page was satisfied; returning a transient error",
+            _LIST_SCAN_HARD_CAP,
+        )
+        return _anthropic_error(
+            503,
+            "api_error",
+            "batch listing could not be completed within the scan budget; narrow the "
+            "query (smaller limit / use after_id) or retry",
+        )
+    page = builder.page
+    return JSONResponse(
+        status_code=200,
+        content={
+            "data": page,
+            "has_more": builder.has_more,
+            "first_id": page[0]["id"] if page else None,
+            "last_id": page[-1]["id"] if page else None,
+        },
+    )
+
+
 @router.get(
     "/v1/messages/batches",
     tags=["[beta] Anthropic `/v1/messages/batches`"],
@@ -1185,14 +1554,32 @@ async def list_message_batches(
     fastapi_response: Response,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
-    # Upstream-only: Bedrock jobs are not merged into the listing (documented).
-    # Admin-gated: the listing enumerates the shared Anthropic workspace's
-    # batch ids, which would let any key discover (and then read) other
-    # users' upstream batches.
-    if not _is_proxy_admin(user_api_key_dict):
-        return _anthropic_error(403, "permission_error", "listing batches requires a proxy admin key")
-    query = f"?{request.url.query}" if request.url.query else ""
-    return await _forward_upstream(request, "GET", f"/v1/messages/batches{query}")
+    # The upstream forward enumerates the proxy's SHARED Anthropic workspace, so
+    # exposing it to a virtual key leaks (and enables reading) OTHER tenants'
+    # batches — the reason the old handler hard-403'd every non-admin (codex P1,
+    # fork PR #131). But that left an owner unable to re-identify their own lost
+    # batch ids. So: admins still get the verbatim upstream forward (full
+    # workspace view); non-admins get an OWNER-SCOPED listing rebuilt from the
+    # billing ledger — the cross-tenant enumeration stays closed, and Bedrock
+    # jobs (never in the upstream listing) now surface for their owner.
+    if _is_proxy_admin(user_api_key_dict):
+        query = f"?{request.url.query}" if request.url.query else ""
+        return await _forward_upstream(request, "GET", f"/v1/messages/batches{query}")
+
+    from litellm.proxy.proxy_server import prisma_client
+
+    if prisma_client is None:
+        # No DB => no per-owner ledger to scope against. Falling back to the
+        # upstream forward here would reopen the exact cross-tenant enumeration
+        # the admin gate closed, so refuse instead (admins above keep the
+        # shared-workspace view even without a DB).
+        return _anthropic_error(
+            403,
+            "permission_error",
+            "listing batches requires a database-backed proxy (no per-key batch ledger is "
+            "available); fetch a known batch with GET /v1/messages/batches/{batch_id} instead",
+        )
+    return await _list_owner_scoped_batches(request, user_api_key_dict)
 
 
 @router.delete(
