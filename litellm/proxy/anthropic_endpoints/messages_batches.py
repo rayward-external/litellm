@@ -602,8 +602,18 @@ async def _get_billing_row(batch_id: str, *, raise_on_error: bool = False) -> Op
     try:
         if batch_id.startswith(BEDROCK_MSGBATCH_PREFIX):
             job_id, _owner8 = _split_bedrock_batch_id(batch_id)
+            # _record_batch_for_billing stores model_object_id = the real
+            # jobArn from AWS (see _job_arn / the create leg), which is
+            # "arn:...:model-invocation-job/<job_id>" — the resource is
+            # preceded by a COLON, not a slash. A leading-slash endswith
+            # pattern never matches a real ARN, so this row lookup silently
+            # missed on every production Bedrock batch (ownership binding
+            # and the delete gate both fell back to their weaker no-row
+            # posture). Match the colon-prefixed suffix as it is actually
+            # persisted; msgbatch_*/batch_* ids never contain this substring,
+            # so it cannot collide with the upstream id shapes.
             return await prisma_client.db.litellm_managedobjecttable.find_first(
-                where={"model_object_id": {"endswith": f"/model-invocation-job/{job_id}"}}
+                where={"model_object_id": {"endswith": f":model-invocation-job/{job_id}"}}
             )
         return await prisma_client.db.litellm_managedobjecttable.find_first(where={"model_object_id": batch_id})
     except Exception:

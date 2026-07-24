@@ -367,6 +367,69 @@ async def test_bedrock_create_stops_job_when_row_write_fails(monkeypatch):
     assert any(url.endswith("/stop") for _method, url in aws_calls), aws_calls
 
 
+# ── _get_billing_row (Bedrock ARN match) ──────────────────────────────────────
+
+
+class _FindFirstPrisma:
+    """Mock the (small) subset of Prisma's `where` filtering `_get_billing_row`
+    actually issues — an `endswith` string filter, or an exact match — against
+    stored rows. Every other test in this module monkeypatches
+    `_get_billing_row` wholesale, which never exercises the endswith pattern
+    itself; this stub does, against a model_object_id that is the REAL jobArn
+    _record_batch_for_billing stores (not a shape hand-picked to satisfy the
+    pattern under test)."""
+
+    def __init__(self, rows):
+        self._rows = list(rows)
+        self.calls = []
+        self.db = SimpleNamespace(litellm_managedobjecttable=SimpleNamespace(find_first=self._find_first))
+
+    async def _find_first(self, where):
+        self.calls.append(where)
+        cond = where["model_object_id"]
+        for row in self._rows:
+            value = row.model_object_id
+            if isinstance(cond, dict):
+                if "endswith" in cond and value.endswith(cond["endswith"]):
+                    return row
+            elif value == cond:
+                return row
+        return None
+
+
+@pytest.mark.asyncio
+async def test_get_billing_row_matches_real_bedrock_arn(monkeypatch):
+    """model_object_id is stored as the REAL jobArn returned by AWS (see
+    _job_arn / the Bedrock create leg): "arn:aws:bedrock:<region>:<acct>:
+    model-invocation-job/<job_id>" — the resource is preceded by a COLON, not
+    a slash. A leading-slash endswith pattern (the pre-fix bug) never matches
+    this shape, so the lookup silently missed on every real Bedrock batch."""
+    row = SimpleNamespace(model_object_id=JOB_ARN)  # JOB_ARN is a real ARN, colon-separated
+    prisma = _FindFirstPrisma([row])
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", prisma)
+
+    batch_id = f"{mb.BEDROCK_MSGBATCH_PREFIX}abc123xyz_deadbeef"  # job id "abc123xyz" matches JOB_ARN
+    found = await mb._get_billing_row(batch_id)
+    assert found is row
+
+
+@pytest.mark.asyncio
+async def test_get_billing_row_bedrock_match_excludes_upstream_id_shapes(monkeypatch):
+    """The Bedrock match must not collide with OpenAI-dialect batch_* rows or
+    raw upstream msgbatch_* rows — neither ever contains
+    "model-invocation-job", so they cannot false-match the ARN suffix."""
+    rows = [
+        SimpleNamespace(model_object_id="msgbatch_01ABC"),
+        SimpleNamespace(model_object_id="batch_01XYZ"),
+    ]
+    prisma = _FindFirstPrisma(rows)
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", prisma)
+
+    batch_id = f"{mb.BEDROCK_MSGBATCH_PREFIX}abc123xyz_deadbeef"
+    found = await mb._get_billing_row(batch_id)
+    assert found is None
+
+
 # ── ownership checks (codex P1 fixes) ────────────────────────────────────────
 
 
