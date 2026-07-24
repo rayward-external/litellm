@@ -66,7 +66,7 @@ import json
 import os
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import quote as _url_quote
 
 import httpx
@@ -420,6 +420,141 @@ async def _forward_upstream(
         {name: value for name, value in upstream.headers.items() if name.lower().startswith("anthropic-ratelimit-")}
     )
     return Response(content=content, status_code=upstream.status_code, media_type=media_type, headers=response_headers)
+
+
+# ── reasoning_effort → native thinking translation (per request) ─────────────
+
+# The proxy provider tag under which batch models are looked up: this route
+# serves the Anthropic dialect, and every batch model resolves through the
+# Anthropic model map (bare "claude-*" names). Not hardcoded per-call so it
+# stays greppable/overridable in one place.
+_ANTHROPIC_PROVIDER = "anthropic"
+
+
+def _anthropic_model_is_known(model: str) -> bool:
+    """Whether ``model`` resolves in LiteLLM's model map under the Anthropic
+    provider. Used to fail OPEN: an unknown model's thinking family cannot be
+    determined, so its params are forwarded untranslated (never guessed)."""
+    from litellm.utils import get_model_info
+
+    try:
+        return bool(get_model_info(model=model, custom_llm_provider=_ANTHROPIC_PROVIDER))
+    except Exception:  # noqa: BLE001 — get_model_info raises bare Exception for unmapped models; fail open (unknown)
+        return False
+
+
+def _translate_reasoning_effort_params(params: Optional[Mapping[str, Any]]) -> Optional[Mapping[str, Any]]:
+    """Translate a single batch request's ``params.reasoning_effort`` into the
+    model-appropriate native Anthropic thinking shape BEFORE the params are
+    forwarded upstream (or staged for Bedrock).
+
+    Anthropic's /v1/messages(/batches) has no ``reasoning_effort`` field, so a
+    raw pass-through is rejected per-record ("reasoning_effort: Extra inputs are
+    not permitted"). Callers arriving from the OpenAI dialect send it; we map it
+    exactly the way LiteLLM's chat path does, reusing
+    ``AnthropicConfig._map_reasoning_effort`` (no reinvented budget table):
+
+      * adaptive-thinking models (opus-4-6+, sonnet-4-6+, ...): ``thinking``
+        becomes ``{"type": "adaptive"}`` and ``output_config.effort`` is set —
+        these models reject ``thinking.type == "enabled"``.
+      * legacy models (e.g. claude-haiku-4-5): ``thinking`` becomes
+        ``{"type": "enabled", "budget_tokens": N}`` for the effort level.
+      * ``reasoning_effort == "none"``: thinking is omitted (legacy: disabled;
+        adaptive: cannot be disabled upstream — we omit rather than fabricate).
+
+    Fail-open rules (never guess): if the model is missing/unknown, the effort
+    value is unusable, or the mapping helper rejects it, the params are returned
+    UNCHANGED (same object) so behaviour matches today's pass-through. Caller
+    -provided native fields WIN: when ``thinking`` or ``output_config`` is
+    already present, ``reasoning_effort`` is merely dropped (debug-logged) and
+    the caller's native shape is never clobbered.
+    """
+    if not isinstance(params, dict) or "reasoning_effort" not in params:
+        return params
+
+    model = params.get("model")
+    if not isinstance(model, str) or not model:
+        return params  # can't resolve a family → pass through unchanged
+    if not _anthropic_model_is_known(model):
+        return params  # unknown model → fail open, forward untranslated
+
+    from litellm.llms.anthropic.chat.transformation import (
+        REASONING_EFFORT_TO_OUTPUT_CONFIG_EFFORT,
+        AnthropicConfig,
+    )
+
+    effort = params.get("reasoning_effort")
+    # The Responses→Chat bridge may send {"effort": "high", ...}; accept it.
+    if isinstance(effort, dict):
+        effort = effort.get("effort")
+    if not isinstance(effort, str):
+        return params  # unusable value → pass through unchanged
+
+    new_params = dict(params)  # mutable-ok: translated copy; the caller's params mapping must not be mutated
+    new_params.pop("reasoning_effort", None)
+
+    # Caller-provided native thinking wins; reasoning_effort is only dropped.
+    if isinstance(params.get("thinking"), dict) or isinstance(params.get("output_config"), dict):
+        verbose_proxy_logger.debug(
+            "messages/batches: dropped reasoning_effort=%r for model=%s (caller-provided thinking/output_config wins)",
+            effort,
+            model,
+        )
+        return new_params
+
+    try:
+        mapped_thinking = AnthropicConfig._map_reasoning_effort(
+            reasoning_effort=effort,
+            model=model,
+            custom_llm_provider=_ANTHROPIC_PROVIDER,
+            llm_provider=_ANTHROPIC_PROVIDER,
+        )
+    except Exception:  # noqa: BLE001 — invalid/unmapped effort must not fail the whole batch; fail open
+        return params  # unmapped/invalid effort → fail open, forward untranslated
+
+    if mapped_thinking is None:
+        # effort == "none": legacy → thinking disabled/omitted; adaptive → not
+        # supported upstream, so omit rather than fabricate a disable.
+        verbose_proxy_logger.debug(
+            "messages/batches: reasoning_effort=%r maps to no thinking for model=%s (omitted)",
+            effort,
+            model,
+        )
+        return new_params
+
+    if mapped_thinking.get("type") != "adaptive":
+        # Legacy budgeted shape: Anthropic (and Bedrock InvokeModel) require
+        # max_tokens > thinking.budget_tokens, and _map_reasoning_effort returns
+        # a FIXED per-effort budget (e.g. high -> 4096) that can exceed a small
+        # record's max_tokens — mirror the chat path's cap
+        # (transformation.py _cap_thinking_budget_to_max_tokens) or the
+        # translated record trades one guaranteed 400 for another.
+        capped = AnthropicConfig._cap_thinking_budget_to_max_tokens(
+            mapped_thinking,  # type: ignore[arg-type]
+            AnthropicConfig._requested_max_tokens(params),
+        )
+        if capped is None:
+            # max_tokens too small to fit even the minimum thinking budget:
+            # drop thinking (same decision as the chat path) rather than
+            # forward an unfittable budget upstream.
+            verbose_proxy_logger.debug(
+                "messages/batches: reasoning_effort=%r dropped for model=%s (max_tokens too small for any thinking budget)",
+                effort,
+                model,
+            )
+            return new_params
+        mapped_thinking = capped
+
+    # mapped_thinking is a fresh dict from _map_reasoning_effort/_cap_thinking_budget_to_max_tokens
+    # and is never mutated after this, so assign it directly (no defensive copy).
+    new_params["thinking"] = mapped_thinking
+    if mapped_thinking.get("type") == "adaptive":
+        # Adaptive models pair the adaptive thinking block with an effort level.
+        mapped_effort = REASONING_EFFORT_TO_OUTPUT_CONFIG_EFFORT.get(effort)
+        if mapped_effort is None:
+            return params  # effort not expressible as output_config → fail open
+        new_params["output_config"] = {"effort": mapped_effort}  # mutable-ok: minimal native output_config block
+    return new_params
 
 
 # ── Billing: managed-object registration (CheckBatchCost pickup) ─────────────
@@ -830,6 +965,19 @@ async def create_message_batch(
     requests_list = body.get("requests")
     if not isinstance(requests_list, list) or not requests_list:
         return _anthropic_error(400, "invalid_request_error", "requests: must be a non-empty array")
+
+    # Translate each request's reasoning_effort into the model's native thinking
+    # shape BEFORE either leg forwards it (upstream Anthropic rejects the raw
+    # field; adaptive models reject thinking.type=enabled). In-place so both the
+    # verbatim upstream forward and the Bedrock modelInput staging see the
+    # translated params; a no-op returns the same object (byte-identical
+    # pass-through preserved).
+    for item in requests_list:
+        if not isinstance(item, dict):
+            continue
+        translated = _translate_reasoning_effort_params(item.get("params"))
+        if translated is not item.get("params"):
+            item["params"] = translated
 
     models = {str((r.get("params") or {}).get("model", "")) for r in requests_list}
     denied = await _check_model_access(sorted(models), user_api_key_dict)
