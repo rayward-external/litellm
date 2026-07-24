@@ -18,12 +18,21 @@ unable to re-identify their own lost batches. These tests pin the fix:
   * with no DB the non-admin still 403s (an upstream fallback would reopen the
     leak).
 
+The listing is now a single INDEXED keyset query (owner_key / team_id /
+created_by columns), not a chunked full-table scan. owner_key holds the
+submitting key hash (written at create, backfilled by migration) and doubles
+as the message-batch route discriminator: OpenAI-dialect /v1/batches rows never
+set it, so `owner_key IS NOT NULL` excludes them. `_ListPrisma` below is a
+faithful in-memory Prisma that interprets the handler's WHERE / order / take
+instead of emulating the old scan.
+
 Several tests exercise the POST-finalization row shape: CheckBatchCost's
 _finalized_file_object rewrites file_object from the provider LiteLLMBatch,
 overwriting the client-facing `id` with the provider id/ARN and turning
-created_at into an epoch int, preserving only a fixed key set. The renderer must
-handle both the pre- and post-finalization shapes. Mirrors the mocking patterns
-of test_messages_batches_billing.py.
+created_at into an epoch int, preserving only a fixed key set (never the
+owner_key COLUMN, which survives untouched). The renderer must handle both the
+pre- and post-finalization shapes. Mirrors the mocking patterns of
+test_messages_batches_billing.py.
 """
 
 import datetime
@@ -42,6 +51,8 @@ JOB_ARN = "arn:aws:bedrock:us-west-2:123456789012:model-invocation-job/abc123xyz
 # Row-column created_at is a real datetime in Postgres (the keyset cursor
 # compares against it directly). Smaller seconds_ago == newer == sorts first.
 _BASE_DT = datetime.datetime(2026, 7, 20, tzinfo=datetime.timezone.utc)
+
+_UNSET = object()  # sentinel so a test can force owner_key=None explicitly
 
 
 def _dt(seconds_ago):
@@ -82,59 +93,100 @@ class _FakeRequest:
         self.url = _FakeURL(query=query)
 
 
+def _match(row, where):
+    """Interpret the handler's Prisma-style WHERE against an in-memory row.
+
+    Supports the exact operators the listing emits: AND/OR composition,
+    scalar equality (file_purpose / team_id / created_by / model_object_id),
+    owner_key IS NULL (scalar None) and IS NOT NULL ({"not": None}),
+    model_object_id {"endswith"}, and the keyset {"lt"}/{"gt"} comparisons on
+    created_at / unified_object_id."""
+    if not where:
+        return True
+    for key, cond in where.items():
+        if key == "AND":
+            if not all(_match(row, c) for c in cond):
+                return False
+        elif key == "OR":
+            if not any(_match(row, c) for c in cond):
+                return False
+        elif key == "owner_key":
+            val = getattr(row, "owner_key", None)
+            if isinstance(cond, dict):
+                assert cond.get("not", _UNSET) is None, f"unhandled owner_key cond: {cond}"
+                if val is None:  # IS NOT NULL
+                    return False
+            elif val != cond:  # scalar equality (incl. None == IS NULL)
+                return False
+        elif key == "model_object_id":
+            val = getattr(row, "model_object_id", None)
+            if isinstance(cond, dict):
+                # only the Bedrock cursor inversion uses a shape filter (endswith)
+                assert "endswith" in cond, f"unhandled model_object_id cond: {cond}"
+                if not (isinstance(val, str) and val.endswith(cond["endswith"])):
+                    return False
+            elif val != cond:
+                return False
+        elif key in ("created_at", "unified_object_id"):
+            val = getattr(row, key, None)
+            if isinstance(cond, dict):
+                for opname, bound in cond.items():
+                    if opname == "lt" and not (val < bound):
+                        return False
+                    elif opname == "gt" and not (val > bound):
+                        return False
+                    elif opname not in ("lt", "gt"):
+                        raise AssertionError(f"unhandled {key} op: {opname}")
+            elif val != cond:
+                return False
+        elif key in ("file_purpose", "team_id", "created_by"):
+            default = "batch" if key == "file_purpose" else None
+            if getattr(row, key, default) != cond:
+                return False
+        else:
+            raise AssertionError(f"unhandled where key: {key}")
+    return True
+
+
+def _sort(rows, order):
+    result = list(rows)
+    for spec in reversed(order):  # secondary key first for a stable multi-key sort
+        ((col, direction),) = spec.items()
+        result.sort(key=lambda r, c=col: getattr(r, c), reverse=(direction == "desc"))
+    return result
+
+
 class _ListPrisma:
-    """Mock that models KEYSET (seek) pagination — NOT skip/take offset.
+    """In-memory Prisma that filters/sorts rows by the handler's actual query
+    (WHERE / order / take), covering find_many (the primary + legacy pages) and
+    find_first (the cursor id-inversion). `error` makes every call raise."""
 
-    It sorts rows by (created_at desc, unified_object_id desc) and, when the
-    WHERE carries the handler's seek predicate
-    ((created_at < X) OR (created_at == X AND unified_object_id < Y)), returns
-    only rows strictly past that cursor. `on_call(call_no, self)` fires BEFORE
-    each fetch so a test can simulate a concurrent insert/delete between chunks.
-    """
-
-    def __init__(self, rows, error=None, on_call=None):
+    def __init__(self, rows, error=None):
         self._rows = list(rows)
         self.error = error
-        self.on_call = on_call
         self.calls = []
-        self.db = SimpleNamespace(litellm_managedobjecttable=SimpleNamespace(find_many=self._find_many))
-
-    @staticmethod
-    def _key(row):
-        return (row.created_at, row.unified_object_id)
-
-    @staticmethod
-    def _seek_key(where):
-        """Extract (created_at, unified_object_id) the seek predicate is past."""
-        if not where or "OR" not in where:
-            return None
-        created_lt = unified_lt = None
-        for clause in where["OR"]:
-            ca = clause.get("created_at")
-            if isinstance(ca, dict) and "lt" in ca:
-                created_lt = ca["lt"]
-            for sub in clause.get("AND", []):
-                uo = sub.get("unified_object_id")
-                if isinstance(uo, dict) and "lt" in uo:
-                    unified_lt = uo["lt"]
-        if created_lt is None or unified_lt is None:
-            return None
-        return (created_lt, unified_lt)
+        self.db = SimpleNamespace(
+            litellm_managedobjecttable=SimpleNamespace(find_many=self._find_many, find_first=self._find_first)
+        )
 
     async def _find_many(self, where=None, order=None, take=None, **kwargs):
         if self.error is not None:
             raise self.error
-        self.calls.append({"where": where, "take": take})
-        if self.on_call is not None:
-            self.on_call(len(self.calls), self)
-        rows = sorted(self._rows, key=self._key, reverse=True)  # created_at desc, uoid desc
-        seek = self._seek_key(where)
-        if seek is not None:
-            # strictly past the cursor == (created_at, uoid) tuple < seek tuple
-            rows = [r for r in rows if self._key(r) < seek]
+        self.calls.append({"where": where, "take": take, "order": order})
+        rows = [r for r in self._rows if _match(r, where or {})]
+        if order:
+            rows = _sort(rows, order)
         if take is not None:
             rows = rows[:take]
         return rows
+
+    async def _find_first(self, where=None, order=None, **kwargs):
+        if self.error is not None:
+            raise self.error
+        self.calls.append({"where": where, "find_first": True})
+        rows = [r for r in self._rows if _match(r, where or {})]
+        rows = _sort(rows, order or [{"created_at": "desc"}, {"unified_object_id": "desc"}])
+        return rows[0] if rows else None
 
 
 def _stash(
@@ -169,6 +221,7 @@ def _row(
     status="validating",
     created_by=None,
     team_id=None,
+    owner_key=_UNSET,
     stash_created_at="2026-07-20T00:00:00.000000Z",
     col_created_at=None,
     model="claude-opus-4-6",
@@ -177,9 +230,14 @@ def _row(
 ):
     """A pre-finalization LiteLLM_ManagedObjectTable row.
 
-    stash_created_at -> file_object.created_at (RFC3339 string, what the renderer
-    reads). col_created_at -> the row's created_at COLUMN (a datetime, what the
-    keyset cursor orders/seeks on); defaults to _BASE_DT."""
+    owner_key -> the indexed COLUMN the primary query matches on; defaults to
+    the attribution's key hash (what the create path / migration backfill
+    write). Pass owner_key=None for an OpenAI-dialect /v1/batches row.
+    stash_created_at -> file_object.created_at (RFC3339 string, what the
+    renderer reads). col_created_at -> the row's created_at COLUMN (a datetime,
+    what the keyset cursor orders/seeks on); defaults to _BASE_DT."""
+    if owner_key is _UNSET:
+        owner_key = attribution.get("user_api_key")
     return SimpleNamespace(
         file_object=json.dumps(
             _stash(
@@ -194,17 +252,24 @@ def _row(
         model_object_id=model_object_id,
         created_by=created_by,
         team_id=team_id,
+        owner_key=owner_key,
         status=status,
         created_at=col_created_at if col_created_at is not None else _BASE_DT,
         unified_object_id="u-" + client_id,
     )
 
 
-def _finalized_row(*, stash, provider_response, model_object_id, status="complete", created_by=None, team_id=None):
+def _finalized_row(
+    *, stash, provider_response, model_object_id, status="complete", created_by=None, team_id=None, owner_key=_UNSET
+):
     """A row AFTER CheckBatchCost finalization — built with the REAL
-    _finalized_file_object so the preserve-list behavior is faithfully tested."""
+    _finalized_file_object so the preserve-list behavior is faithfully tested.
+    owner_key is a COLUMN, so it survives finalization untouched (defaults to
+    the stash's attribution key hash; pass None for an OpenAI-dialect row)."""
     from litellm_enterprise.proxy.common_utils.check_batch_cost import CheckBatchCost
 
+    if owner_key is _UNSET:
+        owner_key = (stash.get("litellm_attribution") or {}).get("user_api_key")
     job = SimpleNamespace(file_object=json.dumps(stash))
     response = MagicMock()
     response.model_dump_json.return_value = json.dumps(provider_response)
@@ -213,6 +278,7 @@ def _finalized_row(*, stash, provider_response, model_object_id, status="complet
         model_object_id=model_object_id,
         created_by=created_by,
         team_id=team_id,
+        owner_key=owner_key,
         status=status,
         created_at=_BASE_DT,  # row COLUMN is a datetime (keyset ordering)
         unified_object_id="u-" + str(provider_response.get("id")),
@@ -282,7 +348,7 @@ async def test_non_admin_lists_only_own_batches(monkeypatch):
         assert set(batch["request_counts"]) == {"processing", "succeeded", "errored", "canceled", "expired"}
         assert "litellm_attribution" not in batch
         assert "litellm_client_batch_id" not in batch
-        assert "created_by" not in batch and "team_id" not in batch
+        assert "created_by" not in batch and "team_id" not in batch and "owner_key" not in batch
 
     ended = payload["data"][0]
     assert ended["processing_status"] == "ended"
@@ -311,6 +377,22 @@ async def test_non_admin_sees_no_foreign_batches(monkeypatch):
     assert payload["has_more"] is False
     assert payload["first_id"] is None
     assert payload["last_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_owner_row_found_among_many_foreign(monkeypatch):
+    """The owner filter runs in SQL: a caller's single row buried behind many
+    newer foreign rows is returned by the one indexed query (the old code had
+    to page past them chunk by chunk)."""
+    rows = [
+        _foreign(client_id=f"msgbatch_F{i}", model_object_id=f"msgbatch_F{i}", col_created_at=_dt(i)) for i in range(20)
+    ]
+    rows.append(_mine(client_id="msgbatch_MINE", model_object_id="msgbatch_MINE", col_created_at=_dt(99)))
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _ListPrisma(rows))
+    monkeypatch.setattr(mb, "_forward_upstream", AsyncMock(side_effect=AssertionError))
+
+    payload = json.loads((await _call(_FakeRequest(), _auth())).body)
+    assert [b["id"] for b in payload["data"]] == ["msgbatch_MINE"]
 
 
 # ── (c) admin -> upstream forward unchanged (verbatim query string) ──────────
@@ -361,10 +443,18 @@ async def test_bedrock_row_renders_owner_tagged_client_id(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_openai_dialect_batch_rows_excluded(monkeypatch):
-    """batch_* rows are the OpenAI-shape /v1/batches flow — NOT message batches
-    — even when owned by the caller; they must not appear here."""
+    """OpenAI-dialect /v1/batches rows never set owner_key, so `owner_key IS
+    NOT NULL` excludes them — even when owned by the caller (same created_by).
+    The legacy bridge fetches them (created_by match) but `_client_batch_id`
+    filters them out, so they still never appear here."""
     rows = [
-        _mine(client_id="batch_01OAI", model_object_id="batch_01OAI", include_marker=False),
+        _mine(
+            client_id="batch_01OAI",
+            model_object_id="batch_01OAI",
+            include_marker=False,
+            owner_key=None,
+            created_by="user-1",
+        ),
         _mine(client_id="msgbatch_01OK", model_object_id="msgbatch_01OK"),
     ]
     monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _ListPrisma(rows))
@@ -440,6 +530,29 @@ async def test_after_id_pagination(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_after_id_paginates_across_pages(monkeypatch):
+    """Walk the whole list forward one page at a time, seeding each request's
+    after_id from the previous page's last_id — the keyset cursor must chain
+    cleanly with no gaps or repeats."""
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _ListPrisma(_many_mine(5)))
+    monkeypatch.setattr(mb, "_forward_upstream", AsyncMock(side_effect=AssertionError))
+
+    seen = []
+    after_id = None
+    for _ in range(5):
+        params = {"limit": "2"}
+        if after_id is not None:
+            params["after_id"] = after_id
+        payload = json.loads((await _call(_FakeRequest(query_params=params), _auth())).body)
+        seen.extend(b["id"] for b in payload["data"])
+        after_id = payload["last_id"]
+        if not payload["has_more"]:
+            break
+    assert seen == [f"msgbatch_{i:03d}" for i in range(5)]
+    assert len(seen) == len(set(seen)), f"duplicate id in {seen}"
+
+
+@pytest.mark.asyncio
 async def test_unknown_after_id_returns_empty(monkeypatch):
     """An unknown forward cursor yields an empty page (best-effort, no error)."""
     monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _ListPrisma(_many_mine(3)))
@@ -497,10 +610,9 @@ async def test_before_id_partial_page_has_no_more(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_before_id_across_chunks(monkeypatch):
-    """The sliding buffer must span chunk boundaries: chunk size 3, before_id=007,
-    limit=3 -> rows 004,005,006 (built across two chunks before the cursor)."""
-    monkeypatch.setattr(mb, "_LIST_CHUNK_SIZE", 3)
+async def test_before_id_multi_row_window(monkeypatch):
+    """before_id=007, limit=3 over 10 rows -> the 3 rows immediately newer than
+    the cursor (004, 005, 006), desc, with an even-newer page remaining."""
     monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _ListPrisma(_many_mine(10)))
     monkeypatch.setattr(mb, "_forward_upstream", AsyncMock(side_effect=AssertionError))
 
@@ -540,7 +652,8 @@ async def test_after_id_and_before_id_together_is_400(monkeypatch):
 @pytest.mark.asyncio
 async def test_key_hash_only_ownership(monkeypatch):
     """A key with no user_id and no team_id owns its batches purely via the key
-    hash stashed in litellm_attribution — created_by/team_id are both null."""
+    hash — now the indexed owner_key COLUMN (backfilled from the attribution
+    hash); created_by/team_id are both null."""
     caller = _auth(user_id=None, team_id=None, api_key="k" * 64)
     row = _mine(
         client_id="msgbatch_01KEYONLY",
@@ -559,7 +672,7 @@ async def test_key_hash_only_ownership(monkeypatch):
 @pytest.mark.asyncio
 async def test_team_ownership_via_row_column(monkeypatch):
     """A teammate whose key hash differs still sees a team batch via the row's
-    team_id column (the coarse ownership signal the poller writes)."""
+    team_id column."""
     caller = _auth(api_key="z" * 64, user_id="teammate", team_id="team-1")
     row = _mine(
         client_id="msgbatch_01TEAM",
@@ -588,6 +701,112 @@ async def test_db_error_fails_closed(monkeypatch):
     assert body["type"] == "error"
 
 
+# ── keyset tie-breaker: rows sharing a created_at page by unified_object_id ────
+
+
+@pytest.mark.asyncio
+async def test_keyset_tie_breaker_across_shared_created_at(monkeypatch):
+    """Rows sharing a created_at must order by the unified_object_id
+    tie-breaker, never straddled/duplicated."""
+    same = _dt(0)  # identical created_at for all three
+    rows = [
+        _mine(client_id="msgbatch_T3", model_object_id="msgbatch_T3", col_created_at=same),
+        _mine(client_id="msgbatch_T2", model_object_id="msgbatch_T2", col_created_at=same),
+        _mine(client_id="msgbatch_T1", model_object_id="msgbatch_T1", col_created_at=same),
+    ]
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _ListPrisma(rows))
+    monkeypatch.setattr(mb, "_forward_upstream", AsyncMock(side_effect=AssertionError))
+
+    payload = json.loads((await _call(_FakeRequest(), _auth())).body)
+    ids = [b["id"] for b in payload["data"]]
+    # unified_object_id desc within the tie: u-msgbatch_T3 > T2 > T1.
+    assert ids == ["msgbatch_T3", "msgbatch_T2", "msgbatch_T1"]
+    assert len(ids) == len(set(ids)), f"duplicate id in {ids}"
+
+
+@pytest.mark.asyncio
+async def test_after_id_tie_breaker_seeks_within_shared_created_at(monkeypatch):
+    """after_id on a row sharing its created_at with others must seek strictly
+    past it on the unified_object_id tie-breaker, not re-serve the tie group."""
+    same = _dt(0)
+    rows = [
+        _mine(client_id="msgbatch_T3", model_object_id="msgbatch_T3", col_created_at=same),
+        _mine(client_id="msgbatch_T2", model_object_id="msgbatch_T2", col_created_at=same),
+        _mine(client_id="msgbatch_T1", model_object_id="msgbatch_T1", col_created_at=same),
+    ]
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _ListPrisma(rows))
+    monkeypatch.setattr(mb, "_forward_upstream", AsyncMock(side_effect=AssertionError))
+
+    request = _FakeRequest(query_params={"after_id": "msgbatch_T3"})
+    payload = json.loads((await _call(request, _auth())).body)
+    # T3 is the newest of the tie (uid u-msgbatch_T3); after it -> T2, T1.
+    assert [b["id"] for b in payload["data"]] == ["msgbatch_T2", "msgbatch_T1"]
+
+
+# ── legacy bridge: pre-migration owner_key IS NULL rows are still surfaced ─────
+
+
+@pytest.mark.asyncio
+async def test_legacy_null_owner_key_row_surfaced_via_column(monkeypatch):
+    """A pre-migration row the backfill missed (owner_key NULL) but owned via
+    the created_by column must NOT be hidden — the legacy bridge query surfaces
+    it and it merges into the page in created_at order."""
+    monkeypatch.setenv("PROXY_BASE_URL", GATEWAY_BASE)
+    rows = [
+        _mine(client_id="msgbatch_NEW", model_object_id="msgbatch_NEW", col_created_at=_dt(0)),
+        # legacy: owner_key NULL, attribution key hash absent, owned via created_by
+        _row(
+            client_id="msgbatch_LEGACY",
+            model_object_id="msgbatch_LEGACY",
+            attribution={"user_api_key_user_id": "user-1"},
+            owner_key=None,
+            created_by="user-1",
+            col_created_at=_dt(1),
+        ),
+    ]
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _ListPrisma(rows))
+    monkeypatch.setattr(mb, "_forward_upstream", AsyncMock(side_effect=AssertionError))
+
+    payload = json.loads((await _call(_FakeRequest(), _auth())).body)
+    assert [b["id"] for b in payload["data"]] == ["msgbatch_NEW", "msgbatch_LEGACY"]
+
+
+@pytest.mark.asyncio
+async def test_key_hash_only_null_owner_absent_until_poller_backfill(monkeypatch):
+    """New posture (owner-approved simplification): the read path has NO key-hash
+    scan. A key-hash-only caller (no user_id/team_id) whose rolling-deploy batch
+    still has owner_key NULL is served by retrieve-by-id and is NOT in the listing
+    yet — Query A can't match a hash. Once the CheckBatchCost poller backfills
+    owner_key (within a poll cycle), the indexed primary query picks it up. This
+    test pins both halves of that self-healing gap."""
+    caller = _auth(user_id=None, team_id=None, api_key="k" * 64)
+    null_row = _row(
+        client_id="msgbatch_01OLDPOD",
+        model_object_id="msgbatch_01OLDPOD",
+        attribution={"user_api_key": "k" * 64},  # owned via the key hash only
+        owner_key=None,  # old writer never set the column; poller hasn't healed yet
+        created_by=None,
+        team_id=None,
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _ListPrisma([null_row]))
+    monkeypatch.setattr(mb, "_forward_upstream", AsyncMock(side_effect=AssertionError))
+    before = json.loads((await _call(_FakeRequest(), caller)).body)
+    assert before["data"] == []  # not scanned at read time; retrieve-by-id meanwhile
+
+    # After the poller backfills owner_key, the indexed primary query surfaces it.
+    healed_row = _row(
+        client_id="msgbatch_01OLDPOD",
+        model_object_id="msgbatch_01OLDPOD",
+        attribution={"user_api_key": "k" * 64},
+        owner_key="k" * 64,  # poller filled the NULL from the attribution hash
+        created_by=None,
+        team_id=None,
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _ListPrisma([healed_row]))
+    after = json.loads((await _call(_FakeRequest(), caller)).body)
+    assert [b["id"] for b in after["data"]] == ["msgbatch_01OLDPOD"]
+
+
 # ── codex P1 #1 & #2: client id + classification survive finalization ─────────
 
 
@@ -611,7 +830,8 @@ def test_finalized_file_object_preserves_client_batch_id():
 async def test_finalized_bedrock_row_keeps_client_id(monkeypatch):
     """codex P1 #1: after finalization the Bedrock row's file_object.id is the
     ARN, but the LIST must still surface the owner-tagged client id (recovered
-    from the preserved litellm_client_batch_id), so it works with retrieve/{id}."""
+    from the preserved litellm_client_batch_id), so it works with retrieve/{id}.
+    The owner_key COLUMN is untouched by finalization, so the row still matches."""
     monkeypatch.setenv("PROXY_BASE_URL", GATEWAY_BASE)
     client_id = "msgbatch_bedrock_abc123xyz_deadbeef"
     row = _finalized_row(
@@ -631,17 +851,19 @@ async def test_finalized_bedrock_row_keeps_client_id(monkeypatch):
 @pytest.mark.asyncio
 async def test_finalized_openai_dialect_bedrock_job_excluded(monkeypatch):
     """codex P1 #2: a FINALIZED OpenAI-dialect /v1/batches Bedrock job has the
-    same model-invocation-job ARN but no litellm_client_batch_id marker (it was
-    not created by this route), so it must NOT surface in the Anthropic listing
-    — even though the caller happens to own it. The old classifier (ARN
-    substring) would have leaked it."""
+    same model-invocation-job ARN but owner_key NULL and no
+    litellm_client_batch_id marker (it was not created by this route), so it
+    must NOT surface in the Anthropic listing — even though the caller happens
+    to own it (same created_by). The legacy bridge fetches it on the column
+    match, then `_client_batch_id` filters it out."""
     row = _finalized_row(
-        # No marker in the stash — this row is NOT ours.
+        # No marker in the stash — this row is NOT ours; OpenAI-dialect => owner_key NULL.
         stash={"litellm_attribution": {"user_api_key": "a" * 64}, "model": "claude-x"},
         provider_response={"id": "batch_openai_dialect_1", "status": "completed", "created_at": 1770000000},
         model_object_id=JOB_ARN,  # a Bedrock model-invocation-job ARN
         status="complete",
         created_by="user-1",
+        owner_key=None,
     )
     monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _ListPrisma([row]))
     monkeypatch.setattr(mb, "_forward_upstream", AsyncMock(side_effect=AssertionError))
@@ -698,7 +920,8 @@ def test_to_rfc3339_accepts_epoch_and_string_and_rejects_junk():
 
 @pytest.mark.asyncio
 async def test_record_batch_stashes_client_batch_id(monkeypatch):
-    """Create-time write must include the finalization-preserved marker."""
+    """Create-time write must include the finalization-preserved marker AND the
+    indexed owner_key column."""
 
     class _Prisma:
         def __init__(self):
@@ -715,143 +938,7 @@ async def test_record_batch_stashes_client_batch_id(monkeypatch):
         total_records=100,
         user_api_key_dict=_auth(),
     )
-    file_object = json.loads(prisma.upsert.await_args.kwargs["data"]["create"]["file_object"])
+    create = prisma.upsert.await_args.kwargs["data"]["create"]
+    file_object = json.loads(create["file_object"])
     assert file_object["litellm_client_batch_id"] == "msgbatch_bedrock_abc_deadbeef"
-
-
-# ── codex P1 #3: owner filter runs across chunks, not a global scan cap ────────
-
-
-@pytest.mark.asyncio
-async def test_owner_row_found_beyond_first_chunk(monkeypatch):
-    """codex P1 #3: a caller's row sitting behind many newer foreign rows must
-    still be reachable — the scan pages through the table applying the owner
-    filter, rather than capping a global window up front."""
-    monkeypatch.setattr(mb, "_LIST_CHUNK_SIZE", 2)
-    # 5 newer foreign rows, then the caller's own row (oldest) -> 3rd chunk.
-    rows = [
-        _foreign(client_id=f"msgbatch_F{i}", model_object_id=f"msgbatch_F{i}", col_created_at=_dt(i)) for i in range(5)
-    ]
-    rows.append(_mine(client_id="msgbatch_MINE", model_object_id="msgbatch_MINE", col_created_at=_dt(5)))
-    prisma = _ListPrisma(rows)
-    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", prisma)
-    monkeypatch.setattr(mb, "_forward_upstream", AsyncMock(side_effect=AssertionError))
-
-    payload = json.loads((await _call(_FakeRequest(), _auth())).body)
-    assert [b["id"] for b in payload["data"]] == ["msgbatch_MINE"]
-    assert len(prisma.calls) >= 3  # had to page past the foreign rows
-
-
-@pytest.mark.asyncio
-async def test_after_id_pagination_across_chunks(monkeypatch):
-    """after_id stays correct when the cursor and its following page straddle
-    chunk boundaries."""
-    monkeypatch.setattr(mb, "_LIST_CHUNK_SIZE", 2)
-    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _ListPrisma(_many_mine(6)))
-    monkeypatch.setattr(mb, "_forward_upstream", AsyncMock(side_effect=AssertionError))
-
-    request = _FakeRequest(query_params={"limit": "2", "after_id": "msgbatch_001"})
-    payload = json.loads((await _call(request, _auth())).body)
-    assert [b["id"] for b in payload["data"]] == ["msgbatch_002", "msgbatch_003"]
-    assert payload["has_more"] is True
-
-
-@pytest.mark.asyncio
-async def test_scan_hard_cap_fails_loud(monkeypatch):
-    """Case (c): hitting the scan cap BEFORE the caller's page is satisfied is a
-    transient FAILURE, not a false-empty success — a 200 here would tell a caller
-    in a large shared ledger 'you have no batches'. It must 503 (and still log)."""
-    monkeypatch.setattr(mb, "_LIST_CHUNK_SIZE", 2)
-    monkeypatch.setattr(mb, "_LIST_SCAN_HARD_CAP", 4)
-    # 10 foreign rows, caller owns none reachable within the 4-row cap.
-    rows = [
-        _foreign(client_id=f"msgbatch_F{i}", model_object_id=f"msgbatch_F{i}", col_created_at=_dt(i)) for i in range(10)
-    ]
-    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _ListPrisma(rows))
-    monkeypatch.setattr(mb, "_forward_upstream", AsyncMock(side_effect=AssertionError))
-    warnings = []
-    monkeypatch.setattr(mb.verbose_proxy_logger, "warning", lambda *a, **k: warnings.append(a))
-
-    response = await _call(_FakeRequest(), _auth())
-    assert response.status_code == 503
-    body = json.loads(response.body)
-    assert body["type"] == "error"
-    assert body["error"]["type"] == "api_error"
-    assert warnings, "cap hit must still be logged"
-
-
-@pytest.mark.asyncio
-async def test_genuine_exhaustion_returns_empty_200(monkeypatch):
-    """Case (b): the table is genuinely exhausted below the cap with no owned
-    match -> an honest empty 200, NOT the cap-hit 503. The two must not conflate."""
-    monkeypatch.setattr(mb, "_LIST_CHUNK_SIZE", 2)
-    monkeypatch.setattr(mb, "_LIST_SCAN_HARD_CAP", 100)  # far above the row count
-    rows = [
-        _foreign(client_id=f"msgbatch_F{i}", model_object_id=f"msgbatch_F{i}", col_created_at=_dt(i)) for i in range(3)
-    ]
-    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _ListPrisma(rows))
-    monkeypatch.setattr(mb, "_forward_upstream", AsyncMock(side_effect=AssertionError))
-
-    response = await _call(_FakeRequest(), _auth())
-    assert response.status_code == 200
-    payload = json.loads(response.body)
-    assert payload["data"] == []
-    assert payload["has_more"] is False
-
-
-@pytest.mark.asyncio
-async def test_keyset_survives_concurrent_insert(monkeypatch):
-    """codex P1: keyset (seek), not offset, chunking. A concurrent INSERT into
-    the shared table between chunk fetches must not duplicate a boundary row or
-    skip an owned one. With OFFSET (skip=), inserting a newer row shifts the
-    window down so the 2nd chunk re-serves the last row of the 1st (duplicate);
-    keyset seeks by VALUE, so it can't."""
-    monkeypatch.setattr(mb, "_LIST_CHUNK_SIZE", 2)
-    # Four owned rows, newest-first A, B, C, D.
-    rows = [
-        _mine(client_id="msgbatch_A", model_object_id="msgbatch_A", col_created_at=_dt(1)),
-        _mine(client_id="msgbatch_B", model_object_id="msgbatch_B", col_created_at=_dt(2)),
-        _mine(client_id="msgbatch_C", model_object_id="msgbatch_C", col_created_at=_dt(3)),
-        _mine(client_id="msgbatch_D", model_object_id="msgbatch_D", col_created_at=_dt(4)),
-    ]
-
-    def _insert_newer_row_before_second_fetch(call_no, prisma):
-        if call_no == 2:
-            # Another request created a batch NEWER than everything already
-            # scanned. Under OFFSET this shifts the window and re-serves B.
-            prisma._rows.insert(
-                0,
-                _mine(client_id="msgbatch_NEW", model_object_id="msgbatch_NEW", col_created_at=_dt(0)),
-            )
-
-    prisma = _ListPrisma(rows, on_call=_insert_newer_row_before_second_fetch)
-    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", prisma)
-    monkeypatch.setattr(mb, "_forward_upstream", AsyncMock(side_effect=AssertionError))
-
-    payload = json.loads((await _call(_FakeRequest(), _auth())).body)
-    ids = [b["id"] for b in payload["data"]]
-    # Every original owned row exactly once — no duplicated boundary row (B), no
-    # skipped row. The row inserted after we passed the top is simply not seen.
-    assert ids == ["msgbatch_A", "msgbatch_B", "msgbatch_C", "msgbatch_D"]
-    assert len(ids) == len(set(ids)), f"duplicate id in {ids}"
-
-
-@pytest.mark.asyncio
-async def test_keyset_tie_breaker_across_shared_created_at(monkeypatch):
-    """Rows sharing a created_at must page by the unified_object_id tie-breaker,
-    never straddled/duplicated. Chunk size 1 forces a seek across the tie."""
-    monkeypatch.setattr(mb, "_LIST_CHUNK_SIZE", 1)
-    same = _dt(0)  # identical created_at for all three
-    rows = [
-        _mine(client_id="msgbatch_T3", model_object_id="msgbatch_T3", col_created_at=same),
-        _mine(client_id="msgbatch_T2", model_object_id="msgbatch_T2", col_created_at=same),
-        _mine(client_id="msgbatch_T1", model_object_id="msgbatch_T1", col_created_at=same),
-    ]
-    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", _ListPrisma(rows))
-    monkeypatch.setattr(mb, "_forward_upstream", AsyncMock(side_effect=AssertionError))
-
-    payload = json.loads((await _call(_FakeRequest(), _auth())).body)
-    ids = [b["id"] for b in payload["data"]]
-    # unified_object_id desc within the tie: u-msgbatch_T3 > T2 > T1.
-    assert ids == ["msgbatch_T3", "msgbatch_T2", "msgbatch_T1"]
-    assert len(ids) == len(set(ids)), f"duplicate id in {ids}"
+    assert create["owner_key"] == "a" * 64

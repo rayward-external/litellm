@@ -32,6 +32,9 @@ class LiteLLM_ManagedObjectTable(LiteLLMPydanticObjectBase):
     file_object: Union[LiteLLMBatch, LiteLLMFineTuningJob, ResponsesAPIResponse]
     created_by: Optional[str] = None
     team_id: Optional[str] = None
+    # Hash of the submitting virtual key; indexed for owner-scoped
+    # /v1/messages/batches listing. NULL on OpenAI-dialect /v1/batches rows.
+    owner_key: Optional[str] = None
 
 
 class LiteLLM_ManagedVectorStoreTable(LiteLLMPydanticObjectBase):

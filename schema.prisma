@@ -974,6 +974,7 @@ model LiteLLM_ManagedObjectTable { // for batches or finetuning jobs which use t
   file_purpose String // either 'batch' or 'fine-tune'
   status String? // check if batch cost has been tracked
   batch_processed Boolean @default(false) // set to true by CheckBatchCost after cost is computed
+  owner_key String? // hash of the submitting virtual key; indexed so owner-scoped /v1/messages/batches listing is a single keyset query. NULL for OpenAI-dialect /v1/batches rows, which doubles as the message-batch route discriminator.
   created_at DateTime @default(now())
   created_by String?
   team_id String?
@@ -983,6 +984,8 @@ model LiteLLM_ManagedObjectTable { // for batches or finetuning jobs which use t
   @@index([unified_object_id])
   @@index([model_object_id])
   @@index([team_id, created_at(sort: Desc)])
+  @@index([owner_key, created_at(sort: Desc)])
+  @@index([created_by, created_at(sort: Desc)])
 }
 
 model LiteLLM_ManagedVectorStoreTable {
