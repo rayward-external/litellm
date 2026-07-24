@@ -1124,6 +1124,11 @@
       "count": 1
     }
   },
+  "src/app/(dashboard)/models-and-endpoints/add/page.tsx": {
+    "no-restricted-imports": {
+      "count": 1
+    }
+  },
   "src/app/(dashboard)/models-and-endpoints/components/ModelRetrySettingsTab.test.tsx": {
     "react/display-name": {
       "count": 1
@@ -1143,6 +1148,11 @@
     }
   },
   "src/app/(dashboard)/models-and-endpoints/layout.tsx": {
+    "no-restricted-imports": {
+      "count": 1
+    }
+  },
+  "src/app/(dashboard)/models-and-endpoints/llm-credentials/page.tsx": {
     "no-restricted-imports": {
       "count": 1
     }
