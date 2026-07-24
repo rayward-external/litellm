@@ -271,6 +271,16 @@ class CheckBatchCost:
             "model",
             "mixed_models",
             "total_records",
+            # The /v1/messages/batches route stashes the CLIENT-facing batch id
+            # here (Bedrock's is the owner-tagged msgbatch_bedrock_* id, which is
+            # NOT recoverable from the finalized provider id/ARN). Preserving it
+            # keeps the owner-scoped LIST able to return an id that still works
+            # against GET /v1/messages/batches/{id} after finalization, and its
+            # presence is the positive marker distinguishing an Anthropic message
+            # batch from an OpenAI-dialect /v1/batches Bedrock job. Additive:
+            # only rows this route created carry the key; every other batch flow
+            # is untouched.
+            "litellm_client_batch_id",
             SPEND_RECORDED_MARKER_KEY,
         ):
             if preserved_key in stash and (
