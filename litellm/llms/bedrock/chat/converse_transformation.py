@@ -1781,7 +1781,15 @@ class AmazonConverseConfig(BaseConfig):
             cache_creation_tokens=cache_creation_input_tokens,
             text_tokens=raw_input_tokens,
         )
-        reasoning_tokens = token_counter(text=reasoning_content, count_response_tokens=True) if reasoning_content else 0
+        # Bedrock's Converse TokenUsage has no reasoning/thinking member (unlike the
+        # native Anthropic API's usage.output_tokens_details.thinking_tokens), so
+        # re-tokenizing the reasoning text is the only count available here. Clamp it:
+        # our tokenizer is not the model's, and an over-estimate would otherwise make
+        # text_tokens negative and mis-split output cost.
+        estimated_reasoning_tokens = (
+            token_counter(text=reasoning_content, count_response_tokens=True) if reasoning_content else 0
+        )
+        reasoning_tokens = min(estimated_reasoning_tokens, output_tokens)
         completion_tokens_details = CompletionTokensDetailsWrapper(
             reasoning_tokens=reasoning_tokens,
             text_tokens=(output_tokens - reasoning_tokens if reasoning_tokens > 0 else output_tokens),

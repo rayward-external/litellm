@@ -5,6 +5,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Dict,
+    Iterable,
     List,
     Mapping,
     NoReturn,
@@ -2274,6 +2275,101 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             compaction_blocks,
         )
 
+    @staticmethod
+    def _mapping_value(container: object, key: str) -> object:
+        """
+        ``container[key]`` when ``container`` is a mapping, else ``None``.
+
+        Raw usage payloads are untyped, so every read below has to prove the shape
+        it found. Narrowing here — rather than asserting one with a cast — keeps a
+        malformed provider payload a ``None`` instead of a downstream TypeError.
+        """
+        if not isinstance(container, Mapping):
+            return None
+        mapping: Mapping[str, object] = container
+        return mapping.get(key)
+
+    @staticmethod
+    def _reported_thinking_tokens(usage_object: object) -> int | None:
+        """
+        Anthropic's own thinking-token count, from ``usage.output_tokens_details``.
+
+        Adaptive-thinking models (claude-opus-5, claude-opus-4-8/4-7,
+        claude-sonnet-5, claude-fable-5) emit the thinking block with an EMPTY
+        ``thinking`` string — only the encrypted ``signature`` carries data — so
+        token-counting the plaintext scores 0 for output tokens that were
+        generated AND billed. This field is the only recoverable source.
+
+        Returns ``None`` (not 0) when the field is missing or unusable, so callers
+        can tell "Anthropic said zero" from "Anthropic said nothing" and fall back
+        to the plaintext estimate instead of silently reporting 0.
+        """
+        thinking_tokens = AnthropicConfig._coerce_optional_int(
+            AnthropicConfig._mapping_value(
+                AnthropicConfig._mapping_value(usage_object, "output_tokens_details"),
+                "thinking_tokens",
+            )
+        )
+        if thinking_tokens is None:
+            return None
+        return max(thinking_tokens, 0)
+
+    @staticmethod
+    def _sum_reported_thinking_tokens(iterations: Iterable[object]) -> int | None:
+        """
+        Total reported thinking tokens across compaction iterations.
+
+        Mirrors how ``calculate_usage`` sums ``output_tokens`` over ``iterations``:
+        the top-level usage object of a compacted response does not aggregate the
+        per-iteration detail. ``None`` means no iteration reported a count.
+        """
+        total: int | None = None
+        for iteration in iterations:
+            reported = AnthropicConfig._reported_thinking_tokens(iteration)
+            if reported is None:
+                continue
+            total = (total or 0) + reported
+        return total
+
+    @staticmethod
+    def _resolve_reported_thinking_tokens(usage_object: object, iterations: Iterable[object] | None) -> int | None:
+        """
+        Anthropic's reported thinking-token count for the response as a whole.
+
+        A compacted response carries the count per iteration rather than on the
+        top-level usage object, so a per-iteration total wins whenever at least one
+        iteration reported one.
+        """
+        if iterations:
+            summed = AnthropicConfig._sum_reported_thinking_tokens(iterations)
+            if summed is not None:
+                return summed
+        return AnthropicConfig._reported_thinking_tokens(usage_object)
+
+    @staticmethod
+    def _reasoning_token_share(
+        reported_thinking_tokens: int | None,
+        reasoning_content: str | None,
+        completion_tokens: int,
+    ) -> int:
+        """
+        How many of ``completion_tokens`` were thinking tokens.
+
+        Anthropic's own count wins when it reports one: the plaintext estimate
+        reads 0 for adaptive thinking, whose thinking block is signature-only (see
+        ``_reported_thinking_tokens``). A reported ZERO deliberately falls through
+        to the estimate instead — the field may simply not be populated for the
+        older ``thinking.type=enabled`` models, and those must keep the
+        reasoning_tokens they report today. The estimate is itself 0 when there was
+        no thinking text, so nothing is invented.
+        """
+        if reported_thinking_tokens:
+            return min(reported_thinking_tokens, completion_tokens)
+        estimated_reasoning_tokens = (
+            token_counter(text=reasoning_content, count_response_tokens=True) if reasoning_content else 0
+        )
+        return min(estimated_reasoning_tokens, completion_tokens)
+
     def calculate_usage(
         self,
         usage_object: dict,
@@ -2352,11 +2448,14 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             cache_creation_token_details=cache_creation_token_details,
             text_tokens=raw_input_tokens,
         )
-        # Always populate completion_token_details, not just when there's reasoning_content
-        estimated_reasoning_tokens = (
-            token_counter(text=reasoning_content, count_response_tokens=True) if reasoning_content else 0
+        # Always populate completion_token_details, not just when there's reasoning_content.
+        # See _reasoning_token_share for why Anthropic's reported count beats the
+        # plaintext estimate, and why a reported zero does not.
+        reasoning_tokens = self._reasoning_token_share(
+            self._resolve_reported_thinking_tokens(_usage, iterations),
+            reasoning_content,
+            completion_tokens,
         )
-        reasoning_tokens = min(estimated_reasoning_tokens, completion_tokens)
         completion_token_details = CompletionTokensDetailsWrapper(
             reasoning_tokens=reasoning_tokens if reasoning_tokens > 0 else 0,
             text_tokens=(completion_tokens - reasoning_tokens if reasoning_tokens > 0 else completion_tokens),

@@ -1288,6 +1288,11 @@ class AWSEventStreamDecoder:
         self.response_id: Optional[str] = None
         self.json_mode = json_mode
         self._current_tool_name: Optional[str] = None
+        # Accumulate streamed reasoning text so the terminal metadata event can split
+        # reasoning tokens out of output tokens, the way the non-streaming Converse
+        # response already does. Without it a streamed reasoning response reports
+        # reasoning_tokens=0 no matter how much thinking it did.
+        self.accumulated_reasoning_content: str = ""
 
     def check_empty_tool_call_args(self) -> bool:
         """
@@ -1440,6 +1445,8 @@ class AWSEventStreamDecoder:
                 "reasoningContent": delta_obj["reasoningContent"],
             }
             reasoning_content = self.extract_reasoning_content_str(delta_obj["reasoningContent"])
+            if reasoning_content:
+                self.accumulated_reasoning_content += reasoning_content
             thinking_blocks = self.translate_thinking_blocks(delta_obj["reasoningContent"])
             if thinking_blocks and len(thinking_blocks) > 0 and reasoning_content is None:
                 reasoning_content = ""  # set to non-empty string to ensure consistency with Anthropic
@@ -1519,7 +1526,10 @@ class AWSEventStreamDecoder:
             elif "stopReason" in chunk_data:
                 finish_reason = map_finish_reason(chunk_data.get("stopReason", "stop"))
             elif "usage" in chunk_data:
-                usage = converse_config._transform_usage(chunk_data.get("usage", {}))
+                usage = converse_config._transform_usage(
+                    chunk_data.get("usage", {}),
+                    reasoning_content=(self.accumulated_reasoning_content or None),
+                )
 
             model_response_provider_specific_fields = {}
             if "trace" in chunk_data:

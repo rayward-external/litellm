@@ -70,6 +70,64 @@ def test_transform_usage_with_reasoning_content():
     )
 
 
+def test_transform_usage_clamps_reasoning_estimate_to_output_tokens():
+    """
+    Bedrock's Converse TokenUsage has no thinking/reasoning member, so the only
+    count available is a re-tokenization of the reasoning text - and our tokenizer
+    is not the model's. An over-estimate must not drive text_tokens negative,
+    which would mis-split output cost across the text and reasoning rates.
+    """
+    usage = ConverseTokenUsageBlock(
+        **{
+            "inputTokens": 10,
+            "outputTokens": 1,
+            "totalTokens": 11,
+        }
+    )
+    config = AmazonConverseConfig()
+    openai_usage = config._transform_usage(
+        usage,
+        reasoning_content="This reasoning text intentionally tokenizes above one output token.",
+    )
+    assert openai_usage.completion_tokens_details is not None
+    assert openai_usage.completion_tokens_details.reasoning_tokens == 1
+    assert openai_usage.completion_tokens_details.text_tokens == 0
+
+
+def test_converse_streaming_usage_accounts_for_streamed_reasoning():
+    """
+    The Converse stream decoder buffered reasoning deltas but never handed them to
+    _transform_usage, so a streamed reasoning response reported reasoning_tokens=0
+    while the non-streaming response for the same content reported them correctly.
+    """
+    from litellm.llms.bedrock.chat.invoke_handler import AWSEventStreamDecoder
+
+    decoder = AWSEventStreamDecoder(model="anthropic.claude-sonnet-4-20250514-v1:0")
+    chunks = [
+        {
+            "contentBlockIndex": 0,
+            "delta": {"reasoningContent": {"text": "Let me think about this step by step."}},
+        },
+        {"contentBlockIndex": 0, "delta": {"reasoningContent": {"signature": "sig_123"}}},
+        {"contentBlockIndex": 1, "delta": {"text": "The probability is 3/8."}},
+        {"usage": {"inputTokens": 10, "outputTokens": 100, "totalTokens": 110}},
+    ]
+
+    final_usage = None
+    for chunk in chunks:
+        parsed = decoder.converse_chunk_parser(chunk)
+        if parsed.usage is not None:
+            final_usage = parsed.usage
+
+    assert final_usage is not None
+    assert final_usage.completion_tokens == 100
+    assert final_usage.completion_tokens_details is not None
+    assert final_usage.completion_tokens_details.reasoning_tokens > 0
+    assert final_usage.completion_tokens_details.text_tokens == (
+        100 - final_usage.completion_tokens_details.reasoning_tokens
+    )
+
+
 def test_transform_system_message():
     config = AmazonConverseConfig()
 
