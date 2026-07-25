@@ -69,6 +69,9 @@ from ..vertex_llm_base import VertexBase
 
 _GCP_LABEL_VALUE_MAX_LEN = 63
 _CUSTOM_ID_RAW_LABEL_PREFIX = "b32_"
+# Prepended when a sanitized label value would not start with a lowercase
+# letter (e.g. a numeric custom_id). See _sanitize_gcp_label_value.
+_GCP_LABEL_VALUE_LEADING_PAD = "id_"
 
 
 def _sanitize_gcp_label_value(value: str) -> str:
@@ -78,7 +81,27 @@ def _sanitize_gcp_label_value(value: str) -> str:
     GCP label values must:
     - Be lowercase
     - Contain only letters, numbers, underscores, and hyphens
+    - START WITH A LOWERCASE LETTER
     - Be max 63 characters
+
+    The leading-character rule is the one that bites. Vertex batch prediction
+    rejects the WHOLE record at proto-parse time when a label value starts with
+    a digit -- the job still reports `completed`, but every affected line in
+    predictions.jsonl carries
+
+        Failed to parse JSON into proto: ...GenerateContentRequest ...
+        @ labels[0]: ... unexpected character: '1'; expected '"'
+
+    and no response. Verified 2026-07-25 by submitting two otherwise byte-identical
+    Vertex batch payloads: `litellm_custom_id: "1"` failed, `"reqa"` returned a
+    normal completion. Since `custom_id: "1"` is the most natural thing for a
+    caller to write first, the unprefixed behaviour made OpenAI-shaped batch files
+    silently useless on Vertex.
+
+    Prefixing is safe for correlation: `litellm_custom_id` is the lossy display
+    label, while `litellm_custom_id_raw` (base32, always `b32_`-prefixed, hence
+    always letter-leading) is what `_get_litellm_batch_custom_id_from_labels`
+    decodes the original id from.
 
     Args:
         value: The string to sanitize
@@ -87,6 +110,8 @@ def _sanitize_gcp_label_value(value: str) -> str:
         A sanitized string that meets GCP label constraints
     """
     sanitized = re.sub(r"[^a-z0-9_-]", "_", value.lower())
+    if sanitized and not sanitized[0].isalpha():
+        sanitized = f"{_GCP_LABEL_VALUE_LEADING_PAD}{sanitized}"
     return sanitized[:_GCP_LABEL_VALUE_MAX_LEN]
 
 

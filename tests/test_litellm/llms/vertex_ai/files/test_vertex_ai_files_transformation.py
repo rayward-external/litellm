@@ -1318,3 +1318,76 @@ class TestConfiguredBucketNameResolution:
         assert "bucket_name" in OPTIONAL_KWARGS_KEYS
         params = get_litellm_params(bucket_name="my-legacy-bucket")
         assert params.get("bucket_name") == "my-legacy-bucket"
+
+
+class TestGcpLabelValueLeadingCharacter:
+    """Vertex batch rejects a record whose label value does not start with a
+    lowercase letter.
+
+    Regression for a silent data-loss bug: the batch JOB reports `completed`, but
+    every affected line in predictions.jsonl carries a proto-parse error at
+    `labels[0]` and no response. Verified live 2026-07-25 against Vertex with two
+    otherwise byte-identical payloads -- `litellm_custom_id: "1"` failed and
+    `"reqa"` returned a normal completion. `custom_id: "1"` is the most natural
+    id a caller writes first, so unprefixed values made OpenAI-shaped batch files
+    silently useless on Vertex.
+    """
+
+    @pytest.mark.parametrize(
+        "custom_id",
+        ["1", "9", "12ab", "_x", "-lead", "0000", 1, 0],
+    )
+    def test_non_letter_leading_ids_are_padded(self, custom_id):
+        from litellm.llms.vertex_ai.files.transformation import (
+            _sanitize_gcp_label_value,
+        )
+
+        sanitized = _sanitize_gcp_label_value(str(custom_id))
+        assert sanitized, "sanitizer must not empty a non-empty id"
+        assert sanitized[0].isalpha() and sanitized[0].islower(), (
+            f"{custom_id!r} sanitized to {sanitized!r}, which Vertex rejects at "
+            "proto-parse time"
+        )
+        assert len(sanitized) <= 63
+
+    @pytest.mark.parametrize("custom_id", ["reqa", "req-1", "REQ-A", "a"])
+    def test_letter_leading_ids_are_left_alone(self, custom_id):
+        """The fix must not churn ids that were already valid — those flow into a
+        user-visible label."""
+        from litellm.llms.vertex_ai.files.transformation import (
+            _sanitize_gcp_label_value,
+        )
+
+        sanitized = _sanitize_gcp_label_value(custom_id)
+        assert sanitized == custom_id.lower()
+
+    def test_custom_id_still_round_trips_through_the_raw_label(self):
+        """Padding the display label must not corrupt correlation: the original id
+        is recovered from `litellm_custom_id_raw`, not from the padded label."""
+        from litellm.llms.vertex_ai.files.transformation import (
+            _get_litellm_batch_custom_id_from_labels,
+            _set_litellm_batch_custom_id_labels,
+        )
+
+        labels: dict = {}
+        _set_litellm_batch_custom_id_labels(labels, "1")
+
+        assert labels["litellm_custom_id"][0].isalpha()
+        assert _get_litellm_batch_custom_id_from_labels(labels) == "1"
+
+    def test_every_emitted_label_value_is_vertex_safe(self):
+        """Guard the whole label set, not just the one we patched — any value that
+        fails the leading-character rule fails the entire record."""
+        from litellm.llms.vertex_ai.files.transformation import (
+            _set_litellm_batch_custom_id_labels,
+        )
+
+        for custom_id in ["1", "x" * 200, "0-9", "réq"]:
+            labels: dict = {}
+            _set_litellm_batch_custom_id_labels(labels, custom_id)
+            for key, value in labels.items():
+                assert value[0].isalpha() and value[0].islower(), (
+                    f"label {key}={value!r} (from custom_id={custom_id!r}) is not "
+                    "Vertex-safe"
+                )
+                assert len(value) <= 63
