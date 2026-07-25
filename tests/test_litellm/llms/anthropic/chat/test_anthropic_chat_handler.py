@@ -574,6 +574,73 @@ def test_streaming_thinking_deltas_count_reasoning_tokens_in_usage():
     )
 
 
+def test_streaming_adaptive_thinking_uses_reported_thinking_tokens():
+    """
+    Adaptive thinking streams a signature but no thinking plaintext, so the
+    accumulated-text estimate the streaming iterator uses reads 0. The terminal
+    `message_delta` carries the real count in usage.output_tokens_details, and
+    that is what the streamed usage must report.
+
+    Fixes reasoning_tokens=0 for claude-opus-5 / opus-4-8 / sonnet-5 / fable-5.
+    """
+    chunks = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg_adaptive",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "usage": {"input_tokens": 18, "output_tokens": 1},
+            },
+        },
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "thinking", "thinking": ""},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "signature_delta", "signature": "EqQBCgIYAhIm..."},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {"type": "text", "text": ""},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "text_delta", "text": "The probability is 3/8."},
+        },
+        {"type": "content_block_stop", "index": 1},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {
+                "output_tokens": 162,
+                "output_tokens_details": {"thinking_tokens": 32},
+            },
+        },
+    ]
+
+    iterator = ModelResponseIterator(None, sync_stream=True)
+    final_usage = None
+    for chunk in chunks:
+        parsed = iterator.chunk_parser(chunk)
+        if parsed.usage is not None:
+            final_usage = parsed.usage
+
+    assert final_usage is not None
+    assert final_usage.completion_tokens == 162
+    completion_tokens_details = final_usage.completion_tokens_details
+    assert completion_tokens_details is not None
+    assert completion_tokens_details.reasoning_tokens == 32
+    assert completion_tokens_details.text_tokens == 162 - 32
+
+
 def test_anthropic_completion_streaming_usage_matches_non_streaming_with_thinking():
     """The completion API should preserve Anthropic thinking usage in streaming mode."""
     thinking_parts = [

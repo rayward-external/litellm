@@ -1,4 +1,5 @@
 import json
+from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Union, cast
 
@@ -218,7 +219,9 @@ class AnthropicPassthroughLoggingHandler:
         # stays undercounted even after completion_tokens is fixed.
         details = getattr(usage, "completion_tokens_details", None)
         if details is not None and getattr(details, "text_tokens", None) is not None:
-            details.text_tokens = recovered_output_tokens
+            # Reasoning tokens are already part of completion_tokens, so leave them
+            # out of the recovered text share or the two together over-count output.
+            details.text_tokens = max(recovered_output_tokens - (getattr(details, "reasoning_tokens", 0) or 0), 0)
 
     @staticmethod
     def _create_anthropic_response_logging_payload(
@@ -665,6 +668,9 @@ class AnthropicPassthroughLoggingHandler:
         cache_creation_5m: Optional[int] = None
         cache_creation_1h: Optional[int] = None
         output_tokens = 0
+        # Adaptive thinking reports its token count only here; the thinking blocks
+        # themselves are signature-only, so nothing downstream can re-derive it.
+        output_tokens_details: Mapping[str, object] | None = None
         web_search_requests: Optional[int] = None
         tool_search_requests: Optional[int] = None
         inference_geo: Optional[str] = None
@@ -693,6 +699,8 @@ class AnthropicPassthroughLoggingHandler:
                         inference_geo = usage.get("inference_geo")
                     if usage.get("output_tokens") is not None:
                         output_tokens = usage.get("output_tokens")
+                    if isinstance(usage.get("output_tokens_details"), dict):
+                        output_tokens_details = usage["output_tokens_details"]
                     found_usage = True
                 elif event_type == "message_delta":
                     _delta_stop = (data.get("delta") or {}).get("stop_reason")
@@ -701,6 +709,8 @@ class AnthropicPassthroughLoggingHandler:
                     usage = data.get("usage") or {}
                     if usage.get("output_tokens") is not None:
                         output_tokens = usage.get("output_tokens")
+                    if isinstance(usage.get("output_tokens_details"), dict):
+                        output_tokens_details = usage["output_tokens_details"]
                     _stu = usage.get("server_tool_use")
                     if isinstance(_stu, dict):
                         if _stu.get("web_search_requests") is not None:
@@ -724,6 +734,8 @@ class AnthropicPassthroughLoggingHandler:
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
         }
+        if output_tokens_details is not None:
+            usage_object["output_tokens_details"] = output_tokens_details
         if cache_read:
             usage_object["cache_read_input_tokens"] = cache_read
         if cache_creation:

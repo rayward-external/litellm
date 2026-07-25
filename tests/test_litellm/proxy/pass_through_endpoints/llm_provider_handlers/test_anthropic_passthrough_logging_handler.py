@@ -2005,6 +2005,43 @@ class TestAnthropicUsageOnlyFallback:
         assert usage.server_tool_use.web_search_requests == 1
         assert usage.server_tool_use.tool_search_requests == 3
 
+    def test_build_usage_only_recovers_adaptive_thinking_reasoning_tokens(self):
+        # Adaptive thinking streams a signature-only thinking block, so nothing
+        # downstream can re-derive the count from text - it is recoverable only
+        # from usage.output_tokens_details, which this rebuild must carry over.
+        chunks = [
+            _sse_bytes(
+                {
+                    "type": "message_start",
+                    "message": {
+                        "model": "claude-opus-5",
+                        "usage": {"input_tokens": 18, "output_tokens": 1},
+                    },
+                }
+            ),
+            _sse_bytes(
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {
+                        "output_tokens": 162,
+                        "output_tokens_details": {"thinking_tokens": 32},
+                    },
+                }
+            ),
+        ]
+        response = (
+            AnthropicPassthroughLoggingHandler._build_usage_only_response_from_chunks(
+                all_chunks=chunks, model="claude-opus-5"
+            )
+        )
+        assert response is not None
+        usage = response.usage
+        assert usage.completion_tokens == 162
+        assert usage.completion_tokens_details is not None
+        assert usage.completion_tokens_details.reasoning_tokens == 32
+        assert usage.completion_tokens_details.text_tokens == 162 - 32
+
     @pytest.mark.parametrize(
         "event_str,expected",
         [

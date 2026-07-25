@@ -2,8 +2,9 @@ import asyncio
 import json
 import os
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 # Ensure the project root is on the import path so `litellm` can be imported when
@@ -545,3 +546,60 @@ def test_output_format_removed_from_bedrock_invoke_request():
     assert (
         "output_format" not in result
     ), f"output_format should be removed for Bedrock Invoke, got keys: {result.keys()}"
+
+
+def _adaptive_thinking_invoke_response() -> httpx.Response:
+    """A Bedrock InvokeModel body for an adaptive-thinking Claude model.
+
+    The invoke route returns the Anthropic-native Messages shape verbatim, so the
+    thinking block is signature-only and the token count lives in
+    usage.output_tokens_details.
+    """
+    return httpx.Response(
+        status_code=200,
+        json={
+            "id": "msg_bdrk_adaptive",
+            "type": "message",
+            "role": "assistant",
+            "model": "anthropic.claude-opus-4-8-v1:0",
+            "content": [
+                {"type": "thinking", "thinking": "", "signature": "EqQBCgIYAhIm..."},
+                {"type": "text", "text": "The probability is 3/8."},
+            ],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 18,
+                "output_tokens": 162,
+                "output_tokens_details": {"thinking_tokens": 32},
+            },
+        },
+        request=httpx.Request("POST", "https://bedrock-runtime.us-east-1.amazonaws.com/model/invoke"),
+    )
+
+
+def test_invoke_route_reports_adaptive_thinking_reasoning_tokens():
+    """
+    Bedrock is the order-1 primary for our Claude models. Its invoke route reuses
+    AnthropicConfig.transform_response, so the adaptive-thinking token count
+    reported by the model must survive into completion_tokens_details.
+    """
+    from litellm.types.utils import ModelResponse
+
+    config = AmazonAnthropicClaudeConfig()
+    model_response = config.transform_response(
+        model="anthropic.claude-opus-4-8-v1:0",
+        raw_response=_adaptive_thinking_invoke_response(),
+        model_response=ModelResponse(),
+        logging_obj=MagicMock(),
+        request_data={},
+        messages=[{"role": "user", "content": "hi"}],
+        optional_params={},
+        litellm_params={},
+        encoding=None,
+    )
+
+    usage = model_response.usage
+    assert usage.completion_tokens == 162
+    assert usage.completion_tokens_details is not None
+    assert usage.completion_tokens_details.reasoning_tokens == 32
+    assert usage.completion_tokens_details.text_tokens == 162 - 32
