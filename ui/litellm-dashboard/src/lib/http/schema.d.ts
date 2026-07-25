@@ -12808,6 +12808,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sso/saml/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Saml Callback
+         * @description Assertion Consumer Service. Validates the IdP assertion and issues a UI session.
+         */
+        post: operations["saml_callback_sso_saml_callback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sso/saml/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Saml Login
+         * @description SP-initiated SAML login. Redirects the user to the configured IdP.
+         */
+        get: operations["saml_login_sso_saml_login_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sso/saml/metadata": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Saml Metadata
+         * @description Service Provider metadata XML, for registering this proxy at the IdP.
+         */
+        get: operations["saml_metadata_sso_saml_metadata_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/tag/daily/activity": {
         parameters: {
             query?: never;
@@ -17916,6 +17976,11 @@ export interface paths {
          *     counts its full spend toward each of those tools, so per-tool numbers are
          *     attributions. ``total_spend`` is the deduplicated spend of every request that
          *     called at least one tool in the window, so it never double counts.
+         *
+         *     ``start_date`` is clamped to at most 30 days before ``end_date`` (serving up to
+         *     31 calendar dates inclusive, the same width as the endpoint's default window):
+         *     a wider requested range is clamped, and the response's ``start_date`` reflects
+         *     the effective window actually served.
          */
         get: operations["get_tool_spend_v1_tool_spend_get"];
         put?: never;
@@ -30918,6 +30983,26 @@ export interface components {
             proxy_base_url?: string | null;
             /** @description Configuration for mapping SSO groups to LiteLLM roles based on group claims in the SSO token */
             role_mappings?: components["schemas"]["RoleMappings"] | null;
+            /**
+             * Saml Allow Unsolicited
+             * @description 'true' to accept IdP-initiated (unsolicited) SAML responses, which cannot be browser-bound against login CSRF
+             */
+            saml_allow_unsolicited?: string | null;
+            /**
+             * Saml Idp Metadata Url
+             * @description URL of the SAML IdP metadata to fetch and parse for SSO authentication
+             */
+            saml_idp_metadata_url?: string | null;
+            /**
+             * Saml Idp Metadata Xml
+             * @description Inline SAML IdP metadata XML, used when a metadata URL is not available
+             */
+            saml_idp_metadata_xml?: string | null;
+            /**
+             * Saml Sp Entity Id
+             * @description SAML Service Provider entityID; defaults to the proxy's /sso/saml/metadata URL
+             */
+            saml_sp_entity_id?: string | null;
             /** @description Configuration for mapping SSO JWT fields to team IDs. Takes precedence over config file settings. */
             team_mappings?: components["schemas"]["TeamMappings"] | null;
             /**
@@ -49747,6 +49832,77 @@ export interface operations {
         };
     };
     sso_readiness_sso_readiness_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    saml_callback_sso_saml_callback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    saml_login_sso_saml_login_get: {
+        parameters: {
+            query?: {
+                return_to?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    saml_metadata_sso_saml_metadata_get: {
         parameters: {
             query?: never;
             header?: never;
