@@ -81,6 +81,7 @@ from litellm.types.passthrough_endpoints.pass_through_endpoints import (
     EndpointType,
     PassthroughStandardLoggingPayload,
 )
+from litellm.types.utils import Usage
 
 from .common_utils import (
     is_cohere_streaming_url,
@@ -90,6 +91,10 @@ from .common_utils import (
 )
 from .streaming_handler import PassThroughStreamingHandler
 from .success_handler import PassThroughEndpointLogging
+from .upstream_usage_headers import (
+    UpstreamReportedUsage,
+    apply_upstream_reported_usage,
+)
 
 router = APIRouter()
 
@@ -723,12 +728,17 @@ def _build_passthrough_failure_request_payload(
     kwargs: Optional[dict],
     logging_obj: Optional[LiteLLMLoggingObj],
     custom_llm_provider: Optional[str],
+    upstream_usage: UpstreamReportedUsage | None = None,
 ) -> dict:
     """Build the ``request_data`` dict passed to ``post_call_failure_hook``.
 
     Shared by the outer exception handler (LiteLLM-internal failures) and
     upstream HTTP error logging, so both failure paths report the same shape
     of request data (model, custom_llm_provider, litellm_logging_obj, ...).
+
+    ``upstream_usage`` carries the cost and tokens an upstream reported on an
+    error response. Spend tracking only attributes a recovered cost when it
+    comes paired with a usage object, so both keys are written together.
     """
     request_payload: dict = dict(parsed_body or {})
     if kwargs:
@@ -739,6 +749,9 @@ def _build_passthrough_failure_request_payload(
         request_payload["model"] = parsed_body.get("model", "")
     if "custom_llm_provider" not in request_payload and custom_llm_provider:
         request_payload["custom_llm_provider"] = custom_llm_provider
+    if upstream_usage is not None:
+        request_payload["response_cost"] = upstream_usage.response_cost or 0.0
+        request_payload["combined_usage_object"] = Usage(total_tokens=upstream_usage.total_tokens or 0)
     return request_payload
 
 
@@ -1183,6 +1196,11 @@ async def pass_through_request(
 
                 response = await async_client.send(req, stream=stream)
 
+            upstream_usage = apply_upstream_reported_usage(
+                logging_obj=logging_obj,
+                headers=response.headers,
+            )
+
             await _log_passthrough_upstream_failure(
                 response=response,
                 user_api_key_dict=user_api_key_dict,
@@ -1191,6 +1209,7 @@ async def pass_through_request(
                     kwargs=kwargs,
                     logging_obj=logging_obj,
                     custom_llm_provider=custom_llm_provider,
+                    upstream_usage=upstream_usage,
                 ),
             )
 
@@ -1245,6 +1264,11 @@ async def pass_through_request(
             )
         verbose_proxy_logger.debug("response.headers= %s", response.headers)
 
+        upstream_usage = apply_upstream_reported_usage(
+            logging_obj=logging_obj,
+            headers=response.headers,
+        )
+
         if _is_streaming_response(response) is True:
             logging_obj.stream = True
             logging_obj.model_call_details["stream"] = True
@@ -1257,6 +1281,7 @@ async def pass_through_request(
                     kwargs=kwargs,
                     logging_obj=logging_obj,
                     custom_llm_provider=custom_llm_provider,
+                    upstream_usage=upstream_usage,
                 ),
             )
 
@@ -1336,6 +1361,7 @@ async def pass_through_request(
             kwargs=kwargs,
             logging_obj=logging_obj,
             custom_llm_provider=custom_llm_provider,
+            upstream_usage=upstream_usage,
         )
         failure_request_payload["response_body"] = response_body
         await _log_passthrough_upstream_failure(
