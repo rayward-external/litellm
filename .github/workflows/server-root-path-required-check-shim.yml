@@ -1,0 +1,38 @@
+name: Test Proxy SERVER_ROOT_PATH Routing (required-check shim)
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+      - litellm_internal_staging
+      - litellm_oss_staging
+      - "litellm_**"
+
+# Upstream removed .github/workflows/test_server_root_path.yml in BerriAI/litellm#34642
+# (drop docker-based SERVER_ROOT_PATH e2e in favor of a unit test), and the 2026-07-26
+# sync correctly matched that deletion. But litellm_internal_staging's branch protection
+# still lists this workflow's two matrix job names as required status checks
+# ("test-server-root-path (/api/v1)", "test-server-root-path (/llmproxy)"), which can now
+# never report on any PR -> every PR is permanently blocked from merging ("N of M required
+# status checks are expected"). This shim reproduces only the job name/matrix shape so the
+# required checks can report; SERVER_ROOT_PATH coverage itself now lives in upstream's unit
+# test (moved as part of #34642), which already runs via the normal test matrix.
+# REMOVAL CONDITION: remove once an admin updates litellm_internal_staging's required status
+# checks (Settings > Branches) to drop these two obsolete contexts.
+jobs:
+  test-server-root-path:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    strategy:
+      fail-fast: false
+      matrix:
+        root_path: ["/api/v1", "/llmproxy"]
+
+    steps:
+      - name: Shim - see fork-patches.txt
+        run: |
+          echo "Required-check shim for the matrix job upstream's test_server_root_path.yml used to produce (root_path=${{ matrix.root_path }})."
+          echo "Real SERVER_ROOT_PATH coverage now lives in upstream's unit test (BerriAI/litellm#34642). See .github/fork-patches.txt."

@@ -3,8 +3,7 @@ import json
 import logging
 import os
 import sys
-from contextlib import ExitStack
-from datetime import datetime
+from contextlib import ExitStack, contextmanager
 from io import BytesIO
 from types import SimpleNamespace
 from typing import Optional
@@ -32,6 +31,7 @@ from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
     resolve_pass_through_request_timeout,
     resolve_llm_passthrough_timeout,
 )
+from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.types.passthrough_endpoints.pass_through_endpoints import (
     LITELLM_PASS_THROUGH_RAW_BODY_STATE_KEY,
@@ -4797,225 +4797,260 @@ async def test_pass_through_relay_full_consumption_logs_no_partial_relay_warning
         await fake_client.aclose()
 
 
-class TestGenericPassthroughUsagePricing:
-    """Cost tracking used to be a strict allow-list.
+class _StandardLoggingPayloadRecorder(CustomLogger):
+    """Stands in for a real logging integration so the assertions run against
+    the StandardLoggingPayload that spend tracking consumes, not an internal."""
 
-    Any pass-through route without a bespoke provider handler recorded $0
-    while its request was still forwarded upstream with *our* credentials and
-    billed to us — breaking per-key budgets and corrupting invoice
-    reconciliation. `normalize_llm_passthrough_logging_payload` now ends in a
-    fallback that prices any recognisable usage shape, so pricing is the
-    default for a new provider rather than something each one must opt into.
-    """
+    def __init__(self):
+        super().__init__()
+        self.payloads = []
 
-    # A host and path that deliberately match no provider handler.
-    URL = "https://api.novel-provider.example/v1/generate"
-    PROMPT_TOKENS = 1000
-    COMPLETION_TOKENS = 500
+    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+        self.payloads.append(kwargs.get("standard_logging_object"))
 
-    def _logging_obj(self):
-        from litellm.litellm_core_utils.litellm_logging import (
-            Logging as LiteLLMLoggingObj,
+
+@contextmanager
+def _recording_success_callback():
+    import litellm
+
+    recorder = _StandardLoggingPayloadRecorder()
+    original = litellm._async_success_callback
+    litellm._async_success_callback = [*original, recorder]
+    try:
+        yield recorder
+    finally:
+        litellm._async_success_callback = original
+
+
+def _enter_upstream_usage_mocks(stack, parsed_body):
+    """Same seams as _enter_relay_logging_mocks, but leaves the real
+    pass-through success handler in place and captures the coroutines the
+    logging worker would have run so the test can await them."""
+    from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER
+
+    mock_proxy_logging = stack.enter_context(
+        patch("litellm.proxy.proxy_server.proxy_logging_obj")
+    )
+    mock_proxy_logging.pre_call_hook = AsyncMock(return_value=parsed_body)
+    mock_proxy_logging.post_call_failure_hook = AsyncMock()
+    mock_proxy_logging.post_call_response_headers_hook = AsyncMock(return_value=None)
+    mock_proxy_logging.get_proxy_hook = MagicMock(return_value=None)
+
+    enqueued = []
+    stack.enter_context(
+        patch.object(
+            GLOBAL_LOGGING_WORKER,
+            "ensure_initialized_and_enqueue",
+            new=MagicMock(side_effect=lambda async_coroutine: enqueued.append(async_coroutine)),
         )
+    )
+    return mock_proxy_logging, enqueued
 
-        mock_logging_obj = MagicMock(spec=LiteLLMLoggingObj)
-        mock_logging_obj.model_call_details = {}
-        mock_logging_obj.optional_params = {}
-        mock_logging_obj.litellm_call_id = "test-call-id"
-        mock_logging_obj.litellm_trace_id = "test-trace-id"
-        return mock_logging_obj
 
-    def _normalize(self, response_body, request_body=None, url=None, logging_obj=None):
-        from litellm.proxy.pass_through_endpoints.success_handler import (
-            PassThroughEndpointLogging,
-        )
+async def _run_upstream_reporting_passthrough(
+    upstream_headers, status_code=200, cost_per_request=None
+):
+    """Drive a generic pass-through against an upstream that reports its own
+    cost/usage. Returns (recorded standard logging payloads, proxy logging mock)."""
+    from litellm.proxy._types import UserAPIKeyAuth
 
-        logging_obj = logging_obj or self._logging_obj()
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 200
-        mock_response.text = json.dumps(response_body)
-
-        PassThroughEndpointLogging().normalize_llm_passthrough_logging_payload(
-            httpx_response=mock_response,
-            response_body=response_body,
-            request_body=request_body or {},
-            logging_obj=logging_obj,
-            url_route=url or self.URL,
-            result="",
-            start_time=datetime.now(),
-            end_time=datetime.now(),
-            cache_hit=False,
-            custom_llm_provider=None,
-        )
-        return logging_obj.model_call_details.get("response_cost")
-
-    def _expected(self, price_key):
-        import litellm
-
-        price = litellm.model_cost[price_key]
-        return (
-            price["input_cost_per_token"] * self.PROMPT_TOKENS
-            + price["output_cost_per_token"] * self.COMPLETION_TOKENS
-        )
-
-    def test_prices_openai_usage_shape(self):
-        """`usage.prompt_tokens` / `usage.completion_tokens`."""
-        cost = self._normalize(
-            {
-                "model": "gpt-4o",
-                "usage": {
-                    "prompt_tokens": self.PROMPT_TOKENS,
-                    "completion_tokens": self.COMPLETION_TOKENS,
-                },
-            }
-        )
-        assert cost == pytest.approx(self._expected("gpt-4o"), rel=1e-6)
-
-    def test_prices_anthropic_usage_shape(self):
-        """`usage.input_tokens` / `usage.output_tokens`."""
-        cost = self._normalize(
-            {
-                "model": "claude-sonnet-4-5",
-                "usage": {
-                    "input_tokens": self.PROMPT_TOKENS,
-                    "output_tokens": self.COMPLETION_TOKENS,
-                },
-            }
-        )
-        assert cost == pytest.approx(self._expected("claude-sonnet-4-5"), rel=1e-6)
-
-    def test_prices_gemini_usage_shape(self):
-        """`usageMetadata.promptTokenCount` / `.candidatesTokenCount`."""
-        cost = self._normalize(
-            {
-                "usageMetadata": {
-                    "promptTokenCount": self.PROMPT_TOKENS,
-                    "candidatesTokenCount": self.COMPLETION_TOKENS,
-                }
-            },
-            request_body={"model": "gemini-2.5-flash"},
-        )
-        assert cost == pytest.approx(self._expected("gemini/gemini-2.5-flash"), rel=1e-6)
-
-    def test_model_may_come_from_the_request_body(self):
-        """Many APIs echo no model in the response."""
-        cost = self._normalize(
-            {
-                "usage": {
-                    "prompt_tokens": self.PROMPT_TOKENS,
-                    "completion_tokens": self.COMPLETION_TOKENS,
-                }
-            },
-            request_body={"model": "gpt-4o"},
-        )
-        assert cost == pytest.approx(self._expected("gpt-4o"), rel=1e-6)
-
-    def test_unknown_model_is_left_unpriced(self):
-        """Never invent a number: an unpriced row is recoverable, a wrong one
-        looks authoritative and corrupts reconciliation."""
-        assert (
-            self._normalize(
-                {
-                    "model": "some-model-that-does-not-exist-xyz",
-                    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-                }
-            )
-            is None
-        )
-
-    def test_missing_model_is_left_unpriced(self):
-        assert (
-            self._normalize(
-                {"usage": {"prompt_tokens": 10, "completion_tokens": 5}}
-            )
-            is None
-        )
-
-    def test_unrecognised_body_is_left_unpriced(self):
-        """No usage block -> nothing to price (file uploads, deletes, ...)."""
-        assert self._normalize({"model": "gpt-4o", "id": "file-123"}) is None
-        assert self._normalize({"model": "gpt-4o", "usage": "not-a-dict"}) is None
-        assert self._normalize(None) is None
-
-    def test_all_zero_usage_is_left_unpriced(self):
-        """A zeroed usage block carries no billable signal."""
-        assert (
-            self._normalize(
-                {
-                    "model": "gpt-4o",
-                    "usage": {"prompt_tokens": 0, "completion_tokens": 0},
-                }
-            )
-            is None
-        )
-
-    def test_per_second_priced_models_are_left_unpriced(self):
-        """Audio / image models price per second or per image, not per token.
-        Multiplying their zero per-token rates would write a misleading $0.00
-        that looks like real coverage."""
-        assert (
-            self._normalize(
-                {
-                    "model": "whisper-1",
-                    "usage": {"prompt_tokens": 100, "completion_tokens": 50},
-                }
-            )
-            is None
-        )
-
-    def test_fallback_does_not_shadow_a_provider_handler(self):
-        """The fallback is the last `else` — a route a real handler claims must
-        still go to that handler."""
-        from litellm.proxy.pass_through_endpoints.success_handler import (
-            PassThroughEndpointLogging,
-        )
-
-        handler = PassThroughEndpointLogging()
-        with patch.object(
-            handler, "_price_generic_passthrough", side_effect=AssertionError("shadowed")
-        ):
-            anthropic_body = {
-                "id": "msg_1",
-                "type": "message",
-                "role": "assistant",
-                "model": "claude-sonnet-4-5",
-                "content": [{"type": "text", "text": "hi"}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 1, "output_tokens": 1},
-            }
-            mock_response = MagicMock(spec=httpx.Response)
-            mock_response.status_code = 200
-            mock_response.text = json.dumps(anthropic_body)
-            mock_response.headers = {}
-            mock_response.json.return_value = anthropic_body
-            # An Anthropic route: claimed by the Anthropic handler, so the
-            # generic fallback must not run.
-            handler.normalize_llm_passthrough_logging_payload(
-                httpx_response=mock_response,
-                response_body=anthropic_body,
-                request_body={},
-                logging_obj=self._logging_obj(),
-                url_route="https://api.anthropic.com/v1/messages",
-                result="",
-                start_time=datetime.now(),
-                end_time=datetime.now(),
-                cache_hit=False,
-                custom_llm_provider=None,
-            )
-
-    def test_pricing_failure_never_breaks_the_request(self):
-        """Cost tracking is best-effort; it must not raise into the response
-        path."""
-        with patch(
-            "litellm.proxy.pass_through_endpoints.success_handler._resolve_generic_price",
-            side_effect=RuntimeError("boom"),
-        ):
-            assert (
-                self._normalize(
-                    {
-                        "model": "gpt-4o",
-                        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-                    }
+    fake_client, cleanup = _inject_fake_passthrough_client(
+        _FakeUpstreamTransport(
+            status_code=status_code,
+            headers={"content-type": "application/json", **upstream_headers},
+            stream=_RecordingUpstreamByteStream((b'{"answer": "ok"}',)),
+        ),
+        timeout=None,
+    )
+    try:
+        with ExitStack() as stack:
+            mock_proxy_logging, enqueued = _enter_upstream_usage_mocks(stack, {})
+            with _recording_success_callback() as recorder:
+                await pass_through_request(
+                    request=_relay_client_request(method="POST"),
+                    target="http://internal-api.test/v1/summarize",
+                    custom_headers={},
+                    user_api_key_dict=UserAPIKeyAuth(
+                        api_key="sk-upstream-usage", team_id="team-fil"
+                    ),
+                    cost_per_request=cost_per_request,
                 )
-                is None
-            )
+                for coroutine in enqueued:
+                    await coroutine
+        return recorder.payloads, mock_proxy_logging
+    finally:
+        cleanup()
+        await fake_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_passthrough_records_cost_and_tokens_reported_by_upstream():
+    """
+    A pass-through target that prices the request itself reports the totals in
+    x-litellm-response-cost / x-litellm-total-tokens. LiteLLM must record those
+    values verbatim; before this, a generic pass-through always logged 0 spend
+    and 0 tokens because there was nothing in the body to price.
+    """
+    payloads, _ = await _run_upstream_reporting_passthrough(
+        {
+            "x-litellm-response-cost": "0.000415",
+            "x-litellm-total-tokens": "1874",
+        }
+    )
+
+    assert len(payloads) == 1
+    assert payloads[0]["response_cost"] == 0.000415
+    assert payloads[0]["total_tokens"] == 1874
+
+
+@pytest.mark.asyncio
+async def test_passthrough_records_zero_when_upstream_reports_zero():
+    payloads, _ = await _run_upstream_reporting_passthrough(
+        {"x-litellm-response-cost": "0", "x-litellm-total-tokens": "0"}
+    )
+
+    assert len(payloads) == 1
+    assert payloads[0]["response_cost"] == 0.0
+    assert payloads[0]["total_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_passthrough_records_zero_when_upstream_reports_nothing():
+    payloads, _ = await _run_upstream_reporting_passthrough({})
+
+    assert len(payloads) == 1
+    assert payloads[0]["response_cost"] == 0.0
+    assert payloads[0]["total_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_passthrough_records_upstream_reported_cost_on_error_response():
+    """
+    An upstream that already burned tokens before failing still reports them on
+    the error response, so the spend must land on the failure row rather than
+    being dropped because the status code was >= 400.
+    """
+    import litellm
+
+    _, mock_proxy_logging = await _run_upstream_reporting_passthrough(
+        {
+            "x-litellm-response-cost": "0.00021",
+            "x-litellm-total-tokens": "930",
+        },
+        status_code=500,
+    )
+
+    mock_proxy_logging.post_call_failure_hook.assert_awaited_once()
+    request_data = mock_proxy_logging.post_call_failure_hook.await_args.kwargs[
+        "request_data"
+    ]
+    assert request_data["response_cost"] == 0.00021
+    assert request_data["combined_usage_object"] == litellm.Usage(total_tokens=930)
+
+
+@pytest.mark.asyncio
+async def test_passthrough_error_response_without_usage_headers_records_no_spend():
+    _, mock_proxy_logging = await _run_upstream_reporting_passthrough(
+        {}, status_code=500
+    )
+
+    mock_proxy_logging.post_call_failure_hook.assert_awaited_once()
+    request_data = mock_proxy_logging.post_call_failure_hook.await_args.kwargs[
+        "request_data"
+    ]
+    assert "combined_usage_object" not in request_data
+
+
+@pytest.mark.asyncio
+async def test_streaming_passthrough_records_cost_and_tokens_reported_by_upstream():
+    """
+    The totals are reported in the response headers, which are known before the
+    first byte of the stream, so a streamed pass-through must record the same
+    spend a buffered one does.
+    """
+    from fastapi.responses import StreamingResponse
+
+    from litellm.proxy._types import UserAPIKeyAuth
+
+    fake_client, cleanup = _inject_fake_passthrough_client(
+        _FakeUpstreamTransport(
+            status_code=200,
+            headers={
+                "content-type": "text/event-stream",
+                "x-litellm-response-cost": "0.00312",
+                "x-litellm-total-tokens": "4021",
+            },
+            stream=_RecordingUpstreamByteStream((b'data: {"delta": "hi"}\n\n',)),
+        ),
+        timeout=None,
+    )
+    try:
+        with ExitStack() as stack:
+            _, enqueued = _enter_upstream_usage_mocks(stack, {})
+            with _recording_success_callback() as recorder:
+                response = await pass_through_request(
+                    request=_relay_client_request(method="POST"),
+                    target="http://internal-api.test/v1/summarize",
+                    custom_headers={},
+                    user_api_key_dict=UserAPIKeyAuth(
+                        api_key="sk-upstream-usage", team_id="team-fil"
+                    ),
+                )
+                assert isinstance(response, StreamingResponse)
+                assert [chunk async for chunk in response.body_iterator] == [
+                    b'data: {"delta": "hi"}\n\n'
+                ]
+                for coroutine in enqueued:
+                    await coroutine
+    finally:
+        cleanup()
+        await fake_client.aclose()
+
+    assert len(recorder.payloads) == 1
+    assert recorder.payloads[0]["response_cost"] == 0.00312
+    assert recorder.payloads[0]["total_tokens"] == 4021
+
+
+@pytest.mark.asyncio
+async def test_upstream_reported_cost_survives_default_cost_per_request():
+    """
+    PassThroughGenericEndpoint.cost_per_request defaults to 0.0, so every
+    config-defined endpoint forwards a 0.0 flat cost even when the operator
+    never configured one. That flat estimate must not overwrite the real cost
+    the upstream reported for the request.
+    """
+    payloads, _ = await _run_upstream_reporting_passthrough(
+        {
+            "x-litellm-response-cost": "0.000415",
+            "x-litellm-total-tokens": "1874",
+        },
+        cost_per_request=0.0,
+    )
+
+    assert len(payloads) == 1
+    assert payloads[0]["response_cost"] == 0.000415
+
+
+@pytest.mark.asyncio
+async def test_configured_cost_per_request_still_applies_without_usage_headers():
+    payloads, _ = await _run_upstream_reporting_passthrough({}, cost_per_request=0.25)
+
+    assert len(payloads) == 1
+    assert payloads[0]["response_cost"] == 0.25
+
+
+@pytest.mark.asyncio
+async def test_unusable_upstream_cost_records_zero_not_the_flat_estimate():
+    """
+    A target that speaks this contract owns the cost for the request. When the
+    value it sends is unusable the contract records 0, rather than falling back
+    to a flat cost_per_request the upstream just contradicted.
+    """
+    payloads, _ = await _run_upstream_reporting_passthrough(
+        {"x-litellm-response-cost": "not-a-number", "x-litellm-total-tokens": "1874"},
+        cost_per_request=0.05,
+    )
+
+    assert len(payloads) == 1
+    assert payloads[0]["response_cost"] == 0.0
+    assert payloads[0]["total_tokens"] == 1874
