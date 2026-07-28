@@ -1,16 +1,5 @@
-from collections.abc import Mapping
 from typing import Optional
-
 from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
-
-# Value emitted for Baseten's native `thinking` switch when reasoning is on / off.
-_THINKING_ENABLED = "enabled"
-_THINKING_DISABLED = "disabled"
-
-# litellm's standard OpenAI-style sentinel for "reasoning off"
-# (litellm.types.llms.openai.REASONING_EFFORT). Baseten deployments have no
-# corresponding effort level, so it becomes the disabled switch below.
-_REASONING_EFFORT_OFF = "none"
 
 
 class BasetenConfig(OpenAIGPTConfig):
@@ -61,16 +50,36 @@ class BasetenConfig(OpenAIGPTConfig):
         """
         Get the supported OpenAI params for the given model.
 
-        ``reasoning_effort`` and ``thinking`` are declared unconditionally, like
-        every other parameter here: Baseten hosts arbitrary, user-supplied
-        deployments (there is no enumerable Baseten catalog in litellm's cost map
-        the way there is for a curated provider), so litellm cannot know in
-        advance which deployed model supports them -- the deployment itself is
-        the only real source of truth on capability, exactly as already true for
-        ``temperature``, ``tools``, etc. above. Declaring them is what stops
-        litellm's own drop_params logic stripping the caller's reasoning intent
-        before map_openai_params ever sees it; map_openai_params then resolves
-        that intent into the switch the deployment actually understands.
+        ``reasoning_effort`` is declared unconditionally, like every other
+        parameter here: Baseten hosts arbitrary, user-supplied deployments
+        (there is no enumerable Baseten catalog in litellm's cost map the way
+        there is for a curated provider), so litellm cannot know in advance
+        which deployed model supports it -- the deployment itself is the only
+        real source of truth on capability, exactly as already true for
+        ``temperature``, ``tools``, etc. above. map_openai_params below is a
+        pure allow-list passthrough with no value translation, so this is the
+        whole fix -- previously reasoning_effort was silently stripped by
+        drop_params before ever reaching a deployment that may well accept it.
+
+        Deliberately a passthrough, NOT a translation into Baseten's native
+        ``thinking`` switch. An earlier version of this file resolved
+        reasoning_effort into ``thinking={"type": "enabled"|"disabled"}`` and
+        dropped the caller's value; that was removed on purpose. Measured
+        directly against ``https://inference.baseten.co/v1/chat/completions``
+        with a real key on 2026-07-28, the deployments served there have real,
+        per-model reasoning_effort vocabularies of their own:
+
+        * ``moonshotai/Kimi-K3`` accepts none/minimal/low/high/max (a genuine
+          graded ladder) and 400s an unknown value.
+        * ``zai-org/GLM-5.2`` accepts none/high/max and 400s minimal/low.
+
+        Collapsing that to a binary on/off destroyed Kimi-K3's ladder, so the
+        caller's literal value goes to the provider and the provider's own
+        vocabulary governs. GLM callers therefore get a real upstream 400 on
+        ``minimal``/``low``. That is the intended, accepted behaviour -- it is
+        the provider's answer, faithfully delivered. Do NOT add a fallback,
+        remap, or special case to paper over it, and do not reintroduce the
+        ``thinking`` translation.
         """
         return [
             "max_tokens",
@@ -88,43 +97,7 @@ class BasetenConfig(OpenAIGPTConfig):
             "frequency_penalty",
             "stream_options",
             "reasoning_effort",
-            "thinking",
         ]
-
-    @staticmethod
-    def _thinking_switch(reasoning_effort: object) -> Mapping[str, str]:
-        """
-        Translate an OpenAI-style ``reasoning_effort`` into Baseten's native
-        ``thinking`` switch.
-
-        Why this is a translation and not a passthrough -- measured directly
-        against ``https://inference.baseten.co/v1/chat/completions`` on the
-        reasoning-capable deployments served there:
-
-        * ``thinking={"type": "enabled"}`` reliably produces reasoning tokens and
-          ``thinking={"type": "disabled"}`` reliably suppresses them. It is the
-          one knob that behaves consistently across those deployments, i.e. the
-          provider's native control.
-        * ``reasoning_effort`` is *not* a usable substitute. Some deployments
-          ignore it outright (zero reasoning tokens for every value, no error),
-          and others accept only a narrow subset of values and reject the rest
-          with an upstream HTTP 400 of the form ``reasoning_effort must be one
-          of ...``. Forwarding the OpenAI-style string verbatim therefore either
-          silently does nothing or breaks the request -- which is exactly why
-          ``map_openai_params`` never copies the raw key into the outbound body.
-        * The underlying control is **binary**: reasoning on or reasoning off.
-          There is no graded budget to express, so there is deliberately no
-          effort-to-budget_tokens ladder here of the kind Anthropic-style
-          providers need. Do not "simplify" this back into a passthrough, and do
-          not invent intermediate levels.
-
-        Precedent for the shape: ``DeepSeekChatConfig.map_openai_params`` does the
-        same ``reasoning_effort`` -> ``{"type": enabled|disabled}`` translation for
-        the same reason (an OpenAI-compatible endpoint whose reasoning switch is
-        binary rather than graded).
-        """
-        switch = _THINKING_DISABLED if reasoning_effort == _REASONING_EFFORT_OFF else _THINKING_ENABLED
-        return {"type": switch}  # mutable-ok: goes straight into the JSON request body as a plain object
 
     def map_openai_params(
         self,
@@ -134,49 +107,11 @@ class BasetenConfig(OpenAIGPTConfig):
         drop_params: bool,
     ) -> dict:
         supported_openai_params = self.get_supported_openai_params(model=model)
-        effort_switch: Mapping[str, str] | None = None
-        caller_thinking: Mapping[str, str] | None = None
         for param, value in non_default_params.items():
             if param == "max_completion_tokens":
                 optional_params["max_tokens"] = value
-            elif param == "thinking":
-                if isinstance(value, Mapping):
-                    # The caller named the provider's native switch explicitly, so
-                    # they were specific about what they want -- honour it verbatim
-                    # and let it win over anything reasoning_effort would imply.
-                    caller_thinking = value
-            elif param == "reasoning_effort":
-                # Deliberately never copied through as-is: see _thinking_switch for
-                # why sending the raw OpenAI-style value to Baseten is harmful.
-                if value is not None:
-                    effort_switch = self._thinking_switch(value)
             elif param in supported_openai_params:
                 optional_params[param] = value
-
-        # `thinking` MUST go in extra_body, never at the top level of
-        # optional_params. Baseten is dispatched through the OpenAI *SDK*
-        # (main.py's `custom_llm_provider == "baseten"` branch reaches
-        # _complete_custom_openai -> openai_chat_completions.completion), and
-        # OpenAIGPTConfig.transform_request splats optional_params straight into
-        # the kwargs of `client.chat.completions.create(**data)`. That method has
-        # an explicit signature with no `thinking` parameter and no **kwargs, so a
-        # top-level key raises TypeError BEFORE any HTTP call and litellm re-wraps
-        # it as a 500 -- turning "reasoning silently ignored" into a hard outage on
-        # exactly the requests this translation exists to fix. extra_body is the
-        # SDK's supported escape hatch for provider-specific body fields, and
-        # add_provider_specific_params_to_optional_params preserves what is already
-        # there. Do NOT "simplify" this back to optional_params["thinking"].
-        #
-        # This is also why DeepSeekChatConfig can write the key top-level and we
-        # cannot: deepseek dispatches via base_llm_http_handler, which POSTs the
-        # dict as raw JSON and tolerates any body key. Baseten does not.
-        thinking = caller_thinking if caller_thinking is not None else effort_switch
-        if thinking is not None:
-            # Seeds the caller's own extra_body when absent, then mutates it in
-            # place below; merged downstream by
-            # add_provider_specific_params_to_optional_params.
-            extra_body = optional_params.setdefault("extra_body", {})  # mutable-ok: seeded then filled in place
-            extra_body["thinking"] = thinking
         return optional_params
 
     def _get_openai_compatible_provider_info(self, api_base: str, api_key: str) -> tuple:
