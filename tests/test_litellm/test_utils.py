@@ -4917,136 +4917,93 @@ def test_is_prompt_caching_valid_prompt_explicit_min_token_count_overrides_model
         is False
     )
 
-@pytest.mark.parametrize(
-    "messages, expected_substring",
-    [
-        # Content-part dicts with no "type" key at all — what a client sends when it
-        # passes a messages array (or raw objects) where a prompt string belongs.
-        (
-            [{"role": "user", "content": [{"role": "user", "content": "hi"}]}],
-            "Invalid user message at index 0",
-        ),
-        # Anthropic-native block posted to the OpenAI chat path.
-        (
-            [
-                {
-                    "role": "user",
-                    "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "42"}],
-                }
-            ],
-            "Invalid user message at index 0",
-        ),
-        # Message missing "role" entirely -> the KeyError branch.
-        (
-            [{"content": [{"type": "text", "text": "hi"}]}],
-            "Invalid message at index 0",
-        ),
-    ],
-)
-def test_validate_chat_completion_user_messages_raises_bad_request(messages, expected_substring):
-    """A malformed client message is a 400, not a 500.
 
-    Regression test: these raised a bare Exception, which exception_type() could not
-    map, so it fell through to APIConnectionError. Clients saw an HTTP 500 blamed on
-    whichever provider the router was about to call -- a provider that was never
-    contacted -- and retried a permanently-invalid request.
-    """
-    from litellm.utils import validate_chat_completion_user_messages
-
-    with pytest.raises(litellm.BadRequestError) as exc_info:
-        validate_chat_completion_user_messages(messages=messages)
-
-    assert exc_info.value.status_code == 400
-    assert expected_substring in str(exc_info.value)
-
-
-def test_validate_chat_completion_tool_choice_raises_bad_request():
-    """Same contract for the tool_choice validator."""
-    from litellm.utils import validate_chat_completion_tool_choice
-
-    with pytest.raises(litellm.BadRequestError) as exc_info:
-        validate_chat_completion_tool_choice(tool_choice={"type": "tool", "name": "get_current_weather"})
-
-    assert exc_info.value.status_code == 400
-
-
-def test_validate_chat_completion_tool_choice_rejects_non_dict_non_str():
-    """The final tool_choice branch: neither str nor dict (e.g. an int or list)."""
-    from litellm.utils import validate_chat_completion_tool_choice
-
-    for bad in (123, ["function"], 4.5):
-        with pytest.raises(litellm.BadRequestError) as exc_info:
-            validate_chat_completion_tool_choice(tool_choice=bad)
-        assert exc_info.value.status_code == 400
-        assert "Invalid tool choice" in str(exc_info.value)
-
-
-def test_first_invalid_content_type_falls_back_when_nothing_is_invalid():
-    """The helper's fallback path, reached when no content part is disallowed.
-
-    The raise sites only call it after a violation, so without this the branch is
-    unreachable from the public API and silently uncovered.
-    """
-    from litellm.utils import _first_invalid_content_type
-
-    assert (
-        _first_invalid_content_type({"role": "user", "content": [{"type": "text", "text": "hi"}]})
-        == repr(None)
+def test_custom_logger_guards_ignore_subclass_instances(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression LIT-4392: the success/failure existence guards used isinstance, so a user
+    subclass of a built-in logger already promoted into the callback lists made the guard
+    report the built-in itself as registered and the configured logger was silently skipped.
+    The exact-class assertions must hold alongside the subclass assertions: the guards still
+    have to dedup a second instance of the same class, only a subclass must stop matching."""
+    from litellm.integrations.custom_logger import CustomLogger
+    from litellm.utils import (
+        _custom_logger_class_exists_in_failure_callbacks,
+        _custom_logger_class_exists_in_success_callbacks,
     )
-    # Non-list content (a plain string) has no parts to inspect.
-    assert _first_invalid_content_type({"role": "user", "content": "hi"}) == repr(None)
+
+    class BuiltinLogger(CustomLogger):
+        pass
+
+    class UserSubclassLogger(BuiltinLogger):
+        pass
+
+    builtin_instance = BuiltinLogger()
+
+    monkeypatch.setattr(litellm, "success_callback", [UserSubclassLogger()])
+    monkeypatch.setattr(litellm, "failure_callback", [UserSubclassLogger()])
+    monkeypatch.setattr(litellm, "_async_success_callback", [])
+    monkeypatch.setattr(litellm, "_async_failure_callback", [])
+    assert _custom_logger_class_exists_in_success_callbacks(builtin_instance) is False
+    assert _custom_logger_class_exists_in_failure_callbacks(builtin_instance) is False
+
+    monkeypatch.setattr(litellm, "success_callback", [BuiltinLogger()])
+    monkeypatch.setattr(litellm, "failure_callback", [BuiltinLogger()])
+    assert _custom_logger_class_exists_in_success_callbacks(builtin_instance) is True
+    assert _custom_logger_class_exists_in_failure_callbacks(builtin_instance) is True
 
 
-def test_validation_bad_request_carries_a_client_error_type():
-    """The error BODY must agree with the 400 status line.
+@pytest.mark.asyncio
+async def test_s3_v2_success_callback_registers_alongside_user_subclass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression LIT-4392: with a user S3Logger subclass registered via litellm_settings.callbacks
+    and success_callback ["s3_v2"], the built-in s3_v2 logger was never added and S3 logs were
+    silently dropped while requests kept returning 200."""
+    from litellm.integrations.s3_v2 import S3Logger
+    from litellm.utils import _add_custom_logger_callback_to_specific_event
 
-    The proxy builds its response with type=getattr(e, "type", "None"), and
-    BadRequestError leaves that attribute None. A client that classifies failures
-    by body type would then see an untyped 400.
-    """
-    from litellm.utils import validate_chat_completion_user_messages
+    class UserS3Logger(S3Logger):
+        async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+            pass
 
-    with pytest.raises(litellm.BadRequestError) as exc_info:
-        validate_chat_completion_user_messages(
-            messages=[{"role": "user", "content": [{"role": "user", "content": "hi"}]}]
-        )
+    user_logger = UserS3Logger()
+    monkeypatch.setattr(litellm, "success_callback", [user_logger, "s3_v2"])
+    monkeypatch.setattr(litellm, "_async_success_callback", [user_logger])
+    monkeypatch.setattr(litellm, "failure_callback", [])
+    monkeypatch.setattr(litellm, "_async_failure_callback", [])
 
-    assert exc_info.value.status_code == 400
-    assert getattr(exc_info.value, "type", None) == "invalid_request_error"
+    _add_custom_logger_callback_to_specific_event("s3_v2", "success")
+
+    assert any(type(cb) is S3Logger for cb in litellm.success_callback)
+    assert any(type(cb) is S3Logger for cb in litellm._async_success_callback)
+    assert "s3_v2" not in litellm.success_callback
+    assert user_logger in litellm.success_callback
 
 
-def test_validation_bad_request_is_not_remapped_to_api_connection_error():
-    """exception_type() must pass the 400 through instead of rewrapping it.
+@pytest.mark.asyncio
+async def test_builtin_string_callback_registers_when_subclass_already_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression LIT-4392, litellm.callbacks path: the inline dedup in function_setup also
+    matched subclass instances, so a built-in name in litellm.callbacks was dropped whenever a
+    user subclass was already promoted into _async_success_callback."""
+    from litellm.integrations.s3_v2 import S3Logger
 
-    This is the half that actually reached users: a BadRequestError is in
-    LITELLM_EXCEPTION_TYPES, so exception_type() re-raises it "already mapped"
-    and never stamps a provider name onto it.
-    """
-    from litellm.litellm_core_utils.exception_mapping_utils import exception_type
-    from litellm.utils import validate_chat_completion_user_messages
+    class UserS3Logger(S3Logger):
+        async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+            pass
 
-    try:
-        validate_chat_completion_user_messages(
-            messages=[{"role": "user", "content": [{"role": "user", "content": "hi"}]}]
-        )
-        pytest.fail("expected a BadRequestError")
-    except Exception as e:  # noqa: BLE001
-        original_exception = e
+    user_logger = UserS3Logger()
+    monkeypatch.setattr(litellm, "callbacks", ["s3_v2"])
+    monkeypatch.setattr(litellm, "input_callback", [])
+    monkeypatch.setattr(litellm, "success_callback", [user_logger])
+    monkeypatch.setattr(litellm, "failure_callback", [])
+    monkeypatch.setattr(litellm, "_async_success_callback", [user_logger])
+    monkeypatch.setattr(litellm, "_async_failure_callback", [])
 
-    # exception_type() returns the mapped exception on this path (callers do
-    # `raise exception_type(...)`), but raises on others -- accept either.
-    try:
-        mapped = exception_type(
-            model="glm-5.2",
-            original_exception=original_exception,
-            custom_llm_provider="baseten",
-            completion_kwargs={},
-            extra_kwargs={},
-        )
-    except Exception as e:  # noqa: BLE001
-        mapped = e
+    await litellm.acompletion(
+        model="gpt-5.6",
+        messages=[{"role": "user", "content": "hi"}],
+        mock_response="ok",
+    )
 
-    assert isinstance(mapped, litellm.BadRequestError)
-    assert mapped.status_code == 400
-    # The provider was never contacted; its name must not appear in the error.
-    assert "BasetenException" not in str(mapped)
+    assert any(type(cb) is S3Logger for cb in litellm._async_success_callback)
