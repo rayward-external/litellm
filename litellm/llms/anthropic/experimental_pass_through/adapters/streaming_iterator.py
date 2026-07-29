@@ -393,24 +393,25 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                 if compaction_event is not None:
                     return compaction_event
 
-            if self.sent_content_block_start is False:
-                self.sent_content_block_start = True
-                self.sent_content_block_finish = False
-                self.chunk_queue.append(
-                    {
-                        "type": "content_block_start",
-                        "index": self.current_content_block_index,
-                        "content_block": {"type": "text", "text": ""},
-                    }
-                )
-                return self.chunk_queue.popleft()
-
             for chunk in self.completion_stream:
                 if chunk == "None" or chunk is None:
                     raise Exception
 
                 should_start_new_block = self._should_start_new_content_block(chunk)
-                if should_start_new_block:
+                is_opening_first_block = self.sent_content_block_start is False
+                if is_opening_first_block and self._is_blank_delta(chunk):
+                    continue
+                if is_opening_first_block:
+                    self.sent_content_block_start = True
+                    self.sent_content_block_finish = False
+                    self.chunk_queue.append(
+                        {
+                            "type": "content_block_start",
+                            "index": self.current_content_block_index,
+                            "content_block": self.current_content_block_start,
+                        }
+                    )
+                elif should_start_new_block:
                     self._increment_content_block_index()
 
                 # Azure OpenAI emits chunks with an EMPTY ``choices`` list
@@ -463,7 +464,7 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                     # ``not self.queued_usage_chunk``.
                     continue
 
-                if should_start_new_block and not self.sent_content_block_finish:
+                if should_start_new_block and not is_opening_first_block and not self.sent_content_block_finish:
                     # Queue the sequence: content_block_stop -> content_block_start
                     # -> (optionally) the trigger chunk's delta.
                     #
@@ -631,25 +632,25 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                 if compaction_event is not None:
                     return compaction_event
 
-            if self.sent_content_block_start is False:
-                self.sent_content_block_start = True
-                self.sent_content_block_finish = False
-                self.chunk_queue.append(
-                    {
-                        "type": "content_block_start",
-                        "index": self.current_content_block_index,
-                        "content_block": {"type": "text", "text": ""},
-                    }
-                )
-                return self.chunk_queue.popleft()
-
             async for chunk in self.completion_stream:
                 if chunk == "None" or chunk is None:
                     raise Exception
 
-                # Check if we need to start a new content block
                 should_start_new_block = self._should_start_new_content_block(chunk)
-                if should_start_new_block:
+                is_opening_first_block = self.sent_content_block_start is False
+                if is_opening_first_block and self._is_blank_delta(chunk):
+                    continue
+                if is_opening_first_block:
+                    self.sent_content_block_start = True
+                    self.sent_content_block_finish = False
+                    self.chunk_queue.append(
+                        {
+                            "type": "content_block_start",
+                            "index": self.current_content_block_index,
+                            "content_block": self.current_content_block_start,
+                        }
+                    )
+                elif should_start_new_block:
                     self._increment_content_block_index()
 
                 # Azure OpenAI emits chunks with an EMPTY ``choices`` list
@@ -696,7 +697,7 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                 # Check if this processed chunk has a stop_reason - hold it for next chunk
 
                 if not self.queued_usage_chunk:
-                    if should_start_new_block and not self.sent_content_block_finish:
+                    if should_start_new_block and not is_opening_first_block and not self.sent_content_block_finish:
                         # Queue the sequence: content_block_stop -> content_block_start
                         # -> (optionally) the trigger chunk's delta.
                         #
@@ -906,6 +907,22 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
         if delta_type not in _STREAMING_DELTA_TYPES:
             return False
         return bool(delta.get(_delta_payload_field(delta_type)))
+
+    @staticmethod
+    def _is_blank_delta(chunk: "ModelResponseStream") -> bool:
+        choice = chunk.choices[0]
+        if choice.finish_reason is not None:
+            return False
+        delta = choice.delta
+        if getattr(delta, "tool_calls", None):
+            return False
+        if getattr(delta, "content", None):
+            return False
+        if getattr(delta, "reasoning_content", None):
+            return False
+        if getattr(delta, "thinking_blocks", None):
+            return False
+        return True
 
     def _should_start_new_content_block(self, chunk: "ModelResponseStream") -> bool:
         """
