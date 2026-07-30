@@ -2612,142 +2612,442 @@ def test_list_files_with_all_proxy_models_team_uses_openai_deployment(
     proxy_logging_obj.post_call_failure_hook.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# `POST /v1/files` with `purpose=batch` and no routing hint (`model`,
-# `target_model_names`, `target_storage` all absent — exactly what a stock
-# `client.files.create(file=..., purpose="batch")` sends). This used to fall
-# through to route_create_file()'s `files_settings` branch, whose bare
-# ValueError("files_settings is not set, set it on your config.yaml file.")
-# was wrapped into an HTTP 500 that hands the caller a server-config
-# instruction they cannot act on, and reads as "this proxy supports no
-# batching" — which is how it got misdiagnosed as exactly that. The fix
-# below only changes what happens when that branch is about to fail: same
-# route, no new inference, no new routing, no new authorization surface —
-# just a 400 that says which two form fields would fix the request.
-# ---------------------------------------------------------------------------
+def _setup_vertex_named_credential_router(monkeypatch) -> Router:
+    from litellm.types.utils import CredentialItem
 
-
-def _post_stock_batch_upload(**extra_form):
-    """POST /v1/files exactly as the OpenAI SDK does, plus any extra form fields."""
-    content = (
-        b'{"custom_id":"r-0","method":"POST","url":"/v1/chat/completions",'
-        b'"body":{"model":"gpt-3.5-turbo","messages":[{"role":"user","content":"hi"}]}}\n'
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [
+            CredentialItem(
+                credential_name="vertex-named-cred",
+                credential_info={},
+                credential_values={
+                    "vertex_project": "customer-project",
+                    "vertex_location": "us-central1",
+                    "vertex_credentials": "/creds/customer-sa.json",
+                },
+            )
+        ],
     )
-    return client.post(
-        "/v1/files",
-        files={"file": ("batch.jsonl", content, "application/jsonl")},
-        data={"purpose": "batch", **extra_form},
-        headers={"Authorization": "Bearer test-key"},
+    return Router(
+        model_list=[
+            {
+                "model_name": "gemini-2.5-pro",
+                "litellm_params": {
+                    "model": "vertex_ai/gemini-2.5-pro",
+                    "litellm_credential_name": "vertex-named-cred",
+                },
+            }
+        ]
     )
 
 
-def test_batch_upload_with_no_routing_hint_is_a_400_not_a_500(
-    monkeypatch, llm_router: Router
+def _assert_vertex_named_credentials_attached(captured_kwargs: dict) -> None:
+    assert captured_kwargs.get("custom_llm_provider") == "vertex_ai"
+    assert captured_kwargs.get("vertex_project") == "customer-project"
+    assert captured_kwargs.get("vertex_location") == "us-central1"
+    assert captured_kwargs.get("vertex_credentials") == "/creds/customer-sa.json"
+    assert captured_kwargs.get("model") is None
+
+
+def test_create_file_provider_only_resolves_named_vertex_credentials(
+    mocker: MockerFixture, monkeypatch
 ):
-    """The exact request a stock OpenAI Batch client sends, with no files_settings
-    configured, must fail as an actionable 400 — not a 500 about server config.
+    """
+    POST /v1/files with only a custom-llm-provider header (no model, no
+    target_model_names) must attach the configured named vertex credential to
+    the upstream call instead of falling through to google.auth.default(),
+    which uploads into the hosting environment's GCP project.
     """
     import litellm.proxy.proxy_server as ps
     from litellm.proxy._types import LitellmUserRoles
-    from litellm.proxy.openai_files_endpoints import files_endpoints as fe
 
-    monkeypatch.setattr(fe, "files_config", None)
-    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", llm_router)
-    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
-        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
-    )
-    try:
-        response = _post_stock_batch_upload()
-    finally:
-        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+    router = _setup_vertex_named_credential_router(monkeypatch)
+    proxy_logging_obj = setup_proxy_logging_object(monkeypatch, router)
+    monkeypatch.setattr("litellm.proxy.proxy_server.master_key", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", router)
+    proxy_logging_obj.update_request_status = mocker.AsyncMock()
+    proxy_logging_obj.post_call_failure_hook = mocker.AsyncMock()
 
-    assert response.status_code == 400, response.text
-    body = response.text
-    assert "files_settings" not in body, (
-        "server config internals must never reach the client"
-    )
-    assert "config.yaml" not in body
-    assert "model=" in body and "target_model_names=" in body, (
-        "the error must tell the caller how to route the upload"
-    )
+    captured_kwargs: dict = {}
 
-
-def test_non_batch_upload_with_no_routing_hint_gets_the_same_fix(
-    monkeypatch, llm_router: Router
-):
-    """The dead-end branch is reachable for any purpose, not just batch — fix it there too."""
-    import litellm.proxy.proxy_server as ps
-    from litellm.proxy._types import LitellmUserRoles
-    from litellm.proxy.openai_files_endpoints import files_endpoints as fe
-
-    monkeypatch.setattr(fe, "files_config", None)
-    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", llm_router)
-    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
-        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
-    )
-    try:
-        response = client.post(
-            "/v1/files",
-            files={"file": ("data.jsonl", b'{"foo": "bar"}\n', "application/jsonl")},
-            data={"purpose": "user_data"},
-            headers={"Authorization": "Bearer test-key"},
-        )
-    finally:
-        app.dependency_overrides.pop(ps.user_api_key_auth, None)
-
-    assert response.status_code == 400, response.text
-    assert "config.yaml" not in response.text
-
-
-def test_files_settings_still_routes_normally_when_configured(
-    monkeypatch, mocker, llm_router: Router
-):
-    """The fix must only fire on the dead end — a real files_settings config is untouched."""
-    import litellm.proxy.proxy_server as ps
-    from litellm.proxy._types import LitellmUserRoles
-    from litellm.proxy.openai_files_endpoints import files_endpoints as fe
-
-    monkeypatch.setattr(
-        fe,
-        "files_config",
-        [{"custom_llm_provider": "openai", "api_key": "configured-openai-key"}],
-    )
-    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", llm_router)
-
-    captured_kwargs = {}
-
-    async def fake_acreate_file(**kwargs):
+    async def _mock_acreate_file(**kwargs):
         captured_kwargs.update(kwargs)
         return OpenAIFileObject(
-            id="file-via-files-settings",
+            id="file-vertex-123",
             object="file",
-            bytes=0,
+            bytes=2,
             created_at=1234567890,
             filename="batch.jsonl",
             purpose="batch",
             status="uploaded",
         )
 
-    mocker.patch("litellm.acreate_file", side_effect=fake_acreate_file)
+    monkeypatch.setattr(litellm, "acreate_file", _mock_acreate_file)
+
     app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
-        api_key="test-key", user_role=LitellmUserRoles.PROXY_ADMIN
+        api_key="test-key",
+        user_role=LitellmUserRoles.PROXY_ADMIN,
+        user_id="test-user",
     )
+
     try:
-        response = _post_stock_batch_upload()
-        assert response.status_code == 200, response.text
+        response = client.post(
+            "/v1/files",
+            files={"file": ("batch.jsonl", b"{}", "application/jsonl")},
+            data={"purpose": "batch"},
+            headers={
+                "Authorization": "Bearer test-key",
+                "custom-llm-provider": "vertex_ai",
+            },
+        )
     finally:
         app.dependency_overrides.pop(ps.user_api_key_auth, None)
 
-    assert response.json()["id"] == "file-via-files-settings"
-    assert captured_kwargs.get("api_key") == "configured-openai-key"
+    assert response.status_code == 200, response.text
+    _assert_vertex_named_credentials_attached(captured_kwargs)
+    proxy_logging_obj.post_call_failure_hook.assert_not_called()
 
 
-def test_vertex_ai_provider_is_unaffected_by_the_fix(monkeypatch, llm_router: Router):
-    """`custom_llm_provider == "vertex_ai"` returns None (not a raise) before this
-    branch is reached at all — confirm it still bypasses files_settings entirely.
-    """
-    from litellm.proxy.openai_files_endpoints.files_endpoints import (
-        get_files_provider_config,
+def test_get_file_provider_only_resolves_named_vertex_credentials(
+    mocker: MockerFixture, monkeypatch
+):
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    router = _setup_vertex_named_credential_router(monkeypatch)
+    proxy_logging_obj = setup_proxy_logging_object(monkeypatch, router)
+    monkeypatch.setattr("litellm.proxy.proxy_server.master_key", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", router)
+    proxy_logging_obj.update_request_status = mocker.AsyncMock()
+    proxy_logging_obj.post_call_failure_hook = mocker.AsyncMock()
+
+    captured_kwargs: dict = {}
+
+    async def _mock_afile_retrieve(**kwargs):
+        captured_kwargs.update(kwargs)
+        return OpenAIFileObject(
+            id="file-abc123",
+            object="file",
+            bytes=2,
+            created_at=1234567890,
+            filename="batch.jsonl",
+            purpose="batch",
+            status="uploaded",
+        )
+
+    monkeypatch.setattr(litellm, "afile_retrieve", _mock_afile_retrieve)
+
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key",
+        user_role=LitellmUserRoles.PROXY_ADMIN,
+        user_id="test-user",
     )
 
-    assert get_files_provider_config(custom_llm_provider="vertex_ai") is None
+    try:
+        response = client.get(
+            "/v1/files/file-abc123",
+            headers={
+                "Authorization": "Bearer test-key",
+                "custom-llm-provider": "vertex_ai",
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert response.status_code == 200, response.text
+    assert captured_kwargs.get("file_id") == "file-abc123"
+    _assert_vertex_named_credentials_attached(captured_kwargs)
+    proxy_logging_obj.post_call_failure_hook.assert_not_called()
+
+
+def test_get_file_content_provider_only_resolves_named_vertex_credentials(
+    mocker: MockerFixture, monkeypatch
+):
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    router = _setup_vertex_named_credential_router(monkeypatch)
+    proxy_logging_obj = setup_proxy_logging_object(monkeypatch, router)
+    monkeypatch.setattr("litellm.proxy.proxy_server.master_key", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", router)
+    proxy_logging_obj.update_request_status = mocker.AsyncMock()
+    proxy_logging_obj.post_call_failure_hook = mocker.AsyncMock()
+
+    captured_kwargs: dict = {}
+
+    async def _mock_afile_content(**kwargs):
+        captured_kwargs.update(kwargs)
+        return HttpxBinaryResponseContent(
+            response=httpx.Response(
+                status_code=200,
+                content=b"vertex-bytes",
+                headers={"content-type": "application/octet-stream"},
+            )
+        )
+
+    monkeypatch.setattr(litellm, "afile_content", _mock_afile_content)
+
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key",
+        user_role=LitellmUserRoles.PROXY_ADMIN,
+        user_id="test-user",
+    )
+
+    try:
+        response = client.get(
+            "/v1/files/file-abc123/content",
+            headers={
+                "Authorization": "Bearer test-key",
+                "custom-llm-provider": "vertex_ai",
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert response.status_code == 200, response.text
+    assert response.content == b"vertex-bytes"
+    assert captured_kwargs.get("file_id") == "file-abc123"
+    _assert_vertex_named_credentials_attached(captured_kwargs)
+    proxy_logging_obj.post_call_failure_hook.assert_not_called()
+
+
+def test_delete_file_provider_only_resolves_named_vertex_credentials(
+    mocker: MockerFixture, monkeypatch
+):
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    router = _setup_vertex_named_credential_router(monkeypatch)
+    proxy_logging_obj = setup_proxy_logging_object(monkeypatch, router)
+    monkeypatch.setattr("litellm.proxy.proxy_server.master_key", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", router)
+    proxy_logging_obj.update_request_status = mocker.AsyncMock()
+    proxy_logging_obj.post_call_failure_hook = mocker.AsyncMock()
+
+    captured_kwargs: dict = {}
+
+    async def _mock_afile_delete(**kwargs):
+        captured_kwargs.update(kwargs)
+        return OpenAIFileObject(
+            id="file-abc123",
+            object="file",
+            bytes=2,
+            created_at=1234567890,
+            filename="batch.jsonl",
+            purpose="batch",
+            status="uploaded",
+        )
+
+    monkeypatch.setattr(litellm, "afile_delete", _mock_afile_delete)
+
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key",
+        user_role=LitellmUserRoles.PROXY_ADMIN,
+        user_id="test-user",
+    )
+
+    try:
+        response = client.delete(
+            "/v1/files/file-abc123",
+            headers={
+                "Authorization": "Bearer test-key",
+                "custom-llm-provider": "vertex_ai",
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert response.status_code == 200, response.text
+    assert captured_kwargs.get("file_id") == "file-abc123"
+    _assert_vertex_named_credentials_attached(captured_kwargs)
+    proxy_logging_obj.post_call_failure_hook.assert_not_called()
+
+
+def test_create_file_provider_only_skips_other_team_vertex_deployment(
+    mocker: MockerFixture, monkeypatch
+):
+    """
+    Regression: with a team-scoped vertex deployment indexed before a global
+    one under the same model name, a provider-only upload from a different
+    team must use the global deployment's credentials, never the other
+    team's.
+    """
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    router = Router(
+        model_list=[
+            {
+                "model_name": "gemini-2.5-pro",
+                "litellm_params": {
+                    "model": "vertex_ai/gemini-2.5-pro",
+                    "vertex_project": "team-b-project",
+                },
+                "model_info": {
+                    "id": "team-b-vertex",
+                    "team_id": "team-b",
+                    "team_public_model_name": "gemini-2.5-pro",
+                },
+            },
+            {
+                "model_name": "gemini-2.5-pro",
+                "litellm_params": {
+                    "model": "vertex_ai/gemini-2.5-pro",
+                    "vertex_project": "shared-project",
+                },
+            },
+        ]
+    )
+    proxy_logging_obj = setup_proxy_logging_object(monkeypatch, router)
+    monkeypatch.setattr("litellm.proxy.proxy_server.master_key", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", router)
+    proxy_logging_obj.update_request_status = mocker.AsyncMock()
+    proxy_logging_obj.post_call_failure_hook = mocker.AsyncMock()
+
+    captured_kwargs: dict = {}
+
+    async def _mock_acreate_file(**kwargs):
+        captured_kwargs.update(kwargs)
+        return OpenAIFileObject(
+            id="file-vertex-456",
+            object="file",
+            bytes=2,
+            created_at=1234567890,
+            filename="batch.jsonl",
+            purpose="batch",
+            status="uploaded",
+        )
+
+    monkeypatch.setattr(litellm, "acreate_file", _mock_acreate_file)
+
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key",
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="test-user",
+        team_id="team-a",
+        team_models=["gemini-2.5-pro"],
+    )
+
+    try:
+        response = client.post(
+            "/v1/files",
+            files={"file": ("batch.jsonl", b"{}", "application/jsonl")},
+            data={"purpose": "batch"},
+            headers={
+                "Authorization": "Bearer test-key",
+                "custom-llm-provider": "vertex_ai",
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert response.status_code == 200, response.text
+    assert captured_kwargs.get("vertex_project") == "shared-project"
+    proxy_logging_obj.post_call_failure_hook.assert_not_called()
+
+
+def _team_openai_plus_global_anthropic_router() -> Router:
+    return Router(
+        model_list=[
+            {
+                "model_name": "team-gpt",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "team-openai-key",
+                },
+                "model_info": {
+                    "id": "team-a-openai",
+                    "team_id": "team-a",
+                    "team_public_model_name": "team-gpt",
+                },
+            },
+            {
+                "model_name": "claude-opus-4-6",
+                "litellm_params": {
+                    "model": "anthropic/claude-opus-4-6",
+                    "api_key": "anthropic-key",
+                },
+            },
+        ]
+    )
+
+
+def _list_files_captured_kwargs(
+    mocker: MockerFixture, monkeypatch, router: Router, key_models: list
+) -> dict:
+    import litellm.proxy.proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    proxy_logging_obj = setup_proxy_logging_object(monkeypatch, router)
+    monkeypatch.setattr("litellm.proxy.proxy_server.master_key", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", None)
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", router)
+    proxy_logging_obj.update_request_status = mocker.AsyncMock()
+    proxy_logging_obj.post_call_success_hook = mocker.AsyncMock(return_value=[])
+    proxy_logging_obj.post_call_failure_hook = mocker.AsyncMock()
+
+    captured_kwargs: dict = {}
+
+    async def _mock_afile_list(**kwargs):
+        captured_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(litellm, "afile_list", _mock_afile_list)
+
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        api_key="test-key",
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="test-user",
+        team_id="team-a",
+        team_models=["team-gpt", "claude-opus-4-6"],
+        models=key_models,
+    )
+
+    try:
+        response = client.get(
+            "/v1/files",
+            headers={
+                "Authorization": "Bearer test-key",
+                "custom-llm-provider": "openai",
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+    assert response.status_code == 200, response.text
+    return captured_kwargs
+
+
+def test_list_files_key_restricted_to_other_provider_does_not_leak_team_openai_credentials(
+    mocker: MockerFixture, monkeypatch
+):
+    """
+    Regression: a key restricted to an anthropic model on a team that also has
+    an openai deployment must not attach the team's openai credentials to a
+    provider-only openai files call; key-level model restrictions apply to
+    credential resolution, not just completions.
+    """
+    captured_kwargs = _list_files_captured_kwargs(
+        mocker, monkeypatch, _team_openai_plus_global_anthropic_router(), ["claude-opus-4-6"]
+    )
+    assert captured_kwargs.get("api_key") != "team-openai-key"
+
+
+def test_list_files_key_allowed_openai_model_still_resolves_team_credentials(
+    mocker: MockerFixture, monkeypatch
+):
+    """
+    A key whose allowlist includes the team's openai model keeps resolving that
+    deployment's credentials for provider-only openai files calls.
+    """
+    captured_kwargs = _list_files_captured_kwargs(
+        mocker, monkeypatch, _team_openai_plus_global_anthropic_router(), ["team-gpt"]
+    )
+    assert captured_kwargs.get("api_key") == "team-openai-key"
