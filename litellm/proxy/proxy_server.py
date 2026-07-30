@@ -421,6 +421,9 @@ from litellm.proxy.management_endpoints.key_management_endpoints import (
 from litellm.proxy.management_endpoints.key_management_endpoints import (
     router as key_management_router,
 )
+from litellm.proxy.management_endpoints.self_usage_endpoints import (
+    router as self_usage_router,
+)
 from litellm.proxy.management_endpoints.model_access_group_management_endpoints import (
     router as model_access_group_management_router,
 )
@@ -16416,6 +16419,7 @@ app.include_router(llm_passthrough_router)
 app.include_router(pass_through_router)
 app.include_router(health_router)
 app.include_router(key_management_router)
+app.include_router(self_usage_router)
 app.include_router(internal_user_router)
 app.include_router(team_router)
 app.include_router(ui_sso_router)

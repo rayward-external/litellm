@@ -754,6 +754,10 @@ class LiteLLMRoutes(enum.Enum):
     )
 
     self_managed_routes = [
+        # Self-service usage read. Scoped entirely to the calling key: the
+        # handler takes no identity parameter, so it cannot be pointed at
+        # another tenant. Role-agnostic branch, so a key with user_id=None works.
+        "/v1/usage",
         "/team/member_add",
         "/team/member_delete",
         "/team/member_update",

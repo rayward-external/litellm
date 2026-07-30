@@ -482,6 +482,10 @@ MODEL_DISCOVERY_ROUTES = frozenset(
         "/v1/model/info",
         "/v2/model/info",
         "/model_group/info",
+        # A key holder must be able to read their own usage precisely when they
+        # have run out -- otherwise the meter goes dark at the moment it matters.
+        # Read-only and incurs no spend, so it belongs with the discovery routes.
+        "/v1/usage",
     }
 )
 
