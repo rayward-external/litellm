@@ -200,7 +200,7 @@ async def test_model_rollup_filters_on_api_key_alone() -> None:
 @pytest.mark.asyncio
 async def test_model_rollup_is_empty_without_a_db_rather_than_raising() -> None:
     with patch("litellm.proxy.proxy_server.prisma_client", None):
-        assert await _model_rollup("hash-abc") == []
+        assert await _model_rollup("hash-abc") == ()
 
 
 def test_route_survives_an_exhausted_budget() -> None:

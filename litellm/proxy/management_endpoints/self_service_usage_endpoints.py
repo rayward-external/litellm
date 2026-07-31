@@ -40,8 +40,11 @@ no admin auth ("Self-service endpoint — no admin auth, VK in header is the
 credential"), which is the precedent this follows.
 """
 
+from collections.abc import Mapping, Sequence
+from typing import Annotated
 from datetime import datetime
 from decimal import Decimal
+from types import MappingProxyType
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -50,6 +53,10 @@ from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 
 router = APIRouter()
+
+# Read-only stand-in so an absent aggregate does not construct a fresh dict
+# per row (LIT002) just to be read once.
+_NO_TOTALS: Mapping[str, object] = MappingProxyType({})  # mutable-ok: frozen at construction, never mutated
 
 
 class UsageBudgetWindow(BaseModel):
@@ -82,8 +89,8 @@ class UsageResponse(BaseModel):
     see the allowlist test before doing it."""
 
     key_alias: str | None = None
-    budgets: list[UsageBudgetWindow] = Field(default_factory=list)
-    models: list[UsageModelRow] = Field(default_factory=list)
+    budgets: Sequence[UsageBudgetWindow] = Field(default=())
+    models: Sequence[UsageModelRow] = Field(default=())
 
 
 def _as_int(value: object) -> int:
@@ -118,7 +125,7 @@ def _as_float(value: object) -> float:
     return 0.0
 
 
-async def _budget_windows(valid_token: UserAPIKeyAuth) -> list[UsageBudgetWindow]:
+async def _budget_windows(valid_token: UserAPIKeyAuth) -> tuple[UsageBudgetWindow, ...]:
     """Read each configured window's own counter.
 
     Deliberately NOT derived from ``valid_token.spend``: that field is a
@@ -130,14 +137,14 @@ async def _budget_windows(valid_token: UserAPIKeyAuth) -> list[UsageBudgetWindow
     """
     budget_limits = getattr(valid_token, "budget_limits", None)
     if not budget_limits:
-        return []
+        return ()
 
     from litellm.proxy.proxy_server import get_current_spend
     from litellm.proxy.spend_tracking.budget_reservation import get_budget_window_start
 
-    windows: list[UsageBudgetWindow] = []
+    windows: list[UsageBudgetWindow] = []  # mutable-ok: local accumulator, never escapes; returned as a tuple
     for window in budget_limits:
-        w: dict[str, object] = window if isinstance(window, dict) else window.model_dump()
+        w: Mapping[str, object] = window if isinstance(window, dict) else window.model_dump()
         duration = w.get("budget_duration")
         if duration is None:
             continue
@@ -174,10 +181,10 @@ async def _budget_windows(valid_token: UserAPIKeyAuth) -> list[UsageBudgetWindow
                 reset_at=reset_at,
             )
         )
-    return windows
+    return tuple(windows)
 
 
-async def _model_rollup(api_key: str) -> list[UsageModelRow]:
+async def _model_rollup(api_key: str) -> tuple[UsageModelRow, ...]:
     """Aggregate LiteLLM_DailyUserSpend for this key.
 
     Filtered on ``api_key`` ALONE — strictly narrower than
@@ -189,12 +196,12 @@ async def _model_rollup(api_key: str) -> list[UsageModelRow]:
     from litellm.proxy.proxy_server import prisma_client
 
     if prisma_client is None:
-        return []
+        return ()
 
     rows = await prisma_client.db.litellm_dailyuserspend.group_by(
-        by=["model"],
-        where={"api_key": api_key},
-        sum={
+        by=["model"],  # mutable-ok: prisma query arg, passed to the driver, never retained
+        where={"api_key": api_key},  # mutable-ok: prisma query arg; api_key ALONE is the scoping guarantee
+        sum={  # mutable-ok: prisma query arg, passed to the driver, never retained
             "spend": True,
             "prompt_tokens": True,
             "completion_tokens": True,
@@ -204,9 +211,9 @@ async def _model_rollup(api_key: str) -> list[UsageModelRow]:
         },
     )
 
-    rollup: list[UsageModelRow] = []
-    for row in rows or []:
-        totals = row.get("_sum") or {}
+    rollup: list[UsageModelRow] = []  # mutable-ok: local accumulator, never escapes; returned as a tuple
+    for row in rows or ():
+        totals = row.get("_sum") or _NO_TOTALS
         rollup.append(
             UsageModelRow(
                 model=row.get("model"),
@@ -219,17 +226,17 @@ async def _model_rollup(api_key: str) -> list[UsageModelRow]:
             )
         )
     rollup.sort(key=lambda r: r.spend, reverse=True)
-    return rollup
+    return tuple(rollup)
 
 
 @router.get(
     "/v1/usage",
-    tags=["usage"],
+    tags=["usage"],  # mutable-ok: FastAPI requires a list here
     response_model=UsageResponse,
     summary="Read your own key's budget state and per-model usage",
 )
 async def get_self_usage(
-    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),  # noqa: B008
+    user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
 ) -> UsageResponse:
     """Return the calling key's per-window budgets and per-model rollup.
 
@@ -239,7 +246,7 @@ async def get_self_usage(
     api_key = user_api_key_dict.api_key or user_api_key_dict.token
 
     budgets = await _budget_windows(user_api_key_dict)
-    models = await _model_rollup(api_key) if api_key else []
+    models = await _model_rollup(api_key) if api_key else ()
 
     return UsageResponse(
         key_alias=user_api_key_dict.key_alias,

@@ -33315,12 +33315,18 @@ export interface components {
          *     see the allowlist test before doing it.
          */
         UsageResponse: {
-            /** Budgets */
-            budgets?: components["schemas"]["UsageBudgetWindow"][];
+            /**
+             * Budgets
+             * @default []
+             */
+            budgets: components["schemas"]["UsageBudgetWindow"][];
             /** Key Alias */
             key_alias?: string | null;
-            /** Models */
-            models?: components["schemas"]["UsageModelRow"][];
+            /**
+             * Models
+             * @default []
+             */
+            models: components["schemas"]["UsageModelRow"][];
         };
         /**
          * UserAPIKeyAuth
