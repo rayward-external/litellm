@@ -119,6 +119,14 @@ GATEWAY_EXACT_PATHS: frozenset[str] = frozenset(
         "/docs/oauth2-redirect",
         "/redoc",
         "/test",
+        # Self-service usage read, scoped entirely to the calling key's own token
+        # hash. GATEWAY and not backend: the caller is an API-key holder with no
+        # UI/SSO identity at all and reaches us only on the gateway hostname, so
+        # putting it on the backend component would drop it from the gateway
+        # process and 404 exactly the audience it exists for. Exact rather than a
+        # "/v1/usage" prefix so a future sibling like /v1/usage_admin cannot
+        # inherit data-plane exposure by accident.
+        "/v1/usage",
     }
 )
 
