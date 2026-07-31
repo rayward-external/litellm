@@ -18128,6 +18128,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read your own key's budget state and per-model usage
+         * @description Return the calling key's per-window budgets and per-model rollup.
+         *
+         *     Takes NO parameters. The identity is the presented credential and cannot be
+         *     overridden by the caller — see this module's docstring.
+         */
+        get: operations["get_self_usage_v1_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/vector_store/list": {
         parameters: {
             query?: never;
@@ -33117,6 +33140,38 @@ export interface components {
              */
             model?: string | null;
         };
+        /**
+         * UsageBudgetWindow
+         * @description One budget window's state. `spent`/`remaining` are for THIS window only.
+         */
+        UsageBudgetWindow: {
+            /**
+             * Duration
+             * @description Window duration as configured, e.g. '1d', '1w', '1mo'.
+             */
+            duration: string;
+            /**
+             * Max Budget
+             * @description Cap for this window in USD.
+             */
+            max_budget?: number | null;
+            /**
+             * Remaining
+             * @description max_budget - spent, floored at 0. Null when the window has no finite cap.
+             */
+            remaining?: number | null;
+            /**
+             * Reset At
+             * @description ISO-8601 timestamp at which this window's counter resets.
+             */
+            reset_at?: string | null;
+            /**
+             * Spent
+             * @description Spend accumulated inside the current window.
+             * @default 0
+             */
+            spent: number;
+        };
         /** UsageDetailResponse */
         UsageDetailResponse: {
             /** Avglatency */
@@ -33178,6 +33233,44 @@ export interface components {
             /** Total */
             total: number;
         };
+        /**
+         * UsageModelRow
+         * @description Per-model rollup for the calling key.
+         */
+        UsageModelRow: {
+            /**
+             * Api Requests
+             * @default 0
+             */
+            api_requests: number;
+            /**
+             * Completion Tokens
+             * @default 0
+             */
+            completion_tokens: number;
+            /**
+             * Failed Requests
+             * @default 0
+             */
+            failed_requests: number;
+            /** Model */
+            model?: string | null;
+            /**
+             * Prompt Tokens
+             * @default 0
+             */
+            prompt_tokens: number;
+            /**
+             * Spend
+             * @default 0
+             */
+            spend: number;
+            /**
+             * Successful Requests
+             * @default 0
+             */
+            successful_requests: number;
+        };
         /** UsageOverviewResponse */
         UsageOverviewResponse: {
             /** Chart */
@@ -33215,6 +33308,19 @@ export interface components {
             trend: string;
             /** Type */
             type: string;
+        };
+        /**
+         * UsageResponse
+         * @description The complete wire contract. Adding a field here is a deliberate act —
+         *     see the allowlist test before doing it.
+         */
+        UsageResponse: {
+            /** Budgets */
+            budgets?: components["schemas"]["UsageBudgetWindow"][];
+            /** Key Alias */
+            key_alias?: string | null;
+            /** Models */
+            models?: components["schemas"]["UsageModelRow"][];
         };
         /**
          * UserAPIKeyAuth
@@ -56866,6 +56972,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_self_usage_v1_usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageResponse"];
                 };
             };
         };

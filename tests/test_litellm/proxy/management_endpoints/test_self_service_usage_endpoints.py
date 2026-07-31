@@ -14,8 +14,7 @@ field nobody approved. That is the #387 lesson, and it applies verbatim here.
 """
 
 import inspect
-from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -54,7 +53,7 @@ FORBIDDEN_ANYWHERE = {
 }
 
 
-def _all_keys(obj: Any) -> set:
+def _all_keys(obj: object) -> set:
     """Every dict key anywhere in a nested structure, for exact-match checks."""
     keys: set = set()
     if isinstance(obj, dict):
@@ -67,7 +66,7 @@ def _all_keys(obj: Any) -> set:
     return keys
 
 
-def test_handler_accepts_no_caller_supplied_identity():
+def test_handler_accepts_no_caller_supplied_identity() -> None:
     """A `?key=` added later for support triage must fail the build.
 
     The scoping guarantee is that identity comes only from the presented
@@ -84,9 +83,9 @@ def test_handler_accepts_no_caller_supplied_identity():
         assert banned not in inspect.signature(get_self_usage).parameters
 
 
-def test_response_body_is_a_frozen_allowlist():
+def test_response_body_is_a_frozen_allowlist() -> None:
     """Asserted on the SERIALISED body, not the model instance."""
-    body: Dict[str, Any] = UsageResponse(
+    body: dict[str, object] = UsageResponse(
         key_alias="umass-1d6b0754",
         budgets=[
             {  # type: ignore[list-item]
@@ -113,7 +112,7 @@ def test_response_body_is_a_frozen_allowlist():
 
 
 @pytest.mark.asyncio
-async def test_budget_windows_use_per_window_counters_not_lifetime_spend():
+async def test_budget_windows_use_per_window_counters_not_lifetime_spend() -> None:
     """The lifetime `spend` field must not be substituted for a window counter.
 
     Subtracting a lifetime total from a monthly cap reports STOP on a budget with
@@ -131,9 +130,9 @@ async def test_budget_windows_use_per_window_counters_not_lifetime_spend():
         ],
     )
 
-    seen: List[str] = []
+    seen: list[str] = []
 
-    async def fake_spend(counter_key: str, **kwargs: Any) -> float:
+    async def fake_spend(counter_key: str, **kwargs: object) -> float:
         seen.append(counter_key)
         return 25.0
 
@@ -151,13 +150,13 @@ async def test_budget_windows_use_per_window_counters_not_lifetime_spend():
 
 
 @pytest.mark.asyncio
-async def test_remaining_is_floored_at_zero_when_over_budget():
+async def test_remaining_is_floored_at_zero_when_over_budget() -> None:
     """An over-spent window reports 0 remaining, never a negative number."""
     token = UserAPIKeyAuth(
         token="t", api_key="t", budget_limits=[{"budget_duration": "1d", "max_budget": 10.0}]
     )
 
-    async def over(counter_key: str, **kwargs: Any) -> float:
+    async def over(counter_key: str, **kwargs: object) -> float:
         return 42.0
 
     with patch("litellm.proxy.proxy_server.get_current_spend", new=over):
@@ -168,13 +167,13 @@ async def test_remaining_is_floored_at_zero_when_over_budget():
 
 
 @pytest.mark.asyncio
-async def test_model_rollup_filters_on_api_key_alone():
+async def test_model_rollup_filters_on_api_key_alone() -> None:
     """No user or team predicate — that is what makes cross-tenant leakage
     unrepresentable rather than a filter we have to keep correct."""
-    captured: Dict[str, Any] = {}
+    captured: dict[str, object] = {}
 
     class FakeTable:
-        async def group_by(self, **kwargs: Any) -> List[Dict[str, Any]]:
+        async def group_by(self, **kwargs: object) -> list[dict[str, object]]:
             captured.update(kwargs)
             return [
                 {"model": "gpt-5.5", "_sum": {"spend": 1.0, "prompt_tokens": 10}},
@@ -201,12 +200,12 @@ async def test_model_rollup_filters_on_api_key_alone():
 
 
 @pytest.mark.asyncio
-async def test_model_rollup_is_empty_without_a_db_rather_than_raising():
+async def test_model_rollup_is_empty_without_a_db_rather_than_raising() -> None:
     with patch("litellm.proxy.proxy_server.prisma_client", None):
         assert await _model_rollup("hash-abc") == []
 
 
-def test_route_survives_an_exhausted_budget():
+def test_route_survives_an_exhausted_budget() -> None:
     """Registered for the budget skip, so the read works exactly when needed.
 
     Without this the holder learns they are over budget from the same 429 that
@@ -215,12 +214,12 @@ def test_route_survives_an_exhausted_budget():
     assert "/v1/usage" in MODEL_DISCOVERY_ROUTES
 
 
-def test_route_is_self_managed():
+def test_route_is_self_managed() -> None:
     """The one role-independent branch — required for a key with user_id=None."""
     assert "/v1/usage" in LiteLLMRoutes.self_managed_routes.value
 
 
-def test_route_is_not_an_llm_api_route():
+def test_route_is_not_an_llm_api_route() -> None:
     """Must NOT be an LLM route, or _virtual_key_max_budget_check fires on it
     and the read dies on an exhausted key-level budget."""
     from litellm.proxy.auth.route_checks import RouteChecks

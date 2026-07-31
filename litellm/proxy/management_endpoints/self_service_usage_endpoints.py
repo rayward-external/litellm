@@ -40,7 +40,8 @@ no admin auth ("Self-service endpoint — no admin auth, VK in header is the
 credential"), which is the precedent this follows.
 """
 
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -55,13 +56,13 @@ class UsageBudgetWindow(BaseModel):
     """One budget window's state. `spent`/`remaining` are for THIS window only."""
 
     duration: str = Field(description="Window duration as configured, e.g. '1d', '1w', '1mo'.")
-    max_budget: Optional[float] = Field(default=None, description="Cap for this window in USD.")
+    max_budget: float | None = Field(default=None, description="Cap for this window in USD.")
     spent: float = Field(default=0.0, description="Spend accumulated inside the current window.")
-    remaining: Optional[float] = Field(
+    remaining: float | None = Field(
         default=None,
         description="max_budget - spent, floored at 0. Null when the window has no finite cap.",
     )
-    reset_at: Optional[str] = Field(
+    reset_at: str | None = Field(
         default=None, description="ISO-8601 timestamp at which this window's counter resets."
     )
 
@@ -69,7 +70,7 @@ class UsageBudgetWindow(BaseModel):
 class UsageModelRow(BaseModel):
     """Per-model rollup for the calling key."""
 
-    model: Optional[str] = None
+    model: str | None = None
     spend: float = 0.0
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -82,31 +83,44 @@ class UsageResponse(BaseModel):
     """The complete wire contract. Adding a field here is a deliberate act —
     see the allowlist test before doing it."""
 
-    key_alias: Optional[str] = None
-    budgets: List[UsageBudgetWindow] = Field(default_factory=list)
-    models: List[UsageModelRow] = Field(default_factory=list)
+    key_alias: str | None = None
+    budgets: list[UsageBudgetWindow] = Field(default_factory=list)
+    models: list[UsageModelRow] = Field(default_factory=list)
 
 
-def _as_int(value: Any) -> int:
-    """BigInt columns arrive as int, str or Decimal depending on the driver."""
-    if value is None:
-        return 0
-    try:
+def _as_int(value: object) -> int:
+    """BigInt columns arrive as int, str or Decimal depending on the driver.
+
+    Narrowed explicitly rather than typed Any: the driver-dependence is exactly
+    the reason to enumerate what may arrive instead of waving it through.
+    """
+    if isinstance(value, bool):
         return int(value)
-    except (TypeError, ValueError):
-        return 0
+    if isinstance(value, (int, float, Decimal)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
 
 
-def _as_float(value: Any) -> float:
-    if value is None:
-        return 0.0
-    try:
+def _as_float(value: object) -> float:
+    """Same contract as _as_int, for the Float columns."""
+    if isinstance(value, bool):
         return float(value)
-    except (TypeError, ValueError):
-        return 0.0
+    if isinstance(value, (int, float, Decimal)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0
 
 
-async def _budget_windows(valid_token: UserAPIKeyAuth) -> List[UsageBudgetWindow]:
+async def _budget_windows(valid_token: UserAPIKeyAuth) -> list[UsageBudgetWindow]:
     """Read each configured window's own counter.
 
     Deliberately NOT derived from ``valid_token.spend``: that field is a
@@ -123,13 +137,14 @@ async def _budget_windows(valid_token: UserAPIKeyAuth) -> List[UsageBudgetWindow
     from litellm.proxy.proxy_server import get_current_spend
     from litellm.proxy.spend_tracking.budget_reservation import get_budget_window_start
 
-    windows: List[UsageBudgetWindow] = []
+    windows: list[UsageBudgetWindow] = []
     for window in budget_limits:
-        w: Dict[str, Any] = window if isinstance(window, dict) else window.model_dump()
+        w: dict[str, object] = window if isinstance(window, dict) else window.model_dump()
         duration = w.get("budget_duration")
         if duration is None:
             continue
-        max_budget = w.get("max_budget")
+        raw_max_budget = w.get("max_budget")
+        max_budget = _as_float(raw_max_budget) if raw_max_budget is not None else None
 
         spent = await get_current_spend(
             counter_key=f"spend:key:{valid_token.token}:window:{duration}",
@@ -140,27 +155,31 @@ async def _budget_windows(valid_token: UserAPIKeyAuth) -> List[UsageBudgetWindow
             window_start=get_budget_window_start(w),
         )
 
-        remaining: Optional[float] = None
-        if max_budget is not None:
-            try:
-                remaining = max(0.0, float(max_budget) - float(spent))
-            except (TypeError, ValueError):
-                remaining = None
+        remaining = max(0.0, max_budget - _as_float(spent)) if max_budget is not None else None
 
-        reset_at = w.get("reset_at")
+        # reset_at is a datetime from the DB but a string once the window has
+        # been through a model_dump/JSON round trip, so normalise both shapes.
+        raw_reset_at = w.get("reset_at")
+        if isinstance(raw_reset_at, datetime):
+            reset_at = raw_reset_at.isoformat()
+        elif isinstance(raw_reset_at, str):
+            reset_at = raw_reset_at
+        else:
+            reset_at = None
+
         windows.append(
             UsageBudgetWindow(
                 duration=str(duration),
-                max_budget=float(max_budget) if max_budget is not None else None,
+                max_budget=max_budget,
                 spent=_as_float(spent),
                 remaining=remaining,
-                reset_at=reset_at.isoformat() if hasattr(reset_at, "isoformat") else reset_at,
+                reset_at=reset_at,
             )
         )
     return windows
 
 
-async def _model_rollup(api_key: str) -> List[UsageModelRow]:
+async def _model_rollup(api_key: str) -> list[UsageModelRow]:
     """Aggregate LiteLLM_DailyUserSpend for this key.
 
     Filtered on ``api_key`` ALONE — strictly narrower than
@@ -187,7 +206,7 @@ async def _model_rollup(api_key: str) -> List[UsageModelRow]:
         },
     )
 
-    rollup: List[UsageModelRow] = []
+    rollup: list[UsageModelRow] = []
     for row in rows or []:
         totals = row.get("_sum") or {}
         rollup.append(
@@ -212,7 +231,7 @@ async def _model_rollup(api_key: str) -> List[UsageModelRow]:
     summary="Read your own key's budget state and per-model usage",
 )
 async def get_self_usage(
-    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),  # noqa: B008
 ) -> UsageResponse:
     """Return the calling key's per-window budgets and per-model rollup.
 
