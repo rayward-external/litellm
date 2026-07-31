@@ -488,6 +488,9 @@ try:
 except ImportError:
     build_billing_metrics_recorder = None
     shutdown_billing_metrics_recorder = None
+from litellm.proxy.middleware.external_audience_middleware import (
+    ExternalAudienceHeaderMiddleware,
+)
 from litellm.proxy.middleware.in_flight_requests_middleware import (
     InFlightRequestsMiddleware,
 )
@@ -16454,6 +16457,14 @@ app.add_middleware(
     get_max_request_size_mb=lambda: general_settings.get("max_request_size_mb"),
     is_request_size_limit_enabled=lambda: premium_user is True,
 )
+# RAYWARD FORK PATCH — keep this the LAST add_middleware call in this file.
+# Starlette makes the last-added middleware outermost, and this one must observe
+# the final response header set produced by every inner middleware (CORS's
+# access-control-expose-headers included) before it strips gateway-identifying
+# headers for external callers. Registered here rather than next to the other
+# middlewares for that reason. See external_audience_middleware.py for what
+# breaks if this line is dropped by an upstream rebase.
+app.add_middleware(ExternalAudienceHeaderMiddleware)
 
 
 async def _stream_mcp_asgi_response(handle_fn, scope: dict, receive) -> "StreamingResponse":
