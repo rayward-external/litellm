@@ -41,7 +41,7 @@ direction the worst a client can do by forging the header is suppress its own
 response headers, which harms nobody.
 """
 
-from typing import Dict, Iterable, List, Tuple
+from collections.abc import Iterable
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -54,7 +54,7 @@ EXTERNAL_AUDIENCE = "external"
 #: Renamed, not suppressed: this is the caller's OWN usage data, which they
 #: legitimately need. The neutral names disclose nothing about the gateway.
 #: Applied BEFORE the prefix check below, which would otherwise drop all three.
-RENAMED_HEADERS: Dict[str, str] = {
+RENAMED_HEADERS: dict[str, str] = {
     "x-litellm-response-cost": "x-usage-cost",
     "x-litellm-key-spend": "x-usage-spend",
     "x-litellm-key-max-budget": "x-usage-budget",
@@ -62,16 +62,16 @@ RENAMED_HEADERS: Dict[str, str] = {
 
 #: Names our gateway software ("x-litellm-") and proves we proxy, leaking the
 #: upstream's own headers wholesale ("llm_provider-").
-GATEWAY_PREFIXES: Tuple[str, ...] = ("x-litellm-", "llm_provider-")
+GATEWAY_PREFIXES: tuple[str, ...] = ("x-litellm-", "llm_provider-")
 
 #: Bare quota headers promoted by ``get_response_headers()``. These carry OUR
 #: purchased deployment quota (e.g. Azure 500 rpm / 500k tpm) -- not the caller's
 #: key limit -- so they are a capacity disclosure, and misleading as a client
 #: backoff signal. The caller's real per-key counters are ``x-litellm-key-*`` and
 #: are suppressed by GATEWAY_PREFIXES regardless.
-UPSTREAM_QUOTA_PREFIXES: Tuple[str, ...] = ("x-ratelimit-",)
+UPSTREAM_QUOTA_PREFIXES: tuple[str, ...] = ("x-ratelimit-",)
 
-SUPPRESSED_PREFIXES: Tuple[str, ...] = GATEWAY_PREFIXES + UPSTREAM_QUOTA_PREFIXES
+SUPPRESSED_PREFIXES: tuple[str, ...] = GATEWAY_PREFIXES + UPSTREAM_QUOTA_PREFIXES
 
 #: CORS advertises LITELLM_UI_ALLOW_HEADERS here, i.e. literal "x-litellm-*" names.
 #: That is a disclosure even once the headers themselves are gone, so on the
@@ -88,7 +88,7 @@ def _is_external_audience(scope: Scope) -> bool:
     client also sends one the value can arrive duplicated (two entries) or
     comma-joined into one. Every occurrence is checked and every token within it.
     """
-    raw_headers: Iterable[Tuple[bytes, bytes]] = scope.get("headers") or []
+    raw_headers: Iterable[tuple[bytes, bytes]] = scope.get("headers") or []
     for raw_name, raw_value in raw_headers:
         if raw_name.decode("latin-1").lower() != AUDIENCE_REQUEST_HEADER:
             continue
@@ -99,10 +99,10 @@ def _is_external_audience(scope: Scope) -> bool:
 
 
 def apply_external_header_policy(
-    headers: Iterable[Tuple[bytes, bytes]],
-) -> List[Tuple[bytes, bytes]]:
+    headers: Iterable[tuple[bytes, bytes]],
+) -> list[tuple[bytes, bytes]]:
     """Rewrite one response's raw ASGI header list for an external caller."""
-    filtered: List[Tuple[bytes, bytes]] = []
+    filtered: list[tuple[bytes, bytes]] = []
     for raw_name, raw_value in headers:
         name = raw_name.decode("latin-1").lower()
 
@@ -143,7 +143,7 @@ class ExternalAudienceHeaderMiddleware:
             # "http.response.start" is emitted exactly once, before any body
             # chunk, so this covers streaming and error responses identically.
             if message["type"] == "http.response.start":
-                raw_headers: Iterable[Tuple[bytes, bytes]] = message.get("headers") or []
+                raw_headers: Iterable[tuple[bytes, bytes]] = message.get("headers") or []
                 message["headers"] = apply_external_header_policy(raw_headers)
             await send(message)
 
