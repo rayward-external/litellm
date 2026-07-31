@@ -482,6 +482,13 @@ MODEL_DISCOVERY_ROUTES = frozenset(
         "/v1/model/info",
         "/v2/model/info",
         "/model_group/info",
+        # /v1/usage reports budget state, so it must stay readable once a budget
+        # is exhausted — precisely when a caller needs it. Without this the read
+        # dies at the moment it becomes useful: the holder is told they are over
+        # budget by the same 429 that hides how far over, and how long until the
+        # window resets. It qualifies on this set's own terms — read-only, incurs
+        # no spend, no side effects.
+        "/v1/usage",
     }
 )
 

@@ -765,6 +765,12 @@ class LiteLLMRoutes(enum.Enum):
         "/model/update",
         "/model/delete",
         "/user/daily/activity",
+        # Self-service usage read. Scoped ENTIRELY to the presented credential's
+        # own token hash — the handler takes no identity parameter, so there is
+        # no caller-supplied field to widen. Listed here because this is the one
+        # role-independent branch, which is what lets a key with user_id=None
+        # (a keyless service-account key) reach it as well as a class-A key.
+        "/v1/usage",
         "/user/available_roles",  # read-only role metadata; any authenticated user may read
         "/user/list",  # org admins checked in endpoint; non-admins get 403
         "/model/{model_id}/update",
