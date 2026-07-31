@@ -54,11 +54,13 @@ EXTERNAL_AUDIENCE = "external"
 #: Renamed, not suppressed: this is the caller's OWN usage data, which they
 #: legitimately need. The neutral names disclose nothing about the gateway.
 #: Applied BEFORE the prefix check below, which would otherwise drop all three.
-RENAMED_HEADERS: dict[str, str] = {
-    "x-litellm-response-cost": "x-usage-cost",
-    "x-litellm-key-spend": "x-usage-spend",
-    "x-litellm-key-max-budget": "x-usage-budget",
-}
+#: Pairs rather than a dict so the table is immutable at import: nothing can
+#: grow this at runtime, and a header cannot be renamed into existence later.
+RENAMED_HEADERS: tuple[tuple[str, str], ...] = (
+    ("x-litellm-response-cost", "x-usage-cost"),
+    ("x-litellm-key-spend", "x-usage-spend"),
+    ("x-litellm-key-max-budget", "x-usage-budget"),
+)
 
 #: Names our gateway software ("x-litellm-") and proves we proxy, leaking the
 #: upstream's own headers wholesale ("llm_provider-").
@@ -77,7 +79,9 @@ SUPPRESSED_PREFIXES: tuple[str, ...] = GATEWAY_PREFIXES + UPSTREAM_QUOTA_PREFIXE
 #: That is a disclosure even once the headers themselves are gone, so on the
 #: external path the list is re-pointed at the neutral usage headers.
 _EXPOSE_HEADERS_NAME = "access-control-expose-headers"
-_EXTERNAL_EXPOSED_HEADERS = ", ".join(RENAMED_HEADERS.values()).encode("latin-1")
+_EXTERNAL_EXPOSED_HEADERS = ", ".join(
+    neutral for _, neutral in RENAMED_HEADERS
+).encode("latin-1")
 
 
 def _is_external_audience(scope: Scope) -> bool:
@@ -88,7 +92,7 @@ def _is_external_audience(scope: Scope) -> bool:
     client also sends one the value can arrive duplicated (two entries) or
     comma-joined into one. Every occurrence is checked and every token within it.
     """
-    raw_headers: Iterable[tuple[bytes, bytes]] = scope.get("headers") or []
+    raw_headers: Iterable[tuple[bytes, bytes]] = scope.get("headers") or ()
     for raw_name, raw_value in raw_headers:
         if raw_name.decode("latin-1").lower() != AUDIENCE_REQUEST_HEADER:
             continue
@@ -98,28 +102,41 @@ def _is_external_audience(scope: Scope) -> bool:
     return False
 
 
+def _rewrite_header(
+    raw_name: bytes, raw_value: bytes
+) -> tuple[bytes, bytes] | None:
+    """One header's external form, or None to drop it entirely."""
+    name = raw_name.decode("latin-1").lower()
+
+    # Checked BEFORE the prefix test below, which would otherwise drop all three.
+    for original, neutral in RENAMED_HEADERS:
+        if name == original:
+            return (neutral.encode("latin-1"), raw_value)
+
+    if name.startswith(SUPPRESSED_PREFIXES):
+        return None
+
+    if name == _EXPOSE_HEADERS_NAME:
+        return (raw_name, _EXTERNAL_EXPOSED_HEADERS)
+
+    return (raw_name, raw_value)
+
+
 def apply_external_header_policy(
     headers: Iterable[tuple[bytes, bytes]],
-) -> list[tuple[bytes, bytes]]:
-    """Rewrite one response's raw ASGI header list for an external caller."""
-    filtered: list[tuple[bytes, bytes]] = []
-    for raw_name, raw_value in headers:
-        name = raw_name.decode("latin-1").lower()
+) -> tuple[tuple[bytes, bytes], ...]:
+    """Rewrite one response's raw ASGI header list for an external caller.
 
-        renamed = RENAMED_HEADERS.get(name)
-        if renamed is not None:
-            filtered.append((renamed.encode("latin-1"), raw_value))
-            continue
-
-        if name.startswith(SUPPRESSED_PREFIXES):
-            continue
-
-        if name == _EXPOSE_HEADERS_NAME:
-            filtered.append((raw_name, _EXTERNAL_EXPOSED_HEADERS))
-            continue
-
-        filtered.append((raw_name, raw_value))
-    return filtered
+    Returns a tuple, not a list: the ASGI spec types ``headers`` as an iterable
+    of pairs, and nothing is layered between this middleware and the server that
+    could want to mutate it in place -- being registered outermost is what makes
+    that true.
+    """
+    return tuple(
+        rewritten
+        for raw_name, raw_value in headers
+        if (rewritten := _rewrite_header(raw_name, raw_value)) is not None
+    )
 
 
 class ExternalAudienceHeaderMiddleware:
@@ -143,7 +160,7 @@ class ExternalAudienceHeaderMiddleware:
             # "http.response.start" is emitted exactly once, before any body
             # chunk, so this covers streaming and error responses identically.
             if message["type"] == "http.response.start":
-                raw_headers: Iterable[tuple[bytes, bytes]] = message.get("headers") or []
+                raw_headers: Iterable[tuple[bytes, bytes]] = message.get("headers") or ()
                 message["headers"] = apply_external_header_policy(raw_headers)
             await send(message)
 
