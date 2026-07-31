@@ -62,9 +62,7 @@ class UsageBudgetWindow(BaseModel):
         default=None,
         description="max_budget - spent, floored at 0. Null when the window has no finite cap.",
     )
-    reset_at: str | None = Field(
-        default=None, description="ISO-8601 timestamp at which this window's counter resets."
-    )
+    reset_at: str | None = Field(default=None, description="ISO-8601 timestamp at which this window's counter resets.")
 
 
 class UsageModelRow(BaseModel):

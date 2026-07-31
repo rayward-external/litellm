@@ -42,7 +42,7 @@ ALLOWED_MODEL = {
 
 # Fields whose presence would leak someone else's data or an employee's identity.
 FORBIDDEN_ANYWHERE = {
-    "metadata",           # carries requested_by_email — a Rayward employee address
+    "metadata",  # carries requested_by_email — a Rayward employee address
     "team_id",
     "user_id",
     "credential_set_id",
@@ -152,9 +152,7 @@ async def test_budget_windows_use_per_window_counters_not_lifetime_spend() -> No
 @pytest.mark.asyncio
 async def test_remaining_is_floored_at_zero_when_over_budget() -> None:
     """An over-spent window reports 0 remaining, never a negative number."""
-    token = UserAPIKeyAuth(
-        token="t", api_key="t", budget_limits=[{"budget_duration": "1d", "max_budget": 10.0}]
-    )
+    token = UserAPIKeyAuth(token="t", api_key="t", budget_limits=[{"budget_duration": "1d", "max_budget": 10.0}])
 
     async def over(counter_key: str, **kwargs: object) -> float:
         return 42.0
