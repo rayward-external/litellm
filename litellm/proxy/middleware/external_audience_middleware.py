@@ -79,9 +79,7 @@ SUPPRESSED_PREFIXES: tuple[str, ...] = GATEWAY_PREFIXES + UPSTREAM_QUOTA_PREFIXE
 #: That is a disclosure even once the headers themselves are gone, so on the
 #: external path the list is re-pointed at the neutral usage headers.
 _EXPOSE_HEADERS_NAME = "access-control-expose-headers"
-_EXTERNAL_EXPOSED_HEADERS = ", ".join(
-    neutral for _, neutral in RENAMED_HEADERS
-).encode("latin-1")
+_EXTERNAL_EXPOSED_HEADERS = ", ".join(neutral for _, neutral in RENAMED_HEADERS).encode("latin-1")
 
 
 def _is_external_audience(scope: Scope) -> bool:
@@ -102,9 +100,7 @@ def _is_external_audience(scope: Scope) -> bool:
     return False
 
 
-def _rewrite_header(
-    raw_name: bytes, raw_value: bytes
-) -> tuple[bytes, bytes] | None:
+def _rewrite_header(raw_name: bytes, raw_value: bytes) -> tuple[bytes, bytes] | None:
     """One header's external form, or None to drop it entirely."""
     name = raw_name.decode("latin-1").lower()
 
@@ -133,9 +129,7 @@ def apply_external_header_policy(
     that true.
     """
     return tuple(
-        rewritten
-        for raw_name, raw_value in headers
-        if (rewritten := _rewrite_header(raw_name, raw_value)) is not None
+        rewritten for raw_name, raw_value in headers if (rewritten := _rewrite_header(raw_name, raw_value)) is not None
     )
 
 
