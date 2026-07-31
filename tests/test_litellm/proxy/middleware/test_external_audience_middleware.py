@@ -84,9 +84,7 @@ async def _stream(request):
         for chunk in (b'data: {"a":1}\n\n', b"data: [DONE]\n\n"):
             yield chunk
 
-    return StreamingResponse(
-        body(), media_type="text/event-stream", headers=LEAKY_HEADERS
-    )
+    return StreamingResponse(body(), media_type="text/event-stream", headers=LEAKY_HEADERS)
 
 
 async def _client_error(request):
@@ -95,6 +93,15 @@ async def _client_error(request):
 
 async def _server_error(request):
     return JSONResponse({"error": "upstream blew up"}, status_code=500, headers=LEAKY_HEADERS)
+
+
+def _echo_route(headers):
+    """A route that returns exactly the given response headers."""
+
+    async def route(request):
+        return JSONResponse({"ok": True}, headers=headers)
+
+    return route
 
 
 def _client():
@@ -157,8 +164,12 @@ def test_external_suppresses_llm_provider_headers():
 def test_external_suppresses_bare_upstream_quota_headers():
     """Bare x-ratelimit-* is OUR purchased deployment quota, not the caller's."""
     resp = _client().get("/ok", headers=EXTERNAL)
-    for name in ("x-ratelimit-limit-requests", "x-ratelimit-remaining-requests",
-                 "x-ratelimit-limit-tokens", "x-ratelimit-remaining-tokens"):
+    for name in (
+        "x-ratelimit-limit-requests",
+        "x-ratelimit-remaining-requests",
+        "x-ratelimit-limit-tokens",
+        "x-ratelimit-remaining-tokens",
+    ):
         assert name not in resp.headers, name
 
 
@@ -179,18 +190,27 @@ def test_external_renames_usage_headers_with_values_intact(neutral_name, expecte
 
 
 def test_external_keeps_neutral_headers_untouched():
+    """Standard headers survive; x-request-id deliberately does not.
+
+    Under the prefix denylist this asserted x-request-id passes through, on the
+    reasoning that a correlation id says nothing about us. That holds for one we
+    mint and not for one we forward: the pass-through path copies the upstream's
+    response headers verbatim, and OpenAI sends its own x-request-id, so keeping
+    the name means handing an external caller a VENDOR's request id. The
+    allowlist drops it, and the caller loses nothing they can act on.
+    """
     resp = _client().get("/ok", headers=EXTERNAL)
-    assert resp.headers["x-request-id"] == "client-supplied-trace"
+    assert resp.headers["content-type"].startswith("application/json")
+    assert "x-request-id" not in resp.headers
 
 
 def test_external_rewrites_cors_expose_header_list():
     """CORS advertises literal x-litellm-* names; that is a disclosure too."""
+
     async def _with_expose(request):
         return JSONResponse(
             {},
-            headers={
-                "access-control-expose-headers": "x-litellm-semantic-filter,x-litellm-version"
-            },
+            headers={"access-control-expose-headers": "x-litellm-semantic-filter,x-litellm-version"},
         )
 
     app2 = Starlette(routes=[Route("/e", _with_expose)])
@@ -236,7 +256,7 @@ def test_only_explicit_external_enables_suppression(audience_value):
 @pytest.mark.parametrize(
     "forged_value",
     [
-        "internal,external",   # GCP custom_request_headers ADDS, so ours is appended
+        "internal,external",  # GCP custom_request_headers ADDS, so ours is appended
         "external,internal",
         "internal, external",
         "spoofed external",
@@ -314,9 +334,7 @@ def test_unhandled_exception_handler_response_is_covered():
     async def _handler(request, exc):
         return JSONResponse({"error": "internal"}, status_code=500, headers=LEAKY_HEADERS)
 
-    app = Starlette(
-        routes=[Route("/boom", _boom)], exception_handlers={ValueError: _handler}
-    )
+    app = Starlette(routes=[Route("/boom", _boom)], exception_handlers={ValueError: _handler})
     app.add_middleware(ExternalAudienceHeaderMiddleware)
     resp = TestClient(app).get("/boom", headers=EXTERNAL)
     assert resp.status_code == 500
@@ -362,3 +380,90 @@ def test_middleware_is_outermost_on_the_real_proxy_app():
 
     registered = [m.cls.__name__ for m in app.user_middleware]
     assert registered[0] == "ExternalAudienceHeaderMiddleware", registered
+
+
+# ── the pass-through hole the prefix denylist could not see ─────────────────
+
+
+def test_external_drops_bare_upstream_headers():
+    """The finding that turned this patch from a denylist into an allowlist.
+
+    HttpPassThroughEndpointHelpers.get_response_headers() forwards the upstream's
+    response headers VERBATIM and UN-PREFIXED, excluding only seven framing
+    names. None of these carries `llm_provider-` or `x-litellm-`, so a prefix
+    match saw nothing to do and every one of them reached the caller.
+    """
+    leaked = {
+        "openai-version": "2020-10-01",
+        "openai-organization": "rayward-ai",
+        "openai-processing-ms": "412",
+        "anthropic-organization-id": "b86e8a2d-ad5a-4d86-8432-d852a7c2fb39",
+        "anthropic-ratelimit-tokens-limit": "12000000",
+        "request-id": "req_011CdYdGULDUYXM2Z3DrVKkJ",
+        "cf-ray": "a23608cf5daa4556-DFW",
+        "x-ms-region": "East US",
+        "azureml-model-session": "d123",
+        "apim-request-id": "0f2f0e2c-1111-2222-3333-444455556666",
+        "x-baseten-request-id": "bt-9",
+        "fireworks-server-processing-time": "0.41",
+    }
+    app = Starlette(routes=[Route("/pt", _echo_route(leaked))])
+    app.add_middleware(ExternalAudienceHeaderMiddleware)
+
+    resp = TestClient(app).get("/pt", headers=EXTERNAL)
+
+    for name in leaked:
+        assert name not in resp.headers, f"{name} reached an external caller"
+
+
+def test_external_upstream_cannot_collide_with_the_neutral_usage_headers():
+    """An upstream sending x-usage-cost must not join ours into one value.
+
+    Duplicate response headers are commonly comma-joined by clients, which turns
+    a number into "999, 0.004" and lets the upstream obscure — or spoof — the
+    caller's real spend. The gateway's value wins because the rename runs first
+    and the upstream copy then fails the allowlist.
+    """
+    app = Starlette(
+        routes=[
+            Route(
+                "/pt",
+                _echo_route(
+                    {
+                        "x-usage-cost": "999",
+                        "x-usage-spend": "999",
+                        "x-usage-budget": "999",
+                        "x-litellm-response-cost": "0.004",
+                        "x-litellm-key-spend": "1.25",
+                        "x-litellm-key-max-budget": "50.0",
+                    }
+                ),
+            )
+        ]
+    )
+    app.add_middleware(ExternalAudienceHeaderMiddleware)
+
+    resp = TestClient(app).get("/pt", headers=EXTERNAL)
+
+    assert resp.headers.get_list("x-usage-cost") == ["0.004"]
+    assert resp.headers.get_list("x-usage-spend") == ["1.25"]
+    assert resp.headers.get_list("x-usage-budget") == ["50.0"]
+
+
+def test_external_keeps_the_websocket_handshake():
+    """A 101 stripped of its handshake is rejected by every compliant client."""
+    handshake = {
+        "upgrade": "websocket",
+        "sec-websocket-accept": "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+        "sec-websocket-protocol": "realtime",
+        "sec-websocket-extensions": "permessage-deflate",
+        "sec-websocket-version": "13",
+    }
+    app = Starlette(routes=[Route("/ws", _echo_route({**handshake, "x-litellm-version": "1.95.0"}))])
+    app.add_middleware(ExternalAudienceHeaderMiddleware)
+
+    resp = TestClient(app).get("/ws", headers=EXTERNAL)
+
+    for name, value in handshake.items():
+        assert resp.headers[name] == value
+    assert "x-litellm-version" not in resp.headers

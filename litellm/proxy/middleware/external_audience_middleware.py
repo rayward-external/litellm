@@ -15,6 +15,32 @@ not anticipate. The root cause is ``_get_llm_provider_headers()`` in
 EVERY upstream response header under an ``llm_provider-`` prefix with no allowlist
 and no gating flag -- so the emitted name set is unbounded and provider-dependent.
 
+WHY AN ALLOWLIST AND NOT A PREFIX DENYLIST
+------------------------------------------
+This started as a denylist over ``x-litellm-``, ``llm_provider-`` and bare
+``x-ratelimit-``, on the reasoning that LiteLLM gives its leak a SHAPE: it puts
+its own facts under one prefix and everything upstream under another, so matching
+those two prefixes closes it. That is true of the native path and false of
+pass-through. ``HttpPassThroughEndpointHelpers.get_response_headers()``
+(``proxy/pass_through_endpoints/pass_through_endpoints.py``) forwards the
+upstream's headers VERBATIM and UN-PREFIXED, excluding only seven framing names
+-- so ``openai-version``, ``anthropic-organization-id``, ``cf-ray`` and whatever
+the next provider invents sail straight through a prefix match. On that path the
+leak has no shape at all, exactly like Bifrost's.
+
+A denylist can only ever list what someone has already seen. So the policy is
+inverted: keep a fixed set of standard HTTP / CORS / security / WebSocket
+headers and drop everything else. A new provider, or an existing one that starts
+sending a new header, is covered on the day it ships rather than the day someone
+notices. The companion patch in the Bifrost fork is the same shape.
+
+Two things fall out of the inversion for free. Bare ``x-ratelimit-*`` (OUR
+purchased deployment quota, not the caller's key limit) is not in the allowlist,
+so it goes without needing its own rule. And an upstream that sends its own
+``x-usage-cost`` can no longer collide with the renamed header below: the
+upstream copy is dropped, ours is written, and the caller sees exactly one value
+rather than two joined into something non-numeric.
+
 IF THIS PATCH IS DROPPED BY A REBASE
 ------------------------------------
 External callers immediately see ``x-litellm-*`` (names our gateway software),
@@ -53,7 +79,7 @@ EXTERNAL_AUDIENCE = "external"
 
 #: Renamed, not suppressed: this is the caller's OWN usage data, which they
 #: legitimately need. The neutral names disclose nothing about the gateway.
-#: Applied BEFORE the prefix check below, which would otherwise drop all three.
+#: Applied BEFORE the allowlist test below, which would otherwise drop all three.
 #: Pairs rather than a dict so the table is immutable at import: nothing can
 #: grow this at runtime, and a header cannot be renamed into existence later.
 RENAMED_HEADERS: tuple[tuple[str, str], ...] = (
@@ -62,18 +88,62 @@ RENAMED_HEADERS: tuple[tuple[str, str], ...] = (
     ("x-litellm-key-max-budget", "x-usage-budget"),
 )
 
-#: Names our gateway software ("x-litellm-") and proves we proxy, leaking the
-#: upstream's own headers wholesale ("llm_provider-").
-GATEWAY_PREFIXES: tuple[str, ...] = ("x-litellm-", "llm_provider-")
-
-#: Bare quota headers promoted by ``get_response_headers()``. These carry OUR
-#: purchased deployment quota (e.g. Azure 500 rpm / 500k tpm) -- not the caller's
-#: key limit -- so they are a capacity disclosure, and misleading as a client
-#: backoff signal. The caller's real per-key counters are ``x-litellm-key-*`` and
-#: are suppressed by GATEWAY_PREFIXES regardless.
-UPSTREAM_QUOTA_PREFIXES: tuple[str, ...] = ("x-ratelimit-",)
-
-SUPPRESSED_PREFIXES: tuple[str, ...] = GATEWAY_PREFIXES + UPSTREAM_QUOTA_PREFIXES
+#: The COMPLETE set of response headers an external caller receives. Anything not
+#: named here is dropped, including every ``x-litellm-*`` and ``llm_provider-*``
+#: name and every bare upstream header the pass-through path forwards verbatim.
+#:
+#: Membership test: does a standard HTTP client need it, and does it say nothing
+#: about who we are or who we buy from? Lowercase; lookups normalize.
+ALLOWED_HEADERS: frozenset[str] = frozenset(
+    (
+        # Message framing. uvicorn owns most of these; dropping one corrupts the
+        # response rather than protecting anything.
+        "content-type",
+        "content-length",
+        "content-encoding",
+        "transfer-encoding",
+        "connection",
+        "date",
+        "vary",
+        "cache-control",
+        "allow",
+        # Backpressure. Unlike the vendor and deployment quota families this
+        # carries no capacity figure -- just "come back later" -- so it stays.
+        "retry-after",
+        # CORS. Browser clients break without these. ``expose-headers`` is
+        # rewritten rather than passed through (see below): LiteLLM advertises
+        # LITELLM_UI_ALLOW_HEADERS in it, i.e. literal ``x-litellm-*`` names,
+        # which is a disclosure even once those headers themselves are gone.
+        "access-control-allow-origin",
+        "access-control-allow-methods",
+        "access-control-allow-headers",
+        "access-control-allow-credentials",
+        "access-control-expose-headers",
+        "access-control-max-age",
+        # Generic hardening, identical on any host.
+        "x-frame-options",
+        "x-content-type-options",
+        "referrer-policy",
+        "content-security-policy",
+        "permissions-policy",
+        "strict-transport-security",
+        "x-robots-tag",
+        # WebSocket handshake (``/v1/realtime``). Pure protocol:
+        # ``sec-websocket-accept`` is a hash of the client's own nonce and
+        # ``sec-websocket-protocol`` echoes what the client asked for, so none of
+        # it describes us -- but a 101 missing them is rejected outright.
+        "upgrade",
+        "sec-websocket-accept",
+        "sec-websocket-protocol",
+        "sec-websocket-extensions",
+        "sec-websocket-version",
+        # uvicorn writes its own value at serialization time whether or not this
+        # is set, so removing it here changes nothing on the wire. Listed so this
+        # set stays an accurate description of what actually goes out; removing
+        # ``server`` is the load balancer's job.
+        "server",
+    )
+)
 
 #: CORS advertises LITELLM_UI_ALLOW_HEADERS here, i.e. literal "x-litellm-*" names.
 #: That is a disclosure even once the headers themselves are gone, so on the
@@ -104,12 +174,15 @@ def _rewrite_header(raw_name: bytes, raw_value: bytes) -> tuple[bytes, bytes] | 
     """One header's external form, or None to drop it entirely."""
     name = raw_name.decode("latin-1").lower()
 
-    # Checked BEFORE the prefix test below, which would otherwise drop all three.
+    # Checked BEFORE the allowlist, which would otherwise drop all three. This
+    # ordering is also what gives the gateway's value precedence over an upstream
+    # that happens to send a header of the same neutral name: the upstream copy
+    # reaches the allowlist test, is not in it, and is dropped.
     for original, neutral in RENAMED_HEADERS:
         if name == original:
             return (neutral.encode("latin-1"), raw_value)
 
-    if name.startswith(SUPPRESSED_PREFIXES):
+    if name not in ALLOWED_HEADERS:
         return None
 
     if name == _EXPOSE_HEADERS_NAME:
