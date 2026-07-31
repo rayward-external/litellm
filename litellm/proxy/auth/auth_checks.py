@@ -486,6 +486,22 @@ MODEL_DISCOVERY_ROUTES = frozenset(
 )
 
 
+# Routes that incur no spend AND must stay readable once a budget is exhausted.
+#
+# /v1/usage is here for the same reason the discovery routes are, and more
+# urgently: it is the route that TELLS a caller they have run out. Gating it on
+# budget makes the read die exactly when it is needed -- the holder loses the
+# ability to see WHY they are being refused, and has no other surface (an
+# external key holder has no identity on our IdP, so every human page is shut
+# to them).
+#
+# Kept as a union rather than by widening MODEL_DISCOVERY_ROUTES so that set
+# keeps meaning what its name says, and stays narrower than info_routes -- an
+# exhausted budget must still not reach side-effectful routes like
+# /health/services (#27923).
+BUDGET_EXEMPT_READ_ROUTES = MODEL_DISCOVERY_ROUTES | frozenset({"/v1/usage"})
+
+
 async def common_checks(
     request_body: dict,
     team_object: Optional[LiteLLM_TeamTable],
@@ -531,7 +547,7 @@ async def common_checks(
         request=request,
     )
 
-    if route in MODEL_DISCOVERY_ROUTES:
+    if route in BUDGET_EXEMPT_READ_ROUTES:
         skip_budget_checks = True
 
     # 1. If team is blocked

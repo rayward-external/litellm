@@ -754,6 +754,12 @@ class LiteLLMRoutes(enum.Enum):
     )
 
     self_managed_routes = [
+        # Scoped entirely by the presented key -- the handler takes no caller
+        # -supplied identity argument, so it is safe for any authenticated
+        # caller including a key with user_id=None. This is the one
+        # role-independent branch in route_checks, which is why it goes here
+        # rather than in an internal-user list.
+        "/v1/usage",
         "/team/member_add",
         "/team/member_delete",
         "/team/member_update",
