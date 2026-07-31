@@ -2,6 +2,8 @@
 Unified /v1/messages endpoint - (Anthropic Spec)
 """
 
+from collections.abc import Mapping
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
@@ -66,8 +68,14 @@ def _strip_total_tokens_from_anthropic_response(response: Any) -> None:
 ANTHROPIC_MESSAGES_REQUIRED_FIELDS = ("model", "messages", "max_tokens")
 
 
-def _missing_required_anthropic_field(data: dict) -> Optional[str]:
+def _missing_required_anthropic_field(data: Mapping[str, object]) -> Optional[str]:
     """Return the first required /v1/messages field that is absent or null.
+
+    ``Mapping[str, object]`` rather than ``dict``/``Any``: the body is parsed
+    JSON, so the value type is genuinely arbitrary, and this function only ever
+    reads it. ``object`` says "some value" without the unchecked escape hatch
+    ``Any`` gives (``typing.Any`` is banned by ruff-strict.toml), and ``Mapping``
+    keeps the read-only view LIT001 asks for.
 
     Without this check the request body is splatted straight into
     ``anthropic_messages(max_tokens: int, messages: List[Dict], model: str, …)``,
