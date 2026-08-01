@@ -296,6 +296,22 @@ def _generic_message(status: int) -> str:
     return _GENERIC_CLIENT_ERROR if status < 500 else _GENERIC_SERVER_ERROR
 
 
+def _generic_body(status: int) -> bytes:
+    """The replacement body, assembled without a dict literal.
+
+    Concatenation rather than ``json.dumps({...})`` so the module carries no
+    mutable collection for this (the LIT002 ratchet), while the message itself
+    still goes through ``json.dumps`` -- it is the only part that could ever need
+    escaping, and hardcoding the escaped form would let it drift from
+    ``_generic_message``.
+    """
+    return (
+        b'{"error": {"message": '
+        + json.dumps(_generic_message(status)).encode("utf-8")
+        + b', "type": "invalid_request_error"}}'
+    )
+
+
 def sanitize_error_message(message: str, status: int) -> str:
     """One error string's external form."""
     stripped = _LITELLM_PREFIX.sub("", message, count=1).strip()
@@ -326,7 +342,17 @@ def _sanitize_tree(root: object, status: int) -> object:
     discard, so nothing else can observe it, and rebuilding it would allocate a
     second copy of every error body for no benefit.
     """
-    stack: list[object] = [root]
+    # A traversal worklist is the case a mutable collection exists for. The
+    # immutable alternative -- rebuilding a tuple per visited node -- makes this
+    # O(n^2) in document depth, and the body is upstream-supplied, so depth is
+    # attacker-influenced. The list never escapes this function, so nothing else
+    # can grow or rewrite it.
+    #
+    # The suppression must sit ON the offending line -- the checker ignores it
+    # anywhere else -- AND must be short enough that the formatter does not split
+    # the statement across lines, which moves the comment off the reported line
+    # and silently un-suppresses it.
+    stack = [root]  # mutable-ok: traversal worklist; a tuple rebuild is O(n^2) in depth
     while stack:
         node = stack.pop()
         if isinstance(node, dict):
@@ -350,9 +376,7 @@ def sanitize_error_body(raw: bytes, status: int) -> bytes:
     the tree walk -- the latter being the guard against a field this code does
     not know to visit.
     """
-    generic = json.dumps({"error": {"message": _generic_message(status), "type": "invalid_request_error"}}).encode(
-        "utf-8"
-    )
+    generic = _generic_body(status)
 
     def _is_dirty(candidate: bytes) -> bool:
         lowered = candidate.decode("utf-8", errors="replace").lower()
@@ -380,13 +404,12 @@ def _with_content_length(headers: Iterable[tuple[bytes, bytes]], length: int) ->
     stale chunked declaration alongside a content-length is a framing error that
     presents as a client hang.
     """
-    rewritten = [
+    kept = tuple(
         (name, value)
         for name, value in headers
         if name.decode("latin-1").lower() not in ("content-length", "transfer-encoding")
-    ]
-    rewritten.append((b"content-length", str(length).encode("latin-1")))
-    return tuple(rewritten)
+    )
+    return kept + ((b"content-length", str(length).encode("latin-1")),)
 
 
 class ExternalAudienceHeaderMiddleware:
@@ -443,7 +466,12 @@ class ExternalAudienceHeaderMiddleware:
                 held_start["headers"] = _with_content_length(held_start["headers"], len(sanitized))
                 await send(held_start)
                 held_start = None
-                await send({"type": "http.response.body", "body": sanitized, "more_body": False})
+                # Reuse the final body message rather than constructing a new
+                # one: it is already the right shape, and this is the last chunk
+                # so `more_body` must be False regardless of what it said.
+                message["body"] = sanitized
+                message["more_body"] = False
+                await send(message)
                 return
 
             await send(message)
