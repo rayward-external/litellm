@@ -2405,6 +2405,12 @@ def test_endpoint_returns_anthropic_400_on_context_management_error():
                 "/v1/messages",
                 json={
                     "model": "gpt-4o",
+                    # max_tokens is required by /v1/messages and the endpoint
+                    # now rejects a body without it before dispatch. These
+                    # tests exercise the CONTEXT-MANAGEMENT error handling
+                    # further down, so the body has to be valid enough to get
+                    # there.
+                    "max_tokens": 1024,
                     "messages": [{"role": "user", "content": "hi"}],
                 },
                 headers={"Authorization": "Bearer test-key"},
@@ -2466,6 +2472,12 @@ def test_endpoint_runs_failure_hook_on_500_context_management_error():
                 "/v1/messages",
                 json={
                     "model": "gpt-4o",
+                    # max_tokens is required by /v1/messages and the endpoint
+                    # now rejects a body without it before dispatch. These
+                    # tests exercise the CONTEXT-MANAGEMENT error handling
+                    # further down, so the body has to be valid enough to get
+                    # there.
+                    "max_tokens": 1024,
                     "messages": [{"role": "user", "content": "hi"}],
                 },
                 headers={"Authorization": "Bearer test-key"},

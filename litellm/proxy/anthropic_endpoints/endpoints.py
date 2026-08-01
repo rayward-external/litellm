@@ -2,6 +2,8 @@
 Unified /v1/messages endpoint - (Anthropic Spec)
 """
 
+from collections.abc import Mapping
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
@@ -61,6 +63,72 @@ def _strip_total_tokens_from_anthropic_response(response: Any) -> None:
         usage.pop("total_tokens", None)
 
 
+# Fields the Anthropic /v1/messages spec marks required. Order matters only
+# for which one a caller is told about first when several are missing.
+ANTHROPIC_MESSAGES_REQUIRED_FIELDS = ("model", "messages", "max_tokens")
+
+
+def _missing_required_anthropic_field(
+    data: Mapping[str, object],
+    *,
+    server_model: object = None,
+    server_max_tokens: object = None,
+) -> Optional[str]:
+    """Return the first required /v1/messages field that is absent or null.
+
+    ``server_model`` / ``server_max_tokens`` carry the proxy's own defaults, and
+    a field they will supply is NOT missing. This is not a nicety — the request
+    processor fills both in before dispatch
+    (``common_request_processing.py:1195-1208``): ``completion_model`` /
+    ``user_model`` for the model, ``user_max_tokens`` for the cap. A proxy
+    started with ``--max_tokens`` or ``--model`` legitimately serves a body that
+    omits them, so validating the raw body alone would reject requests this
+    deployment can answer. ``messages`` has no server-side default and is
+    therefore unconditionally required.
+
+    ``Mapping[str, object]`` rather than ``dict``/``Any``: the body is parsed
+    JSON, so the value type is genuinely arbitrary, and this function only ever
+    reads it. ``object`` says "some value" without the unchecked escape hatch
+    ``Any`` gives (``typing.Any`` is banned by ruff-strict.toml), and ``Mapping``
+    keeps the read-only view LIT001 asks for.
+
+    Without this check the request body is splatted straight into
+    ``anthropic_messages(max_tokens: int, messages: List[Dict], model: str, …)``,
+    whose signature declares those three as required positionals. An absent key
+    therefore raises ``TypeError`` at the Python call boundary — *before* any
+    validation runs — and the generic ``except Exception`` handler below turns
+    it into a 500 carrying the interpreter's message verbatim:
+
+        anthropic_messages() missing 1 required positional argument: 'max_tokens'
+
+    That is wrong twice over: a caller omitting a required field is a 4xx, not a
+    5xx, and the text discloses an internal function name and signature to
+    whoever sent the request — including external parties on a shared gateway.
+
+    A present-but-wrong-type value (``"max_tokens": "16"``) already reaches
+    pydantic and returns a correct 400 ``invalid_request_error``; only the
+    *absent* case skips validation, so this closes that gap rather than
+    duplicating a check that already works.
+
+    ``None`` is treated as absent: ``"max_tokens": null`` otherwise reaches the
+    router, fails deep in transformation, and the resulting message is
+    concatenated with the router's fallback diagnostics — leaking the whole
+    fallback chain (internal model-group names included) to the caller.
+    """
+    for field in ANTHROPIC_MESSAGES_REQUIRED_FIELDS:
+        if data.get(field) is not None:
+            continue
+        # Straight conditionals rather than a {field: default} lookup: building
+        # a dict here trips LIT002 (mutable-collection construction) for no
+        # benefit at two entries.
+        if field == "model" and server_model is not None:
+            continue
+        if field == "max_tokens" and server_max_tokens is not None:
+            continue
+        return field
+    return None
+
+
 @router.post(
     "/v1/messages",
     tags=["[beta] Anthropic `/v1/messages`"],
@@ -90,6 +158,26 @@ async def anthropic_response(
     )
 
     data = await _read_request_body(request=request)
+
+    # Reject a malformed request here, in the Anthropic error shape, rather than
+    # letting it fail as a TypeError deep in the handler and surface as a 500.
+    # See _missing_required_anthropic_field for why the absent case needs its own
+    # check when the wrong-type case is already validated downstream.
+    missing_field = _missing_required_anthropic_field(
+        data,
+        server_model=general_settings.get("completion_model") or user_model,
+        server_max_tokens=user_max_tokens,
+    )
+    if missing_field is not None:
+        return JSONResponse(
+            status_code=400,
+            content=AnthropicExceptionMapping.transform_to_anthropic_error(
+                status_code=400,
+                raw_message=f"{missing_field}: Field required",
+                request_id=request.headers.get("x-request-id"),
+            ),
+        )
+
     base_llm_response_processor = ProxyBaseLLMRequestProcessing(data=data)
     try:
         result = await base_llm_response_processor.base_process_llm_request(
