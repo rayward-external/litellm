@@ -396,6 +396,118 @@ def sanitize_error_body(raw: bytes, status: int) -> bytes:
     return generic if _is_dirty(sanitized) else sanitized
 
 
+# ---------------------------------------------------------------------------
+# SUCCESS BODIES — provider attribution
+#
+# The error policy above stops us disclosing our own routing. A separate, milder
+# disclosure survives on the SUCCESS path: LiteLLM passes several upstream-shaped
+# fields through verbatim, and their NAMES identify the cloud we buy inference
+# from. Measured live on router.trueward.ai:
+#
+#   gemini  vertex_ai_grounding_metadata, vertex_ai_url_context_metadata,
+#           vertex_ai_safety_results, vertex_ai_citation_metadata  -> Vertex
+#   gpt     latency_checkpoint                                     -> Azure
+#   claude  "id":"msg_bdrk_01..."                                  -> Bedrock
+#
+# Every one was EMPTY or purely internal in every measurement: they tell the
+# caller nothing and tell them who we buy from, which is the wrong way round.
+#
+# WHAT IS DELIBERATELY KEPT
+#
+# ``content_filter_results`` and ``prompt_filter_results`` are Azure-shaped too,
+# and they STAY. They tell a caller their content was filtered and on which
+# category -- the difference between "rejected, and here is why" and silent
+# truncation. Removing them would be the over-sanitization failure the error
+# policy is careful to avoid. Their retention is a KNOWING trade: a caller who
+# studies field names can still infer Azure from them.
+#
+# STREAMING IS NOT TOUCHED, because it does not need to be. Measured: SSE chunks
+# carry none of these fields -- the Gemini chunk has no ``vertex_ai_*`` and the
+# Azure chunk has no filter or latency keys. So this stays off the hot path
+# entirely and only buffered, non-streaming success bodies are rewritten.
+
+#: TOP-LEVEL keys removed from a successful external response. Each was measured
+#: EMPTY, so nothing the caller can use is lost.
+PROVIDER_ATTRIBUTION_KEYS: tuple[str, ...] = (
+    "vertex_ai_grounding_metadata",
+    "vertex_ai_url_context_metadata",
+    "vertex_ai_safety_results",
+    "vertex_ai_citation_metadata",
+)
+
+#: NESTED (parent, key) pairs. Listed separately because they are NOT top level
+#: and a top-level pop silently misses them — which is exactly what the first
+#: version of this patch did with ``latency_checkpoint``. Measured shape:
+#:
+#:   "usage": {"completion_tokens": 18, ..., "latency_checkpoint": {"engine_tbt_ms": 7, ...}}
+#:
+#: It is Azure's internal engine timing (TTFT, TBT, pre-inference), useful to
+#: whoever operates the deployment and to nobody calling it.
+PROVIDER_ATTRIBUTION_NESTED_KEYS: tuple[tuple[str, str], ...] = (("usage", "latency_checkpoint"),)
+
+#: Bedrock mints message ids as ``msg_bdrk_<id>``; native Anthropic mints
+#: ``msg_<id>``. Rewriting the prefix makes the response MORE faithful to the
+#: dialect it claims to speak, not less. Message ids are not accepted as input on
+#: /v1/messages, so there is nothing for a caller to round-trip and break.
+_BEDROCK_ID_PREFIX = "msg_bdrk_"
+_ANTHROPIC_ID_PREFIX = "msg_"
+
+#: Raw-bytes probes for the fast path, built ONCE at import.
+#:
+#: This runs on every successful external response, so rebuilding the list per
+#: call was both a per-request allocation on the hot path and two mutable-list
+#: constructions against the LIT002 ratchet. A tuple over a generator is neither.
+_ATTRIBUTION_PROBES: tuple[bytes, ...] = (
+    tuple(key.encode("utf-8") for key in PROVIDER_ATTRIBUTION_KEYS)
+    + tuple(key.encode("utf-8") for _, key in PROVIDER_ATTRIBUTION_NESTED_KEYS)
+    + (_BEDROCK_ID_PREFIX.encode("utf-8"),)
+)
+
+
+def strip_provider_attribution(raw: bytes) -> bytes:
+    """One successful response body's external form.
+
+    Returns the input unchanged when there is nothing to remove -- the common
+    case, and the one that has to stay cheap.
+    """
+    if not any(probe in raw for probe in _ATTRIBUTION_PROBES):
+        return raw
+
+    try:
+        decoded = json.loads(raw)
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        # Unlike the error path there is nothing dangerous to fail closed over:
+        # these are attribution hints, not credentials or routing. Replacing a
+        # caller's SUCCESSFUL response because we could not parse it would do
+        # more harm than the disclosure it would prevent.
+        return raw
+
+    if not isinstance(decoded, dict):
+        return raw
+
+    for key in PROVIDER_ATTRIBUTION_KEYS:
+        decoded.pop(key, None)
+
+    for parent, key in PROVIDER_ATTRIBUTION_NESTED_KEYS:
+        container = decoded.get(parent)
+        if isinstance(container, dict):
+            container.pop(key, None)
+
+    message_id = decoded.get("id")
+    if isinstance(message_id, str) and message_id.startswith(_BEDROCK_ID_PREFIX):
+        decoded["id"] = _ANTHROPIC_ID_PREFIX + message_id[len(_BEDROCK_ID_PREFIX) :]
+
+    return json.dumps(decoded).encode("utf-8")
+
+
+def _is_streaming(headers: Iterable[tuple[bytes, bytes]]) -> bool:
+    """True for SSE, which must never be buffered."""
+    for name, value in headers:
+        if name.decode("latin-1").lower() == "content-type":
+            return "text/event-stream" in value.decode("latin-1").lower()
+    return False
+
+
 def _with_content_length(headers: Iterable[tuple[bytes, bytes]], length: int) -> tuple[tuple[bytes, bytes], ...]:
     """Re-frame a held response start for a body whose length we just changed.
 
@@ -447,10 +559,16 @@ class ExternalAudienceHeaderMiddleware:
                 raw_headers: Iterable[tuple[bytes, bytes]] = message.get("headers") or ()
                 message["headers"] = apply_external_header_policy(raw_headers)
 
-                if message.get("status", 200) >= 400:
-                    # Held, not forwarded: content-length cannot be corrected
-                    # once the start message is on the wire, and the sanitized
-                    # body is a different length than the original.
+                status = message.get("status", 200)
+                # Held, not forwarded: content-length cannot be corrected once
+                # the start message is on the wire, and a rewritten body is a
+                # different length than the original.
+                #
+                # Errors always. Successes only when they are NOT streaming --
+                # buffering an SSE response would defeat streaming entirely, and
+                # measurement says the attribution fields never appear in chunks
+                # anyway, so there is nothing there to buy with that cost.
+                if status >= 400 or not _is_streaming(message["headers"]):
                     held_start = message
                     return
                 await send(message)
@@ -462,7 +580,10 @@ class ExternalAudienceHeaderMiddleware:
                     return
 
                 status = held_start.get("status", 500)
-                sanitized = sanitize_error_body(bytes(buffered), status)
+                if status >= 400:
+                    sanitized = sanitize_error_body(bytes(buffered), status)
+                else:
+                    sanitized = strip_provider_attribution(bytes(buffered))
                 held_start["headers"] = _with_content_length(held_start["headers"], len(sanitized))
                 await send(held_start)
                 held_start = None
