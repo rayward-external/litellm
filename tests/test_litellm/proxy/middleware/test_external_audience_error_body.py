@@ -139,7 +139,9 @@ def test_openai_dialect_body_is_sanitized():
 def test_anthropic_dialect_body_is_sanitized():
     # A different shape, not hardcoded anywhere: the tree walk visits "message"
     # at any depth, so both dialects are covered by one rule.
-    raw = json.dumps({"type": "error", "error": {"type": "invalid_request_error", "message": PROD_LEAK_MESSAGE}}).encode()
+    raw = json.dumps(
+        {"type": "error", "error": {"type": "invalid_request_error", "message": PROD_LEAK_MESSAGE}}
+    ).encode()
     out = sanitize_error_body(raw, 400).decode()
     assert_no_leak(out)
 
@@ -152,6 +154,41 @@ def test_marker_in_an_unvisited_field_still_fails_closed():
     out = sanitize_error_body(raw, 400).decode()
     assert_no_leak(out)
     assert json.loads(out)["error"]["message"] == "Invalid request."
+
+
+def test_tree_walk_rewrites_in_place_rather_than_discarding_the_body():
+    # SEPARATES THE TWO LAYERS. Every other body-level test here passes even if
+    # the tree walk is a complete no-op, because the backstop then replaces the
+    # whole body -- a mutation run showed exactly that, so the walk had no
+    # coverage of its own.
+    #
+    # The distinction is not academic: backstop-only behaviour means EVERY error
+    # collapses to "Invalid request." and the caller loses the sibling fields
+    # (and, in the clean case, the upstream's own explanation). Only the walk can
+    # rewrite `message` while leaving `param` and `code` intact.
+    raw = json.dumps(
+        {"error": {"message": PROD_LEAK_MESSAGE, "type": "invalid_request_error", "param": "model", "code": "400"}}
+    ).encode()
+    out = json.loads(sanitize_error_body(raw, 400))
+
+    assert_no_leak(json.dumps(out))
+    assert out["error"]["message"] == "Invalid request."
+    assert out["error"]["param"] == "model", "tree walk did not run — the backstop discarded the body"
+    assert out["error"]["code"] == "400", "tree walk did not run — the backstop discarded the body"
+
+
+def test_deeply_nested_body_does_not_blow_the_stack():
+    # The body is UPSTREAM-CONTROLLED, so nesting depth is attacker-influenced.
+    # The original tree walk was recursive and would raise RecursionError from
+    # inside a security control at roughly this depth; the iterative version is
+    # bounded by the heap. CI's recursive-function gate flagged this, correctly.
+    depth = 5000
+    node: dict = {"message": PROD_LEAK_MESSAGE}
+    for _ in range(depth):
+        node = {"error": node}
+
+    out = sanitize_error_body(json.dumps(node).encode(), 400)
+    assert_no_leak(out.decode())
 
 
 def test_non_json_body_carrying_markers_is_replaced():
@@ -199,7 +236,11 @@ async def test_error_response_is_sanitized_end_to_end():
     body = json.dumps({"error": {"message": PROD_LEAK_MESSAGE}}).encode()
     sent = await _drive(
         [
-            {"type": "http.response.start", "status": 400, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]},
+            {
+                "type": "http.response.start",
+                "status": 400,
+                "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
+            },
             {"type": "http.response.body", "body": body, "more_body": False},
         ],
         external=True,
@@ -238,12 +279,12 @@ async def test_successful_streaming_response_is_not_buffered():
     # traffic. Each chunk must reach the server as its own message.
     chunks = [
         {"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/event-stream")]},
-        {"type": "http.response.body", "body": b"data: {\"a\":1}\n\n", "more_body": True},
+        {"type": "http.response.body", "body": b'data: {"a":1}\n\n', "more_body": True},
         {"type": "http.response.body", "body": b"data: [DONE]\n\n", "more_body": False},
     ]
     sent = await _drive(chunks, external=True)
     assert [m["type"] for m in sent] == [c["type"] for c in chunks]
-    assert sent[1]["body"] == b"data: {\"a\":1}\n\n"
+    assert sent[1]["body"] == b'data: {"a":1}\n\n'
     assert sent[2]["body"] == b"data: [DONE]\n\n"
 
 

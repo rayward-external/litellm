@@ -75,7 +75,6 @@ response headers, which harms nobody.
 import json
 import re
 from collections.abc import Iterable
-from typing import Any
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -310,20 +309,37 @@ def sanitize_error_message(message: str, status: int) -> str:
     return stripped
 
 
-def _sanitize_tree(node: Any, status: int) -> Any:
-    """Rewrite every error-prose string in a decoded JSON body."""
-    if isinstance(node, dict):
-        return {
-            key: (
-                sanitize_error_message(value, status)
-                if key in _MESSAGE_KEYS and isinstance(value, str)
-                else _sanitize_tree(value, status)
-            )
-            for key, value in node.items()
-        }
-    if isinstance(node, list):
-        return [_sanitize_tree(item, status) for item in node]
-    return node
+def _sanitize_tree(root: object, status: int) -> object:
+    """Rewrite every error-prose string in a decoded JSON body, in place.
+
+    ITERATIVE, with an explicit stack, rather than the obvious recursion. Two
+    reasons, and the CI gate that rejects unignored recursive functions is right
+    on both counts:
+
+    1. The input is an UPSTREAM-CONTROLLED error body. Recursion depth would be
+       attacker-influenced, and a deeply nested document would raise
+       RecursionError from inside a security control -- i.e. fail open unless
+       every caller remembered to catch it.
+    2. Depth is now bounded by the heap rather than the C stack.
+
+    Mutates in place: the tree comes from ``json.loads`` on bytes we are about to
+    discard, so nothing else can observe it, and rebuilding it would allocate a
+    second copy of every error body for no benefit.
+    """
+    stack: list[object] = [root]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in _MESSAGE_KEYS and isinstance(value, str):
+                    node[key] = sanitize_error_message(value, status)
+                elif isinstance(value, (dict, list)):
+                    stack.append(value)
+        elif isinstance(node, list):
+            for item in node:
+                if isinstance(item, (dict, list)):
+                    stack.append(item)
+    return root
 
 
 def sanitize_error_body(raw: bytes, status: int) -> bytes:
@@ -344,7 +360,10 @@ def sanitize_error_body(raw: bytes, status: int) -> bytes:
 
     try:
         decoded = json.loads(raw)
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        # RecursionError is not hypothetical and is NOT a ValueError: CPython's
+        # JSON decoder recurses, and this body is upstream-controlled. Letting it
+        # escape would take down a security control with an unhandled exception.
         # Not JSON: an HTML error page or a plain-text 502 from something in
         # front of us. Only replaced if it actually carries internal vocabulary.
         return generic if _is_dirty(raw) else raw
