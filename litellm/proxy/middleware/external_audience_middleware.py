@@ -1,5 +1,10 @@
 """
-RAYWARD FORK PATCH — minimal response-header exposure for external callers.
+RAYWARD FORK PATCH — minimal response exposure for external callers.
+
+Two policies, one audience gate, one module: response HEADERS are reduced to an
+allowlist, and error BODIES are sanitized. The header half is described first
+because it came first; the body half and the reasoning behind its different
+shape are documented above ``ROUTING_DISCLOSURE_MARKERS`` further down.
 
 WHY THIS EXISTS
 ---------------
@@ -67,6 +72,8 @@ direction the worst a client can do by forging the header is suppress its own
 response headers, which harms nobody.
 """
 
+import json
+import re
 from collections.abc import Iterable
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -206,9 +213,211 @@ def apply_external_header_policy(
     )
 
 
+# ---------------------------------------------------------------------------
+# ERROR BODIES
+#
+# The header policy above closes the header route. Error BODIES are a second,
+# independent route, and they leak worse: not our vendor's facts but OUR OWN
+# routing decisions. Measured live on the external router, 2026-08-01, from a
+# request whose only fault was a misspelled ``role``:
+#
+#   litellm.BadRequestError: Not allowed to access model due to tags
+#   configuration. Passed model=gpt-5.6-luna-openai and
+#   tags=['!pin:anthropic', '!pin:openai'] No fallback model group found for
+#   original model_group=gpt-5.6-luna-openai.
+#   Fallbacks=[{'gpt-5.4': ['gpt-5.4-openai']}, ... 7 groups ...]
+#
+# Four disclosures in one string: it NAMES THE GATEWAY SOFTWARE, publishes the
+# whole internal fallback table, exposes internal model-group naming, and hands
+# over the deny-tag mechanism -- syntax and values -- that is the only thing
+# keeping this key on our hyperscaler credits rather than our direct vendor
+# accounts. We were publishing the control to the party it constrains.
+#
+# It is not an edge case: 3 of 4 ordinary client mistakes reproduced it
+# (temperature out of range, negative max_tokens, a bad role), so it fires on
+# any 4xx from the primary leg during normal operation.
+#
+# WHY A DENYLIST HERE, WHEN THE HEADER POLICY IS DELIBERATELY AN ALLOWLIST
+# -----------------------------------------------------------------------
+# Header NAMES are a closed vocabulary, so "keep these, drop the rest" is
+# expressible. An error MESSAGE is free text, and the useful part is written by
+# the upstream: "max_tokens: Field required" is worth forwarding and cannot be
+# enumerated in advance. An allowlist over free text degenerates to "return
+# nothing", which is a real cost -- an external caller who cannot see why their
+# request was rejected files a ticket we then answer by hand.
+#
+# So the policy is two independent controls, and a message must pass BOTH:
+#
+#   1. Markers -- known internal vocabulary. Catches the shapes we measured.
+#   2. A LENGTH CAP -- shape, not vocabulary. Catches dumps whose wording we
+#      have never seen, which is the failure mode a marker list has by
+#      construction. Measured: the leak is 1150 chars; the legitimate 403 that
+#      names the key's own model entitlement is 229; upstream validation
+#      messages are far shorter still.
+#
+# Then a FINAL RE-CHECK over the serialized result, so a marker hiding in a
+# field this code did not know to visit still fails closed.
+# ---------------------------------------------------------------------------
+
+#: Internal vocabulary that must never reach an external caller. Lowercase;
+#: matched as substrings against the message AFTER the ``litellm.`` prefix is
+#: stripped, so an upstream message LiteLLM merely wrapped is still forwarded.
+ROUTING_DISCLOSURE_MARKERS: tuple[str, ...] = (
+    "litellm",  # names the gateway software
+    "model_group",  # internal routing vocabulary
+    "fallback",  # the routing table itself
+    "tags=",  # the deny-tag mechanism ...
+    "tags configuration",  # ... and how it is described
+    "deployment",  # Azure-shaped internal topology
+    "api_base",  # upstream account URL
+    "api_key",
+)
+
+#: A message longer than this is a dump, not an explanation. Sits between the
+#: measured legitimate maximum (229) and the measured leak (1150), nearer the
+#: former: anything in between is far likelier to be a dump than a useful
+#: sentence, and the cost of being wrong is a generic message rather than a leak.
+MAX_EXTERNAL_ERROR_MESSAGE_CHARS = 400
+
+#: Keys whose string values are error prose. Visited at any depth so both
+#: dialects are covered -- OpenAI's {"error":{"message":...}} and Anthropic's
+#: {"type":"error","error":{"message":...}} -- without hardcoding either shape.
+_MESSAGE_KEYS: frozenset[str] = frozenset(("message", "detail", "error_message"))
+
+#: Strips a leading ``litellm.SomeError:`` so an upstream message that LiteLLM
+#: only wrapped survives the marker test on its own merits.
+_LITELLM_PREFIX = re.compile(r"^\s*litellm\.\w*(?:Error|Exception)\s*:\s*", re.IGNORECASE)
+
+_GENERIC_CLIENT_ERROR = "Invalid request."
+_GENERIC_SERVER_ERROR = "Internal error."
+
+
+def _generic_message(status: int) -> str:
+    return _GENERIC_CLIENT_ERROR if status < 500 else _GENERIC_SERVER_ERROR
+
+
+def _generic_body(status: int) -> bytes:
+    """The replacement body, assembled without a dict literal.
+
+    Concatenation rather than ``json.dumps({...})`` so the module carries no
+    mutable collection for this (the LIT002 ratchet), while the message itself
+    still goes through ``json.dumps`` -- it is the only part that could ever need
+    escaping, and hardcoding the escaped form would let it drift from
+    ``_generic_message``.
+    """
+    return (
+        b'{"error": {"message": '
+        + json.dumps(_generic_message(status)).encode("utf-8")
+        + b', "type": "invalid_request_error"}}'
+    )
+
+
+def sanitize_error_message(message: str, status: int) -> str:
+    """One error string's external form."""
+    stripped = _LITELLM_PREFIX.sub("", message, count=1).strip()
+    if not stripped:
+        return _generic_message(status)
+    lowered = stripped.lower()
+    if any(marker in lowered for marker in ROUTING_DISCLOSURE_MARKERS):
+        return _generic_message(status)
+    if len(stripped) > MAX_EXTERNAL_ERROR_MESSAGE_CHARS:
+        return _generic_message(status)
+    return stripped
+
+
+def _sanitize_tree(root: object, status: int) -> object:
+    """Rewrite every error-prose string in a decoded JSON body, in place.
+
+    ITERATIVE, with an explicit stack, rather than the obvious recursion. Two
+    reasons, and the CI gate that rejects unignored recursive functions is right
+    on both counts:
+
+    1. The input is an UPSTREAM-CONTROLLED error body. Recursion depth would be
+       attacker-influenced, and a deeply nested document would raise
+       RecursionError from inside a security control -- i.e. fail open unless
+       every caller remembered to catch it.
+    2. Depth is now bounded by the heap rather than the C stack.
+
+    Mutates in place: the tree comes from ``json.loads`` on bytes we are about to
+    discard, so nothing else can observe it, and rebuilding it would allocate a
+    second copy of every error body for no benefit.
+    """
+    # A traversal worklist is the case a mutable collection exists for. The
+    # immutable alternative -- rebuilding a tuple per visited node -- makes this
+    # O(n^2) in document depth, and the body is upstream-supplied, so depth is
+    # attacker-influenced. The list never escapes this function, so nothing else
+    # can grow or rewrite it.
+    #
+    # The suppression must sit ON the offending line -- the checker ignores it
+    # anywhere else -- AND must be short enough that the formatter does not split
+    # the statement across lines, which moves the comment off the reported line
+    # and silently un-suppresses it.
+    stack = [root]  # mutable-ok: traversal worklist; a tuple rebuild is O(n^2) in depth
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in _MESSAGE_KEYS and isinstance(value, str):
+                    node[key] = sanitize_error_message(value, status)
+                elif isinstance(value, (dict, list)):
+                    stack.append(value)
+        elif isinstance(node, list):
+            for item in node:
+                if isinstance(item, (dict, list)):
+                    stack.append(item)
+    return root
+
+
+def sanitize_error_body(raw: bytes, status: int) -> bytes:
+    """One error response body's external form.
+
+    Fails CLOSED in both uncertain cases: a body that does not parse but carries
+    internal vocabulary is replaced, and so is a body that still carries it after
+    the tree walk -- the latter being the guard against a field this code does
+    not know to visit.
+    """
+    generic = _generic_body(status)
+
+    def _is_dirty(candidate: bytes) -> bool:
+        lowered = candidate.decode("utf-8", errors="replace").lower()
+        return any(marker in lowered for marker in ROUTING_DISCLOSURE_MARKERS)
+
+    try:
+        decoded = json.loads(raw)
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        # RecursionError is not hypothetical and is NOT a ValueError: CPython's
+        # JSON decoder recurses, and this body is upstream-controlled. Letting it
+        # escape would take down a security control with an unhandled exception.
+        # Not JSON: an HTML error page or a plain-text 502 from something in
+        # front of us. Only replaced if it actually carries internal vocabulary.
+        return generic if _is_dirty(raw) else raw
+
+    sanitized = json.dumps(_sanitize_tree(decoded, status)).encode("utf-8")
+    return generic if _is_dirty(sanitized) else sanitized
+
+
+def _with_content_length(headers: Iterable[tuple[bytes, bytes]], length: int) -> tuple[tuple[bytes, bytes], ...]:
+    """Re-frame a held response start for a body whose length we just changed.
+
+    ``transfer-encoding`` is dropped rather than preserved: the body is fully
+    buffered by the time this runs, so it is sent as one complete chunk, and a
+    stale chunked declaration alongside a content-length is a framing error that
+    presents as a client hang.
+    """
+    kept = tuple(
+        (name, value)
+        for name, value in headers
+        if name.decode("latin-1").lower() not in ("content-length", "transfer-encoding")
+    )
+    return kept + ((b"content-length", str(length).encode("latin-1")),)
+
+
 class ExternalAudienceHeaderMiddleware:
     """
     Pure ASGI (never BaseHTTPMiddleware -- that degrades streaming).
+
+    Applies BOTH external policies: the header allowlist, and the error-body
+    sanitizer above.
 
     Must be registered LAST in proxy_server.py: Starlette makes the last-added
     middleware outermost, and this has to see the final header set produced by
@@ -223,12 +432,48 @@ class ExternalAudienceHeaderMiddleware:
             await self.app(scope, receive, send)
             return
 
-        async def send_with_minimal_headers(message: Message) -> None:
-            # "http.response.start" is emitted exactly once, before any body
-            # chunk, so this covers streaming and error responses identically.
+        # Only set for a response being held for sanitization. A successful
+        # response is forwarded chunk by chunk exactly as before -- buffering one
+        # would break streaming, which is most of this proxy's traffic.
+        held_start: Message | None = None
+        buffered = bytearray()
+
+        async def send_external(message: Message) -> None:
+            nonlocal held_start
+
             if message["type"] == "http.response.start":
+                # Emitted exactly once, before any body chunk, so this covers
+                # streaming and error responses identically.
                 raw_headers: Iterable[tuple[bytes, bytes]] = message.get("headers") or ()
                 message["headers"] = apply_external_header_policy(raw_headers)
+
+                if message.get("status", 200) >= 400:
+                    # Held, not forwarded: content-length cannot be corrected
+                    # once the start message is on the wire, and the sanitized
+                    # body is a different length than the original.
+                    held_start = message
+                    return
+                await send(message)
+                return
+
+            if message["type"] == "http.response.body" and held_start is not None:
+                buffered.extend(message.get("body") or b"")
+                if message.get("more_body", False):
+                    return
+
+                status = held_start.get("status", 500)
+                sanitized = sanitize_error_body(bytes(buffered), status)
+                held_start["headers"] = _with_content_length(held_start["headers"], len(sanitized))
+                await send(held_start)
+                held_start = None
+                # Reuse the final body message rather than constructing a new
+                # one: it is already the right shape, and this is the last chunk
+                # so `more_body` must be False regardless of what it said.
+                message["body"] = sanitized
+                message["more_body"] = False
+                await send(message)
+                return
+
             await send(message)
 
-        await self.app(scope, receive, send_with_minimal_headers)
+        await self.app(scope, receive, send_external)
