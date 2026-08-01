@@ -116,12 +116,15 @@ from litellm.proxy._experimental.mcp_server.utils import (
     get_server_prefix,
     interpolate_headers,
     is_short_mcp_tool_prefix_enabled,
-    is_tool_name_prefixed,
     iter_known_server_prefixes,
+    iter_known_tool_name_spellings,
+    match_known_server_prefix,
+    match_known_tool_name,
     merge_mcp_headers,
     normalize_server_name,
+    openapi_tool_name,
     parse_admin_env_vars,
-    split_server_prefix_from_name,
+    strip_known_server_prefix,
     validate_mcp_server_name,
 )
 from litellm.proxy._types import (
@@ -901,6 +904,20 @@ def _extract_upstream_auth_failure(
     ``__context__`` chain last. A response raised while handling the real failure can therefore never
     shadow the causal one."""
     return upstream_auth_challenge(exc)
+
+
+def _obo_retry_applies(server: MCPServer, subject_token: str | None) -> bool:
+    """Whether an upstream 401/403 should invalidate the minted credential and retry once.
+
+    ``oauth2_token_exchange`` can only mint from an inbound subject token, so with no token there is
+    nothing to re-mint and the plain single call is correct. ``oauth2_id_jag`` also sources its
+    subject from the identity assertion stored for the user at SSO login, so it qualifies whether or
+    not the caller presented a token of its own; gating it on the inbound token would leave a
+    store-sourced bearer un-invalidated and replayed until its TTL.
+    """
+    if server.auth_type == MCPAuth.oauth2_id_jag:
+        return True
+    return server.auth_type == MCPAuth.oauth2_token_exchange and bool(subject_token)
 
 
 def _warn_on_server_name_fields(
@@ -1783,7 +1800,7 @@ class MCPServerManager:
 
                     # Generate tool name (without prefix initially)
                     operation_id = operation.get("operationId", f"{method}_{path.replace('/', '_')}")
-                    base_tool_name = operation_id.replace(" ", "_").lower()
+                    base_tool_name = openapi_tool_name(operation_id)
 
                     # Add server prefix to tool name
                     prefixed_tool_name = add_server_prefix_to_name(base_tool_name, server_prefix)
@@ -2411,6 +2428,11 @@ class MCPServerManager:
                 and not is_admitted_subject
                 and _user_has_admin_view(user_api_key_auth)
                 and not has_explicit_object_permission
+                # An entitlement attached to the HUMAN binds them whatever their role: it is the
+                # person's scope, not the credential's, so an admin role is not a waiver of it. An
+                # UNRESOLVED entitlement also skips the shortcut, so the resolver denies rather than
+                # handing over the whole registry on a transient fault.
+                and not await MCPRequestHandler._user_places_mcp_ceiling(user_api_key_auth)
             ):
                 verbose_logger.debug("Admin user without explicit object_permission - returning all servers")
                 return list(self.get_registry().keys())
@@ -4180,10 +4202,8 @@ class MCPServerManager:
             # Register every known prefix form (alias, server_name, server_id,
             # short ID) so call_tool can resolve regardless of which form a
             # caller / cached client is using.
-            self.tool_name_to_mcp_server_name_mapping[original_name] = prefix
-            for known_prefix in iter_known_server_prefixes(server):
-                qualified = add_server_prefix_to_name(original_name, known_prefix)
-                self.tool_name_to_mcp_server_name_mapping[qualified] = prefix
+            for spelling in iter_known_tool_name_spellings(original_name, server):
+                self.tool_name_to_mcp_server_name_mapping[spelling] = prefix
 
         verbose_logger.info(f"Successfully fetched {len(prefixed_tools)} tools from server {server.name}")
         return prefixed_tools
@@ -4256,28 +4276,29 @@ class MCPServerManager:
 
     def check_allowed_or_banned_tools(self, tool_name: str, server: MCPServer) -> bool:
         """
-        Check if the tool is allowed or banned for the given server
+        Check if the tool is allowed or banned for the given server.
+
+        ``tool_name`` is bare: every caller resolves the boundary against the server's
+        registered prefixes before dispatch (``server.py``'s ``original_tool_name``, the
+        Responses handler's ``sanitized_tool_name``). Configured entries are matched by
+        deriving the spellings routing accepts, never by stripping the entry, which would
+        cut a second boundary out of a native name that opens with the server prefix.
         """
         from litellm.proxy._experimental.mcp_server.utils import (
             server_applies_tool_allowlist,
         )
 
         if server_applies_tool_allowlist(server):
-            if not server.allowed_tools:
-                return False
-            return tool_name in server.allowed_tools or f"{server.name}-{tool_name}" in server.allowed_tools
-        if server.disallowed_tools:
-            return (
-                tool_name not in server.disallowed_tools and f"{server.name}-{tool_name}" not in server.disallowed_tools
-            )
-        return True
+            return match_known_tool_name(tool_name, server, server.allowed_tools or ()) is not None
+        return match_known_tool_name(tool_name, server, server.disallowed_tools or ()) is None
 
     def validate_allowed_params(self, tool_name: str, arguments: dict[str, Any], server: MCPServer) -> None:
         """
         Filter arguments to only include allowed parameters for the given tool.
 
         Args:
-            tool_name: Name of the tool (with or without prefix)
+            tool_name: Bare tool name, already resolved against the server's
+                registered prefixes by the caller
             arguments: Dictionary of arguments to filter
             server: MCPServer configuration
 
@@ -4287,23 +4308,12 @@ class MCPServerManager:
         Raises:
             HTTPException: If allowed_params is configured for this tool but arguments contain disallowed params
         """
-        from litellm.proxy._experimental.mcp_server.utils import (
-            split_server_prefix_from_name,
-        )
-
-        # If no allowed_params configured, return all arguments
-        if not server.allowed_params:
+        allowed_params = server.allowed_params or {}
+        matched = match_known_tool_name(tool_name, server, allowed_params)
+        if matched is None:
             return
 
-        # Get the unprefixed tool name to match against config
-        unprefixed_tool_name, _ = split_server_prefix_from_name(tool_name)
-
-        # Check both prefixed and unprefixed tool names
-        allowed_params_list = server.allowed_params.get(tool_name) or server.allowed_params.get(unprefixed_tool_name)
-
-        # If this tool doesn't have allowed_params specified, allow all params
-        if allowed_params_list is None:
-            return None
+        allowed_params_list = allowed_params[matched]
 
         # Filter arguments to only include allowed parameters
         disallowed_params = [param for param in arguments.keys() if param not in allowed_params_list]
@@ -4385,8 +4395,11 @@ class MCPServerManager:
             global_mcp_tool_registry,
         )
 
-        # Get the tool from the registry
-        tool = global_mcp_tool_registry.get_tool(f"{server.name}-{tool_name}")
+        # Registration used add_server_prefix_to_name(base, get_server_prefix(server)),
+        # and tool_name is the bare base name by the time call_tool reaches here, so
+        # rebuilding the key the same way reproduces it exactly
+        registry_key = add_server_prefix_to_name(tool_name, get_server_prefix(server))
+        tool = global_mcp_tool_registry.get_tool(registry_key)
         if tool is None:
             # Tool not found in registry
             error_msg = f"OpenAPI tool {tool_name} not found in registry"
@@ -4423,12 +4436,17 @@ class MCPServerManager:
         arguments: dict[str, Any],
         server_name: str,
         user_api_key_auth: Optional[UserAPIKeyAuth],
-        proxy_logging_obj: ProxyLogging,
+        proxy_logging_obj: ProxyLogging | None,
         server: MCPServer,
         raw_headers: Optional[dict[str, str]] = None,
     ) -> dict[str, Any]:
         """
         Run pre-call checks and guardrail hooks for an MCP tool call.
+
+        Authorization runs unconditionally; only the guardrail hooks, which are
+        dispatched through ``proxy_logging_obj``, depend on a logger being
+        present. An absent logger must never be able to turn an authorization
+        decision into a no-op.
 
         Returns a dict that may contain:
         - "arguments": hook-modified tool arguments (only if changed)
@@ -4456,6 +4474,10 @@ class MCPServerManager:
             arguments=arguments,
             server=server,
         )
+
+        hook_result: dict[str, Any] = {}
+        if proxy_logging_obj is None:
+            return hook_result
 
         # Extract incoming Bearer token from raw request headers so
         # guardrails like MCPJWTSigner can verify + re-sign it (FR-5).
@@ -4486,7 +4508,6 @@ class MCPServerManager:
         # Convert to LLM format for existing guardrail compatibility
         synthetic_llm_data = proxy_logging_obj._convert_mcp_to_llm_format(mcp_request_obj, pre_hook_kwargs)
 
-        hook_result: dict[str, Any] = {}
         try:
             # Use standard pre_call_hook
             modified_data = await proxy_logging_obj.pre_call_hook(
@@ -4779,7 +4800,7 @@ class MCPServerManager:
             arguments=arguments,
         )
 
-        if mcp_server.auth_type in (MCPAuth.oauth2_token_exchange, MCPAuth.oauth2_id_jag) and subject_token:
+        if _obo_retry_applies(mcp_server, subject_token):
             # OBO / ID-JAG: the exchanged token may have been revoked/rotated upstream since it was
             # cached, so an upstream 401 gets one invalidate + re-mint + retry. Gated to these modes;
             # all others keep the plain single call below.
@@ -5112,19 +5133,17 @@ class MCPServerManager:
         # Allow validation and modification of tool calls before execution
         # Using standard pre_call_hook
         #########################################################
-        hook_result: dict[str, Any] = {}
-        if proxy_logging_obj:
-            hook_result = await self.pre_call_tool_check(
-                name=name,
-                arguments=arguments,
-                server_name=server_name,
-                user_api_key_auth=user_api_key_auth,
-                proxy_logging_obj=proxy_logging_obj,
-                server=mcp_server,
-                raw_headers=raw_headers,
-            )
-            if "arguments" in hook_result:
-                arguments = hook_result["arguments"]
+        hook_result: dict[str, Any] = await self.pre_call_tool_check(
+            name=name,
+            arguments=arguments,
+            server_name=server_name,
+            user_api_key_auth=user_api_key_auth,
+            proxy_logging_obj=proxy_logging_obj,
+            server=mcp_server,
+            raw_headers=raw_headers,
+        )
+        if "arguments" in hook_result:
+            arguments = hook_result["arguments"]
 
         # Prepare tasks for during hooks
         tasks = []
@@ -5246,7 +5265,7 @@ class MCPServerManager:
             for tool in tools:
                 # The tool.name here is already prefixed from _get_tools_from_server
                 # Extract original name for mapping
-                original_name, _ = split_server_prefix_from_name(tool.name)
+                original_name = strip_known_server_prefix(tool.name, server)
                 self.tool_name_to_mcp_server_name_mapping[original_name] = server.name
                 self.tool_name_to_mcp_server_name_mapping[tool.name] = server.name
 
@@ -5283,13 +5302,10 @@ class MCPServerManager:
 
         # If not found and tool name is prefixed, extract the prefix and
         # match against any known form.
-        if is_tool_name_prefixed(tool_name, known_server_prefixes=set(prefix_to_server.keys())):
-            (
-                original_tool_name,
-                server_name_from_prefix,
-            ) = split_server_prefix_from_name(tool_name)
-            normalised_prefix = normalize_server_name(server_name_from_prefix)
-            matched_server = prefix_to_server.get(normalised_prefix)
+        matched = match_known_server_prefix(tool_name, prefix_to_server.keys())
+        if matched is not None:
+            matched_prefix, original_tool_name = matched
+            matched_server = prefix_to_server.get(matched_prefix)
             if matched_server is not None and (
                 original_tool_name in self.tool_name_to_mcp_server_name_mapping
                 or tool_name in self.tool_name_to_mcp_server_name_mapping
@@ -5322,7 +5338,7 @@ class MCPServerManager:
                 ]
             }
         )
-        db_mcp_servers = [LiteLLM_MCPServerTable(**r.model_dump()) for r in raw_rows]
+        db_mcp_servers = [LiteLLM_MCPServerTable.model_validate(r.model_dump()) for r in raw_rows]
         verbose_logger.info(f"Found {len(db_mcp_servers)} MCP servers in database")
 
         previous_registry = self.registry
