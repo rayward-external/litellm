@@ -105,7 +105,20 @@ class TestBlockedResponseUsage:
         )
 
         with (
-            patch.object(ep, "_read_request_body", new=AsyncMock(return_value={})),
+            # A valid body: the endpoint rejects one missing model/messages/
+            # max_tokens before dispatch, and this test is about the guardrail
+            # ModifyResponseException path further down.
+            patch.object(
+                ep,
+                "_read_request_body",
+                new=AsyncMock(
+                    return_value={
+                        "model": "claude-3-5-sonnet-20240620",
+                        "max_tokens": 1024,
+                        "messages": [{"role": "user", "content": "hi"}],
+                    }
+                ),
+            ),
             patch.object(
                 ep.ProxyBaseLLMRequestProcessing,
                 "base_process_llm_request",

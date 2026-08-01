@@ -103,6 +103,45 @@ def test_first_missing_field_is_reported_when_several_are_absent():
     assert _missing_required_anthropic_field({}) == "model"
 
 
+# --- server-side defaults ------------------------------------------------
+# The request processor fills `model` and `max_tokens` from the proxy's own
+# settings before dispatch (common_request_processing.py:1195-1208):
+# `completion_model`/`user_model` for the model, `user_max_tokens` for the cap.
+# A proxy started with `--model` or `--max_tokens` legitimately serves a body
+# that omits them, so validating the raw body ALONE would reject requests this
+# deployment can answer.
+
+
+def test_max_tokens_may_come_from_the_server_default():
+    body = _without("max_tokens")
+    assert _missing_required_anthropic_field(body) == "max_tokens"
+    assert _missing_required_anthropic_field(body, server_max_tokens=4096) is None
+
+
+def test_model_may_come_from_the_server_default():
+    body = _without("model")
+    assert _missing_required_anthropic_field(body) == "model"
+    assert _missing_required_anthropic_field(body, server_model="gpt-4o") is None
+
+
+def test_messages_has_no_server_default_and_stays_required():
+    """`messages` is the request; nothing on the server can supply it."""
+    body = _without("messages")
+    assert (
+        _missing_required_anthropic_field(
+            body, server_model="gpt-4o", server_max_tokens=4096
+        )
+        == "messages"
+    )
+
+
+def test_server_defaults_do_not_mask_a_different_missing_field():
+    assert (
+        _missing_required_anthropic_field({"messages": []}, server_max_tokens=4096)
+        == "model"
+    )
+
+
 def test_error_message_does_not_leak_internals():
     """The message a caller sees must name the field, not our call stack."""
     field = _missing_required_anthropic_field(_without("max_tokens"))

@@ -68,8 +68,23 @@ def _strip_total_tokens_from_anthropic_response(response: Any) -> None:
 ANTHROPIC_MESSAGES_REQUIRED_FIELDS = ("model", "messages", "max_tokens")
 
 
-def _missing_required_anthropic_field(data: Mapping[str, object]) -> Optional[str]:
+def _missing_required_anthropic_field(
+    data: Mapping[str, object],
+    *,
+    server_model: object = None,
+    server_max_tokens: object = None,
+) -> Optional[str]:
     """Return the first required /v1/messages field that is absent or null.
+
+    ``server_model`` / ``server_max_tokens`` carry the proxy's own defaults, and
+    a field they will supply is NOT missing. This is not a nicety — the request
+    processor fills both in before dispatch
+    (``common_request_processing.py:1195-1208``): ``completion_model`` /
+    ``user_model`` for the model, ``user_max_tokens`` for the cap. A proxy
+    started with ``--max_tokens`` or ``--model`` legitimately serves a body that
+    omits them, so validating the raw body alone would reject requests this
+    deployment can answer. ``messages`` has no server-side default and is
+    therefore unconditionally required.
 
     ``Mapping[str, object]`` rather than ``dict``/``Any``: the body is parsed
     JSON, so the value type is genuinely arbitrary, and this function only ever
@@ -101,8 +116,16 @@ def _missing_required_anthropic_field(data: Mapping[str, object]) -> Optional[st
     fallback chain (internal model-group names included) to the caller.
     """
     for field in ANTHROPIC_MESSAGES_REQUIRED_FIELDS:
-        if data.get(field) is None:
-            return field
+        if data.get(field) is not None:
+            continue
+        # Straight conditionals rather than a {field: default} lookup: building
+        # a dict here trips LIT002 (mutable-collection construction) for no
+        # benefit at two entries.
+        if field == "model" and server_model is not None:
+            continue
+        if field == "max_tokens" and server_max_tokens is not None:
+            continue
+        return field
     return None
 
 
@@ -140,7 +163,11 @@ async def anthropic_response(
     # letting it fail as a TypeError deep in the handler and surface as a 500.
     # See _missing_required_anthropic_field for why the absent case needs its own
     # check when the wrong-type case is already validated downstream.
-    missing_field = _missing_required_anthropic_field(data)
+    missing_field = _missing_required_anthropic_field(
+        data,
+        server_model=general_settings.get("completion_model") or user_model,
+        server_max_tokens=user_max_tokens,
+    )
     if missing_field is not None:
         return JSONResponse(
             status_code=400,
