@@ -85,6 +85,7 @@ class BudgetWindow(NamedTuple):
     max_budget: float
     spent: float
 
+
 #: Header the windows are published under. Deliberately the SAME name the
 #: lifetime cap already used, rather than a new one:
 #:
