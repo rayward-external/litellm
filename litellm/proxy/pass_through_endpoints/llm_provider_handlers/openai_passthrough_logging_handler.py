@@ -5,7 +5,6 @@ Handles cost tracking and logging for OpenAI passthrough endpoints, specifically
 """
 
 from datetime import datetime
-from typing import List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 import httpx
@@ -36,18 +35,12 @@ from litellm.proxy.pass_through_endpoints.llm_provider_handlers.base_passthrough
 from litellm.proxy.pass_through_endpoints.success_handler import (
     PassThroughEndpointLogging,
 )
+from litellm.types.llms.openai import ResponsesAPIResponse
 from litellm.types.passthrough_endpoints.pass_through_endpoints import (
     EndpointType,
     PassthroughStandardLoggingPayload,
 )
-from litellm.types.llms.openai import ResponsesAPIResponse
-from litellm.types.utils import (
-    EmbeddingResponse,
-    ImageResponse,
-    LlmProviders,
-    PassthroughCallTypes,
-    Usage,
-)
+from litellm.types.utils import ImageResponse, LlmProviders, PassthroughCallTypes
 from litellm.utils import ModelResponse, TextCompletionResponse
 
 # Hostname/URL classification for OpenAI-compatible APIs lives in
@@ -184,7 +177,7 @@ def _is_responses_item_path(path: str) -> bool:
     return False
 
 
-def _is_openai_compatible_host(hostname: Optional[str]) -> bool:
+def _is_openai_compatible_host(hostname: str | None) -> bool:
     """True if the hostname is OpenAI proper or one of the Azure OpenAI domains.
 
     Narrow hostname-only test for OpenAI proper / the Azure OpenAI domains.
@@ -196,8 +189,8 @@ def _is_openai_compatible_host(hostname: Optional[str]) -> bool:
     return _hostname_matches(hostname, _OPENAI_HOSTNAMES) or _hostname_matches(hostname, _AZURE_OPENAI_HOSTNAMES)
 
 
-def _in_openai_scope(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
-    """Scope gate shared by every `is_openai_*_route` helper.
+def _is_openai_compatible_url(url_route: str | None) -> bool:
+    """True if the URL targets an OpenAI-compatible API surface.
 
     Each helper used to gate on `_is_openai_compatible_host`, a hardcoded tuple
     of OpenAI/Azure hostnames. Any other OpenAI-compatible upstream — Fireworks
@@ -434,7 +427,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
     def _get_user_from_metadata(
         self,
         passthrough_logging_payload: PassthroughStandardLoggingPayload,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Extract user information from passthrough logging payload."""
         request_body = passthrough_logging_payload.get("request_body")
         if request_body:
@@ -472,7 +465,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
             return cost
         except Exception as e:
-            verbose_proxy_logger.warning(f"Error calculating image generation cost: {str(e)}")
+            verbose_proxy_logger.warning(f"Error calculating image generation cost: {e!s}")
             return 0.0
 
     @staticmethod
@@ -506,7 +499,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
             return cost
         except Exception as e:
-            verbose_proxy_logger.warning(f"Error calculating image editing cost: {str(e)}")
+            verbose_proxy_logger.warning(f"Error calculating image editing cost: {e!s}")
             return 0.0
 
     @staticmethod
@@ -515,7 +508,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         httpx_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: str,
-    ) -> Tuple[ResponsesAPIResponse, float]:
+    ) -> tuple[ResponsesAPIResponse, float]:
         """Transform a Responses API raw response into a ResponsesAPIResponse
         and compute its cost.
 
@@ -670,15 +663,9 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
         try:
             response_cost = 0.0
-            litellm_model_response: Optional[
-                Union[
-                    ModelResponse,
-                    TextCompletionResponse,
-                    ImageResponse,
-                    ResponsesAPIResponse,
-                    EmbeddingResponse,
-                ]
-            ] = None
+            litellm_model_response: (
+                ModelResponse | TextCompletionResponse | ImageResponse | ResponsesAPIResponse | None
+            ) = None
             handler_instance = OpenAIPassthroughLoggingHandler()
 
             # Resolve the pricing provider. A generic pass-through
@@ -722,7 +709,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             kwargs["custom_llm_provider"] = custom_llm_provider
 
             # Extract user information for tracking
-            passthrough_logging_payload: Optional[PassthroughStandardLoggingPayload] = kwargs.get(
+            passthrough_logging_payload: PassthroughStandardLoggingPayload | None = kwargs.get(
                 "passthrough_logging_payload"
             )
             if passthrough_logging_payload:
@@ -771,7 +758,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             }
 
         except Exception as e:
-            verbose_proxy_logger.error(f"Error in OpenAI passthrough cost tracking: {str(e)}")
+            verbose_proxy_logger.error(f"Error in OpenAI passthrough cost tracking: {e!s}")
             # Fall back to base handler without cost tracking
             base_handler = OpenAIPassthroughLoggingHandler()
             return base_handler.passthrough_chat_handler(
@@ -792,7 +779,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         all_chunks: list,
         litellm_logging_obj: LiteLLMLoggingObj,
         model: str,
-    ) -> Optional[Union[ModelResponse, TextCompletionResponse]]:
+    ) -> ModelResponse | TextCompletionResponse | None:
         """
         Builds complete response from raw chunks for OpenAI streaming responses.
 
@@ -840,7 +827,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             return complete_streaming_response
 
         except Exception as e:
-            verbose_proxy_logger.error(f"Error building complete streaming response: {str(e)}")
+            verbose_proxy_logger.error(f"Error building complete streaming response: {e!s}")
             return None
 
     @staticmethod
@@ -893,7 +880,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         request_body: dict,
         endpoint_type: EndpointType,
         start_time: datetime,
-        all_chunks: List[str],
+        all_chunks: list[str],
         end_time: datetime,
     ) -> PassThroughEndpointLoggingTypedDict:
         """
@@ -975,7 +962,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             }
 
             # Extract user information for tracking
-            passthrough_logging_payload: Optional[PassthroughStandardLoggingPayload] = (
+            passthrough_logging_payload: PassthroughStandardLoggingPayload | None = (
                 litellm_logging_obj.model_call_details.get("passthrough_logging_payload")
             )
             if passthrough_logging_payload:
@@ -1012,7 +999,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             }
 
         except Exception as e:
-            verbose_proxy_logger.error(f"Error in OpenAI streaming passthrough cost tracking: {str(e)}")
+            verbose_proxy_logger.error(f"Error in OpenAI streaming passthrough cost tracking: {e!s}")
             return {
                 "result": None,
                 "kwargs": {},

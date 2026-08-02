@@ -7,7 +7,7 @@
 
 import asyncio
 import traceback
-from typing import Any, BinaryIO, Optional, Union, cast, get_args
+from typing import Any, BinaryIO, cast, get_args
 
 import httpx
 from fastapi import (
@@ -25,6 +25,9 @@ from fastapi import (
 import litellm
 from litellm import CreateFileRequest, get_secret_str
 from litellm._logging import verbose_proxy_logger
+from litellm.litellm_core_utils.cloud_storage_security import (
+    is_managed_cloud_storage_uri,
+)
 from litellm.llms.base_llm.files.transformation import BaseFileEndpoints
 from litellm.proxy._types import *
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
@@ -37,9 +40,6 @@ from litellm.proxy.common_utils.openai_endpoint_utils import (
     get_custom_llm_provider_from_request_body,
     get_custom_llm_provider_from_request_headers,
     get_custom_llm_provider_from_request_query,
-)
-from litellm.litellm_core_utils.cloud_storage_security import (
-    is_managed_cloud_storage_uri,
 )
 from litellm.proxy.openai_files_endpoints.common_utils import (
     _is_base64_encoded_unified_file_id,
@@ -97,7 +97,7 @@ def get_files_provider_config(
     return None
 
 
-def get_first_json_object(file_source: Union[bytes, BinaryIO]) -> Optional[dict]:
+def get_first_json_object(file_source: bytes | BinaryIO) -> dict | None:
     try:
         if isinstance(file_source, (bytes, bytearray)):
             newline = file_source.find(b"\n")
@@ -112,7 +112,7 @@ def get_first_json_object(file_source: Union[bytes, BinaryIO]) -> Optional[dict]
         return None
 
 
-def get_model_from_json_obj(json_object: dict) -> Optional[str]:
+def get_model_from_json_obj(json_object: dict) -> str | None:
     body = json_object.get("body", {}) or {}
     model = body.get("model")
 
@@ -120,7 +120,7 @@ def get_model_from_json_obj(json_object: dict) -> Optional[str]:
 
 
 async def _deprecated_loadbalanced_create_file(
-    llm_router: Optional[Router],
+    llm_router: Router | None,
     router_model: str,
     _create_file_request: CreateFileRequest,
 ) -> OpenAIFileObject:
@@ -135,17 +135,17 @@ async def _deprecated_loadbalanced_create_file(
 
 
 async def route_create_file(
-    llm_router: Optional[Router],
+    llm_router: Router | None,
     _create_file_request: CreateFileRequest,
     purpose: OpenAIFilesPurpose,
     proxy_logging_obj: ProxyLogging,
     user_api_key_dict: UserAPIKeyAuth,
-    target_model_names_list: List[str],
+    target_model_names_list: list[str],
     is_router_model: bool,
-    router_model: Optional[str],
+    router_model: str | None,
     custom_llm_provider: str,
-    model: Optional[str] = None,
-    target_storage: Optional[str] = "default",
+    model: str | None = None,
+    target_storage: str | None = "default",
 ) -> OpenAIFileObject:
     """
     Route file creation request to the appropriate provider.
@@ -316,10 +316,10 @@ async def create_file(
     purpose: str = Form(...),
     target_model_names: str = Form(default=""),
     target_storage: str = Form(default="default"),
-    provider: Optional[str] = None,
+    provider: str | None = None,
     custom_llm_provider: str = Form(default="openai"),
     file: UploadFile = File(...),
-    litellm_metadata: Optional[str] = Form(default=None),
+    litellm_metadata: str | None = Form(default=None),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
@@ -347,12 +347,12 @@ async def create_file(
         version,
     )
 
-    data: Dict = {}
+    data: dict = {}
     try:
         # Batch uploads can be gigabytes. Starlette has already spooled the upload
         # to disk, so stream from that handle instead of reading it into memory.
         # Other uploads are small and stay in-memory bytes.
-        file_source: Union[bytes, BinaryIO]
+        file_source: bytes | BinaryIO
         if purpose == "batch":
             await file.seek(0)
             file_source = file.file
@@ -398,10 +398,10 @@ async def create_file(
         data = {}
 
         # Parse expires_after if provided
-        expires_after: Optional[FileExpiresAfter] = None
+        expires_after: FileExpiresAfter | None = None
         form_data_raw = await request.form()
-        form_data_dict: Dict[str, Any] = dict(form_data_raw)
-        extracted_litellm_metadata: Optional[Dict[str, Any]] = extract_nested_form_metadata(
+        form_data_dict: dict[str, Any] = dict(form_data_raw)
+        extracted_litellm_metadata: dict[str, Any] | None = extract_nested_form_metadata(
             form_data=form_data_dict, prefix="litellm_metadata["
         )
         expires_after_anchor = form_data_raw.get("expires_after[anchor]")
@@ -481,7 +481,7 @@ async def create_file(
         file_data = (file.filename, file_source, file.content_type)
 
         ## check if model is a loadbalanced model
-        router_model: Optional[str] = None
+        router_model: str | None = None
         is_router_model = False
         if litellm.enable_loadbalancing_on_batch_endpoints is True:
             json_obj = get_first_json_object(file_source)
@@ -573,9 +573,7 @@ async def create_file(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.create_file(): Exception occured - {}".format(str(e))
-        )
+        verbose_proxy_logger.exception(f"litellm.proxy.proxy_server.create_file(): Exception occured - {e!s}")
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "message", str(e.detail)),
@@ -584,7 +582,7 @@ async def create_file(
                 code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
             )
         else:
-            error_msg = f"{str(e)}"
+            error_msg = f"{e!s}"
             raise ProxyException(
                 message=getattr(e, "message", error_msg),
                 type=getattr(e, "type", "None"),
@@ -612,7 +610,7 @@ async def get_file_content(
     request: Request,
     fastapi_response: Response,
     file_id: str,
-    provider: Optional[str] = None,
+    provider: str | None = None,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
@@ -636,7 +634,7 @@ async def get_file_content(
         version,
     )
 
-    data: Dict = {"file_id": file_id}
+    data: dict = {"file_id": file_id}
     try:
         # Include original request and headers in the data
         base_llm_response_processor = ProxyBaseLLMRequestProcessing(data=data)
@@ -716,13 +714,13 @@ async def get_file_content(
                         )
                     except ValueError as e:
                         raise ProxyException(
-                            message=f"Storage backend error: {str(e)}",
+                            message=f"Storage backend error: {e!s}",
                             type="invalid_request_error",
                             param="file_id",
                             code=400,
                         )
 
-            model = cast(Optional[str], data.get("model"))
+            model = cast(str | None, data.get("model"))
             if model:
                 response = await llm_router.afile_content(
                     **{
@@ -857,7 +855,7 @@ async def get_file_content(
                 model_region=getattr(user_api_key_dict, "allowed_model_region", ""),
             )
         )
-        httpx_response: Optional[httpx.Response] = getattr(response, "response", None)
+        httpx_response: httpx.Response | None = getattr(response, "response", None)
         if httpx_response is None:
             raise ValueError(f"Invalid response - response.response is None - got {response}")
 
@@ -871,9 +869,7 @@ async def get_file_content(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.retrieve_file_content(): Exception occured - {}".format(str(e))
-        )
+        verbose_proxy_logger.exception(f"litellm.proxy.proxy_server.retrieve_file_content(): Exception occured - {e!s}")
         verbose_proxy_logger.debug(traceback.format_exc())
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -883,7 +879,7 @@ async def get_file_content(
                 code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
             )
         else:
-            error_msg = f"{str(e)}"
+            error_msg = f"{e!s}"
             raise ProxyException(
                 message=getattr(e, "message", error_msg),
                 type=getattr(e, "type", "None"),
@@ -911,7 +907,7 @@ async def get_file(
     request: Request,
     fastapi_response: Response,
     file_id: str,
-    provider: Optional[str] = None,
+    provider: str | None = None,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
@@ -934,7 +930,7 @@ async def get_file(
         version,
     )
 
-    data: Dict = {"file_id": file_id}
+    data: dict = {"file_id": file_id}
     try:
         custom_llm_provider = (
             provider
@@ -1060,7 +1056,7 @@ async def get_file(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.retrieve_file(): Exception occured - {}".format(str(e)))
+        verbose_proxy_logger.error(f"litellm.proxy.proxy_server.retrieve_file(): Exception occured - {e!s}")
         verbose_proxy_logger.debug(traceback.format_exc())
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -1070,7 +1066,7 @@ async def get_file(
                 code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
             )
         else:
-            error_msg = f"{str(e)}"
+            error_msg = f"{e!s}"
             raise ProxyException(
                 message=getattr(e, "message", error_msg),
                 type=getattr(e, "type", "None"),
@@ -1098,7 +1094,7 @@ async def delete_file(
     request: Request,
     fastapi_response: Response,
     file_id: str,
-    provider: Optional[str] = None,
+    provider: str | None = None,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
@@ -1124,7 +1120,7 @@ async def delete_file(
         version,
     )
 
-    data: Dict = {"file_id": file_id}
+    data: dict = {"file_id": file_id}
     try:
         custom_llm_provider = (
             provider
@@ -1266,9 +1262,7 @@ async def delete_file(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.delete_file(): Exception occured - {}".format(str(e))
-        )
+        verbose_proxy_logger.exception(f"litellm.proxy.proxy_server.delete_file(): Exception occured - {e!s}")
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "message", str(e.detail)),
@@ -1277,7 +1271,7 @@ async def delete_file(
                 code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
             )
         else:
-            error_msg = f"{str(e)}"
+            error_msg = f"{e!s}"
             raise ProxyException(
                 message=getattr(e, "message", error_msg),
                 type=getattr(e, "type", "None"),
@@ -1305,9 +1299,9 @@ async def list_files(
     request: Request,
     fastapi_response: Response,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
-    provider: Optional[str] = None,
-    target_model_names: Optional[str] = None,
-    purpose: Optional[str] = None,
+    provider: str | None = None,
+    target_model_names: str | None = None,
+    purpose: str | None = None,
 ):
     """
     Returns information about a specific file. that can be used across - Assistants API, Batch API 
@@ -1330,7 +1324,7 @@ async def list_files(
         version,
     )
 
-    data: Dict = {}
+    data: dict = {}
     try:
         # Include original request and headers in the data
         base_llm_response_processor = ProxyBaseLLMRequestProcessing(data=data)
@@ -1347,7 +1341,7 @@ async def list_files(
             route_type=CallTypes.alist_fine_tuning_jobs.value,
         )
 
-        response: Optional[Any] = None
+        response: Any | None = None
 
         # Check for model-based credential routing (no file_id encoding check for list)
         should_route, model_used, _, credentials = handle_model_based_routing(
@@ -1457,7 +1451,7 @@ async def list_files(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.list_files(): Exception occured - {}".format(str(e)))
+        verbose_proxy_logger.error(f"litellm.proxy.proxy_server.list_files(): Exception occured - {e!s}")
         verbose_proxy_logger.debug(traceback.format_exc())
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -1467,7 +1461,7 @@ async def list_files(
                 code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
             )
         else:
-            error_msg = f"{str(e)}"
+            error_msg = f"{e!s}"
             raise ProxyException(
                 message=getattr(e, "message", error_msg),
                 type=getattr(e, "type", "None"),

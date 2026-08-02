@@ -65,6 +65,8 @@ RUN mkdir -p /home/nonroot && \
     HOME=/home/nonroot prisma generate --schema=./schema.prisma && \
     chown -R nonroot:nonroot /home/nonroot/.cache
 
+RUN sed -i 's/\r$//' docker/component_entrypoint.sh && chmod +x docker/component_entrypoint.sh
+
 # ---------- Runtime ----------
 FROM cgr.dev/chainguard/wolfi-base@sha256:31da6565f35af6401031c1d7aa91dc84ac76c5c48edd17fb90f0ed9e3173c7a9 AS runtime
 
@@ -95,5 +97,5 @@ USER nonroot
 
 EXPOSE 4001/tcp
 
-ENTRYPOINT ["uvicorn", "backend.main:app"]
+ENTRYPOINT ["/app/docker/component_entrypoint.sh", "uvicorn", "backend.main:app"]
 CMD ["--host", "0.0.0.0", "--port", "4001"]

@@ -79,9 +79,9 @@ COPY migrations/run.py /app/run.py
 # client at runtime — the migration job invokes `prisma migrate deploy`
 # via subprocess — but having it cached is harmless and the alternative
 # (`prisma py fetch`) doesn't reliably trigger engine downloads.
-RUN mkdir -p /home/nonroot && \
-    HOME=/home/nonroot prisma generate --schema=./schema.prisma && \
-    chown -R nonroot:nonroot /home/nonroot/.cache
+RUN HOME=/opt/prisma XDG_CACHE_HOME=/opt/prisma/.cache PRISMA_BINARY_CACHE_DIR=/opt/prisma/binaries \
+    npm_config_cache=/root/.npm \
+    prisma generate --schema=./schema.prisma
 
 # ---------- Runtime ----------
 FROM cgr.dev/chainguard/wolfi-base@sha256:31da6565f35af6401031c1d7aa91dc84ac76c5c48edd17fb90f0ed9e3173c7a9 AS runtime
@@ -89,7 +89,7 @@ FROM cgr.dev/chainguard/wolfi-base@sha256:31da6565f35af6401031c1d7aa91dc84ac76c5
 USER root
 
 RUN for i in 1 2 3; do \
-      apk add --no-cache bash openssl tzdata python3 libsndfile libatomic && break; \
+      apk add --no-cache bash openssl tzdata python3 nodejs libsndfile libatomic && break; \
       [ $i = 3 ] && { echo "apk add failed after 3 retries" >&2; exit 1; }; \
       sleep 5; \
     done
@@ -102,10 +102,18 @@ ENV HOME=/home/nonroot \
     PATH="/app/.venv/bin:${PATH}" \
     PYTHONPATH="/app" \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PRISMA_BINARY_CACHE_DIR=/opt/prisma/binaries \
+    PRISMA_CLI_PATH=/opt/prisma/binaries/node_modules/.bin/prisma \
+    PRISMA_CLI_QUERY_ENGINE_TYPE=binary \
+    PRISMA_OFFLINE_MODE=true
 
 COPY --from=builder --chown=nonroot:nonroot /app /app
-COPY --from=builder --chown=nonroot:nonroot /home/nonroot/.cache /home/nonroot/.cache
+COPY --from=builder /opt/prisma /opt/prisma
+
+RUN chmod -R a+rX /opt/prisma && \
+    test -x /opt/prisma/binaries/node_modules/.bin/prisma && \
+    test -f /opt/prisma/binaries/node_modules/prisma/build/index.js
 
 USER nonroot
 
