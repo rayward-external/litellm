@@ -77,15 +77,25 @@ LEAKY_HEADERS = {
     # Renamed, not suppressed: the caller's own usage data.
     "x-litellm-response-cost": "0.00031415",
     "x-litellm-key-spend": "12.5",
+    # Budget's rename source is a FORK-ONLY name, not upstream's
+    # x-litellm-key-max-budget — that one carries upstream's scalar again (#491)
+    # and renaming it would publish None for every windowed key.
+    "x-litellm-key-budget-windows": "1d;limit=100;spent=4.5",
+    # Upstream's scalar, present at the same time, and NOT the rename source. It
+    # must be suppressed like any other branded name rather than winning the
+    # neutral slot.
     "x-litellm-key-max-budget": "100.0",
     # Neutral header that must pass through untouched.
     "x-request-id": "client-supplied-trace",
 }
 
+#: Neutral name -> the value it must carry externally. Note the budget value is
+#: the WINDOW list, proving the rename reads the fork-only header and not the
+#: upstream scalar sitting beside it in LEAKY_HEADERS.
 USAGE_RENAMES = {
     "x-usage-cost": "0.00031415",
     "x-usage-spend": "12.5",
-    "x-usage-budget": "100.0",
+    "x-usage-budget": "1d;limit=100;spent=4.5",
 }
 
 EXTERNAL = {AUDIENCE_REQUEST_HEADER: "external"}
@@ -439,6 +449,12 @@ def test_external_upstream_cannot_collide_with_the_neutral_usage_headers():
     a number into "999, 0.004" and lets the upstream obscure — or spoof — the
     caller's real spend. The gateway's value wins because the rename runs first
     and the upstream copy then fails the allowlist.
+
+    Since #491 this covers a second source of a duplicate, not just a hostile
+    upstream: the proxy itself now emits the neutral names at source for internal
+    callers. Those copies arrive at this middleware exactly like an upstream's
+    would, and must die exactly the same way — which is why the neutral names
+    stay out of ALLOWED_HEADERS. The `999`s below stand in for both.
     """
     app = Starlette(
         routes=[
@@ -451,7 +467,7 @@ def test_external_upstream_cannot_collide_with_the_neutral_usage_headers():
                         "x-usage-budget": "999",
                         "x-litellm-response-cost": "0.004",
                         "x-litellm-key-spend": "1.25",
-                        "x-litellm-key-max-budget": "50.0",
+                        "x-litellm-key-budget-windows": "1d;limit=50;spent=2",
                     }
                 ),
             )
@@ -463,7 +479,44 @@ def test_external_upstream_cannot_collide_with_the_neutral_usage_headers():
 
     assert resp.headers.get_list("x-usage-cost") == ["0.004"]
     assert resp.headers.get_list("x-usage-spend") == ["1.25"]
-    assert resp.headers.get_list("x-usage-budget") == ["50.0"]
+    assert resp.headers.get_list("x-usage-budget") == ["1d;limit=50;spent=2"]
+
+
+def test_the_neutral_names_are_not_allowlisted():
+    """The load-bearing invariant behind every duplicate test above (#491).
+
+    A neutral name must be mintable ONLY by the rename. Add one to
+    ALLOWED_HEADERS and three separate duplicate sources open at once — a hostile
+    upstream on the pass-through path (where upstream headers win over custom
+    ones), the proxy's own source-emitted copy, and any future provider that
+    picks the same obvious name. Every `get_list(...) == [one_value]` assertion
+    in this file rests on this set staying disjoint.
+    """
+    from litellm.proxy.middleware.external_audience_middleware import (
+        ALLOWED_HEADERS,
+        RENAMED_HEADERS,
+    )
+
+    neutral = {neutral for _, neutral in RENAMED_HEADERS}
+    assert neutral, "the rename table is empty; nothing reaches an external caller"
+    assert neutral.isdisjoint(ALLOWED_HEADERS), (
+        f"neutral name(s) {sorted(neutral & ALLOWED_HEADERS)} are in ALLOWED_HEADERS, so an "
+        f"upstream or source-emitted copy now survives beside the renamed one"
+    )
+
+
+def test_external_suppresses_the_upstream_scalar_budget_header():
+    """#491 moved the rename off `x-litellm-key-max-budget` onto a fork-only name.
+
+    The upstream name still ships internally with upstream's scalar. It must not
+    reach an external caller — it is a branded name like any other, and if it
+    somehow won the neutral slot the caller would receive `None` for every
+    windowed key (broker keys set `budget_limits`, never a top-level max_budget).
+    """
+    resp = _client().get("/ok", headers=EXTERNAL)
+    assert "x-litellm-key-max-budget" not in resp.headers
+    assert "x-litellm-key-budget-windows" not in resp.headers
+    assert resp.headers["x-usage-budget"] == "1d;limit=100;spent=4.5"
 
 
 def test_external_keeps_the_websocket_handshake():
