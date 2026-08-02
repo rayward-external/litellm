@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from collections.abc import Iterable, Mapping
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -1236,7 +1237,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
 
     @staticmethod
     def _translate_legacy_thinking_for_adaptive_model(
-        model: str, optional_params: Dict[str, Any], custom_llm_provider: str
+        model: str, optional_params: dict[str, Any], custom_llm_provider: str
     ) -> None:
         if not AnthropicConfig._is_adaptive_thinking_model(model, custom_llm_provider):
             return
@@ -1265,7 +1266,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
 
     @staticmethod
     def _legacy_thinking_budget_to_effort(
-        model: str, budget_tokens: int, max_tokens: Optional[int], custom_llm_provider: str
+        model: str, budget_tokens: int, max_tokens: int | None, custom_llm_provider: str
     ) -> str:
         if (
             max_tokens is not None
@@ -1286,7 +1287,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         return "low"
 
     @staticmethod
-    def _coerce_optional_int(value: Any) -> Optional[int]:
+    def _coerce_optional_int(value: Any) -> int | None:
         if isinstance(value, bool) or value is None:
             return None
         if isinstance(value, int):
@@ -1297,7 +1298,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             return None
 
     @staticmethod
-    def _requested_max_tokens(non_default_params: Mapping[str, Any]) -> Optional[int]:
+    def _requested_max_tokens(non_default_params: Mapping[str, Any]) -> int | None:
         """The caller's output-token ceiling, whichever alias they sent it under."""
         return AnthropicConfig._coerce_optional_int(
             non_default_params.get("max_completion_tokens") or non_default_params.get("max_tokens")

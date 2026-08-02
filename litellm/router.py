@@ -24,9 +24,11 @@ from functools import lru_cache
 from typing import (
     TYPE_CHECKING,
     Any,
+    List,
     Literal,
     NoReturn,
     Optional,
+    Tuple,
     TypeVar,
     Union,
     cast,

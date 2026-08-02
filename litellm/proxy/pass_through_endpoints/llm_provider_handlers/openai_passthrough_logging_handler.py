@@ -5,6 +5,7 @@ Handles cost tracking and logging for OpenAI passthrough endpoints, specifically
 """
 
 from datetime import datetime
+from typing import List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 import httpx

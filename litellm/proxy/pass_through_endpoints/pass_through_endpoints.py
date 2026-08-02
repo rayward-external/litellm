@@ -8,7 +8,7 @@ from base64 import b64encode
 from collections.abc import AsyncGenerator, Mapping
 from datetime import datetime
 from itertools import groupby
-from typing import Any, cast
+from typing import Any, Optional, cast
 from urllib.parse import urlencode, urlparse
 
 import httpx
