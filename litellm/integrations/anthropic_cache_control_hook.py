@@ -229,7 +229,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
     @staticmethod
     def _resolve_default_cache_control(
         headers: dict[str, Any],
-    ) -> Optional[ChatCompletionCachedContent]:
+    ) -> ChatCompletionCachedContent | None:
         lower_headers = {str(k).lower(): v for k, v in headers.items()}
         raw_policy = lower_headers.get(ANTHROPIC_PROMPT_CACHE_TTL_HEADER)
         policy = AnthropicCacheControlHook._normalise_prompt_cache_policy(raw_policy)
