@@ -208,6 +208,17 @@ def _build_anthropic_tool_name_maps(
     return forward, reverse
 
 
+# Every ``output_config.effort`` level, ascending.
+ALL_EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+
+# Levels checked against model capabilities. low/medium/high are accepted by every
+# effort-capable Claude model, so gating them would only produce false rejections.
+GATED_EFFORT_LEVELS: tuple[str, ...] = ("xhigh", "max")
+
+# The effort ladder an adaptive-thinking model gets by virtue of being adaptive.
+# ``xhigh`` is not on it -- see ``AnthropicConfig._is_effort_level_allowed``.
+ADAPTIVE_THINKING_BASE_EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "max")
+
 REASONING_EFFORT_TO_OUTPUT_CONFIG_EFFORT: dict[str, str] = {
     "low": "low",
     "minimal": "low",
@@ -344,6 +355,43 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         return AnthropicConfig._supports_model_capability(
             model, f"supports_{level}_reasoning_effort", custom_llm_provider
         )
+
+    @staticmethod
+    def _is_effort_level_allowed(model: str, level: str, custom_llm_provider: str) -> bool:
+        """One rule, applied identically to every gated effort level.
+
+        A gated level is allowed when either:
+          1. the model map advertises ``supports_{level}_reasoning_effort``, or
+          2. the level belongs to the adaptive-thinking base ladder
+             (``ADAPTIVE_THINKING_BASE_EFFORT_LEVELS``) and the model uses
+             adaptive thinking.
+
+        ``xhigh`` is deliberately absent from that base ladder: it is a per-model
+        extension (Sonnet 5, Opus 4.7+), not part of the ladder every adaptive
+        model gets. That is why Sonnet 4.6 accepts ``max`` and refuses ``xhigh``
+        -- an apparent "inverted ceiling", but the model's real vocabulary rather
+        than an implementation asymmetry (Bifrost independently reports the same
+        set for that model: high, low, max, medium). Both levels are therefore
+        rejected strictly and by the same predicate; neither is silently degraded
+        here. Provider subclasses that *do* have a narrower ceiling clamp before
+        this runs (see the Bedrock invoke transformation).
+        """
+        if level not in GATED_EFFORT_LEVELS:
+            return True
+        if AnthropicConfig._supports_effort_level(model, level, custom_llm_provider):
+            return True
+        return level in ADAPTIVE_THINKING_BASE_EFFORT_LEVELS and AnthropicConfig._is_adaptive_thinking_model(
+            model, custom_llm_provider
+        )
+
+    @staticmethod
+    def _supported_effort_levels(model: str, custom_llm_provider: str) -> list[str]:
+        """The effort levels ``model`` accepts, in ascending order."""
+        return [
+            level
+            for level in ALL_EFFORT_LEVELS
+            if AnthropicConfig._is_effort_level_allowed(model, level, custom_llm_provider)
+        ]
 
     @staticmethod
     def _validate_effort_for_model(model: str, effort: str | None, custom_llm_provider: str) -> str | None:
