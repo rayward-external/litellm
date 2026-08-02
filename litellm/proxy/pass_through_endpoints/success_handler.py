@@ -1,6 +1,6 @@
 import json
 from datetime import datetime
-from typing import Any, Union
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -215,11 +215,9 @@ class PassThroughEndpointLogging:
     async def _handle_logging(
         self,
         logging_obj: LiteLLMLoggingObj,
-        standard_logging_response_object: Union[
-            StandardPassThroughResponseObject,
-            PassThroughEndpointLoggingResultValues,
-            dict,
-        ],
+        standard_logging_response_object: StandardPassThroughResponseObject
+        | PassThroughEndpointLoggingResultValues
+        | dict,
         result: str,
         start_time: datetime,
         end_time: datetime,
@@ -530,9 +528,7 @@ class PassThroughEndpointLogging:
 
     def is_assemblyai_route(self, url_route: str):
         parsed_url = urlparse(url_route)
-        if parsed_url.hostname == "api.assemblyai.com":
-            return True
-        elif "/transcript" in parsed_url.path:
+        if parsed_url.hostname == "api.assemblyai.com" or "/transcript" in parsed_url.path:
             return True
         return False
 

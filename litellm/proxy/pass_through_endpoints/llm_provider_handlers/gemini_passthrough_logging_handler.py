@@ -1,6 +1,5 @@
 import re
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Union
 
 import httpx
 
@@ -13,14 +12,6 @@ from litellm.types.utils import (
     ModelResponse,
     TextCompletionResponse,
 )
-
-if TYPE_CHECKING:
-    from litellm.types.passthrough_endpoints.pass_through_endpoints import EndpointType
-
-    from ..success_handler import PassThroughEndpointLogging
-else:
-    PassThroughEndpointLogging = Any
-    EndpointType = Any
 
 
 class GeminiPassthroughLoggingHandler:
@@ -143,7 +134,7 @@ class GeminiPassthroughLoggingHandler:
 
     @staticmethod
     def _create_gemini_response_logging_payload_for_generate_content(
-        litellm_model_response: Union[ModelResponse, TextCompletionResponse],
+        litellm_model_response: ModelResponse | TextCompletionResponse,
         model: str,
         kwargs: dict,
         start_time: datetime,

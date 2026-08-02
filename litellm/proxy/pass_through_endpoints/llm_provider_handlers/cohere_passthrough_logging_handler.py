@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional, Union
+from typing import Optional
 
 import httpx
 
@@ -40,26 +40,10 @@ class CoherePassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
     def _build_complete_streaming_response(
         self,
-        all_chunks: List[str],
+        all_chunks: list[str],
         litellm_logging_obj: LiteLLMLoggingObj,
         model: str,
-    ) -> Optional[Union[ModelResponse, TextCompletionResponse]]:
-        """Rebuild a Cohere v2 chat response from collected raw SSE lines.
-
-        Two things this had to get right before it could produce a cost, and
-        which went unnoticed while the method had no call sites:
-
-        1. It must use the **v2** iterator. The v1 `ModelResponseIterator`
-           never populates `usage` on any chunk, so a response rebuilt with it
-           has no tokens and prices at exactly $0 — the very hole this is
-           supposed to close. Only `CohereV2ModelResponseIterator` reads the
-           `message-end` event's usage block, and `/v2/chat` is the streaming
-           surface the pass-through tracks anyway.
-        2. It receives raw SSE *lines* (`data: {...}`, `event: content-delta`),
-           not bare JSON. `convert_str_chunk_to_generic_chunk` only strips a
-           `data:` prefix when handed `bytes`, so passing these straight through
-           raises `JSONDecodeError` on the first line.
-        """
+    ) -> ModelResponse | TextCompletionResponse | None:
         cohere_model_response_iterator = CohereModelResponseIterator(
             streaming_response=None,
             sync_stream=False,
@@ -165,7 +149,7 @@ class CoherePassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 kwargs["custom_llm_provider"] = "cohere"
 
                 # Extract user information for tracking
-                passthrough_logging_payload: Optional[PassthroughStandardLoggingPayload] = kwargs.get(
+                passthrough_logging_payload: PassthroughStandardLoggingPayload | None = kwargs.get(
                     "passthrough_logging_payload"
                 )
                 if passthrough_logging_payload:
