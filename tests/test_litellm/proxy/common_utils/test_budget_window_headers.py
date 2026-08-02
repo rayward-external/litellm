@@ -335,3 +335,61 @@ class TestNeverRaises:
 
         for mock in (Mock(), MagicMock()):
             assert format_budget_windows(getattr(mock, "budget_window_usage", None)) is None
+
+
+class TestDuplicateDurations:
+    """A duration is not a unique key, and the published format assumes it is.
+
+    The sibling gateway shipped exactly this defect and it was found only by
+    probing a live endpoint. Here duplicates are not currently configured, but
+    `budget_limits` is an iterated LIST rather than a mapping, so a key with two
+    same-duration rows is one config edit away — which is exactly what was true
+    of the sibling gateway the day before it shipped the bug.
+    """
+
+    def test_same_duration_collapses_to_the_least_headroom(self):
+        got = format_budget_windows([w("1d", 1000.0, 0.0066209), w("1w", 5000.0, 0.1), w("1d", 5000.0, 0.087)])
+        # 0.0066209 renders as 0.006621: the formatter rounds to 6 dp so float
+        # noise never reaches the customer. The BINDING 1d;limit=1000 survived and
+        # the looser 1d;limit=5000 duplicate is gone, which is the assertion.
+        assert got == "1d;limit=1000;spent=0.006621, 1w;limit=5000;spent=0.1"
+
+    def test_the_survivor_is_least_remaining_not_smallest_limit(self):
+        # A large, nearly exhausted cap binds before a small, untouched one.
+        got = format_budget_windows([w("1d", 10.0, 0.0), w("1d", 10000.0, 9999.0)])
+        assert got == "1d;limit=10000;spent=9999"
+
+    def test_distinct_durations_are_never_collapsed(self):
+        got = format_budget_windows([w("1d", 50.0, 1.0), w("1w", 200.0, 2.0)])
+        assert got == "1d;limit=50;spent=1, 1w;limit=200;spent=2"
+
+    def test_first_appearance_order_survives_collapsing(self):
+        got = format_budget_windows([w("1mo", 500.0, 1.0), w("1d", 50.0, 2.0), w("1mo", 900.0, 3.0)])
+        assert got.startswith("1mo;"), "evaluation order must not be re-sorted"
+
+    def test_the_value_stays_dict_safe_which_is_the_whole_point(self):
+        """Stated the way a customer meets it: the documented parser is a dict."""
+        raw = format_budget_windows([w("1d", 1000.0, 0.0), w("1d", 5000.0, 0.0), w("1w", 5000.0, 0.0)])
+        entries = raw.split(", ")
+        names = [e.split(";")[0] for e in entries]
+        assert len(names) == len(set(names)), (
+            f"duplicate window name in {raw!r}; the documented dict-based parser would silently drop a cap"
+        )
+
+    def test_an_unreadable_entry_never_ranks_as_the_most_binding(self):
+        """Tested on the helper directly: `_render_window` filters malformed
+        entries first, so this branch is unreachable through the public function.
+
+        It still has to be right. Ranking an unreadable entry as 0.0 remaining
+        would make it beat every real window and displace a cap whose numbers are
+        known good — replacing a correct figure with an unusable one. +inf means
+        it can only ever lose.
+        """
+        from litellm.proxy.common_utils.budget_window_headers import (
+            _remaining_from_rendered,
+        )
+
+        assert _remaining_from_rendered("1d;limit=50;spent=12.5") == pytest.approx(37.5)
+        assert _remaining_from_rendered("1d;limit=abc;spent=1") == float("inf")
+        assert _remaining_from_rendered("1d;spent=1") == float("inf")
+        assert _remaining_from_rendered("1d") == float("inf")
