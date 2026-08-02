@@ -3651,7 +3651,15 @@ async def _virtual_key_multi_budget_check(
     if not valid_token.budget_limits:
         return
 
+    from litellm.proxy.common_utils.budget_window_headers import BudgetWindow
     from litellm.proxy.proxy_server import get_current_spend
+
+    # RAYWARD FORK PATCH: collected as we go so the response can publish
+    # x-usage-budget. These are the numbers enforcement ACTUALLY acted on — a
+    # second read in the header builder could disagree with the decision the
+    # caller just experienced, and get_custom_headers is sync so it could not
+    # await these counters anyway. See common_utils/budget_window_headers.py.
+    window_usage: tuple[BudgetWindow, ...] = ()
 
     for window in valid_token.budget_limits:
         w: dict = window if isinstance(window, dict) else window.model_dump()
@@ -3664,6 +3672,19 @@ async def _virtual_key_multi_budget_check(
             window_entity_id=valid_token.token,
             window_start=get_budget_window_start(w),
         )
+        window_usage = (
+            *window_usage,
+            BudgetWindow(
+                budget_duration=w["budget_duration"],
+                max_budget=w["max_budget"],
+                spent=window_spend,
+            ),
+        )
+        # Assigned on EVERY iteration rather than after the loop: the raise below
+        # exits early, and a caller who is over budget still gets a 400 whose
+        # headers should show the windows that produced it. The tuple is already
+        # immutable, so the assignment needs no defensive copy.
+        valid_token.budget_window_usage = window_usage
         if math.isfinite(w["max_budget"]) and window_spend >= w["max_budget"]:
             raise litellm.BudgetExceededError(
                 current_cost=window_spend,

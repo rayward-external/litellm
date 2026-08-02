@@ -50,6 +50,7 @@ from litellm.litellm_core_utils.llm_response_utils.get_headers import (
 from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 from litellm.proxy._types import ProxyException, UserAPIKeyAuth
 from litellm.proxy.auth.auth_utils import check_response_size_is_safe
+from litellm.proxy.common_utils.budget_window_headers import format_budget_windows
 from litellm.proxy.common_utils.callback_utils import (
     get_logging_caching_headers,
     get_remaining_tokens_and_requests_from_request_data,
@@ -1025,7 +1026,26 @@ class ProxyBaseLLMRequestProcessing:
             "x-litellm-response-cost-margin-percent": (str(margin_percent) if margin_percent is not None else None),
             "x-litellm-key-tpm-limit": str(user_api_key_dict.tpm_limit),
             "x-litellm-key-rpm-limit": str(user_api_key_dict.rpm_limit),
-            "x-litellm-key-max-budget": str(user_api_key_dict.max_budget),
+            # RAYWARD FORK PATCH: a key with concurrent budget WINDOWS publishes
+            # them here instead of the lifetime cap. Without this the header is
+            # str(None) -> "None" -> dropped by exclude_values below, which is why
+            # x-usage-budget never shipped to external callers at all. The two
+            # shapes are mutually exclusive per key, so there is no collision, and
+            # a windowed key emits nothing today — no existing value to break.
+            # See litellm/proxy/common_utils/budget_window_headers.py.
+            # getattr, not attribute access, for two independent reasons:
+            #   * a sync that reverts the _types.py half would otherwise raise
+            #     AttributeError on EVERY request rather than just dropping the
+            #     header — a fork patch must never be able to 500 the proxy;
+            #   * upstream tests build MagicMock(spec=UserAPIKeyAuth), and
+            #     pydantic v2 fields are not visible to a mock spec, so direct
+            #     access breaks unrelated upstream tests on every rebase.
+            # The wiring tests assert the field and the call site still exist, so
+            # the graceful degradation cannot go unnoticed.
+            "x-litellm-key-max-budget": (
+                format_budget_windows(getattr(user_api_key_dict, "budget_window_usage", None))
+                or str(user_api_key_dict.max_budget)
+            ),
             "x-litellm-key-spend": str(updated_spend),
             "x-litellm-response-duration-ms": str(hidden_params.get("_response_ms", None)),
             "x-litellm-overhead-duration-ms": str(hidden_params.get("litellm_overhead_time_ms", None)),
