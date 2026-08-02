@@ -16,6 +16,7 @@ import pytest
 
 from litellm.proxy.common_utils.budget_window_headers import (
     BUDGET_HEADER_NAME,
+    BudgetWindow,
     format_budget_windows,
 )
 
@@ -23,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
 def w(duration, limit, spent):
-    return {"budget_duration": duration, "max_budget": limit, "spent": spent}
+    return BudgetWindow(budget_duration=duration, max_budget=limit, spent=spent)
 
 
 class TestFormatBudgetWindows:
@@ -43,7 +44,7 @@ class TestFormatBudgetWindows:
         got = format_budget_windows([w("1mo", 500.0, 1.0), w("1d", 50.0, 2.0)])
         assert got.startswith("1mo;")
 
-    @pytest.mark.parametrize("windows", [None, [], [{}]])
+    @pytest.mark.parametrize("windows", [None, [], [object()]])
     def test_nothing_to_say_means_no_header(self, windows):
         """None keeps the header ABSENT. An empty or placeholder value would read
         as a real cap of zero."""
@@ -54,12 +55,12 @@ class TestFormatBudgetWindows:
         assert format_budget_windows([w("1d", float("inf"), 5.0)]) is None
 
     def test_a_partial_window_is_skipped_not_guessed(self):
-        assert format_budget_windows([{"budget_duration": "1d", "max_budget": 50.0}]) is None
+        assert format_budget_windows([w("1d", 50.0, None)]) is None
         assert format_budget_windows([w("1d", None, 5.0)]) is None
         assert format_budget_windows([w(None, 50.0, 5.0)]) is None
 
     def test_a_partial_window_does_not_suppress_a_good_one(self):
-        got = format_budget_windows([{"budget_duration": "1d"}, w("1w", 200.0, 40.0)])
+        got = format_budget_windows([w("1d", None, None), w("1w", 200.0, 40.0)])
         assert got == "1w;limit=200;spent=40"
 
     def test_float_noise_never_reaches_the_customer(self):
@@ -103,9 +104,13 @@ class TestWiring:
             "It is the only place the numbers exist — get_custom_headers is sync and "
             "cannot await the counters itself."
         )
-        assert '"spent": window_spend' in src, (
+        assert "spent=window_spend" in src, (
             "the snapshot no longer carries the spend enforcement actually read; "
             "without it the header can only publish limits and headroom is not derivable"
+        )
+        assert "BudgetWindow(" in src, (
+            "the snapshot is no longer built as a BudgetWindow; a dict would trip the "
+            "type-discipline gate (LIT001/LIT002) and _render_window reads by attribute"
         )
 
     def test_header_builder_calls_the_formatter(self):
@@ -218,7 +223,7 @@ class TestNeverRaises:
             "1d;limit=50",           # a str is a Sequence — iterating yields chars
             42,
             object(),
-            {"budget_duration": "1d"},  # a bare Mapping, not a list of them
+            {"budget_duration": "1d"},  # a bare dict, not a BudgetWindow
             [None],
             ["not-a-mapping"],
             [[]],

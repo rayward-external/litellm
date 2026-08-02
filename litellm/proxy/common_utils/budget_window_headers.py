@@ -63,7 +63,27 @@ any part of it goes missing, including the call sites in ``auth_checks.py`` and
 """
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
+from typing import NamedTuple
+
+
+class BudgetWindow(NamedTuple):
+    """One enforced budget window and the spend recorded against it.
+
+    A NamedTuple rather than a dict because the repo's type-discipline gate bans
+    mutable collections in annotations (LIT001) and mutable construction
+    (LIT002) — and it is the better shape anyway: this record is assembled once
+    by enforcement and only ever read, so it should not be mutable.
+
+    Construction is the boundary where `budget_limits` entries (dicts from the
+    DB, or pydantic model_dump() output) become something with a known shape.
+    Everything downstream reads attributes and still proves the types, because
+    the VALUES crossing that boundary are not validated by NamedTuple.
+    """
+
+    budget_duration: str
+    max_budget: float
+    spent: float
 
 #: Header the windows are published under. Deliberately the SAME name the
 #: lifetime cap already used, rather than a new one:
@@ -79,17 +99,16 @@ from collections.abc import Mapping, Sequence
 BUDGET_HEADER_NAME = "x-litellm-key-max-budget"
 
 
-def format_budget_windows(windows: Sequence[Mapping[str, object]] | None) -> str | None:
+def format_budget_windows(windows: Sequence[BudgetWindow] | None) -> str | None:
     """Render enforcement's per-window snapshot as one header value.
 
     Returns None when there is nothing to say, which keeps the header absent
     rather than publishing an empty or placeholder value.
 
-    `Mapping[str, object]` rather than a TypedDict: the snapshot is assembled
-    from `budget_limits` entries that may be dicts OR pydantic model_dump()
-    output, so its VALUES are genuinely unvalidated at this boundary. Saying
-    `object` states that honestly and forces every read below to prove the type
-    before using it — which is what the checks here do.
+    The annotation says BudgetWindow, but every read below still proves its own
+    types. NamedTuple validates nothing at runtime, and the values originate in
+    `budget_limits` rows that may be dicts or pydantic model_dump() output, so
+    the shape is known here while the VALUES are not.
     """
     # isinstance BEFORE truthiness, and a CONCRETE list/tuple rather than the
     # Sequence ABC. Two things this catches that `if not windows` does not:
@@ -106,19 +125,23 @@ def format_budget_windows(windows: Sequence[Mapping[str, object]] | None) -> str
     # informational, and its absence is a state callers already handle.
     if not isinstance(windows, (list, tuple)) or not windows:
         return None
-    rendered = [item for item in (_render_window(w) for w in windows) if item]
+    # tuple(generator), not a list comprehension: a list literal/comprehension is
+    # mutable construction (LIT002) and nothing here mutates the result.
+    rendered = tuple(item for item in (_render_window(w) for w in windows) if item)
     return ", ".join(rendered) if rendered else None
 
 
-def _render_window(window: Mapping[str, object]) -> str | None:
-    """One window as `<duration>;limit=<n>;spent=<n>`, or None to omit it."""
-    if not isinstance(window, Mapping):
-        # Same reasoning as the sequence check above: an entry we do not
-        # recognise is omitted, never allowed to raise out of a header builder.
-        return None
-    duration = window.get("budget_duration")
-    limit = _finite(window.get("max_budget"))
-    spent = _finite(window.get("spent"))
+def _render_window(window: object) -> str | None:
+    """One window as `<duration>;limit=<n>;spent=<n>`, or None to omit it.
+
+    Reads by getattr rather than attribute access so an entry that is not a
+    BudgetWindow — a Mock, a dict, junk — yields None instead of raising. Same
+    reasoning as the sequence check above: nothing here may escape as an
+    exception, because this runs while building response headers.
+    """
+    duration = getattr(window, "budget_duration", None)
+    limit = _finite(getattr(window, "max_budget", None))
+    spent = _finite(getattr(window, "spent", None))
 
     # A window missing any part is skipped rather than guessed at. A header that
     # says `limit=None` is worse than one that omits the window: the customer
