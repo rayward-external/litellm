@@ -142,7 +142,68 @@ def format_budget_windows(windows: Sequence[BudgetWindow] | None) -> str | None:
     # tuple(generator), not a list comprehension: a list literal/comprehension is
     # mutable construction (LIT002) and nothing here mutates the result.
     rendered = tuple(item for item in (_render_window(w) for w in windows) if item)
-    return ", ".join(rendered) if rendered else None
+    return ", ".join(_collapse_duplicate_durations(rendered)) or None
+
+
+def _collapse_duplicate_durations(rendered: Sequence[str]) -> tuple[str, ...]:
+    """One entry per duration, keeping the window with the LEAST headroom.
+
+    The published format is a comma-separated list keyed by window name, and the
+    parser in the customer-facing documentation turns it into a dict. So two
+    entries sharing a duration do not give the caller extra information — one of
+    them silently overwrites the other, and because a later assignment wins, the
+    survivor is whichever happened to be last rather than whichever binds.
+
+    THIS IS NOT HYPOTHETICAL. The sibling gateway shipped exactly this and it was
+    caught only by probing a live endpoint: a header carrying `1d;limit=1000` and
+    `1d;limit=5000` made the documented parser report $4999.89 of daily headroom
+    against a real binding cap of $999.99. The error runs in the dangerous
+    direction every time, because the looser duplicate is the one that survives.
+
+    Here duplicates are not currently configured — `budget_limits` happens to
+    hold one row per duration — but nothing enforces that: it is an iterated
+    LIST, not a mapping, so a key with two same-duration rows is a config edit
+    away. "Not currently triggered" is precisely what was true of the sibling
+    gateway the day before it shipped the bug.
+
+    Least REMAINING, not smallest limit: a large, nearly exhausted cap binds
+    before a small, untouched one. Falls back to keeping the first entry when a
+    value cannot be re-read, since dropping a cap is worse than keeping an
+    arbitrary one of two.
+
+    First-appearance order is preserved — it is enforcement's evaluation order,
+    and re-sorting would be a silent change to a published contract.
+    """
+    best: dict[str, tuple[str, float]] = {}
+    order: list[str] = []  # mutable-ok: local accumulator, never returned as-is
+    for item in rendered:
+        duration, _, _ = item.partition(";")
+        remaining = _remaining_from_rendered(item)
+        previous = best.get(duration)
+        if previous is None:
+            best[duration] = (item, remaining)
+            order.append(duration)
+        elif remaining < previous[1]:
+            best[duration] = (item, remaining)
+    return tuple(best[duration][0] for duration in order)
+
+
+def _remaining_from_rendered(item: str) -> float:
+    """`limit - spent` for an already-rendered entry, or +inf if unreadable.
+
+    +inf, not 0.0: an unreadable entry must never look like the most binding one
+    and displace a window whose numbers are known good.
+    """
+    fields: dict[str, float] = {}
+    for param in item.split(";")[1:]:
+        name, _, value = param.partition("=")
+        try:
+            fields[name] = float(value)
+        except ValueError:
+            return float("inf")
+    if "limit" not in fields or "spent" not in fields:
+        return float("inf")
+    return fields["limit"] - fields["spent"]
 
 
 def _render_window(window: object) -> str | None:
