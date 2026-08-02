@@ -1,5 +1,5 @@
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -668,6 +668,9 @@ class AnthropicPassthroughLoggingHandler:
         cache_creation_5m: int | None = None
         cache_creation_1h: int | None = None
         output_tokens = 0
+        # Adaptive thinking reports its token count only here; the thinking blocks
+        # themselves are signature-only, so nothing downstream can re-derive it.
+        output_tokens_details: Mapping[str, object] | None = None
         web_search_requests: int | None = None
         tool_search_requests: int | None = None
         inference_geo: str | None = None
