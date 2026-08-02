@@ -129,6 +129,8 @@ def _match_deployment(
     request_tags: list[str] | None,
     header_strings: list[str],
     match_any: bool,
+    *,
+    pin_enforced: bool = False,
 ) -> dict[str, str] | None:
     """
     Determine whether *deployment* matches the current request.

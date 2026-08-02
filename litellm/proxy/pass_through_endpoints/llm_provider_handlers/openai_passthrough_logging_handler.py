@@ -46,6 +46,7 @@ from litellm.types.utils import (
     ImageResponse,
     LlmProviders,
     PassthroughCallTypes,
+    Usage,
 )
 from litellm.utils import ModelResponse, TextCompletionResponse
 
@@ -195,8 +196,8 @@ def _is_openai_compatible_host(hostname: str | None) -> bool:
     return _hostname_matches(hostname, _OPENAI_HOSTNAMES) or _hostname_matches(hostname, _AZURE_OPENAI_HOSTNAMES)
 
 
-def _is_openai_compatible_url(url_route: str | None) -> bool:
-    """True if the URL targets an OpenAI-compatible API surface.
+def _in_openai_scope(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
+    """Scope gate shared by every `is_openai_*_route` helper.
 
     Each helper used to gate on `_is_openai_compatible_host`, a hardcoded tuple
     of OpenAI/Azure hostnames. Any other OpenAI-compatible upstream — Fireworks

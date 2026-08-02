@@ -5,7 +5,7 @@ import re
 import secrets
 from datetime import datetime, timezone
 from datetime import datetime as dt
-from typing import Any, Literal, cast
+from typing import Any, Literal, Optional, cast
 
 from pydantic import BaseModel
 
@@ -146,6 +146,9 @@ def _get_spend_logs_metadata(
     clean_metadata["litellm_call_id"] = litellm_call_id
 
     return clean_metadata
+
+
+BATCH_COST_CALL_ID_PREFIX = "batch-cost-"
 
 
 def generate_hash_from_response(response_obj: Any) -> str:

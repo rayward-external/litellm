@@ -10,6 +10,7 @@ Supported for both `v1/chat/completions` (via the prompt-management hook) and
 """
 
 import copy
+import os
 from typing import TYPE_CHECKING, Any, cast
 
 from litellm._logging import verbose_logger
@@ -127,6 +128,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         points: list[CacheControlMessageInjectionPoint],
         messages: list[AllMessageValues],
         max_blocks: int,
+        default_control: ChatCompletionCachedContent | None,
     ) -> list[AllMessageValues]:
         """Apply message-level cache control injection points in order.
 
