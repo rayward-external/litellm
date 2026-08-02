@@ -74,7 +74,7 @@ response headers, which harms nobody.
 
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, MutableMapping
 
 from anyio.lowlevel import checkpoint
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -441,10 +441,23 @@ def sanitize_error_body(raw: bytes, status: int) -> bytes:
 # where the caller asked for the alias ``claude-haiku-4-5``.
 #
 # The model name is therefore rewritten ON THE STREAMING PATH, per chunk, without
-# buffering -- see ``SSEModelRewriter``. Note that the KEY-BASED rewrites above
-# still do not apply to chunks: nothing has measured a ``vertex_ai_*`` or a
-# ``latency_checkpoint`` inside an SSE frame, and this module does not claim
-# things it has not measured.
+# buffering -- see ``SSEModelRewriter``.
+#
+# THE BEDROCK MESSAGE ID IS REWRITTEN THERE TOO, and leaving it out was a second
+# bug in the first version of this fix. The marker table above lists
+# ``"id":"msg_bdrk_01..."`` as a measured cloud disclosure, and the BUFFERED path
+# has stripped that prefix all along -- so the same streamed ``/v1/messages``
+# request named AWS while its buffered twin did not. Measured on 2026-08-02
+# against router.trueward.ai, streamed, AFTER the model rewrite was in place:
+#
+#   "id":"msg_bdrk_01Tvwe7PT19qAfSyY5VLp4Az"
+#
+# Unlike the model rewrite it needs nothing from the request, so it runs even
+# when the caller's alias could not be determined.
+#
+# Of the three buffered rewrites, that is the only one that applies to chunks:
+# nothing has measured a ``vertex_ai_*`` or a ``latency_checkpoint`` inside an
+# SSE frame, and this module does not claim things it has not measured.
 #
 # Also note what ``strip_provider_attribution`` does NOT do: it has no model
 # rewrite at all. Buffered bodies are clean because LiteLLM natively echoes the
@@ -677,23 +690,30 @@ def requested_model(raw: bytes | None) -> str | None:
     return None
 
 
+def _envelopes(
+    payload: object,
+) -> tuple[MutableMapping[str, object], ...]:  # mutable-ok: these ARE the caller's frame, rewritten in place
+    """The allowlisted objects in one frame: the root plus MODEL_ENVELOPE_KEYS.
+
+    One level deep, and nothing else -- see rule 2 above for why this is not a
+    recursive walk. Shared by both rewrites below so they cannot come to disagree
+    about what an envelope is.
+    """
+    if not isinstance(payload, dict):
+        return ()
+    candidates = (payload, *(payload.get(key) for key in MODEL_ENVELOPE_KEYS))
+    return tuple(item for item in candidates if isinstance(item, dict))
+
+
 def rewrite_envelope_model(payload: object, alias: str) -> bool:
     """Point ``model`` at the caller's alias in the allowlisted envelopes.
 
     Returns True when something actually changed, so the caller can leave a frame
     byte-identical when there was nothing to do -- re-serializing every frame
     would churn key order and unicode escaping for no reason.
-
-    Visits the document root plus ``MODEL_ENVELOPE_KEYS``, one level deep, and
-    nothing else. See rule 2 above for why this is not a recursive walk.
     """
-    if not isinstance(payload, dict):
-        return False
-
     changed = False
-    for envelope in (payload, *(payload.get(key) for key in MODEL_ENVELOPE_KEYS)):
-        if not isinstance(envelope, dict):
-            continue
+    for envelope in _envelopes(payload):
         current = envelope.get("model")
         # EQUALITY. `alias in current` is True of the exact leak this closes.
         if isinstance(current, str) and current != alias:
@@ -702,7 +722,30 @@ def rewrite_envelope_model(payload: object, alias: str) -> bool:
     return changed
 
 
-def rewrite_sse_line(line: bytes, alias: str) -> bytes:
+def rewrite_envelope_bedrock_id(payload: object) -> bool:
+    """Restore the native Anthropic ``id`` shape in the allowlisted envelopes.
+
+    Bedrock mints ``msg_bdrk_<id>``; native Anthropic mints ``msg_<id>``. The
+    buffered path has always stripped the infix (see
+    ``strip_provider_attribution``); this is the streaming counterpart, and its
+    absence meant a streamed ``/v1/messages`` named AWS while the same request
+    buffered did not.
+
+    Takes no alias, and deliberately so: unlike the model rewrite it needs
+    nothing from the request, so it still runs when the caller's model could not
+    be determined. Prefix test, not containment -- an id that merely contains
+    the infix somewhere is not Bedrock's shape and is left alone.
+    """
+    changed = False
+    for envelope in _envelopes(payload):
+        current = envelope.get("id")
+        if isinstance(current, str) and current.startswith(_BEDROCK_ID_PREFIX):
+            envelope["id"] = _ANTHROPIC_ID_PREFIX + current[len(_BEDROCK_ID_PREFIX) :]
+            changed = True
+    return changed
+
+
+def rewrite_sse_line(line: bytes, alias: str | None) -> bytes:
     """One COMPLETE SSE line's external form, its newline terminator excluded.
 
     Returns the input unchanged unless it is a ``data:`` line holding a JSON
@@ -724,7 +767,13 @@ def rewrite_sse_line(line: bytes, alias: str) -> bytes:
         decoded: object = json.loads(payload)
     except (ValueError, UnicodeDecodeError, RecursionError):
         return line
-    if not rewrite_envelope_model(decoded, alias):
+
+    # Both, and NOT short-circuited: `a() or b()` would skip the id rewrite on
+    # any frame whose model already matched. The model half is skipped entirely
+    # when the caller's alias is unknown; the id half never needs one.
+    changed = alias is not None and rewrite_envelope_model(decoded, alias)
+    changed = rewrite_envelope_bedrock_id(decoded) or changed
+    if not changed:
         return line
 
     spacing = value[: len(value) - len(value.lstrip())]
@@ -749,7 +798,7 @@ class SSEModelRewriter:
     case for exactly that reason.
     """
 
-    def __init__(self, alias: str) -> None:
+    def __init__(self, alias: str | None) -> None:
         self.alias = alias
         self.pending = bytearray()
 
@@ -871,8 +920,11 @@ class ExternalAudienceHeaderMiddleware:
                 # rewriter exists only when the caller's alias is known -- without
                 # it every chunk goes out untouched, which is the fail-safe
                 # direction (a hint survives; the caller's stream does not break).
-                if alias is not None:
-                    rewriter = SSEModelRewriter(alias)
+                # Always, even when the alias is unknown: the Bedrock id rewrite
+                # needs nothing from the request, so gating the whole rewriter on
+                # the alias would leave `msg_bdrk_` shipping on any request whose
+                # model could not be read.
+                rewriter = SSEModelRewriter(alias)
                 await send(message)
                 return
 

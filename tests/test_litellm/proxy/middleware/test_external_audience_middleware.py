@@ -36,9 +36,18 @@ from litellm.proxy.middleware.external_audience_middleware import (
     MAX_CAPTURED_REQUEST_BODY_BYTES,
     ExternalAudienceHeaderMiddleware,
     SSEModelRewriter,
+    rewrite_envelope_bedrock_id,
     rewrite_envelope_model,
     rewrite_sse_line,
 )
+
+#: The id Bedrock actually minted for a streamed /v1/messages call through
+#: router.trueward.ai on 2026-08-02, and the native Anthropic shape it must be
+#: republished as. Real rather than invented: the first version of this fix used
+#: a placeholder `msg_1` here, and because a placeholder cannot carry the Bedrock
+#: prefix, no test in this file could observe that the id was still naming AWS.
+BEDROCK_MESSAGE_ID = "msg_bdrk_01Tvwe7PT19qAfSyY5VLp4Az"
+NATIVE_MESSAGE_ID = "msg_01Tvwe7PT19qAfSyY5VLp4Az"
 
 # A response header set modelled on what an external caller actually received
 # through the LB on 2026-07-31, after the url-map had already stripped its 50.
@@ -515,7 +524,8 @@ _RESPONSES_FRAMES = (
 
 _MESSAGES_FRAMES = (
     b"event: message_start\n"
-    b'data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant",'
+    b'data: {"type":"message_start","message":{"id":"' + BEDROCK_MESSAGE_ID.encode() + b'",'
+    b'"type":"message","role":"assistant",'
     b'"model":"' + DATED_SNAPSHOT.encode() + b'","content":[]}}\n\n',
     b"event: content_block_delta\n"
     b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n',
@@ -988,3 +998,96 @@ def test_error_bodies_are_still_sanitized_when_the_request_body_was_captured():
     assert resp.json() == {"error": {"message": "Invalid request."}}
     assert b"litellm" not in resp.content
     assert b"fallback" not in resp.content
+
+
+# ── the Bedrock message id, on the streaming path ────────────────────────────
+#
+# Found by adversarial review of the first version of this fix, then MEASURED
+# live: after `message.model` was already being rewritten, a streamed
+# /v1/messages call through router.trueward.ai still returned
+# `msg_bdrk_01Tvwe7PT19qAfSyY5VLp4Az`. The buffered path had stripped that infix
+# all along, so the same request named AWS streamed and did not buffered.
+
+
+def test_streamed_message_start_strips_the_bedrock_id_prefix():
+    raw = _post_stream(
+        _sse_client(_MESSAGES_FRAMES, path="/v1/messages"),
+        {"model": REQUESTED_ALIAS, "stream": True},
+        path="/v1/messages",
+    )
+
+    starts = [frame["message"] for frame in _data_frames(raw) if frame.get("type") == "message_start"]
+    assert len(starts) == 1, raw
+    assert starts[0]["id"] == NATIVE_MESSAGE_ID, raw
+    # The whole point: the prefix names Amazon and must not reach the caller.
+    assert b"msg_bdrk_" not in raw
+
+
+def test_bedrock_id_is_stripped_even_when_the_caller_model_is_unknown():
+    """The id rewrite takes no alias, so an unreadable request must not gate it.
+
+    Gating the whole rewriter on a known alias -- which the first version did --
+    left `msg_bdrk_` shipping on any request whose model could not be read.
+    """
+    raw = _post_stream(
+        _sse_client(_MESSAGES_FRAMES, path="/v1/messages"),
+        {"stream": True},  # no `model` at all: alias is None
+        path="/v1/messages",
+    )
+
+    starts = [frame["message"] for frame in _data_frames(raw) if frame.get("type") == "message_start"]
+    assert starts[0]["id"] == NATIVE_MESSAGE_ID, raw
+    assert b"msg_bdrk_" not in raw
+    # The model is left ALONE, because there was no alias to point it at.
+    assert starts[0]["model"] == DATED_SNAPSHOT, raw
+
+
+def test_rewrite_envelope_bedrock_id_matches_the_prefix_not_a_substring():
+    """An id that merely CONTAINS the infix is not Bedrock's shape."""
+    payload = {"id": "msg_not_bdrk_msg_bdrk_tail"}
+    assert rewrite_envelope_bedrock_id(payload) is False
+    assert payload["id"] == "msg_not_bdrk_msg_bdrk_tail"
+
+
+def test_rewrite_envelope_bedrock_id_visits_only_the_allowlisted_envelopes():
+    """Same allowlist as the model rewrite -- root, `response`, `message`."""
+    payload = {
+        "id": BEDROCK_MESSAGE_ID,
+        "message": {"id": BEDROCK_MESSAGE_ID},
+        "response": {"id": BEDROCK_MESSAGE_ID},
+        # Two levels down, and inside the caller's own content: NOT an envelope.
+        "delta": {"nested": {"id": BEDROCK_MESSAGE_ID}},
+        "content": [{"id": BEDROCK_MESSAGE_ID}],
+    }
+    assert rewrite_envelope_bedrock_id(payload) is True
+
+    assert payload["id"] == NATIVE_MESSAGE_ID
+    assert payload["message"]["id"] == NATIVE_MESSAGE_ID
+    assert payload["response"]["id"] == NATIVE_MESSAGE_ID
+    assert payload["delta"]["nested"]["id"] == BEDROCK_MESSAGE_ID
+    assert payload["content"][0]["id"] == BEDROCK_MESSAGE_ID
+
+
+def test_rewrite_envelope_bedrock_id_ignores_a_non_string_id():
+    payload = {"id": 42, "message": {"id": None}}
+    assert rewrite_envelope_bedrock_id(payload) is False
+    assert payload["id"] == 42
+    assert payload["message"]["id"] is None
+
+
+def test_a_frame_needing_only_the_id_rewrite_is_still_rewritten():
+    """Regression for a short-circuit: `model_rewrite() or id_rewrite()`.
+
+    When the model already matches the alias the first call returns False, and
+    an `or` chain would skip the id rewrite entirely.
+    """
+    line = (
+        b'data: {"type":"message_start","message":{"id":"'
+        + BEDROCK_MESSAGE_ID.encode()
+        + b'","model":"'
+        + REQUESTED_ALIAS.encode()
+        + b'"}}'
+    )
+    out = rewrite_sse_line(line, REQUESTED_ALIAS)
+    assert b"msg_bdrk_" not in out
+    assert NATIVE_MESSAGE_ID.encode() in out
