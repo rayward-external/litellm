@@ -62,7 +62,8 @@ any part of it goes missing, including the call sites in ``auth_checks.py`` and
 ``common_request_processing.py``.
 """
 
-from typing import Any, Dict, List, Optional
+import math
+from collections.abc import Mapping, Sequence
 
 #: Header the windows are published under. Deliberately the SAME name the
 #: lifetime cap already used, rather than a new one:
@@ -78,34 +79,79 @@ from typing import Any, Dict, List, Optional
 BUDGET_HEADER_NAME = "x-litellm-key-max-budget"
 
 
-def format_budget_windows(windows: Optional[List[Dict[str, Any]]]) -> Optional[str]:
+def format_budget_windows(windows: Sequence[Mapping[str, object]] | None) -> str | None:
     """Render enforcement's per-window snapshot as one header value.
 
     Returns None when there is nothing to say, which keeps the header absent
     rather than publishing an empty or placeholder value.
+
+    `Mapping[str, object]` rather than a TypedDict: the snapshot is assembled
+    from `budget_limits` entries that may be dicts OR pydantic model_dump()
+    output, so its VALUES are genuinely unvalidated at this boundary. Saying
+    `object` states that honestly and forces every read below to prove the type
+    before using it — which is what the checks here do.
     """
-    if not windows:
+    # isinstance BEFORE truthiness, and a CONCRETE list/tuple rather than the
+    # Sequence ABC. Two things this catches that `if not windows` does not:
+    #
+    #   * a str is a Sequence, and iterating one yields characters;
+    #   * a plain unittest.mock.Mock is TRUTHY and NOT iterable, so the
+    #     comprehension below raised `TypeError: 'Mock' object is not iterable`
+    #     and reddened an unrelated upstream pass-through test. That was a
+    #     genuine defect wearing a test costume: this function runs while
+    #     building response headers, so anything it raises 500s a request whose
+    #     completion already succeeded.
+    #
+    # Publishing nothing is always the safe answer here — the header is
+    # informational, and its absence is a state callers already handle.
+    if not isinstance(windows, (list, tuple)) or not windows:
+        return None
+    rendered = [item for item in (_render_window(w) for w in windows) if item]
+    return ", ".join(rendered) if rendered else None
+
+
+def _render_window(window: Mapping[str, object]) -> str | None:
+    """One window as `<duration>;limit=<n>;spent=<n>`, or None to omit it."""
+    if not isinstance(window, Mapping):
+        # Same reasoning as the sequence check above: an entry we do not
+        # recognise is omitted, never allowed to raise out of a header builder.
+        return None
+    duration = window.get("budget_duration")
+    limit = _finite(window.get("max_budget"))
+    spent = _finite(window.get("spent"))
+
+    # A window missing any part is skipped rather than guessed at. A header that
+    # says `limit=None` is worse than one that omits the window: the customer
+    # would treat it as a real number.
+    if not duration or not isinstance(duration, str) or limit is None or spent is None:
         return None
 
-    items = []
-    for window in windows:
-        duration = window.get("budget_duration")
-        limit = window.get("max_budget")
-        spent = window.get("spent")
-        # A window missing either half is skipped rather than guessed at. A
-        # header that says `limit=None` is worse than one that omits the window:
-        # the customer would treat it as a real number.
-        if not duration or limit is None or spent is None:
-            continue
-        # An infinite cap is not a cap. Publishing `limit=inf` invites a client
-        # to parse it as a float and get inf, so the window is simply omitted.
-        if limit == float("inf"):
-            continue
-        items.append(f"{duration};limit={_num(limit)};spent={_num(spent)}")
+    return f"{duration};limit={_num(limit)};spent={_num(spent)}"
 
-    if not items:
+
+def _finite(value: object) -> float | None:
+    """The value as a finite float, or None if it cannot be published.
+
+    The finiteness test is `math.isfinite`, NOT `== float("inf")`. That
+    comparison is False for BOTH nan and -inf, so either would have been
+    formatted straight into the header, and a customer parsing
+    `float(fields["limit"])` would get nan/-inf and compute nonsense headroom —
+    the exact failure that filtering +inf exists to prevent.
+
+    Never raises. This runs while building response headers; a budget figure we
+    cannot render is a reason to omit one window, never to fail the request.
+    """
+    if value is None or isinstance(value, bool):
+        # bool is a subclass of int, so float(True) is 1.0 — a budget of "True"
+        # is not a budget, and publishing 1 would be worse than omitting it.
         return None
-    return ", ".join(items)
+    if not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _num(value: float) -> str:

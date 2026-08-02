@@ -3658,7 +3658,7 @@ async def _virtual_key_multi_budget_check(
     # second read in the header builder could disagree with the decision the
     # caller just experienced, and get_custom_headers is sync so it could not
     # await these counters anyway. See common_utils/budget_window_headers.py.
-    window_usage: List[Dict[str, Any]] = []
+    window_usage: list[dict[str, Any]] = []
 
     for window in valid_token.budget_limits:
         w: dict = window if isinstance(window, dict) else window.model_dump()

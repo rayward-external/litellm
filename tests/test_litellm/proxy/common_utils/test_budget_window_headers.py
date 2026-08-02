@@ -161,3 +161,85 @@ class TestWiring:
             if isinstance(node, ast.Constant) and node.value == BUDGET_HEADER_NAME
         }
         assert names, f"get_custom_headers no longer emits {BUDGET_HEADER_NAME}"
+
+
+class TestNonFiniteLimits:
+    """`== float("inf")` is False for BOTH nan and -inf.
+
+    Either would have been formatted straight into the header, and a customer
+    parsing float(fields["limit"]) would get nan or -inf and compute nonsense
+    headroom — the exact failure filtering +inf exists to prevent.
+    """
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("-inf"), float("inf")])
+    def test_non_finite_limit_is_omitted(self, bad):
+        assert format_budget_windows([w("1d", bad, 5.0)]) is None
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("-inf"), float("inf")])
+    def test_non_finite_spend_is_omitted(self, bad):
+        assert format_budget_windows([w("1d", 50.0, bad)]) is None
+
+    def test_a_non_finite_window_does_not_suppress_a_good_one(self):
+        got = format_budget_windows([w("1d", float("nan"), 5.0), w("1w", 200.0, 40.0)])
+        assert got == "1w;limit=200;spent=40"
+
+    def test_no_header_value_can_ever_carry_nan_or_inf(self):
+        """Belt and braces: whatever survives must parse as a finite float."""
+        import math as _math
+
+        got = format_budget_windows(
+            [w("1d", 50.0, 12.3), w("1w", float("nan"), 1.0), w("1mo", float("inf"), 2.0)]
+        )
+        for item in got.split(", "):
+            for param in item.split(";")[1:]:
+                assert _math.isfinite(float(param.split("=", 1)[1]))
+
+    def test_a_non_numeric_limit_does_not_raise(self):
+        """float("abc") raises ValueError; a header builder must never 500."""
+        assert format_budget_windows([w("1d", "abc", 5.0)]) is None
+        assert format_budget_windows([w("1d", 50.0, object())]) is None
+
+
+class TestNeverRaises:
+    """This runs while building response headers.
+
+    Anything it raises 500s a request whose completion already SUCCEEDED — the
+    user is billed, the tokens are spent, and the caller gets an error. So every
+    unexpected input must degrade to "no header", never to an exception.
+
+    Not hypothetical: a plain `Mock` is truthy and not iterable, and the
+    comprehension raised `TypeError: 'Mock' object is not iterable`, reddening
+    an unrelated upstream pass-through test in CI.
+    """
+
+    @pytest.mark.parametrize(
+        "junk",
+        [
+            "1d;limit=50",           # a str is a Sequence — iterating yields chars
+            42,
+            object(),
+            {"budget_duration": "1d"},  # a bare Mapping, not a list of them
+            [None],
+            ["not-a-mapping"],
+            [[]],
+        ],
+    )
+    def test_unexpected_input_returns_none_instead_of_raising(self, junk):
+        assert format_budget_windows(junk) is None
+
+    def test_a_plain_mock_does_not_raise(self):
+        from unittest.mock import Mock
+
+        assert format_budget_windows(Mock()) is None
+
+    def test_a_magicmock_does_not_raise(self):
+        from unittest.mock import MagicMock
+
+        assert format_budget_windows(MagicMock()) is None
+
+    def test_the_getattr_seam_is_safe_for_any_mock_shape(self):
+        """The exact expression get_custom_headers evaluates."""
+        from unittest.mock import MagicMock, Mock
+
+        for mock in (Mock(), MagicMock()):
+            assert format_budget_windows(getattr(mock, "budget_window_usage", None)) is None
