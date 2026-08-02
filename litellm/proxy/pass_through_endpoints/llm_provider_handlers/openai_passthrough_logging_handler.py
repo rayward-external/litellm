@@ -41,7 +41,12 @@ from litellm.types.passthrough_endpoints.pass_through_endpoints import (
     EndpointType,
     PassthroughStandardLoggingPayload,
 )
-from litellm.types.utils import ImageResponse, LlmProviders, PassthroughCallTypes
+from litellm.types.utils import (
+    EmbeddingResponse,
+    ImageResponse,
+    LlmProviders,
+    PassthroughCallTypes,
+)
 from litellm.utils import ModelResponse, TextCompletionResponse
 
 # Hostname/URL classification for OpenAI-compatible APIs lives in

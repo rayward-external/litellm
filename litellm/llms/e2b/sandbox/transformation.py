@@ -8,7 +8,7 @@ Talks to e2b's REST API directly over httpx (no e2b SDK dependency):
 """
 
 import json
-from typing import cast
+from typing import Any, cast
 
 import httpx
 
