@@ -16,8 +16,11 @@ What is asserted:
   * streaming responses are covered
   * error responses (4xx/5xx) are covered
   * the registration in proxy_server.py is present and outermost
+  * streamed success bodies never publish an upstream wire model id (#487)
 """
 
+import asyncio
+import json
 import re
 from pathlib import Path
 
@@ -30,7 +33,11 @@ from starlette.testclient import TestClient
 
 from litellm.proxy.middleware.external_audience_middleware import (
     AUDIENCE_REQUEST_HEADER,
+    MAX_CAPTURED_REQUEST_BODY_BYTES,
     ExternalAudienceHeaderMiddleware,
+    SSEModelRewriter,
+    rewrite_envelope_model,
+    rewrite_sse_line,
 )
 
 # A response header set modelled on what an external caller actually received
@@ -467,3 +474,517 @@ def test_external_keeps_the_websocket_handshake():
     for name, value in handshake.items():
         assert resp.headers[name] == value
     assert "x-litellm-version" not in resp.headers
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STREAMED SUCCESS BODIES — the model name (#487)
+#
+# Measured live 2026-08-02 against router.trueward.ai with a real external-party
+# key. STREAMED /v1/responses on a Bedrock-backed model published the upstream
+# wire id at `response.model` on 3 of 12 frames (response.created,
+# response.in_progress, response.completed):
+#
+#     "model":"global.anthropic.claude-haiku-4-5-20251001-v1:0"
+#
+# `anthropic.<model>-v1:0` is Bedrock's id format and `global.` is our inference
+# profile scope, so the frame names both the vendor and our own deployment
+# topology. Buffered /v1/responses was CLEAN; chat-completions streaming was
+# CLEAN. Streamed /v1/messages echoed the dated snapshot instead of the alias.
+#
+# THE SUBSTRING TRAP, which these tests exist to not fall into:
+#
+#     "claude-haiku-4-5" in "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+#
+# is True. A `contains` assertion therefore PASSES on the exact leak. Every
+# assertion below parses the frame and compares the model field by EQUALITY.
+# ══════════════════════════════════════════════════════════════════════════════
+
+REQUESTED_ALIAS = "claude-haiku-4-5"
+#: Verbatim from the 2026-08-02 measurement.
+BEDROCK_WIRE_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+#: Leak 2: milder, same cause — the dated snapshot rather than the alias.
+DATED_SNAPSHOT = "claude-haiku-4-5-20251001"
+
+_RESPONSES_FRAMES = (
+    b'data: {"type":"response.created","sequence_number":0,"response":'
+    b'{"id":"resp_a","object":"response","model":"' + BEDROCK_WIRE_ID.encode() + b'","status":"in_progress"}}\n\n',
+    b'data: {"type":"response.output_text.delta","sequence_number":1,"delta":"hi"}\n\n',
+    b'data: {"type":"response.completed","sequence_number":2,"response":'
+    b'{"id":"resp_a","object":"response","model":"' + BEDROCK_WIRE_ID.encode() + b'","status":"completed"}}\n\n',
+)
+
+_MESSAGES_FRAMES = (
+    b"event: message_start\n"
+    b'data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant",'
+    b'"model":"' + DATED_SNAPSHOT.encode() + b'","content":[]}}\n\n',
+    b"event: content_block_delta\n"
+    b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n',
+)
+
+
+def _sse_client(chunks, *, seen_bodies=None, path="/v1/responses"):
+    """A POST route that streams `chunks` back verbatim as text/event-stream."""
+
+    async def route(request):
+        if seen_bodies is not None:
+            seen_bodies.append(await request.body())
+
+        async def body():
+            for chunk in chunks:
+                yield chunk
+
+        return StreamingResponse(body(), media_type="text/event-stream", headers=LEAKY_HEADERS)
+
+    app = Starlette(routes=[Route(path, route, methods=["POST"])])
+    app.add_middleware(ExternalAudienceHeaderMiddleware)
+    return TestClient(app)
+
+
+def _post_stream(client, payload, *, path="/v1/responses", headers=EXTERNAL):
+    """POST a JSON body and return the raw SSE bytes the caller receives."""
+    kwargs = {"json": payload} if isinstance(payload, (dict, list)) else {"content": payload}
+    request_headers = {"content-type": "application/json", **headers}
+    with client.stream("POST", path, headers=request_headers, **kwargs) as resp:
+        assert resp.status_code == 200
+        return b"".join(resp.iter_bytes())
+
+
+def _data_frames(raw: bytes):
+    """Every `data:` payload in an SSE stream, PARSED — never substring-matched."""
+    frames = []
+    for line in raw.split(b"\n"):
+        field = line.rstrip(b"\r")
+        if not field.startswith(b"data:"):
+            continue
+        payload = field[len(b"data:") :].strip()
+        if not payload or payload == b"[DONE]":
+            continue
+        frames.append(json.loads(payload))
+    return frames
+
+
+# ── leak 1: /v1/responses streamed, `response.model` ─────────────────────────
+
+
+def test_streamed_responses_api_rewrites_response_model_to_the_requested_alias():
+    raw = _post_stream(_sse_client(_RESPONSES_FRAMES), {"model": REQUESTED_ALIAS, "stream": True})
+
+    envelopes = [frame["response"] for frame in _data_frames(raw) if "response" in frame]
+    assert len(envelopes) == 2, raw
+    for envelope in envelopes:
+        # EQUALITY. `REQUESTED_ALIAS in envelope["model"]` is True of the leak.
+        assert envelope["model"] == REQUESTED_ALIAS, raw
+
+
+def test_streamed_responses_api_leaves_no_trace_of_the_bedrock_wire_id():
+    """The wire id names AWS twice over: `anthropic.` and the `global.` profile."""
+    raw = _post_stream(_sse_client(_RESPONSES_FRAMES), {"model": REQUESTED_ALIAS, "stream": True})
+
+    assert BEDROCK_WIRE_ID.encode() not in raw
+    assert b"anthropic." not in raw
+    assert b"global." not in raw
+    assert b"-v1:0" not in raw
+
+
+def test_streamed_responses_api_preserves_every_other_field():
+    """A sanitizer that eats the caller's payload is worse than the leak."""
+    raw = _post_stream(_sse_client(_RESPONSES_FRAMES), {"model": REQUESTED_ALIAS, "stream": True})
+
+    frames = _data_frames(raw)
+    assert [frame["type"] for frame in frames] == [
+        "response.created",
+        "response.output_text.delta",
+        "response.completed",
+    ]
+    assert [frame["sequence_number"] for frame in frames] == [0, 1, 2]
+    assert frames[1]["delta"] == "hi"
+    assert frames[0]["response"]["id"] == "resp_a"
+    assert frames[2]["response"]["status"] == "completed"
+
+
+# ── leak 2: /v1/messages streamed, `message.model` ───────────────────────────
+
+
+def test_streamed_message_start_rewrites_message_model_to_the_requested_alias():
+    raw = _post_stream(
+        _sse_client(_MESSAGES_FRAMES, path="/v1/messages"),
+        {"model": REQUESTED_ALIAS, "stream": True},
+        path="/v1/messages",
+    )
+
+    starts = [frame["message"] for frame in _data_frames(raw) if frame.get("type") == "message_start"]
+    assert len(starts) == 1, raw
+    assert starts[0]["model"] == REQUESTED_ALIAS, raw
+    assert DATED_SNAPSHOT.encode() not in raw
+    # The SSE `event:` lines are not `data:` lines and must survive untouched.
+    assert b"event: message_start\n" in raw
+    assert b"event: content_block_delta\n" in raw
+
+
+# ── chat completions: the root envelope ──────────────────────────────────────
+
+
+def test_streamed_chat_completion_rewrites_the_root_model():
+    frames = (
+        b'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"'
+        + BEDROCK_WIRE_ID.encode()
+        + b'","choices":[{"delta":{"content":"hi"}}]}\n\n',
+        b"data: [DONE]\n\n",
+    )
+    raw = _post_stream(
+        _sse_client(frames, path="/v1/chat/completions"),
+        {"model": REQUESTED_ALIAS, "stream": True},
+        path="/v1/chat/completions",
+    )
+
+    chunks = _data_frames(raw)
+    assert len(chunks) == 1
+    assert chunks[0]["model"] == REQUESTED_ALIAS
+    assert chunks[0]["choices"][0]["delta"]["content"] == "hi"
+    assert raw.endswith(b"data: [DONE]\n\n")
+
+
+# ── the allowlist is an ALLOWLIST, not a recursive walk ──────────────────────
+
+
+def test_model_rewrite_visits_only_the_allowlisted_envelope_paths():
+    """A completion can legitimately contain the word "model" anywhere.
+
+    Only the document root, `message` (Anthropic message_start) and `response`
+    (/v1/responses events) are envelope paths. Everything else — including a
+    model name the caller themselves asked about — is the caller's content.
+    """
+    frame = {
+        "type": "response.output_item.done",
+        "response": {"model": BEDROCK_WIRE_ID},
+        "item": {"model": "the completion is talking about a model"},
+        "delta": {"nested": {"model": "still the caller's content"}},
+    }
+    raw = _post_stream(
+        _sse_client((b"data: " + json.dumps(frame).encode() + b"\n\n",)),
+        {"model": REQUESTED_ALIAS, "stream": True},
+    )
+
+    (out,) = _data_frames(raw)
+    assert out["response"]["model"] == REQUESTED_ALIAS
+    assert out["item"]["model"] == "the completion is talking about a model"
+    assert out["delta"]["nested"]["model"] == "still the caller's content"
+
+
+def test_rewrite_envelope_model_is_not_recursive():
+    """Unit-level twin of the test above, on the helper itself."""
+    payload = {
+        "model": BEDROCK_WIRE_ID,
+        "response": {"model": BEDROCK_WIRE_ID},
+        "message": {"model": DATED_SNAPSHOT},
+        "choices": [{"delta": {"model": "deep"}}],
+        "item": {"model": "deep"},
+    }
+    assert rewrite_envelope_model(payload, REQUESTED_ALIAS) is True
+    assert payload["model"] == REQUESTED_ALIAS
+    assert payload["response"]["model"] == REQUESTED_ALIAS
+    assert payload["message"]["model"] == REQUESTED_ALIAS
+    assert payload["choices"][0]["delta"]["model"] == "deep"
+    assert payload["item"]["model"] == "deep"
+
+
+def test_rewrite_envelope_model_reports_no_change_when_already_the_alias():
+    payload = {"model": REQUESTED_ALIAS, "response": {"status": "completed"}}
+    assert rewrite_envelope_model(payload, REQUESTED_ALIAS) is False
+
+
+# ── an SSE frame split across ASGI chunks ────────────────────────────────────
+
+
+def test_frame_split_across_asgi_chunks_is_reassembled_and_rewritten():
+    """The wire id straddles two ASGI body messages, mid-JSON-key."""
+    split = (
+        b'data: {"type":"response.created","response":{"mod',
+        b'el":"' + BEDROCK_WIRE_ID.encode() + b'","status":"in_progress"}}\n\n',
+    )
+    raw = _post_stream(_sse_client(split), {"model": REQUESTED_ALIAS, "stream": True})
+
+    (out,) = _data_frames(raw)
+    assert out["response"]["model"] == REQUESTED_ALIAS
+    assert BEDROCK_WIRE_ID.encode() not in raw
+
+
+def test_frame_split_byte_by_byte_is_reassembled_and_rewritten():
+    """Worst case: one ASGI body message per byte."""
+    whole = _RESPONSES_FRAMES[0]
+    raw = _post_stream(
+        _sse_client(tuple(whole[i : i + 1] for i in range(len(whole)))),
+        {"model": REQUESTED_ALIAS, "stream": True},
+    )
+
+    (out,) = _data_frames(raw)
+    assert out["response"]["model"] == REQUESTED_ALIAS
+    assert BEDROCK_WIRE_ID.encode() not in raw
+
+
+@pytest.mark.parametrize("terminator", [b"\n", b"\r\n"])
+def test_rewriter_reassembles_across_arbitrary_splits(terminator):
+    line = b'data: {"response":{"model":"' + BEDROCK_WIRE_ID.encode() + b'"}}'
+    stream = line + terminator + terminator
+
+    for cut in range(len(stream) + 1):
+        rewriter = SSEModelRewriter(REQUESTED_ALIAS)
+        out = rewriter.feed(stream[:cut], last=False) + rewriter.feed(stream[cut:], last=True)
+        assert BEDROCK_WIRE_ID.encode() not in out, cut
+        (frame,) = _data_frames(out)
+        assert frame["response"]["model"] == REQUESTED_ALIAS, cut
+        # Line terminators are preserved byte-for-byte.
+        assert out.endswith(terminator + terminator), cut
+
+
+def test_a_stream_with_no_trailing_newline_is_still_rewritten():
+    frame = b'data: {"response":{"model":"' + BEDROCK_WIRE_ID.encode() + b'"}}'
+    raw = _post_stream(_sse_client((frame,)), {"model": REQUESTED_ALIAS, "stream": True})
+
+    (out,) = _data_frames(raw)
+    assert out["response"]["model"] == REQUESTED_ALIAS
+
+
+# ── non-JSON frames ──────────────────────────────────────────────────────────
+
+
+def test_non_json_sse_frames_pass_through_byte_identical():
+    frames = (
+        b": ping\n\n",
+        b"event: ping\ndata: not json at all\n\n",
+        b"data: [DONE]\n\n",
+        b"\n",
+        b"data: \n\n",
+        b"retry: 1000\n\n",
+    )
+    raw = _post_stream(_sse_client(frames), {"model": REQUESTED_ALIAS, "stream": True})
+
+    assert raw == b"".join(frames)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        b"data: not json at all",
+        b"data: [DONE]",
+        b"data:",
+        b"data: ",
+        b"event: message_start",
+        b": a comment",
+        b"",
+        b'data: "a bare json string"',
+        b"data: [1, 2, 3]",
+        b'data: {"model": 7}',
+        b'data: {"response": "not a dict"}',
+    ],
+)
+def test_rewrite_sse_line_leaves_unrewritable_lines_byte_identical(line):
+    assert rewrite_sse_line(line, REQUESTED_ALIAS) == line
+    assert rewrite_sse_line(line + b"\r", REQUESTED_ALIAS) == line + b"\r"
+
+
+def test_rewrite_sse_line_preserves_the_data_field_spacing():
+    """`data:{...}` with no space is valid SSE and must stay that way."""
+    line = b'data:{"model":"' + BEDROCK_WIRE_ID.encode() + b'"}'
+    out = rewrite_sse_line(line, REQUESTED_ALIAS)
+    assert out.startswith(b"data:{")
+    assert json.loads(out[len(b"data:") :])["model"] == REQUESTED_ALIAS
+
+
+# ── fail safe: the requested model cannot be determined ──────────────────────
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"not json at all",
+        b'{"stream": true}',
+        b'{"model": 12}',
+        b'{"model": ""}',
+        b'{"model": "   "}',
+        b'["model", "not-a-dict"]',
+        b"",
+    ],
+)
+def test_stream_is_untouched_when_the_requested_model_cannot_be_determined(payload):
+    """A caller's working stream matters more than a hint. Fail SAFE, not empty."""
+    raw = _post_stream(_sse_client(_RESPONSES_FRAMES), payload)
+    assert raw == b"".join(_RESPONSES_FRAMES)
+
+
+def test_stream_is_untouched_for_internal_callers():
+    raw = _post_stream(_sse_client(_RESPONSES_FRAMES), {"model": REQUESTED_ALIAS}, headers={})
+    assert raw == b"".join(_RESPONSES_FRAMES)
+
+
+def test_stream_is_untouched_when_the_request_body_exceeds_the_capture_cap():
+    """An oversized body is not held in memory, so the model is unknown: no rewrite."""
+    payload = json.dumps({"model": REQUESTED_ALIAS, "pad": "x" * (MAX_CAPTURED_REQUEST_BODY_BYTES + 1024)}).encode()
+    raw = _post_stream(_sse_client(_RESPONSES_FRAMES), payload)
+    assert raw == b"".join(_RESPONSES_FRAMES)
+
+
+# ── the request body must still reach the app, intact ────────────────────────
+
+
+@pytest.mark.parametrize("size", [0, 1, 64_000, 300_000])
+def test_downstream_app_still_receives_the_full_request_body(size):
+    """Getting the receive replay wrong breaks EVERY request, not just streams."""
+    seen = []
+    payload = {"model": REQUESTED_ALIAS, "input": "y" * size}
+    raw = _post_stream(_sse_client(_RESPONSES_FRAMES, seen_bodies=seen), payload)
+
+    assert seen and json.loads(seen[0]) == payload
+    assert [frame["response"]["model"] for frame in _data_frames(raw) if "response" in frame] == [
+        REQUESTED_ALIAS,
+        REQUESTED_ALIAS,
+    ]
+
+
+def test_downstream_app_receives_an_oversized_body_intact():
+    """Over the capture cap the middleware stops holding, but must not truncate."""
+    seen = []
+    payload = {"model": REQUESTED_ALIAS, "pad": "z" * (MAX_CAPTURED_REQUEST_BODY_BYTES + 4096)}
+    _post_stream(_sse_client(_RESPONSES_FRAMES, seen_bodies=seen), json.dumps(payload).encode())
+
+    assert seen and json.loads(seen[0]) == payload
+
+
+def test_a_disconnect_poll_before_the_body_is_read_does_not_eat_the_body():
+    """`Request.is_disconnected()` calls receive inside an ALREADY-CANCELLED scope.
+
+    A replay that returns a message without ever awaiting has no cancellation
+    point, so that poll would swallow a real body chunk and the request would
+    silently arrive truncated. The replay must yield to the event loop first.
+    """
+    seen = []
+
+    async def route(request):
+        assert await request.is_disconnected() is False
+        assert await request.is_disconnected() is False
+        seen.append(await request.body())
+        return JSONResponse({"ok": True})
+
+    app = Starlette(routes=[Route("/v1/responses", route, methods=["POST"])])
+    app.add_middleware(ExternalAudienceHeaderMiddleware)
+
+    payload = {"model": REQUESTED_ALIAS, "input": "w" * 5000}
+    resp = TestClient(app).post("/v1/responses", json=payload, headers=EXTERNAL)
+
+    assert resp.status_code == 200
+    assert json.loads(seen[0]) == payload
+
+
+def test_buffered_json_responses_still_work_end_to_end():
+    """The non-streaming path must not regress from capturing the request body."""
+    seen = []
+
+    async def route(request):
+        seen.append(await request.body())
+        return JSONResponse({"model": REQUESTED_ALIAS, "ok": True}, headers=LEAKY_HEADERS)
+
+    app = Starlette(routes=[Route("/v1/responses", route, methods=["POST"])])
+    app.add_middleware(ExternalAudienceHeaderMiddleware)
+
+    resp = TestClient(app).post("/v1/responses", json={"model": REQUESTED_ALIAS}, headers=EXTERNAL)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"model": REQUESTED_ALIAS, "ok": True}
+    assert json.loads(seen[0]) == {"model": REQUESTED_ALIAS}
+    _assert_nothing_disclosed(resp.headers)
+
+
+def test_multipart_upload_body_is_not_captured_but_arrives_intact():
+    seen = []
+    client = _sse_client(_RESPONSES_FRAMES, seen_bodies=seen)
+    resp = client.post(
+        "/v1/responses",
+        files={"file": ("batch.jsonl", b'{"model":"' + REQUESTED_ALIAS.encode() + b'"}\n')},
+        headers=EXTERNAL,
+    )
+
+    assert resp.status_code == 200
+    assert b"batch.jsonl" in seen[0]
+    # multipart is never parsed for a model, so the stream is forwarded untouched.
+    assert resp.content == b"".join(_RESPONSES_FRAMES)
+
+
+# ── SSE must never be buffered ───────────────────────────────────────────────
+
+
+def test_sse_is_forwarded_chunk_by_chunk_and_never_buffered():
+    """_is_streaming's docstring: streaming "must never be buffered".
+
+    Asserted from inside the app: after it sends chunk N, the caller must already
+    have received N body messages. A buffering middleware scores 0 until the end.
+    """
+    observed = []
+    body_counts = []
+
+    async def app(scope, receive, send):
+        while True:
+            message = await receive()
+            if not message.get("more_body", False):
+                break
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/event-stream")],
+            }
+        )
+        for chunk in _RESPONSES_FRAMES:
+            await send({"type": "http.response.body", "body": chunk, "more_body": True})
+            body_counts.append(len([m for m in observed if m["type"] == "http.response.body"]))
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    async def send(message):
+        observed.append(message)
+
+    async def receive():
+        return {
+            "type": "http.request",
+            "body": json.dumps({"model": REQUESTED_ALIAS}).encode(),
+            "more_body": False,
+        }
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/responses",
+        "headers": [
+            (AUDIENCE_REQUEST_HEADER.encode(), b"external"),
+            (b"content-type", b"application/json"),
+        ],
+    }
+    asyncio.run(ExternalAudienceHeaderMiddleware(app)(scope, receive, send))
+
+    assert body_counts == [1, 2, 3], body_counts
+    raw = b"".join(m.get("body") or b"" for m in observed if m["type"] == "http.response.body")
+    assert BEDROCK_WIRE_ID.encode() not in raw
+    assert [frame["response"]["model"] for frame in _data_frames(raw) if "response" in frame] == [
+        REQUESTED_ALIAS,
+        REQUESTED_ALIAS,
+    ]
+
+
+def test_error_bodies_are_still_sanitized_when_the_request_body_was_captured():
+    """The capture must not disturb the error path this module already guards."""
+
+    async def route(request):
+        await request.body()
+        return JSONResponse(
+            {"error": {"message": "litellm.BadRequestError: No fallback model group found"}},
+            status_code=400,
+            headers=LEAKY_HEADERS,
+        )
+
+    app = Starlette(routes=[Route("/v1/responses", route, methods=["POST"])])
+    app.add_middleware(ExternalAudienceHeaderMiddleware)
+
+    resp = TestClient(app).post("/v1/responses", json={"model": REQUESTED_ALIAS}, headers=EXTERNAL)
+
+    assert resp.status_code == 400
+    assert resp.json() == {"error": {"message": "Invalid request."}}
+    assert b"litellm" not in resp.content
+    assert b"fallback" not in resp.content

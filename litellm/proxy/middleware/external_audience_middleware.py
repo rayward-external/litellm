@@ -76,6 +76,7 @@ import json
 import re
 from collections.abc import Iterable
 
+from anyio.lowlevel import checkpoint
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 #: Request header injected by the EXTERNAL load balancer's backend service.
@@ -421,10 +422,33 @@ def sanitize_error_body(raw: bytes, status: int) -> bytes:
 # policy is careful to avoid. Their retention is a KNOWING trade: a caller who
 # studies field names can still infer Azure from them.
 #
-# STREAMING IS NOT TOUCHED, because it does not need to be. Measured: SSE chunks
-# carry none of these fields -- the Gemini chunk has no ``vertex_ai_*`` and the
-# Azure chunk has no filter or latency keys. So this stays off the hot path
-# entirely and only buffered, non-streaming success bodies are rewritten.
+# STREAMING WAS NOT TOUCHED, AND THAT WAS WRONG. This comment used to read
+# "STREAMING IS NOT TOUCHED, because it does not need to be. Measured: SSE chunks
+# carry none of these fields". That measurement was real but NARROW: it covered
+# Gemini and Azure on CHAT COMPLETIONS, where it still holds. It was never taken
+# on a Bedrock-backed model over ``/v1/responses``, which is the one endpoint the
+# leak-check suite never probed. Measured there on 2026-08-02 against
+# router.trueward.ai with a real external-party key, streamed, 3 of 12 frames
+# (``response.created``, ``response.in_progress``, ``response.completed``):
+#
+#   "model":"global.anthropic.claude-haiku-4-5-20251001-v1:0"
+#
+# ``anthropic.<model>-v1:0`` is Bedrock's id format, so the frame names AWS, and
+# ``global.`` is our own inference-profile scope. The same request BUFFERED was
+# clean, and chat-completions streaming was clean -- which is exactly why the
+# narrow measurement read as general. Streamed ``/v1/messages`` leaked the milder
+# form of the same thing: ``claude-haiku-4-5-20251001``, the dated snapshot,
+# where the caller asked for the alias ``claude-haiku-4-5``.
+#
+# The model name is therefore rewritten ON THE STREAMING PATH, per chunk, without
+# buffering -- see ``SSEModelRewriter``. Note that the KEY-BASED rewrites above
+# still do not apply to chunks: nothing has measured a ``vertex_ai_*`` or a
+# ``latency_checkpoint`` inside an SSE frame, and this module does not claim
+# things it has not measured.
+#
+# Also note what ``strip_provider_attribution`` does NOT do: it has no model
+# rewrite at all. Buffered bodies are clean because LiteLLM natively echoes the
+# request's own model string back, not because anything here enforces it.
 
 #: TOP-LEVEL keys removed from a successful external response. Each was measured
 #: EMPTY, so nothing the caller can use is lost.
@@ -500,6 +524,264 @@ def strip_provider_attribution(raw: bytes) -> bytes:
     return json.dumps(decoded).encode("utf-8")
 
 
+# ---------------------------------------------------------------------------
+# THE MODEL NAME, ON THE STREAMING PATH
+#
+# Rewriting ``model`` needs something the response does not carry: what the
+# CALLER asked for. That comes from the request body, so this middleware captures
+# it (see ``_capture_request_body``) and replays it to the app untouched.
+#
+# TWO RULES THIS CODE IS BUILT AROUND, both of which are easy to get wrong:
+#
+# 1. COMPARE BY EQUALITY, NEVER BY CONTAINMENT. The requested alias is a
+#    SUBSTRING of the leaked wire id:
+#
+#        "claude-haiku-4-5" in "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+#
+#    is True. Any "does the frame contain the alias?" check therefore passes on
+#    the exact leak it is supposed to catch. Nothing here substring-matches a
+#    model name: the frame is parsed and the field is compared with ``!=``.
+#
+# 2. AN ALLOWLIST OF ENVELOPE PATHS, NEVER A RECURSIVE WALK. A completion can
+#    legitimately contain the word "model" -- in the caller's own text, in a tool
+#    call's arguments, in a JSON document the model was asked to produce.
+#    Rewriting every "model" key found by a document walk would silently corrupt
+#    the caller's payload. Only the three envelopes that carry the RESPONSE's own
+#    model are visited: the document root, ``response`` (/v1/responses events)
+#    and ``message`` (Anthropic ``message_start``).
+# ---------------------------------------------------------------------------
+
+#: Request methods that can carry a body naming a model.
+_MODEL_BEARING_METHODS: frozenset[str] = frozenset(("POST", "PUT", "PATCH"))
+
+#: Content types never captured: file uploads. They can be arbitrarily large and
+#: never carry a top-level JSON ``model``, so holding one in memory would buy
+#: nothing. Prefix match, so ``multipart/form-data; boundary=...`` is covered.
+_UNCAPTURED_CONTENT_TYPES: tuple[str, ...] = ("multipart/", "application/octet-stream")
+
+#: Cap on the request body held in memory to learn the caller's model. Past it
+#: the capture is abandoned and the model stays unknown -- which means no rewrite
+#: (fail safe). The app still receives every byte either way; only OUR copy stops.
+MAX_CAPTURED_REQUEST_BODY_BYTES = 1024 * 1024
+
+#: Cap on the unterminated tail ``SSEModelRewriter`` will hold while waiting for a
+#: newline. A real SSE line is a few KB; past this the upstream is not sending
+#: line-terminated SSE, so the tail is released verbatim rather than stalling the
+#: caller's stream forever.
+MAX_PENDING_SSE_LINE_BYTES = 1024 * 1024
+
+#: The ONLY nested envelopes visited, one level below the root. ``response`` is
+#: the /v1/responses event envelope (response.created / .in_progress /
+#: .completed); ``message`` is Anthropic's ``message_start``. Not a walk.
+MODEL_ENVELOPE_KEYS: tuple[str, ...] = ("response", "message")
+
+_SSE_DATA_FIELD = b"data:"
+_SSE_DONE = b"[DONE]"
+
+
+def _may_carry_a_model(scope: Scope) -> bool:
+    """True when it is worth capturing this request body to learn its model."""
+    method: str = scope.get("method") or ""
+    if method.upper() not in _MODEL_BEARING_METHODS:
+        return False
+
+    raw_headers: Iterable[tuple[bytes, bytes]] = scope.get("headers") or ()
+    for raw_name, raw_value in raw_headers:
+        name = raw_name.decode("latin-1").lower()
+        if name == "content-type":
+            content_type = raw_value.decode("latin-1").strip().lower()
+            if content_type.startswith(_UNCAPTURED_CONTENT_TYPES):
+                return False
+        elif name == "content-length":
+            declared = raw_value.decode("latin-1").strip()
+            if declared.isdigit() and int(declared) > MAX_CAPTURED_REQUEST_BODY_BYTES:
+                return False
+    return True
+
+
+async def _capture_request_body(receive: Receive) -> tuple[bytes | None, Receive]:
+    """Read the request body, and hand back a receive that replays it verbatim.
+
+    The standard ASGI receive-replay: the middleware consumes the real receive
+    channel, then gives the app a substitute that re-emits the exact messages it
+    consumed and, once those run out, falls through to the real channel. Getting
+    this wrong does not break streaming, it breaks EVERY request -- an app that
+    never sees ``more_body: False`` hangs, and one that sees a synthesized
+    message instead of the original loses whatever else the server put in it.
+
+    Replayed messages accumulate into a TUPLE rather than a list: the count is
+    the number of ASGI chunks the server split the body into (single digits for
+    an LLM request), so the quadratic rebuild is unmeasurable, and it keeps a
+    mutable buffer of caller data from existing at all.
+
+    Returns ``None`` for the body -- not a partial one -- unless the whole body
+    was read. A truncated body is worse than no body: it would parse as invalid
+    JSON at best, and at worst as a DIFFERENT valid document.
+    """
+    replay: tuple[Message, ...] = ()
+    captured = bytearray()
+    complete = False
+
+    while True:
+        message = await receive()
+        replay = replay + (message,)
+        if message.get("type") != "http.request":
+            # http.disconnect: the client went away mid-body. Nothing to learn.
+            break
+        captured.extend(message.get("body") or b"")
+        if len(captured) > MAX_CAPTURED_REQUEST_BODY_BYTES:
+            break
+        if not message.get("more_body", False):
+            complete = True
+            break
+
+    pending = iter(replay)
+
+    async def replaying_receive() -> Message:
+        # The checkpoint is NOT decoration, and it must come BEFORE the message
+        # is taken off the iterator. A real receive always yields to the event
+        # loop, and starlette's Request.is_disconnected() relies on exactly that:
+        # it calls receive inside an ALREADY-CANCELLED anyio scope so that a
+        # receive with nothing to deliver returns an empty message instead of
+        # blocking. A replay that returns without ever awaiting has no
+        # cancellation point, so is_disconnected() would consume a real body
+        # chunk and throw it away -- silently truncating the request. With the
+        # checkpoint first, cancellation lands before anything is consumed and
+        # the substitute behaves exactly like the channel it stands in for.
+        await checkpoint()
+        held = next(pending, None)
+        return await receive() if held is None else held
+
+    return (bytes(captured) if complete else None), replaying_receive
+
+
+def requested_model(raw: bytes | None) -> str | None:
+    """The caller's own model string, or None when it cannot be determined.
+
+    None is the fail-safe answer and every uncertain case returns it: no body, a
+    body that does not parse, a body that is not an object, a ``model`` that is
+    absent, not a string, or blank. A caller's working stream matters more than
+    a hint, so "unknown" must mean "change nothing", never "guess".
+    """
+    if not raw:
+        return None
+    try:
+        decoded: object = json.loads(raw)
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    model = decoded.get("model")
+    if isinstance(model, str) and model.strip():
+        return model
+    return None
+
+
+def rewrite_envelope_model(payload: object, alias: str) -> bool:
+    """Point ``model`` at the caller's alias in the allowlisted envelopes.
+
+    Returns True when something actually changed, so the caller can leave a frame
+    byte-identical when there was nothing to do -- re-serializing every frame
+    would churn key order and unicode escaping for no reason.
+
+    Visits the document root plus ``MODEL_ENVELOPE_KEYS``, one level deep, and
+    nothing else. See rule 2 above for why this is not a recursive walk.
+    """
+    if not isinstance(payload, dict):
+        return False
+
+    changed = False
+    for envelope in (payload, *(payload.get(key) for key in MODEL_ENVELOPE_KEYS)):
+        if not isinstance(envelope, dict):
+            continue
+        current = envelope.get("model")
+        # EQUALITY. `alias in current` is True of the exact leak this closes.
+        if isinstance(current, str) and current != alias:
+            envelope["model"] = alias
+            changed = True
+    return changed
+
+
+def rewrite_sse_line(line: bytes, alias: str) -> bytes:
+    """One COMPLETE SSE line's external form, its newline terminator excluded.
+
+    Returns the input unchanged unless it is a ``data:`` line holding a JSON
+    object with a model to rewrite -- so comments, ``event:`` / ``retry:`` /
+    ``id:`` fields, ``[DONE]``, blank lines and anything that does not parse all
+    survive byte for byte. The field's own spacing is preserved too: ``data:{``
+    with no space is valid SSE and some clients are strict about round-tripping.
+    """
+    field = line[:-1] if line.endswith(b"\r") else line
+    if not field.startswith(_SSE_DATA_FIELD):
+        return line
+
+    value = field[len(_SSE_DATA_FIELD) :]
+    payload = value.strip()
+    if not payload or payload == _SSE_DONE:
+        return line
+
+    try:
+        decoded: object = json.loads(payload)
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return line
+    if not rewrite_envelope_model(decoded, alias):
+        return line
+
+    spacing = value[: len(value) - len(value.lstrip())]
+    rendered = _SSE_DATA_FIELD + spacing + json.dumps(decoded).encode("utf-8")
+    return rendered + b"\r" if line.endswith(b"\r") else rendered
+
+
+class SSEModelRewriter:
+    """Rewrites ``model`` in an SSE stream AS IT PASSES. Never buffers the stream.
+
+    ``_is_streaming``'s docstring is the constraint: SSE "must never be buffered".
+    So this holds the only thing it has to -- the bytes after the last newline it
+    has seen -- and emits every complete line immediately. A frame is not the
+    unit: SSE is LINE oriented, a ``data:`` field is exactly one line, and lines
+    are what this splits on. That makes frame reassembly a non-question: a frame
+    split across ASGI chunks is just a line whose newline has not arrived yet,
+    and both ``\\n`` and ``\\r\\n`` fall out of it for free (the ``\\r`` rides along
+    as the last byte of the line and is put back).
+
+    An ASGI chunk boundary can land anywhere, including mid-key or mid-escape, so
+    nothing here may assume a chunk is a frame. The byte-by-byte split is a test
+    case for exactly that reason.
+    """
+
+    def __init__(self, alias: str) -> None:
+        self.alias = alias
+        self.pending = bytearray()
+
+    def feed(self, chunk: bytes, *, last: bool) -> bytes:
+        """The external form of one ASGI body chunk. ``last`` flushes the tail."""
+        self.pending.extend(chunk)
+        out = bytearray()
+
+        cut = self.pending.rfind(b"\n")
+        if cut >= 0:
+            complete = bytes(self.pending[: cut + 1])
+            del self.pending[: cut + 1]
+            # `complete` ends in a newline, so split() leaves a trailing empty
+            # element that is not a line; [:-1] drops it.
+            for line in complete.split(b"\n")[:-1]:
+                out += rewrite_sse_line(line, self.alias) + b"\n"
+
+        if last:
+            # The stream ended without a final newline: what is held is a whole
+            # line after all, so it gets rewritten rather than merely released.
+            out += rewrite_sse_line(bytes(self.pending), self.alias)
+            self.pending.clear()
+        elif len(self.pending) > MAX_PENDING_SSE_LINE_BYTES:
+            # Not line-terminated SSE. Release it verbatim -- an unterminated
+            # fragment cannot be parsed, so there is nothing to rewrite, and
+            # holding it would stall the caller's stream indefinitely.
+            out += self.pending
+            self.pending.clear()
+
+        return bytes(out)
+
+
 def _is_streaming(headers: Iterable[tuple[bytes, bytes]]) -> bool:
     """True for SSE, which must never be buffered."""
     for name, value in headers:
@@ -528,8 +810,8 @@ class ExternalAudienceHeaderMiddleware:
     """
     Pure ASGI (never BaseHTTPMiddleware -- that degrades streaming).
 
-    Applies BOTH external policies: the header allowlist, and the error-body
-    sanitizer above.
+    Applies ALL THREE external policies: the header allowlist, the error-body
+    sanitizer, and the streamed model-name rewrite.
 
     Must be registered LAST in proxy_server.py: Starlette makes the last-added
     middleware outermost, and this has to see the final header set produced by
@@ -544,14 +826,27 @@ class ExternalAudienceHeaderMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # The caller's own model string, needed to rewrite a streamed response's
+        # `model` back to what they asked for. Read from the REQUEST body, which
+        # is then replayed to the app byte for byte. None whenever it cannot be
+        # determined, and None means "change nothing" everywhere below.
+        app_receive = receive
+        alias: str | None = None
+        if _may_carry_a_model(scope):
+            captured, app_receive = await _capture_request_body(receive)
+            alias = requested_model(captured)
+
         # Only set for a response being held for sanitization. A successful
         # response is forwarded chunk by chunk exactly as before -- buffering one
         # would break streaming, which is most of this proxy's traffic.
         held_start: Message | None = None
         buffered = bytearray()
+        # Only set for a streamed SUCCESS whose caller alias we know. It rewrites
+        # chunks in flight; it does not hold them. See SSEModelRewriter.
+        rewriter: SSEModelRewriter | None = None
 
         async def send_external(message: Message) -> None:
-            nonlocal held_start
+            nonlocal held_start, rewriter
 
             if message["type"] == "http.response.start":
                 # Emitted exactly once, before any body chunk, so this covers
@@ -566,11 +861,32 @@ class ExternalAudienceHeaderMiddleware:
                 #
                 # Errors always. Successes only when they are NOT streaming --
                 # buffering an SSE response would defeat streaming entirely, and
-                # measurement says the attribution fields never appear in chunks
-                # anyway, so there is nothing there to buy with that cost.
+                # no measurement has put the attribution KEYS inside a chunk. The
+                # model NAME is in there (see above), and it is handled without
+                # buffering, per chunk, rather than by holding the response.
                 if status >= 400 or not _is_streaming(message["headers"]):
                     held_start = message
                     return
+                # A streamed success: forwarded immediately, never held. The
+                # rewriter exists only when the caller's alias is known -- without
+                # it every chunk goes out untouched, which is the fail-safe
+                # direction (a hint survives; the caller's stream does not break).
+                if alias is not None:
+                    rewriter = SSEModelRewriter(alias)
+                await send(message)
+                return
+
+            if message["type"] == "http.response.body" and rewriter is not None:
+                last = not message.get("more_body", False)
+                rewritten = rewriter.feed(message.get("body") or b"", last=last)
+                if last:
+                    rewriter = None
+                elif not rewritten:
+                    # Nothing complete yet. An empty non-final body message
+                    # carries no information, so it is dropped rather than
+                    # written out as a zero-length chunk.
+                    return
+                message["body"] = rewritten
                 await send(message)
                 return
 
@@ -597,4 +913,4 @@ class ExternalAudienceHeaderMiddleware:
 
             await send(message)
 
-        await self.app(scope, receive, send_external)
+        await self.app(scope, app_receive, send_external)
