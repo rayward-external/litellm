@@ -193,6 +193,27 @@ class TestWiring:
             f"value type is what #491 removed — put new shapes on a name of our own."
         )
 
+    def test_the_neutral_names_are_exposed_to_browser_clients(self):
+        """Emitting a header is not enough for a cross-origin browser caller.
+
+        `proxy_server.py` hands LITELLM_UI_ALLOW_HEADERS to CORSMiddleware as
+        expose_headers, and a browser reads `null` from `response.headers` for
+        anything absent from it — with no error, so nobody notices. Found by
+        review, not by a test, because every test here drives the app in-process
+        where CORS never applies.
+
+        Internal callers only: the external middleware REPLACES
+        access-control-expose-headers, since the list itself advertises literal
+        x-litellm-* names and is a disclosure in its own right.
+        """
+        from litellm.constants import LITELLM_UI_ALLOW_HEADERS
+
+        missing = {"x-usage-cost", "x-usage-spend", NEUTRAL_BUDGET_HEADER_NAME} - set(LITELLM_UI_ALLOW_HEADERS)
+        assert not missing, (
+            f"{sorted(missing)} are emitted but not in expose_headers, so a browser client "
+            f"on the internal hostname reads null for them"
+        )
+
     def test_the_neutral_budget_header_is_emitted_at_source(self):
         """Internal callers get `x-usage-budget` without the external rename.
 
