@@ -2645,6 +2645,13 @@ class UserAPIKeyAuth(LiteLLM_VerificationTokenView):  # the expected response ob
         ),
     )
     budget_reservation: dict[str, Any] | None = Field(default=None, exclude=True)
+    # RAYWARD FORK PATCH: per-window snapshot stashed by
+    # _virtual_key_multi_budget_check so get_custom_headers can publish
+    # x-usage-budget without a second (impossible — it is sync) cache read.
+    # exclude=True for the same reason as budget_reservation above: transient
+    # request state, never persisted and never part of the key's API shape.
+    # See litellm/proxy/common_utils/budget_window_headers.py.
+    budget_window_usage: tuple[Any, ...] | None = Field(default=None, exclude=True)
     budget_throttle_pct: float | None = Field(default=None, exclude=True)
     user: Any | None = None  # Expanded user object when expand=user is used
     created_by_user: Any | None = None  # Expanded created_by user when expand=user is used

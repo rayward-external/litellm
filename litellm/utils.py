@@ -7466,6 +7466,53 @@ def cleanup_none_field_in_message(message: AllMessageValues):
     return {k: v for k, v in new_message.items() if v is not None}
 
 
+def _client_side_bad_request(message: str) -> litellm.BadRequestError:
+    """Build the 400 raised by the pre-flight request validators.
+
+    These validators run in completion() BEFORE a provider is selected or contacted,
+    so the request is malformed no matter which deployment would have served it.
+
+    Raising a bare Exception here meant exception_type() could not map it and fell
+    through to APIConnectionError (HTTP 500) stamped with the provider the router was
+    about to try -- reporting a client mistake as an outage at a provider that never
+    saw the request, and inviting the caller to retry something that can never succeed.
+    BadRequestError is in LITELLM_EXCEPTION_TYPES, so exception_type() re-raises it
+    unchanged and the caller gets an honest, non-retryable 400.
+
+    model/llm_provider are deliberately empty: no deployment has been chosen yet, and
+    naming one would recreate the false attribution this fixes.
+
+    `type` is set so the proxy's error BODY agrees with the status line. The proxy
+    builds its response with `type=getattr(e, "type", "None")`
+    (litellm/proxy/common_request_processing.py), and BadRequestError leaves that
+    attribute None, so a client classifying failures by body type would read a 400
+    as untyped. "invalid_request_error" is OpenAI's type for this class of error.
+    """
+    error = litellm.BadRequestError(message=message, model="", llm_provider="")
+    error.type = "invalid_request_error"
+    return error
+
+
+def _first_invalid_content_type(message: AllMessageValues) -> str:
+    """Return repr() of the first disallowed content-part `type` in a user message.
+
+    repr() rather than the raw value because the value is client-controlled and need
+    not be a string, and because `type=None` -- the common case and the most confusing
+    one to debug blind -- must be visibly distinct from the string "None". None means
+    the content-part dicts carry no "type" key at all, which is what a client sends
+    when it passes a messages array (or raw domain objects) where a content-part list
+    belongs.
+    """
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict):
+                item_type = item.get("type")
+                if item_type not in ValidUserMessageContentTypes:
+                    return repr(item_type)
+    return repr(None)
+
+
 def validate_chat_completion_user_messages(messages: list[AllMessageValues]):
     """
     Ensures all user messages are valid OpenAI chat completion messages.
