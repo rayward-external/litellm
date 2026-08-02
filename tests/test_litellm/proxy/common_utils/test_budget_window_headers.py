@@ -1,0 +1,163 @@
+"""RAYWARD FORK PATCH tests — x-usage-budget must actually ship.
+
+The defect these cover is not "the value is wrong". It is that the header was
+ABSENT entirely for every key the broker issues, because ``get_custom_headers``
+read a lifetime ``max_budget`` that broker keys deliberately never set, and the
+resulting ``"None"`` was filtered out before the external rename ran.
+
+So the tests that matter most here are the WIRING ones at the bottom: a correct
+formatter that nothing calls reproduces the original bug exactly.
+"""
+
+import ast
+from pathlib import Path
+
+import pytest
+
+from litellm.proxy.common_utils.budget_window_headers import (
+    BUDGET_HEADER_NAME,
+    format_budget_windows,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+def w(duration, limit, spent):
+    return {"budget_duration": duration, "max_budget": limit, "spent": spent}
+
+
+class TestFormatBudgetWindows:
+    def test_renders_every_window_with_both_halves(self):
+        """`limit` AND `spent`, because headroom must come from ONE header.
+
+        x-usage-spend is the key's LIFETIME spend while the caps are windowed, so
+        the two cannot be subtracted. Adding a fourth header was declined, so
+        this one has to be self-sufficient.
+        """
+        got = format_budget_windows([w("1d", 50.0, 12.3), w("1w", 200.0, 40.1), w("1mo", 500.0, 95.2)])
+        assert got == "1d;limit=50;spent=12.3, 1w;limit=200;spent=40.1, 1mo;limit=500;spent=95.2"
+
+    def test_window_order_is_preserved(self):
+        """Enforcement's evaluation order, not a sort. A reorder would be a silent
+        change to a published contract."""
+        got = format_budget_windows([w("1mo", 500.0, 1.0), w("1d", 50.0, 2.0)])
+        assert got.startswith("1mo;")
+
+    @pytest.mark.parametrize("windows", [None, [], [{}]])
+    def test_nothing_to_say_means_no_header(self, windows):
+        """None keeps the header ABSENT. An empty or placeholder value would read
+        as a real cap of zero."""
+        assert format_budget_windows(windows) is None
+
+    def test_infinite_cap_is_omitted_not_published(self):
+        """`limit=inf` parses to float('inf') in a client and reads as a number."""
+        assert format_budget_windows([w("1d", float("inf"), 5.0)]) is None
+
+    def test_a_partial_window_is_skipped_not_guessed(self):
+        assert format_budget_windows([{"budget_duration": "1d", "max_budget": 50.0}]) is None
+        assert format_budget_windows([w("1d", None, 5.0)]) is None
+        assert format_budget_windows([w(None, 50.0, 5.0)]) is None
+
+    def test_a_partial_window_does_not_suppress_a_good_one(self):
+        got = format_budget_windows([{"budget_duration": "1d"}, w("1w", 200.0, 40.0)])
+        assert got == "1w;limit=200;spent=40"
+
+    def test_float_noise_never_reaches_the_customer(self):
+        """repr(0.1 + 0.2) is 0.30000000000000004. A spend figure must not look
+        like that."""
+        assert format_budget_windows([w("1d", 50.0, 0.1 + 0.2)]) == "1d;limit=50;spent=0.3"
+
+    def test_no_scientific_notation(self):
+        """A per-request cost of 1.14e-05 is real; a header a customer parses as a
+        float must not carry an exponent."""
+        got = format_budget_windows([w("1d", 50.0, 0.0000114)])
+        assert "e-" not in got and "E-" not in got
+
+    def test_zero_spend_renders_as_zero(self):
+        assert format_budget_windows([w("1mo", 500, 0)]) == "1mo;limit=500;spent=0"
+
+    def test_value_is_parseable_back_into_numbers(self):
+        """The point of the format: a customer computes headroom from it."""
+        raw = format_budget_windows([w("1d", 50.0, 12.3), w("1w", 200.0, 40.1)])
+        parsed = {}
+        for item in raw.split(", "):
+            name, *params = item.split(";")
+            fields = dict(p.split("=") for p in params)
+            parsed[name] = (float(fields["limit"]), float(fields["spent"]))
+        assert parsed == {"1d": (50.0, 12.3), "1w": (200.0, 40.1)}
+        assert parsed["1d"][0] - parsed["1d"][1] == pytest.approx(37.7)
+
+
+class TestWiring:
+    """A correct formatter that nothing calls IS the original bug.
+
+    Asserted against the source rather than by booting the proxy: these are
+    three separate files a rebase can revert independently, and the failure mode
+    is silence, not an exception.
+    """
+
+    def test_auth_check_stashes_the_snapshot(self):
+        src = (REPO_ROOT / "litellm/proxy/auth/auth_checks.py").read_text()
+        assert "valid_token.budget_window_usage" in src, (
+            "_virtual_key_multi_budget_check no longer records the per-window snapshot. "
+            "It is the only place the numbers exist — get_custom_headers is sync and "
+            "cannot await the counters itself."
+        )
+        assert '"spent": window_spend' in src, (
+            "the snapshot no longer carries the spend enforcement actually read; "
+            "without it the header can only publish limits and headroom is not derivable"
+        )
+
+    def test_header_builder_calls_the_formatter(self):
+        src = (REPO_ROOT / "litellm/proxy/common_request_processing.py").read_text()
+        assert 'format_budget_windows(getattr(user_api_key_dict, "budget_window_usage", None))' in src, (
+            "get_custom_headers no longer publishes the budget windows, so x-usage-budget "
+            "goes back to str(None) -> dropped, which is the original defect"
+        )
+        # getattr, NOT direct attribute access. Direct access raises
+        # AttributeError on every request if a sync reverts the _types.py half,
+        # and breaks upstream tests that build MagicMock(spec=UserAPIKeyAuth) —
+        # pydantic v2 fields are invisible to a mock spec. Both were observed.
+        assert "format_budget_windows(user_api_key_dict.budget_window_usage)" not in src, (
+            "direct attribute access is back; it turns a dropped fork patch into a 500 "
+            "on every request and reds upstream's mock-based tests"
+        )
+        assert "from litellm.proxy.common_utils.budget_window_headers import" in src, (
+            "the formatter import was dropped"
+        )
+
+    def test_snapshot_field_survives_on_the_auth_object(self):
+        src = (REPO_ROOT / "litellm/proxy/_types.py").read_text()
+        assert "budget_window_usage" in src, (
+            "UserAPIKeyAuth.budget_window_usage is gone; the snapshot has nowhere to live"
+        )
+
+    def test_the_lifetime_fallback_is_still_there(self):
+        """A key with a plain max_budget must keep getting the plain float.
+
+        Over-correction guard: the windowed shape and the lifetime shape are
+        mutually exclusive per key, and dropping the fallback would silently
+        un-publish the cap for every key that uses one.
+        """
+        src = (REPO_ROOT / "litellm/proxy/common_request_processing.py").read_text()
+        assert "or str(user_api_key_dict.max_budget)" in src
+
+    def test_header_name_matches_the_external_rename_table(self):
+        """The external middleware renames exactly one internal name to
+        x-usage-budget. If they drift, the windows are computed and then dropped
+        by the allowlist — silently, on the external path only."""
+        src = (REPO_ROOT / "litellm/proxy/middleware/external_audience_middleware.py").read_text()
+        assert f'("{BUDGET_HEADER_NAME}", "x-usage-budget")' in src, (
+            f"{BUDGET_HEADER_NAME} is no longer renamed to x-usage-budget; external callers "
+            f"would lose the header entirely while internal ones kept it"
+        )
+
+    def test_header_builder_emits_under_that_exact_name(self):
+        src = (REPO_ROOT / "litellm/proxy/common_request_processing.py").read_text()
+        tree = ast.parse(src)
+        names = {
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and node.value == BUDGET_HEADER_NAME
+        }
+        assert names, f"get_custom_headers no longer emits {BUDGET_HEADER_NAME}"
