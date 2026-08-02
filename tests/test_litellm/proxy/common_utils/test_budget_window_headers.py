@@ -16,6 +16,7 @@ import pytest
 
 from litellm.proxy.common_utils.budget_window_headers import (
     BUDGET_HEADER_NAME,
+    NEUTRAL_BUDGET_HEADER_NAME,
     BudgetWindow,
     format_budget_windows,
 )
@@ -114,22 +115,47 @@ class TestWiring:
         )
 
     def test_header_builder_calls_the_formatter(self):
+        """Asserted over the AST, not the source text.
+
+        The previous version matched one exact single-line spelling of the call.
+        `ruff format` reflows that call across three lines the moment anything
+        near it grows, which reds the guard without a behaviour change and
+        teaches whoever hits it to edit the assertion — the failure mode
+        described in the repo's own notes on vacuous guards.
+        """
         src = (REPO_ROOT / "litellm/proxy/common_request_processing.py").read_text()
-        assert 'format_budget_windows(getattr(user_api_key_dict, "budget_window_usage", None))' in src, (
-            "get_custom_headers no longer publishes the budget windows, so x-usage-budget "
-            "goes back to str(None) -> dropped, which is the original defect"
+        tree = ast.parse(src)
+
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "format_budget_windows"
+        ]
+        # Two: the neutral x-usage-budget for internal callers, and the
+        # fork-only branded twin the external rename reads.
+        assert len(calls) == 2, (
+            f"expected 2 format_budget_windows calls (neutral + branded twin), found "
+            f"{len(calls)}; get_custom_headers is no longer publishing both, so one "
+            f"audience silently loses its budget header"
         )
-        # getattr, NOT direct attribute access. Direct access raises
-        # AttributeError on every request if a sync reverts the _types.py half,
-        # and breaks upstream tests that build MagicMock(spec=UserAPIKeyAuth) —
-        # pydantic v2 fields are invisible to a mock spec. Both were observed.
-        assert "format_budget_windows(user_api_key_dict.budget_window_usage)" not in src, (
-            "direct attribute access is back; it turns a dropped fork patch into a 500 "
-            "on every request and reds upstream's mock-based tests"
-        )
-        assert "from litellm.proxy.common_utils.budget_window_headers import" in src, (
-            "the formatter import was dropped"
-        )
+
+        for call in calls:
+            assert len(call.args) == 1, "format_budget_windows takes the snapshot positionally"
+            arg = call.args[0]
+            # getattr, NOT direct attribute access. Direct access raises
+            # AttributeError on every request if a sync reverts the _types.py
+            # half, and breaks upstream tests that build
+            # MagicMock(spec=UserAPIKeyAuth) — pydantic v2 fields are invisible
+            # to a mock spec. Both were observed 2026-08-02.
+            assert isinstance(arg, ast.Call) and getattr(arg.func, "id", None) == "getattr", (
+                "direct attribute access is back; it turns a dropped fork patch into a 500 "
+                "on every request and reds upstream's mock-based tests"
+            )
+            assert len(arg.args) == 3, "getattr without a default still raises when a sync drops the _types.py field"
+
+        assert "from litellm.proxy.common_utils.budget_window_headers import" in src, "the formatter import was dropped"
 
     def test_snapshot_field_survives_on_the_auth_object(self):
         src = (REPO_ROOT / "litellm/proxy/_types.py").read_text()
@@ -137,15 +163,59 @@ class TestWiring:
             "UserAPIKeyAuth.budget_window_usage is gone; the snapshot has nowhere to live"
         )
 
-    def test_the_lifetime_fallback_is_still_there(self):
-        """A key with a plain max_budget must keep getting the plain float.
+    def test_the_upstream_header_carries_upstream_value_only(self):
+        """`x-litellm-key-max-budget` must be upstream's scalar and nothing else.
 
-        Over-correction guard: the windowed shape and the lifetime shape are
-        mutually exclusive per key, and dropping the fallback would silently
-        un-publish the cap for every key that uses one.
+        This guard used to assert the OPPOSITE — that the windowed value fell back
+        to `or str(user_api_key_dict.max_budget)` on the same header. That design
+        put two value types under one upstream name, which no reader can dispatch
+        on: the fork's own `gateway_cost.py` did `float(raw)` and reported
+        `max_budget: None` for every windowed key, silently, from the day it
+        shipped. #491 gave the windows a name of their own.
+
+        Asserted over the AST so the check is about the VALUE bound to that key,
+        not about text appearing somewhere in a 2000-line file.
         """
         src = (REPO_ROOT / "litellm/proxy/common_request_processing.py").read_text()
-        assert "or str(user_api_key_dict.max_budget)" in src
+        tree = ast.parse(src)
+
+        values = [
+            value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Dict)
+            for key, value in zip(node.keys, node.values)
+            if isinstance(key, ast.Constant) and key.value == "x-litellm-key-max-budget"
+        ]
+        assert len(values) == 1, f"expected exactly one emission of x-litellm-key-max-budget, found {len(values)}"
+        assert ast.unparse(values[0]) == "str(user_api_key_dict.max_budget)", (
+            f"x-litellm-key-max-budget is not upstream's plain scalar any more, it is "
+            f"{ast.unparse(values[0])!r}. Overloading an upstream header with a second "
+            f"value type is what #491 removed — put new shapes on a name of our own."
+        )
+
+    def test_the_neutral_budget_header_is_emitted_at_source(self):
+        """Internal callers get `x-usage-budget` without the external rename.
+
+        The neutral trio is the one documented contract
+        (docs/external-api-usage-headers.md). Before #491 it existed only as a
+        rename inside the external-audience middleware, so a client written
+        against the docs read nothing on `litellm.rayward.ai`. Losing this line
+        restores that split silently — internal keeps working for anyone reading
+        the branded names, which is exactly who does not notice.
+        """
+        src = (REPO_ROOT / "litellm/proxy/common_request_processing.py").read_text()
+        tree = ast.parse(src)
+
+        emitted = {
+            key.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Dict)
+            for key in node.keys
+            if isinstance(key, ast.Constant) and str(key.value).startswith("x-usage-")
+        }
+        assert emitted == {"x-usage-cost", "x-usage-spend", NEUTRAL_BUDGET_HEADER_NAME}, (
+            f"get_custom_headers emits {sorted(emitted)}; internal callers need all three neutral names at source"
+        )
 
     def test_header_name_matches_the_external_rename_table(self):
         """The external middleware renames exactly one internal name to
@@ -161,9 +231,7 @@ class TestWiring:
         src = (REPO_ROOT / "litellm/proxy/common_request_processing.py").read_text()
         tree = ast.parse(src)
         names = {
-            node.value
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Constant) and node.value == BUDGET_HEADER_NAME
+            node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and node.value == BUDGET_HEADER_NAME
         }
         assert names, f"get_custom_headers no longer emits {BUDGET_HEADER_NAME}"
 
@@ -192,9 +260,7 @@ class TestNonFiniteLimits:
         """Belt and braces: whatever survives must parse as a finite float."""
         import math as _math
 
-        got = format_budget_windows(
-            [w("1d", 50.0, 12.3), w("1w", float("nan"), 1.0), w("1mo", float("inf"), 2.0)]
-        )
+        got = format_budget_windows([w("1d", 50.0, 12.3), w("1w", float("nan"), 1.0), w("1mo", float("inf"), 2.0)])
         for item in got.split(", "):
             for param in item.split(";")[1:]:
                 assert _math.isfinite(float(param.split("=", 1)[1]))
@@ -220,7 +286,7 @@ class TestNeverRaises:
     @pytest.mark.parametrize(
         "junk",
         [
-            "1d;limit=50",           # a str is a Sequence — iterating yields chars
+            "1d;limit=50",  # a str is a Sequence — iterating yields chars
             42,
             object(),
             {"budget_duration": "1d"},  # a bare dict, not a BudgetWindow

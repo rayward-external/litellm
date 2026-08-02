@@ -90,10 +90,25 @@ EXTERNAL_AUDIENCE = "external"
 #: Applied BEFORE the allowlist test below, which would otherwise drop all three.
 #: Pairs rather than a dict so the table is immutable at import: nothing can
 #: grow this at runtime, and a header cannot be renamed into existence later.
+#:
+#: THE RENAME IS THE ONLY WAY A NEUTRAL NAME REACHES AN EXTERNAL CALLER, and that
+#: is a property to preserve, not an accident to tidy up (#491). Since #491 the
+#: proxy ALSO emits `x-usage-cost` / `-spend` / `-budget` at source, so internal
+#: callers get the documented contract too — those copies reach the allowlist
+#: test, are not in it, and die here. So does an upstream's own `x-usage-*` on the
+#: pass-through path, where upstream headers win over custom ones. Net effect: an
+#: external caller receives exactly one value per name, and it is the gateway's.
+#: Allowlisting any neutral name would forfeit that and let two copies join into
+#: something non-numeric.
+#:
+#: The budget source is a FORK-ONLY name, not `x-litellm-key-max-budget`. That
+#: upstream header carries upstream's scalar again since #491; renaming it would
+#: publish `None` for every windowed key — broker keys set `budget_limits` and
+#: never a top-level `max_budget` — and silently end external budget reporting.
 RENAMED_HEADERS: tuple[tuple[str, str], ...] = (
     ("x-litellm-response-cost", "x-usage-cost"),
     ("x-litellm-key-spend", "x-usage-spend"),
-    ("x-litellm-key-max-budget", "x-usage-budget"),
+    ("x-litellm-key-budget-windows", "x-usage-budget"),
 )
 
 #: The COMPLETE set of response headers an external caller receives. Anything not

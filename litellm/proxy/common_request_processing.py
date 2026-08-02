@@ -1017,13 +1017,45 @@ class ProxyBaseLLMRequestProcessing:
             "x-litellm-response-cost-margin-percent": (str(margin_percent) if margin_percent is not None else None),
             "x-litellm-key-tpm-limit": str(user_api_key_dict.tpm_limit),
             "x-litellm-key-rpm-limit": str(user_api_key_dict.rpm_limit),
-            # RAYWARD FORK PATCH: a key with concurrent budget WINDOWS publishes
-            # them here instead of the lifetime cap. Without this the header is
-            # str(None) -> "None" -> dropped by exclude_values below, which is why
-            # x-usage-budget never shipped to external callers at all. The two
-            # shapes are mutually exclusive per key, so there is no collision, and
-            # a windowed key emits nothing today — no existing value to break.
-            # See litellm/proxy/common_utils/budget_window_headers.py.
+            # UPSTREAM VALUE, deliberately restored (#491). This header used to
+            # carry our budget-WINDOW list when the key had one, falling back to
+            # upstream's scalar otherwise. Two value types under one upstream name
+            # is not something a reader can dispatch on: the fork's own
+            # gateway_cost.py did `float(raw)` here and silently reported
+            # `max_budget: None` on every windowed key. The window list now lives
+            # in the two headers below, which are ours and single-typed.
+            "x-litellm-key-max-budget": str(user_api_key_dict.max_budget),
+            "x-litellm-key-spend": str(updated_spend),
+            # ── RAYWARD FORK PATCH (#491): the neutral usage contract ──────────
+            # `x-usage-cost` / `-spend` / `-budget` are the ONE documented way a
+            # caller reads their own spend (docs/external-api-usage-headers.md in
+            # the infra repo). They were external-only, minted by the rename table
+            # in external_audience_middleware.py, so a client written against the
+            # documented contract read nothing on the internal hostname. Emitting
+            # them here gives internal callers the same contract.
+            #
+            # WHAT HAPPENS TO THESE THREE ON THE EXTERNAL LEG: they are DROPPED.
+            # That is intentional and load-bearing, not an oversight. The external
+            # policy is a strict allowlist and these names are not in it, so the
+            # copy emitted here dies at the boundary and the copy the caller
+            # receives is the one the rename table mints from the branded header
+            # beside it. Keeping the neutral names unmintable-except-by-rename is
+            # what guarantees an external caller sees exactly ONE value: an
+            # upstream that sends its own `x-usage-cost` (the pass-through path
+            # forwards upstream headers verbatim, and upstream wins over custom
+            # ones there) also fails the allowlist and is dropped. Add any of
+            # these three to ALLOWED_HEADERS and that guarantee is gone.
+            "x-usage-cost": str(response_cost),
+            "x-usage-spend": str(updated_spend),
+            "x-usage-budget": format_budget_windows(getattr(user_api_key_dict, "budget_window_usage", None)),
+            # The branded twin the external rename reads. It exists because the
+            # neutral header above cannot cross the boundary on its own, and
+            # because `x-litellm-key-max-budget` went back to upstream's scalar —
+            # renaming THAT would publish `None` to every windowed key and silently
+            # kill external budget reporting. Fork-only name by design: upstream
+            # never emits it, so nothing but this line can produce the value the
+            # rename turns into `x-usage-budget`.
+            #
             # getattr, not attribute access, for two independent reasons:
             #   * a sync that reverts the _types.py half would otherwise raise
             #     AttributeError on EVERY request rather than just dropping the
@@ -1031,13 +1063,12 @@ class ProxyBaseLLMRequestProcessing:
             #   * upstream tests build MagicMock(spec=UserAPIKeyAuth), and
             #     pydantic v2 fields are not visible to a mock spec, so direct
             #     access breaks unrelated upstream tests on every rebase.
-            # The wiring tests assert the field and the call site still exist, so
-            # the graceful degradation cannot go unnoticed.
-            "x-litellm-key-max-budget": (
-                format_budget_windows(getattr(user_api_key_dict, "budget_window_usage", None))
-                or str(user_api_key_dict.max_budget)
+            # Both degradations are silent, so the wiring tests assert this call
+            # site and the _types.py field still exist.
+            "x-litellm-key-budget-windows": format_budget_windows(
+                getattr(user_api_key_dict, "budget_window_usage", None)
             ),
-            "x-litellm-key-spend": str(updated_spend),
+            # ── end fork patch ─────────────────────────────────────────────────
             "x-litellm-response-duration-ms": str(hidden_params.get("_response_ms", None)),
             "x-litellm-overhead-duration-ms": str(hidden_params.get("litellm_overhead_time_ms", None)),
             "x-litellm-callback-duration-ms": str(hidden_params.get("callback_duration_ms", None)),

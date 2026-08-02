@@ -86,18 +86,31 @@ class BudgetWindow(NamedTuple):
     spent: float
 
 
-#: Header the windows are published under. Deliberately the SAME name the
-#: lifetime cap already used, rather than a new one:
+#: Header the windows are published under, and the source the external rename
+#: table turns into ``x-usage-budget``.
 #:
-#:   * the external rename table maps exactly one internal name to
-#:     ``x-usage-budget``, and two would collide into a duplicate header;
-#:   * a key with windows currently emits NOTHING here (the "None" filter above),
-#:     so there is no existing float value for an internal consumer to break on.
+#: This used to be ``x-litellm-key-max-budget``, reusing the upstream name the
+#: lifetime cap already had. The argument was that the two shapes are mutually
+#: exclusive per key, so nothing collides. True per key, and beside the point: a
+#: READER cannot dispatch on a name that returns a float from one key and a
+#: window list from the next. The fork's own ``gateway_cost.py`` did
+#: ``float(raw)`` on it and reported ``max_budget: None`` for every windowed key,
+#: silently, from the day this shipped. Overloading an upstream name also puts a
+#: semantic change in front of every rebase.
 #:
-#: A key with a lifetime ``max_budget`` still gets the plain float. The two shapes
-#: are mutually exclusive per key by construction: the broker sets one or the
-#: other, never both.
-BUDGET_HEADER_NAME = "x-litellm-key-max-budget"
+#: So: upstream's name keeps upstream's scalar, and the windows get a name of
+#: their own. Fork-only by design — upstream never emits it, so the rename can
+#: only ever be fed by our own emitter, which is what keeps an external caller
+#: seeing exactly one ``x-usage-budget`` (see the rename table's own note).
+#:
+#: The neutral ``x-usage-budget`` is ALSO emitted at source for internal callers.
+#: It is not renamed from anything and is dropped on the external leg by the
+#: allowlist; do not try to unify the two paths by allowlisting it.
+BUDGET_HEADER_NAME = "x-litellm-key-budget-windows"
+
+#: The neutral name, emitted at source for internal callers and minted by the
+#: rename for external ones. Named here so the guards can assert both halves.
+NEUTRAL_BUDGET_HEADER_NAME = "x-usage-budget"
 
 
 def format_budget_windows(windows: Sequence[BudgetWindow] | None) -> str | None:
