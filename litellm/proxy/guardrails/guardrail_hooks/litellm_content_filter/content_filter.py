@@ -456,7 +456,9 @@ class ContentFilterGuardrail(CustomGuardrail):
                     )
             except ValueError as e:
                 verbose_proxy_logger.warning(
-                    f"Category '{category_name}': resolved category file path escapes categories_dir, skipping. {e}"
+                    "Category '%s': resolved category file path escapes categories_dir, skipping. %s",
+                    category_name,
+                    e,
                 )
                 continue
 
