@@ -299,19 +299,15 @@ class ContentFilterGuardrail(CustomGuardrail):
         return result
 
     @staticmethod
-    def _assert_within_categories_dir(path: str, categories_dir: str) -> None:
-        """Raise ValueError if path escapes the categories directory."""
+    def _assert_within_categories_dir(path: str, categories_dir: str) -> str:
+        """Return the realpath of `path`, raising ValueError if it escapes categories_dir."""
         resolved = os.path.realpath(path)
         allowed = os.path.realpath(categories_dir)
-        try:
-            common = os.path.commonpath([resolved, allowed])
-        except ValueError:
-            # commonpath() raises ValueError on Windows when paths span different drives
-            raise ValueError(f"Category file path '{path}' is outside the allowed categories directory")
-        if common != allowed:
+        if resolved != allowed and not resolved.startswith(allowed + os.sep):
             raise ValueError(
                 f"Category file path '{path}' is outside the allowed categories directory '{categories_dir}'"
             )
+        return resolved
 
     def _resolve_category_file_path(self, file_path: str) -> str:
         """
@@ -444,16 +440,9 @@ class ContentFilterGuardrail(CustomGuardrail):
             # Defense-in-depth: re-assert the resolved candidate path stays inside
             # categories_dir before it is ever passed to os.path.exists()/loaded.
             # category_name is already regex-validated above, but this closes the
-            # gap for any future code path that reaches here without that check
-            # (and satisfies CodeQL's path-injection analysis, which cannot see
-            # through the earlier regex validation).
+            # gap for any future code path that reaches here without that check.
             try:
-                real_category_file_path = os.path.realpath(category_file_path)
-                real_categories_dir = os.path.realpath(categories_dir)
-                if os.path.commonpath([real_category_file_path, real_categories_dir]) != real_categories_dir:
-                    raise ValueError(
-                        f"Category file path '{category_file_path}' is outside the allowed categories directory"
-                    )
+                real_category_file_path = self._assert_within_categories_dir(category_file_path, categories_dir)
             except ValueError as e:
                 verbose_proxy_logger.warning(
                     "Category '%s': resolved category file path escapes categories_dir, skipping. %s",
