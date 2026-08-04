@@ -19,6 +19,10 @@ on:
         required: false
         default: ''
         description: 'Alert number to fetch full detail for (mode=get)'
+      ref:
+        required: false
+        default: ''
+        description: 'Optional ref filter for mode=list (e.g. a PR head branch)'
 
 permissions:
   security-events: write
@@ -33,11 +37,18 @@ jobs:
     steps:
       - name: List alerts
         if: inputs.mode == 'list'
+        env:
+          REF_FILTER: ${{ inputs.ref }}
         run: |
-          gh api --paginate "repos/${{ github.repository }}/code-scanning/alerts?state=open&per_page=100" > alerts.json
+          query="state=open&per_page=100"
+          if [ -n "$REF_FILTER" ]; then
+            query="ref=$REF_FILTER&$query"
+          fi
+          gh api --paginate "repos/${{ github.repository }}/code-scanning/alerts?$query" > alerts.json
           total=$(jq length alerts.json)
           echo "Open alerts: $total" | tee -a $GITHUB_STEP_SUMMARY
           jq -r 'group_by(.rule.id) | .[] | "\(.[0].rule.id) [\(.[0].rule.severity)]: \(length) alerts — numbers: \([.[].number] | join(","))"' alerts.json | tee -a $GITHUB_STEP_SUMMARY
+          jq -r '.[] | "#\(.number) \(.rule.id) [\(.rule.severity)]: \(.most_recent_instance.location.path):\(.most_recent_instance.location.start_line) ref=\(.most_recent_instance.ref)"' alerts.json | tee -a $GITHUB_STEP_SUMMARY
 
       - name: Upload alerts artifact
         if: inputs.mode == 'list'
