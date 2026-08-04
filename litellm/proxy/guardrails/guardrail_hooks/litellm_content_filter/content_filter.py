@@ -462,12 +462,12 @@ class ContentFilterGuardrail(CustomGuardrail):
                 )
                 continue
 
-            if not os.path.exists(category_file_path):
+            if not os.path.exists(real_category_file_path):
                 verbose_proxy_logger.warning("Category file not found: %s, skipping", category_file_path)
                 continue
 
             try:
-                category_config_obj = self._load_category_file(category_file_path)
+                category_config_obj = self._load_category_file(real_category_file_path)
                 self.loaded_categories[category_name] = category_config_obj
 
                 # Use action from config, or default from category file
