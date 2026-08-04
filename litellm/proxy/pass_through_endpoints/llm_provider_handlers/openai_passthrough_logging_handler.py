@@ -472,7 +472,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
             return cost
         except Exception as e:
-            verbose_proxy_logger.warning(f"Error calculating image generation cost: {e!s}")
+            verbose_proxy_logger.warning("Error calculating image generation cost: %s", e)
             return 0.0
 
     @staticmethod
@@ -506,7 +506,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
             return cost
         except Exception as e:
-            verbose_proxy_logger.warning(f"Error calculating image editing cost: {e!s}")
+            verbose_proxy_logger.warning("Error calculating image editing cost: %s", e)
             return 0.0
 
     @staticmethod
@@ -765,7 +765,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             }
 
         except Exception as e:
-            verbose_proxy_logger.error(f"Error in OpenAI passthrough cost tracking: {e!s}")
+            verbose_proxy_logger.error("Error in OpenAI passthrough cost tracking: %s", e)
             # Fall back to base handler without cost tracking
             base_handler = OpenAIPassthroughLoggingHandler()
             return base_handler.passthrough_chat_handler(
@@ -821,7 +821,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                             all_openai_chunks.append(transformed_chunk)
 
                 except (StopIteration, StopAsyncIteration, Exception) as e:
-                    verbose_proxy_logger.debug(f"Error parsing streaming chunk: {e}")
+                    verbose_proxy_logger.debug("Error parsing streaming chunk: %s", e)
                     continue
 
             if not all_openai_chunks:
@@ -834,7 +834,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             return complete_streaming_response
 
         except Exception as e:
-            verbose_proxy_logger.error(f"Error building complete streaming response: {e!s}")
+            verbose_proxy_logger.error("Error building complete streaming response: %s", e)
             return None
 
     @staticmethod
@@ -1006,7 +1006,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             }
 
         except Exception as e:
-            verbose_proxy_logger.error(f"Error in OpenAI streaming passthrough cost tracking: {e!s}")
+            verbose_proxy_logger.error("Error in OpenAI streaming passthrough cost tracking: %s", e)
             return {
                 "result": None,
                 "kwargs": {},
