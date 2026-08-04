@@ -3,3 +3,8 @@ id = "GHSA-w8v5-vhqr-4h9v"
 ignoreUntil = 2026-09-09
 reason = "diskcache has no fixed release published; remove this entry once one exists"
 
+[[IgnoredVulns]]
+id = "GHSA-g6cj-pr64-35w5"
+ignoreUntil = 2026-11-01
+reason = "cryptography fixed in 50.0.0, but mlflow<=3.15.1 (latest) pins cryptography<50 so uv cannot resolve past 49.x while the mlflow extra stays installed; remove once mlflow raises its cryptography cap past 50.0.0"
+
