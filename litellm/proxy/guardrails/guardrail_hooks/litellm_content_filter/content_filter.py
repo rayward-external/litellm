@@ -441,13 +441,19 @@ class ContentFilterGuardrail(CustomGuardrail):
             # categories_dir before it is ever passed to os.path.exists()/loaded.
             # category_name is already regex-validated above, but this closes the
             # gap for any future code path that reaches here without that check.
-            try:
-                real_category_file_path = self._assert_within_categories_dir(category_file_path, categories_dir)
-            except ValueError as e:
+            # Written inline (not via a helper call), matching CodeQL's
+            # py/path-injection documented safe idiom so its sanitizer
+            # recognition fires; the "+ os.sep" guards against a sibling
+            # directory sharing categories_dir as a string prefix (e.g.
+            # ".../categories-evil" must not pass a bare startswith(categories_dir)).
+            real_category_file_path = os.path.realpath(category_file_path)
+            real_categories_dir = os.path.realpath(categories_dir)
+            if real_category_file_path != real_categories_dir and not real_category_file_path.startswith(
+                real_categories_dir + os.sep
+            ):
                 verbose_proxy_logger.warning(
-                    "Category '%s': resolved category file path escapes categories_dir, skipping. %s",
+                    "Category '%s': resolved category file path escapes categories_dir, skipping",
                     category_name,
-                    e,
                 )
                 continue
 
