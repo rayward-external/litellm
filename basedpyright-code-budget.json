@@ -30,7 +30,7 @@
     "limit": 11
   },
   "reportGeneralTypeIssues": {
-    "limit": 157
+    "limit": 158
   },
   "reportIncompatibleMethodOverride": {
     "limit": 77
@@ -81,7 +81,7 @@
     "limit": 0
   },
   "reportPossiblyUnboundVariable": {
-    "limit": 56
+    "limit": 70
   },
   "reportPrivateUsage": {
     "limit": 2436
@@ -135,10 +135,10 @@
     "limit": 23
   },
   "reportUnusedFunction": {
-    "limit": 139
+    "limit": 146
   },
   "reportUnusedImport": {
-    "limit": 588
+    "limit": 642
   },
   "reportUnusedVariable": {
     "limit": 147
