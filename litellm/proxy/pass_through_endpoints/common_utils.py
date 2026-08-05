@@ -1,4 +1,4 @@
-from urllib.parse import urlparse
+from typing import Final
 
 from fastapi import Request
 
@@ -227,7 +227,7 @@ def get_litellm_virtual_key(request: Request) -> str:
     Vertex JS SDK uses `Authorization` header, we use `x-litellm-api-key` to pass litellm virtual key
 
     """
-    litellm_api_key = request.headers.get("x-litellm-api-key")
+    litellm_api_key: Final = request.headers.get("x-litellm-api-key")
     if litellm_api_key:
         return f"Bearer {litellm_api_key}"
     return request.headers.get("Authorization", "")

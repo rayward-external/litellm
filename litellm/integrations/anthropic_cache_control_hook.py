@@ -10,8 +10,7 @@ Supported for both `v1/chat/completions` (via the prompt-management hook) and
 """
 
 import copy
-import os
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from litellm._logging import verbose_logger
 from litellm.integrations.custom_logger import CustomLogger
@@ -33,25 +32,7 @@ else:
 
 # Anthropic (and Bedrock Claude) reject requests with more than 4 cache_control
 # breakpoints: "A maximum of 4 blocks with cache_control may be provided."
-MAX_CACHE_CONTROL_BLOCKS = 4
-ANTHROPIC_PROMPT_CACHE_TTL_ENV = "ANTHROPIC_PROMPT_CACHE_TTL"
-ANTHROPIC_PROMPT_CACHE_TTL_HEADER = "x-anthropic-prompt-cache-ttl"
-ANTHROPIC_PROMPT_CACHE_WORKLOAD_HEADER = "x-anthropic-prompt-cache-workload"
-ANTHROPIC_PROMPT_CACHE_POLICY_HEADERS = {
-    ANTHROPIC_PROMPT_CACHE_TTL_HEADER,
-    ANTHROPIC_PROMPT_CACHE_WORKLOAD_HEADER,
-}
-ANTHROPIC_PROMPT_CACHE_TTLS = {"off", "5m", "1h", "auto"}
-ANTHROPIC_PROMPT_CACHE_LONG_WORKLOADS = {
-    "eval",
-    "evaluation",
-    "benchmark",
-    "bench",
-    "batch",
-    "pipeline",
-    "long",
-    "long-running",
-}
+MAX_CACHE_CONTROL_BLOCKS: Final = 4
 
 
 class AnthropicCacheControlHook(CustomPromptManagement):
@@ -78,7 +59,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         - non_default_params: dict - params with any global cache controls
         """
         # Extract cache control injection points
-        injection_points: list[CacheControlInjectionPoint] = non_default_params.pop(
+        injection_points: Final[list[CacheControlInjectionPoint]] = non_default_params.pop(
             "cache_control_injection_points", []
         )
         if not injection_points:
@@ -94,8 +75,8 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         processed_messages = copy.deepcopy(messages)
 
         # Separate message-level and non-message-level injection points
-        message_points: list[CacheControlMessageInjectionPoint] = []
-        remaining_points: list[CacheControlInjectionPoint] = []
+        message_points: Final[list[CacheControlMessageInjectionPoint]] = []
+        remaining_points: Final[list[CacheControlInjectionPoint]] = []
         for point in injection_points:
             if point.get("location") == "message":
                 message_points.append(cast(CacheControlMessageInjectionPoint, point))
@@ -106,7 +87,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         # provider transform, where each tool_config point appends at most one
         # cachePoint to the tools. That block also counts toward Anthropic's
         # limit, so reserve a slot for it here to leave room.
-        reserved_blocks = 1 if any(p.get("location") == "tool_config" for p in remaining_points) else 0
+        reserved_blocks: Final = 1 if any(p.get("location") == "tool_config" for p in remaining_points) else 0
 
         processed_messages = self._apply_message_injections(
             points=message_points,
@@ -269,7 +250,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         point: CacheControlMessageInjectionPoint, messages: list[AllMessageValues]
     ) -> list[int]:
         """Resolve which message indices an injection point targets."""
-        _targetted_index: int | str | None = point.get("index", None)
+        _targetted_index: Final[int | str | None] = point.get("index", None)
         targetted_index: int | None = None
         if isinstance(_targetted_index, str):
             try:
@@ -281,7 +262,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
 
         # Case 1: Target by specific index
         if targetted_index is not None:
-            original_index = targetted_index
+            original_index: Final = targetted_index
             if targetted_index < 0:
                 targetted_index += len(messages)
 
@@ -297,7 +278,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
             return []
 
         # Case 2: Target by role
-        targetted_role = point.get("role", None)
+        targetted_role: Final = point.get("role", None)
         if targetted_role is not None:
             return [idx for idx, msg in enumerate(messages) if msg.get("role") == targetted_role]
 
@@ -309,7 +290,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         count = 0
         if message.get("cache_control") is not None:
             count += 1
-        content = message.get("content")
+        content: Final = message.get("content")
         if isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and block.get("cache_control") is not None:
@@ -336,7 +317,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         Per Anthropic's API specification, when using multiple content blocks,
         only the last content block can have cache_control.
         """
-        message_content = message.get("content", None)
+        message_content: Final = message.get("content", None)
 
         # 1. if string, insert cache control in the message
         if isinstance(message_content, str):
@@ -363,9 +344,9 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         processed_messages: list[dict] = copy.deepcopy(messages)
         processed_system = copy.deepcopy(system) if system is not None else None
 
-        message_points: list[CacheControlMessageInjectionPoint] = []
-        system_points: list[CacheControlMessageInjectionPoint] = []
-        remaining_points: list[CacheControlInjectionPoint] = []
+        message_points: Final[list[CacheControlMessageInjectionPoint]] = []
+        system_points: Final[list[CacheControlMessageInjectionPoint]] = []
+        remaining_points: Final[list[CacheControlInjectionPoint]] = []
 
         for point in injection_points:
             if point.get("location") == "message":
@@ -377,8 +358,8 @@ class AnthropicCacheControlHook(CustomPromptManagement):
             else:
                 remaining_points.append(point)
 
-        reserved_blocks = 1 if any(p.get("location") == "tool_config" for p in remaining_points) else 0
-        max_blocks = MAX_CACHE_CONTROL_BLOCKS - reserved_blocks
+        reserved_blocks: Final = 1 if any(p.get("location") == "tool_config" for p in remaining_points) else 0
+        max_blocks: Final = MAX_CACHE_CONTROL_BLOCKS - reserved_blocks
 
         used_blocks = sum(
             AnthropicCacheControlHook._count_cache_control_blocks(cast(AllMessageValues, msg))
@@ -390,11 +371,11 @@ class AnthropicCacheControlHook(CustomPromptManagement):
             )
 
         if system_points and processed_system is not None and used_blocks < max_blocks:
-            system_already_has_cc = isinstance(processed_system, list) and any(
+            system_already_has_cc: Final = isinstance(processed_system, list) and any(
                 isinstance(b, dict) and b.get("cache_control") is not None for b in processed_system
             )
             if not system_already_has_cc:
-                control = system_points[0].get("control") or ChatCompletionCachedContent(type="ephemeral")
+                control: Final = system_points[0].get("control") or ChatCompletionCachedContent(type="ephemeral")
                 if isinstance(processed_system, str):
                     processed_system = [{"type": "text", "text": processed_system, "cache_control": control}]
                     used_blocks += 1
@@ -425,7 +406,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         """
         import litellm
 
-        ttl = litellm.anthropic_prompt_caching_ttl
+        ttl: Final = litellm.anthropic_prompt_caching_ttl
         if ttl == "5m" or ttl == "1h":
             return ChatCompletionCachedContent(type="ephemeral", ttl=ttl)
         return ChatCompletionCachedContent(type="ephemeral")
@@ -535,8 +516,8 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         if AnthropicCacheControlHook._request_has_cache_control(messages, system, tools):
             return []
 
-        control = AnthropicCacheControlHook._default_control()
-        points: list[CacheControlInjectionPoint] = [
+        control: Final = AnthropicCacheControlHook._default_control()
+        points: Final[list[CacheControlInjectionPoint]] = [
             CacheControlMessageInjectionPoint(location="message", role="system", index=None, control=control),
             CacheControlMessageInjectionPoint(location="message", role=None, index=-1, control=control),
         ]
@@ -568,7 +549,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
             ):
                 non_default_params.pop("cache_control_injection_points")
             return
-        points = AnthropicCacheControlHook.get_default_injection_points(
+        points: Final = AnthropicCacheControlHook.get_default_injection_points(
             messages=messages,
             system=None,
             model=model,
@@ -600,7 +581,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         downstream transforms can handle them.
         """
         typed_messages = cast(list[AllMessageValues], messages)  # cast-ok: Anthropic-shaped dicts from v1/messages
-        configured = cast(  # cast-ok: kwargs is untyped; this key only holds the documented injection-point list
+        configured: Final = cast(  # cast-ok: kwargs is untyped; this key only holds the documented injection-point list
             list[CacheControlInjectionPoint] | None, kwargs.pop("cache_control_injection_points", None)
         )
         if configured and AnthropicCacheControlHook._should_stand_down(configured, typed_messages, system, tools):
