@@ -2,7 +2,8 @@
 Unified /v1/messages endpoint - (Anthropic Spec)
 """
 
-from typing import Final
+from collections.abc import Mapping
+from typing import Final, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
