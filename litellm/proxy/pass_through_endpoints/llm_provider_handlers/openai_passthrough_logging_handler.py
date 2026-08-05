@@ -21,14 +21,7 @@ from litellm.llms.openai.openai import OpenAIConfig as OpenAIConfigType
 from litellm.llms.openai.responses.transformation import OpenAIResponsesAPIConfig
 from litellm.proxy._types import PassThroughEndpointLoggingTypedDict
 from litellm.proxy.pass_through_endpoints.common_utils import (
-    AZURE_OPENAI_HOSTNAMES,
-    AZURE_OPENAI_PATH_MARKERS,
-    OPENAI_HOSTNAMES,
-    hostname_matches,
-    is_openai_compatible_url,
-    is_openai_wire_compatible_route,
     normalize_fireworks_model_id,
-    resolve_openai_passthrough_provider,
 )
 from litellm.proxy.pass_through_endpoints.llm_provider_handlers.base_passthrough_logging_handler import (
     BasePassthroughLoggingHandler,
