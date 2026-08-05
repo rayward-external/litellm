@@ -1495,6 +1495,9 @@ DEFAULT_CRON_JOB_LOCK_TTL_SECONDS: Final = int(os.getenv("DEFAULT_CRON_JOB_LOCK_
 PROXY_BUDGET_RESCHEDULER_MIN_TIME: Final = int(os.getenv("PROXY_BUDGET_RESCHEDULER_MIN_TIME", 597))
 PROXY_BATCH_POLLING_INTERVAL: Final = int(os.getenv("PROXY_BATCH_POLLING_INTERVAL", 3600))
 MAX_OBJECTS_PER_POLL_CYCLE: Final = max(1, int(os.getenv("MAX_OBJECTS_PER_POLL_CYCLE", 50)))
+# Reclaim window for pricing claims orphaned by a dead poller worker —
+# see CheckBatchCost._reclaim_abandoned_pricing_claims.
+ABANDONED_PRICING_CLAIM_RECLAIM_SECONDS: Final = max(300, int(os.getenv("ABANDONED_PRICING_CLAIM_RECLAIM_SECONDS", 7200)))
 MANAGED_OBJECT_STALENESS_CUTOFF_DAYS: Final = max(1, int(os.getenv("MANAGED_OBJECT_STALENESS_CUTOFF_DAYS", 7)))
 STALE_OBJECT_CLEANUP_BATCH_SIZE: Final = max(1, int(os.getenv("STALE_OBJECT_CLEANUP_BATCH_SIZE", 1000)))
 # Set PROXY_BATCH_POLLING_ENABLED=false to disable the CheckBatchCost and
