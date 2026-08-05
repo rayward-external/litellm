@@ -253,7 +253,7 @@ class ValkeySemanticCache(RedisSemanticCache):
             if ttl is not None:
                 self.sync_client.expire(doc_key, ttl)
         except Exception as e:
-            print_verbose(f"Error in Valkey semantic-cache set_cache: {e!s}")
+            print_verbose(f"Error in Valkey semantic-cache set_cache: {e}")
 
     def get_cache(self, key: str, **kwargs: Any) -> Any:
         print_verbose(f"Valkey semantic-cache get_cache, kwargs: {kwargs}")
@@ -272,7 +272,7 @@ class ValkeySemanticCache(RedisSemanticCache):
             )
             return self._resolve_hit(self._first_hit(search_result), key, **kwargs)
         except Exception as e:
-            print_verbose(f"Error in Valkey semantic-cache get_cache: {e!s}")
+            print_verbose(f"Error in Valkey semantic-cache get_cache: {e}")
             kwargs.setdefault("metadata", {})["semantic-similarity"] = 0.0
 
     async def async_set_cache(self, key: str, value: Any, **kwargs: Any) -> None:
@@ -292,7 +292,7 @@ class ValkeySemanticCache(RedisSemanticCache):
             if ttl is not None:
                 await self.async_client.expire(doc_key, ttl)
         except Exception as e:
-            print_verbose(f"Error in async Valkey semantic-cache set_cache: {e!s}")
+            print_verbose(f"Error in async Valkey semantic-cache set_cache: {e}")
 
     async def async_get_cache(self, key: str, **kwargs: Any) -> Any:
         print_verbose(f"Async Valkey semantic-cache get_cache, kwargs: {kwargs}")
@@ -311,14 +311,14 @@ class ValkeySemanticCache(RedisSemanticCache):
             )
             return self._resolve_hit(self._first_hit(search_result), key, **kwargs)
         except Exception as e:
-            print_verbose(f"Error in async Valkey semantic-cache get_cache: {e!s}")
+            print_verbose(f"Error in async Valkey semantic-cache get_cache: {e}")
             kwargs.setdefault("metadata", {})["semantic-similarity"] = 0.0
 
     async def async_set_cache_pipeline(self, cache_list: list[tuple[str, Any]], **kwargs: Any) -> None:
         try:
             await asyncio.gather(*[self.async_set_cache(key, value, **kwargs) for key, value in cache_list])
         except Exception as e:
-            print_verbose(f"Error in Valkey semantic-cache async_set_cache_pipeline: {e!s}")
+            print_verbose(f"Error in Valkey semantic-cache async_set_cache_pipeline: {e}")
 
     async def _index_info(self) -> dict:
         return await self.async_client.ft(self.index_name).info()

@@ -1,5 +1,6 @@
 import os
 from unittest.mock import patch
+
 import pytest
 
 
@@ -97,26 +98,21 @@ class TestContentFilterPathTraversal:
 
         categories_dir = str(tmp_path)
         valid_file = str(tmp_path / "test.yaml")
-        # Should not raise
-        ContentFilterGuardrail._assert_within_categories_dir(valid_file, categories_dir)
+        result = ContentFilterGuardrail._assert_within_categories_dir(valid_file, categories_dir)
+        assert result == os.path.realpath(valid_file)
 
-    def test_assert_within_categories_dir_commonpath_raises_valueerror(self, tmp_path):
-        """Cover the except-ValueError branch (Windows cross-drive paths)."""
+    def test_assert_within_categories_dir_rejects_prefix_collision(self, tmp_path):
+        """A sibling dir sharing categories_dir as a string prefix must not pass
+        (e.g. "/tmp/categories-evil" must not be treated as inside "/tmp/categories")."""
         from litellm.proxy.guardrails.guardrail_hooks.litellm_content_filter.content_filter import (
             ContentFilterGuardrail,
         )
 
-        categories_dir = str(tmp_path)
-        valid_file = str(tmp_path / "test.yaml")
-        with patch(
-            "os.path.commonpath", side_effect=ValueError("Paths on different drives")
-        ):
-            with pytest.raises(
-                ValueError, match="outside the allowed categories directory"
-            ):
-                ContentFilterGuardrail._assert_within_categories_dir(
-                    valid_file, categories_dir
-                )
+        categories_dir = str(tmp_path / "categories")
+        os.makedirs(categories_dir)
+        colliding_file = str(tmp_path / "categories-evil" / "test.yaml")
+        with pytest.raises(ValueError, match="outside the allowed categories directory"):
+            ContentFilterGuardrail._assert_within_categories_dir(colliding_file, categories_dir)
 
     def test_resolve_category_file_path_direct_join_hit(self):
         """Cover the first-join-attempt success branch (lines 383-384)."""
