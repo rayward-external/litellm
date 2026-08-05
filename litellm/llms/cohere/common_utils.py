@@ -277,9 +277,18 @@ class CohereV2ModelResponseIterator:
         return None
 
     def _parse_message_end(self, chunk: dict) -> tuple[bool, str, ChatCompletionUsageBlock | None]:
-        """Parse message-end events to extract finish info and usage."""
-        data: Final = chunk.get("data", {})
-        delta: Final = data.get("delta", {})
+        """Parse message-end events to extract finish info and usage.
+
+        Accepts both envelopes. Cohere's v2 SSE stream puts the payload at the
+        top level (`{"type": "message-end", "delta": {...}}`) — the same shape
+        `_parse_content_delta` reads — while a `{"event": ..., "data": {...}}`
+        wrapper is used elsewhere. Reading only the wrapped form meant `usage`
+        came back `None` for every real SSE stream, so the rebuilt response had
+        no token counts and was priced from estimated tokens instead of
+        Cohere's billed ones.
+        """
+        data: Final = chunk.get("data")
+        delta: Final = (data if isinstance(data, dict) else chunk).get("delta", {})
         is_finished: Final = True
         finish_reason: Final = delta.get("finish_reason", "stop")
 
