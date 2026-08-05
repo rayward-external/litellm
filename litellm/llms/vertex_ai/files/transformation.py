@@ -60,6 +60,9 @@ from ..vertex_llm_base import VertexBase
 
 _GCP_LABEL_VALUE_MAX_LEN: Final = 63
 _CUSTOM_ID_RAW_LABEL_PREFIX: Final = "b32_"
+# Prepended when a sanitized label value would not start with a lowercase
+# letter (e.g. a numeric custom_id). See _sanitize_gcp_label_value.
+_GCP_LABEL_VALUE_LEADING_PAD: Final = "id_"
 
 
 def _sanitize_gcp_label_value(value: str) -> str:
@@ -97,7 +100,9 @@ def _sanitize_gcp_label_value(value: str) -> str:
     Returns:
         A sanitized string that meets GCP label constraints
     """
-    sanitized: Final = re.sub(r"[^a-z0-9_-]", "_", value.lower())
+    sanitized = re.sub(r"[^a-z0-9_-]", "_", value.lower())
+    if sanitized and not sanitized[0].isalpha():
+        sanitized = f"{_GCP_LABEL_VALUE_LEADING_PAD}{sanitized}"
     return sanitized[:_GCP_LABEL_VALUE_MAX_LEN]
 
 
