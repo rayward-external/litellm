@@ -19,7 +19,7 @@ import threading
 import time
 import traceback
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Callable, Generator, Mapping
+from collections.abc import AsyncGenerator, Callable, Generator, Mapping, Sequence
 from functools import lru_cache
 from typing import (
     TYPE_CHECKING,
@@ -555,6 +555,33 @@ def _fallback_dispatch_exception(e: Any) -> Exception:
     if isinstance(original, litellm.ContentPolicyViolationError):
         return original
     return e
+
+
+def _stream_chunks_have_generated_content(chunks: Sequence[ModelResponseStream]) -> bool:
+    """True if any already-yielded chunk carries content the client could see.
+
+    e.generated_content (set by the streaming wrapper) is the primary signal for
+    whether a mid-stream error is safe to retry, but it is wrapper-relative and
+    can miss content that reached the caller through a different path. Scanning
+    the raw chunks directly catches those cases instead of assuming "no report"
+    means "no content"."""
+    for chunk in chunks:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        if (
+            delta.get("content")
+            or delta.get("tool_calls")
+            or delta.get("function_call")
+            or delta.get("reasoning_content")
+            or delta.get("thinking_blocks")
+            or delta.get("reasoning_items")
+            or delta.get("audio")
+            or delta.get("images")
+            or delta.get("annotations")
+        ):
+            return True
+    return False
 
 
 async def _maybe_abandon_refused_stream_source(e: Any, source: Any, log_label: str) -> None:
@@ -2391,6 +2418,20 @@ class Router:
                 for released_item in refusal_hold.flush():
                     yield released_item
             except MidStreamFallbackError as e:
+                # Partial content already reached the CLIENT: retrying (even with a
+                # continuation prompt) risks duplicating or confusing the response, so
+                # give up and let the caller see the real error instead of a silent
+                # retry. refusal_hold.active is excluded because it means the content
+                # was only buffered inside the wrapper, never delivered.
+                if (
+                    not e.is_pre_first_chunk
+                    and not refusal_hold.active
+                    and (e.generated_content or _stream_chunks_have_generated_content(model_response.chunks))
+                ):
+                    if e.original_exception is not None:
+                        raise e.original_exception from e
+                    raise
+
                 from litellm.main import stream_chunk_builder
 
                 if isinstance(e.original_exception, litellm.ContentPolicyViolationError) and hasattr(
@@ -2424,28 +2465,10 @@ class Router:
                         "content_policy_fallbacks", self.content_policy_fallbacks
                     )
                     initial_kwargs["original_function"] = self._acompletion
-                    if e.is_pre_first_chunk or not e.generated_content or refusal_hold.active:
-                        # No content was generated before the error (e.g. a
-                        # rate-limit 429 on the very first chunk).  Retry with
-                        # the original messages — adding a continuation prompt
-                        # would waste tokens and confuse the model.
-                        # refusal_hold.active covers a provider error arriving while
-                        # the refusal hold still buffers the stream head: e.generated_content
-                        # is wrapper-relative, but the CLIENT has seen nothing, so a
-                        # continuation would silently skip the held (never-delivered) text.
-                        initial_kwargs["messages"] = messages
-                    else:
-                        initial_kwargs["messages"] = messages + [
-                            {
-                                "role": "system",
-                                "content": "You are a helpful assistant. You are given a message and you need to respond to it. You are also given a generated content. You need to respond to the message in continuation of the generated content. Do not repeat the same content. Your response should be in continuation of this text: ",
-                            },
-                            {
-                                "role": "assistant",
-                                "content": e.generated_content,
-                                "prefix": True,
-                            },
-                        ]
+                    # By construction, the guard above already re-raised whenever a
+                    # continuation prompt would have been used, so there is never
+                    # generated content left to continue from here.
+                    initial_kwargs["messages"] = messages
                     self._update_kwargs_before_fallbacks(model=model_group, kwargs=initial_kwargs)
                     fallback_response = await self.async_function_with_fallbacks_common_utils(
                         e=_fallback_dispatch_exception(e),
@@ -2993,6 +3016,16 @@ class Router:
                 for item in model_response:
                     yield item
             except MidStreamFallbackError as e:
+                # See the async _acompletion_streaming_iterator for why: partial
+                # content already reached the CLIENT, so give up instead of
+                # risking a duplicated/confusing retry.
+                if not e.is_pre_first_chunk and (
+                    e.generated_content or _stream_chunks_have_generated_content(model_response.chunks)
+                ):
+                    if e.original_exception is not None:
+                        raise e.original_exception from e
+                    raise
+
                 from litellm.main import stream_chunk_builder
 
                 complete_response_object = stream_chunk_builder(chunks=model_response.chunks)
@@ -3012,20 +3045,9 @@ class Router:
                         router_self.content_policy_fallbacks,
                     )
                     initial_kwargs["original_function"] = router_self._completion
-                    if e.is_pre_first_chunk or not e.generated_content:
-                        initial_kwargs["messages"] = messages
-                    else:
-                        initial_kwargs["messages"] = messages + [
-                            {
-                                "role": "system",
-                                "content": "You are a helpful assistant. You are given a message and you need to respond to it. You are also given a generated content. You need to respond to the message in continuation of the generated content. Do not repeat the same content. Your response should be in continuation of this text: ",
-                            },
-                            {
-                                "role": "assistant",
-                                "content": e.generated_content,
-                                "prefix": True,
-                            },
-                        ]
+                    # By construction, the guard above already re-raised whenever a
+                    # continuation prompt would have been used.
+                    initial_kwargs["messages"] = messages
                     router_self._update_kwargs_before_fallbacks(model=model_group, kwargs=initial_kwargs)
                     fallback_response = router_self.function_with_fallbacks(
                         **initial_kwargs,
@@ -3222,6 +3244,18 @@ class Router:
                         model=model,
                         llm_provider="",
                     )
+
+            if (
+                isinstance(response, CustomStreamWrapper)
+                and response.completion_stream is None
+                and response.make_call is not None
+            ):
+                # A deferred stream defers its HTTP call to the first __anext__,
+                # which happens OUTSIDE this try/except -- so a 429/5xx there would
+                # never increment fail_calls or trigger cooldown/fallback. Fetching
+                # eagerly here brings that error back inside this method's error
+                # handling, same as a non-streaming response.
+                await response.fetch_stream()
 
             self.success_calls[model_name] += 1
             verbose_router_logger.info("litellm.acompletion(model=%s)\x1b[32m 200 OK\x1b[0m", model_name)
