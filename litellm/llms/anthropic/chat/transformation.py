@@ -1,7 +1,13 @@
 import json
 import re
 import time
-from typing import TYPE_CHECKING, Any, Final, NoReturn, cast
+from collections.abc import Iterable, Mapping
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    NoReturn,
+    cast,
+)
 
 import httpx
 
@@ -116,15 +122,15 @@ else:
 # original was actually rewritten. So a tool whose name is already valid
 # round-trips identically and is *never* mistakenly re-mapped on the
 # response side.
-_ANTHROPIC_TOOL_NAME_INVALID_CHARS: Final = re.compile(r"[^a-zA-Z0-9_-]")
-_ANTHROPIC_TOOL_NAME_MAX_LEN: Final = 128
+_ANTHROPIC_TOOL_NAME_INVALID_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
+_ANTHROPIC_TOOL_NAME_MAX_LEN = 128
 # Single, internal-only key on ``litellm_params`` used to thread the per-
 # request reverse map (sanitized -> original) from request build to response
 # parsing. ``litellm_params`` is never serialized to a provider; ``optional_
 # params`` IS (it becomes the JSON body via ``data = {**optional_params}``).
 # Keep these two channels strictly separate -- never stash internal
 # coordination state in ``optional_params``.
-ANTHROPIC_TOOL_NAME_REVERSE_MAP_KEY: Final = "_anthropic_tool_name_map"
+ANTHROPIC_TOOL_NAME_REVERSE_MAP_KEY = "_anthropic_tool_name_map"
 
 
 def _basic_sanitize_anthropic_tool_name(name: str) -> str:
@@ -161,8 +167,8 @@ def _build_anthropic_tool_name_maps(
       seen gets the disambiguating suffix. Callers should preserve the
       caller's tool order (we do).
     """
-    forward: Final[dict[str, str]] = {}
-    used: Final[set] = set()
+    forward: dict[str, str] = {}
+    used: set = set()
 
     # First pass: reserve slots for names that are already valid so they
     # always have priority regardless of input order.
@@ -198,11 +204,22 @@ def _build_anthropic_tool_name_maps(
             unique = f"{head}{suffix}"
         forward[original] = unique
         used.add(unique)
-    reverse: Final = {v: k for k, v in forward.items()}
+    reverse = {v: k for k, v in forward.items()}
     return forward, reverse
 
 
-REASONING_EFFORT_TO_OUTPUT_CONFIG_EFFORT: Final[dict[str, str]] = {
+# Every ``output_config.effort`` level, ascending.
+ALL_EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+
+# Levels checked against model capabilities. low/medium/high are accepted by every
+# effort-capable Claude model, so gating them would only produce false rejections.
+GATED_EFFORT_LEVELS: tuple[str, ...] = ("xhigh", "max")
+
+# The effort ladder an adaptive-thinking model gets by virtue of being adaptive.
+# ``xhigh`` is not on it -- see ``AnthropicConfig._is_effort_level_allowed``.
+ADAPTIVE_THINKING_BASE_EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "max")
+
+REASONING_EFFORT_TO_OUTPUT_CONFIG_EFFORT: dict[str, str] = {
     "low": "low",
     "minimal": "low",
     "medium": "medium",
@@ -211,17 +228,17 @@ REASONING_EFFORT_TO_OUTPUT_CONFIG_EFFORT: Final[dict[str, str]] = {
     "max": "max",
 }
 
-DROP_UNSUPPORTED_OUTPUT_CONFIG_WARNING: Final = (
+DROP_UNSUPPORTED_OUTPUT_CONFIG_WARNING = (
     "Dropping unsupported `output_config` for model=%s "
     "(drop_params=True). Effort is only supported on Opus 4.5+, "
     "Sonnet 4.6+, and Mythos Preview."
 )
 
-DROP_UNSUPPORTED_ADAPTIVE_THINKING_WARNING: Final = (
+DROP_UNSUPPORTED_ADAPTIVE_THINKING_WARNING = (
     "Dropping adaptive `thinking` for model=%s: max_tokens is too small to fit the minimum thinking budget."
 )
 
-DROP_UNSUPPORTED_SPEED_WARNING: Final = (
+DROP_UNSUPPORTED_SPEED_WARNING = (
     "Dropping unsupported `speed` for model=%s (drop_params=True). Fast mode is only supported on select Opus models."
 )
 
@@ -251,7 +268,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         metadata: dict | None = None,
         system: str | None = None,
     ) -> None:
-        locals_: Final = locals().copy()
+        locals_ = locals().copy()
         for key, value in locals_.items():
             if key != "self" and value is not None:
                 setattr(self.__class__, key, value)
@@ -266,7 +283,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
 
     @classmethod
     def get_config(cls, *, model: str | None = None):
-        config: Final = super().get_config()
+        config = super().get_config()
 
         # anthropic requires a default value for max_tokens
         if config.get("max_tokens") is None:
@@ -283,7 +300,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         if model is None:
             return DEFAULT_ANTHROPIC_CHAT_MAX_TOKENS
         try:
-            max_tokens: Final = get_max_tokens(model)
+            max_tokens = get_max_tokens(model)
             if max_tokens is None:
                 return DEFAULT_ANTHROPIC_CHAT_MAX_TOKENS
             return max_tokens
@@ -306,7 +323,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         Returns:
             ChatCompletionToolCallChunk in OpenAI format
         """
-        tool_call: Final = ChatCompletionToolCallChunk(
+        tool_call = ChatCompletionToolCallChunk(
             id=anthropic_tool_content["id"],
             type="function",
             function=ChatCompletionToolCallFunctionChunk(
@@ -323,13 +340,13 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
     @staticmethod
     def _is_opus_4_6_model(model: str) -> bool:
         """Check if the model is specifically Claude Opus 4.6."""
-        model_lower: Final = model.lower()
+        model_lower = model.lower()
         return any(v in model_lower for v in ("opus-4-6", "opus_4_6", "opus-4.6", "opus_4.6"))
 
     @staticmethod
     def _is_opus_4_7_model(model: str) -> bool:
         """Check if the model is specifically Claude Opus 4.7."""
-        model_lower: Final = model.lower()
+        model_lower = model.lower()
         return any(v in model_lower for v in ("opus-4-7", "opus_4_7", "opus-4.7", "opus_4.7"))
 
     @staticmethod
@@ -428,7 +445,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         if AnthropicConfig._model_supports_speed_param(model, custom_llm_provider):
             return
         if not (litellm.drop_params or drop_params):
-            speed_value: Final = optional_params.get("speed")
+            speed_value = optional_params.get("speed")
             raise litellm.utils.UnsupportedParamsError(
                 message=(
                     f"{model} does not support speed={speed_value!r}. "
@@ -467,7 +484,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         )
 
     def get_supported_openai_params(self, model: str):
-        params: Final = [
+        params = [
             "stream",
             "stop",
             "temperature",
@@ -539,7 +556,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         if not isinstance(schema, dict):
             return schema
 
-        constraint_labels: Final = {
+        constraint_labels = {
             "minItems": "minimum number of items: {}",
             "maxItems": "maximum number of items: {}",
             "uniqueItems": "all array items must be unique",
@@ -566,13 +583,13 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             "else": "conditional (else): {}",
             "not": "must not match: {}",
         }
-        unsupported_fields: Final = set(constraint_labels)
+        unsupported_fields = set(constraint_labels)
 
         # Build description additions from removed constraints. Iterating
         # constraint_labels (not the set) keeps the note order deterministic across
         # processes, so identical requests serialize identically regardless of
         # PYTHONHASHSEED and stay cache-friendly.
-        constraint_descriptions: Final[list] = []
+        constraint_descriptions: list = []
         for field, label in constraint_labels.items():
             if field not in schema:
                 continue
@@ -587,12 +604,12 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             note_value = json.dumps(value) if isinstance(value, (dict, list)) else value
             constraint_descriptions.append(label.format(note_value))
 
-        result: Final[dict[str, Any]] = {}
+        result: dict[str, Any] = {}
 
         # Update description with removed constraint info
         if constraint_descriptions:
-            existing_desc: Final = schema.get("description", "")
-            constraint_note: Final = "Note: " + ", ".join(constraint_descriptions) + "."
+            existing_desc = schema.get("description", "")
+            constraint_note = "Note: " + ", ".join(constraint_descriptions) + "."
             if existing_desc:
                 result["description"] = existing_desc + " " + constraint_note
             else:
@@ -662,7 +679,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             _tool_choice = AnthropicMessagesToolChoice(type="none")
         elif isinstance(tool_choice, dict):
             if "type" in tool_choice and "function" not in tool_choice:
-                tool_type: Final = tool_choice.get("type")
+                tool_type = tool_choice.get("type")
                 if tool_type == "auto":
                     _tool_choice = AnthropicMessagesToolChoice(type="auto")
                 elif tool_type == "required" or tool_type == "any":
@@ -670,7 +687,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                 elif tool_type == "none":
                     _tool_choice = AnthropicMessagesToolChoice(type="none")
             else:
-                _tool_name: Final = tool_choice.get("function", {}).get("name")
+                _tool_name = tool_choice.get("function", {}).get("name")
                 if _tool_name is not None:
                     _tool_choice = AnthropicMessagesToolChoice(type="tool")
                     _tool_choice["name"] = _tool_name
@@ -697,7 +714,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         mcp_server: AnthropicMcpServerTool | None = None
 
         if tool["type"] == "function" or tool["type"] == "custom":
-            _input_schema: Final = tool["function"].get(
+            _input_schema = tool["function"].get(
                 "parameters",
                 {
                     "type": "object",
@@ -705,15 +722,15 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                 },
             )
 
-            input_anthropic_schema: Final = sanitize_input_schema_for_anthropic(_input_schema)
+            input_anthropic_schema = sanitize_input_schema_for_anthropic(_input_schema)
 
-            _tool: Final = AnthropicMessagesTool(
+            _tool = AnthropicMessagesTool(
                 name=tool["function"]["name"],
                 input_schema=input_anthropic_schema,
                 type="custom",
             )
 
-            _description: Final = tool["function"].get("description")
+            _description = tool["function"].get("description")
             if _description is not None:
                 _tool["description"] = _description
 
@@ -724,30 +741,30 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             if "parameters" not in tool["function"]:
                 raise ValueError("Missing required parameter: parameters")
 
-            _display_width_px: Final[int | None] = tool["function"]["parameters"].get("display_width_px")
-            _display_height_px: Final[int | None] = tool["function"]["parameters"].get("display_height_px")
+            _display_width_px: int | None = tool["function"]["parameters"].get("display_width_px")
+            _display_height_px: int | None = tool["function"]["parameters"].get("display_height_px")
             if _display_width_px is None or _display_height_px is None:
                 raise ValueError("Missing required parameter: display_width_px or display_height_px")
 
-            _computer_tool: Final = AnthropicComputerTool(
+            _computer_tool = AnthropicComputerTool(
                 type=tool["type"],
                 name=tool["function"].get("name", "computer"),
                 display_width_px=_display_width_px,
                 display_height_px=_display_height_px,
             )
 
-            _display_number: Final = tool["function"]["parameters"].get("display_number")
+            _display_number = tool["function"]["parameters"].get("display_number")
             if _display_number is not None:
                 _computer_tool["display_number"] = _display_number
 
             returned_tool = _computer_tool
         elif any(tool["type"].startswith(t) for t in ANTHROPIC_HOSTED_TOOLS):
-            function_name_obj: Final = tool.get("name", tool.get("function", {}).get("name"))
+            function_name_obj = tool.get("name", tool.get("function", {}).get("name"))
             if function_name_obj is None or not isinstance(function_name_obj, str):
                 raise ValueError("Missing required parameter: name")
-            function_name: Final = function_name_obj
+            function_name = function_name_obj
 
-            additional_tool_params: Final = {}
+            additional_tool_params = {}
             for k, v in tool.items():
                 if k != "type" and k != "name":
                     additional_tool_params[k] = v
@@ -788,11 +805,11 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         elif tool["type"] == ANTHROPIC_ADVISOR_TOOL_TYPE:
             from litellm.types.llms.anthropic import AnthropicAdvisorTool
 
-            _tool_dict: Final = cast(dict, tool)
-            advisor_model: Final = _tool_dict.get("model")
+            _tool_dict = cast(dict, tool)
+            advisor_model = _tool_dict.get("model")
             if not isinstance(advisor_model, str):
                 raise ValueError("Advisor tool must have a valid model")
-            _advisor_tool: Final = AnthropicAdvisorTool(
+            _advisor_tool = AnthropicAdvisorTool(
                 type=ANTHROPIC_ADVISOR_TOOL_TYPE,
                 name="advisor",
                 model=advisor_model,
@@ -806,8 +823,8 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             raise ValueError(f"Unsupported tool type: {tool['type']}")
 
         ## check if cache_control is set in the tool
-        _cache_control: Final = tool.get("cache_control", None)
-        _cache_control_function: Final = tool.get("function", {}).get("cache_control", None)
+        _cache_control = tool.get("cache_control", None)
+        _cache_control_function = tool.get("function", {}).get("cache_control", None)
         if returned_tool is not None:
             # Only set cache_control on tools that support it (not tool search tools)
             tool_type = returned_tool.get("type", "")
@@ -823,8 +840,8 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                     )
 
         ## check if defer_loading is set in the tool
-        _defer_loading: Final = tool.get("defer_loading", None)
-        _defer_loading_function: Final = tool.get("function", {}).get("defer_loading", None)
+        _defer_loading = tool.get("defer_loading", None)
+        _defer_loading_function = tool.get("function", {}).get("defer_loading", None)
         if returned_tool is not None:
             # Only set defer_loading on tools that support it (not tool search tools or computer tools)
             tool_type = returned_tool.get("type", "")
@@ -844,8 +861,8 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                     returned_tool["defer_loading"] = _defer_loading_function  # type: ignore[typeddict-item]
 
         ## check if allowed_callers is set in the tool
-        _allowed_callers: Final = tool.get("allowed_callers", None)
-        _allowed_callers_function: Final = tool.get("function", {}).get("allowed_callers", None)
+        _allowed_callers = tool.get("allowed_callers", None)
+        _allowed_callers_function = tool.get("function", {}).get("allowed_callers", None)
         if returned_tool is not None:
             # Only set allowed_callers on tools that support it (not tool search tools or computer tools)
             tool_type = returned_tool.get("type", "")
@@ -869,8 +886,8 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                     returned_tool["allowed_callers"] = _allowed_callers_function  # type: ignore[typeddict-item]
 
         ## check if input_examples is set in the tool
-        _input_examples: Final = tool.get("input_examples", None)
-        _input_examples_function: Final = tool.get("function", {}).get("input_examples", None)
+        _input_examples = tool.get("input_examples", None)
+        _input_examples_function = tool.get("function", {}).get("input_examples", None)
         if returned_tool is not None:
             # Only set input_examples on user-defined tools (type "custom" or no type)
             tool_type = returned_tool.get("type", "")
@@ -885,21 +902,21 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
     def _map_openai_mcp_server_tool(self, tool: OpenAIMcpServerTool) -> AnthropicMcpServerTool:
         from litellm.types.llms.anthropic import AnthropicMcpServerToolConfiguration
 
-        allowed_tools: Final = tool.get("allowed_tools", None)
+        allowed_tools = tool.get("allowed_tools", None)
         tool_configuration: AnthropicMcpServerToolConfiguration | None = None
         if allowed_tools is not None:
             tool_configuration = AnthropicMcpServerToolConfiguration(
                 allowed_tools=tool.get("allowed_tools", None),
             )
 
-        headers: Final = tool.get("headers", {})
+        headers = tool.get("headers", {})
         authorization_token: str | None = None
         if headers is not None:
-            bearer_token: Final = headers.get("Authorization", None)
+            bearer_token = headers.get("Authorization", None)
             if bearer_token is not None:
                 authorization_token = bearer_token.replace("Bearer ", "")
 
-        initial_tool: Final = AnthropicMcpServerTool(
+        initial_tool = AnthropicMcpServerTool(
             type="url",
             url=tool["server_url"],
             name=tool["server_label"],
@@ -915,8 +932,8 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         self,
         tools: list,
     ) -> tuple[list[AllAnthropicToolsValues], list[AnthropicMcpServerTool]]:
-        anthropic_tools: Final = []
-        mcp_servers: Final = []
+        anthropic_tools = []
+        mcp_servers = []
         for tool in tools:
             if tool.get("type") == "namespace":
                 # Namespace is a grouping container (e.g. codex's multi_agent_v1).
@@ -972,7 +989,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         """
         if not name_forward_map:
             return messages
-        new_messages: Final[list[AllMessageValues]] = []
+        new_messages: list[AllMessageValues] = []
         for msg in messages:
             if not isinstance(msg, dict):
                 new_messages.append(msg)
@@ -1025,7 +1042,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         the original name out of either ``{"function": {"name": ...}}``
         (legacy OpenAI shape) or ``{"name": ...}`` (rare top-level shape).
         """
-        original_names: Final[list[str]] = []
+        original_names: list[str] = []
         for tool in tools or []:
             if not isinstance(tool, dict):
                 continue
@@ -1055,7 +1072,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         ``computer_*``, ``mcp``, ...) own reserved names defined by Anthropic
         and must not be touched.
         """
-        tools: Final = optional_params.get("tools")
+        tools = optional_params.get("tools")
         if not isinstance(tools, list) or not tools:
             return {}, {}
 
@@ -1063,7 +1080,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         #    Order matters: the first occurrence wins the canonical slot;
         #    later collisions get numeric suffixes (see
         #    ``_build_anthropic_tool_name_maps``).
-        original_names: Final[list[str]] = []
+        original_names: list[str] = []
         for t in tools:
             if not isinstance(t, dict):
                 continue
@@ -1085,7 +1102,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         #    so a caller reusing the same tool list/dicts across requests
         #    doesn't see its inputs permanently rewritten (which would also
         #    drop the original key from `forward` on the next request).
-        new_tools: Final[list[Any]] = []
+        new_tools: list[Any] = []
         for t in tools:
             if (
                 isinstance(t, dict)
@@ -1100,9 +1117,9 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
 
         # 3. Same for ``tool_choice`` when it targets a named tool. Copy
         #    rather than mutate for the same reason as above.
-        tool_choice: Final = optional_params.get("tool_choice")
+        tool_choice = optional_params.get("tool_choice")
         if isinstance(tool_choice, dict) and tool_choice.get("type") == "tool":
-            tc_name: Final = tool_choice.get("name")
+            tc_name = tool_choice.get("name")
             if isinstance(tc_name, str) and tc_name in forward:
                 optional_params["tool_choice"] = {
                     **tool_choice,
@@ -1132,8 +1149,8 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         Returns:
             Tuple of (non_deferred_tools, deferred_tools)
         """
-        non_deferred: Final = []
-        deferred: Final = []
+        non_deferred = []
+        deferred = []
 
         for tool in tools:
             if tool.get("defer_loading", False):
@@ -1166,14 +1183,14 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             return content
 
         # Create a mapping of tool names to tool definitions
-        tool_map: Final = {}
+        tool_map = {}
         for tool in deferred_tools:
             tool_name = tool.get("name") or tool.get("function", {}).get("name")
             if tool_name:
                 tool_map[tool_name] = tool
 
         # Expand tool references in content
-        expanded_content: Final = []
+        expanded_content = []
         for item in content:
             if isinstance(item, dict) and item.get("type") == "tool_reference":
                 tool_name = item.get("tool_name")
@@ -1197,7 +1214,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                 return new_stop
             new_stop = [stop]
         elif isinstance(stop, list):
-            new_v: Final = []
+            new_v = []
             for v in stop:
                 if (
                     v.isspace() and litellm.drop_params is True
@@ -1343,7 +1360,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         requires ``max_tokens > budget_tokens``). Returns the (possibly capped)
         thinking dict, or ``None`` when ``max_tokens`` is too small to fit even the
         minimum thinking budget and thinking should be dropped."""
-        budget: Final = thinking.get("budget_tokens")
+        budget = thinking.get("budget_tokens")
         if max_tokens is None or not isinstance(budget, int):
             return thinking
         if max_tokens <= ANTHROPIC_MIN_THINKING_BUDGET_TOKENS:
@@ -1377,12 +1394,12 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         )
 
         json_schema = copy.deepcopy(json_schema)
-        defs: Final = json_schema.pop("$defs", json_schema.pop("definitions", {}))
+        defs = json_schema.pop("$defs", json_schema.pop("definitions", {}))
         if defs:
             unpack_defs(json_schema, defs)
 
         # Filter out unsupported fields for Anthropic's output_format API
-        filtered_schema: Final = self.filter_anthropic_output_schema(json_schema)
+        filtered_schema = self.filter_anthropic_output_schema(json_schema)
 
         return AnthropicOutputSchema(
             type="json_schema",
@@ -1392,11 +1409,11 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
     def map_response_format_to_anthropic_tool(
         self, value: dict | None, optional_params: dict, is_thinking_enabled: bool
     ) -> AnthropicMessagesTool | None:
-        ignore_response_format_types: Final = ["text"]
+        ignore_response_format_types = ["text"]
         if value is None or value["type"] in ignore_response_format_types:  # value is a no-op
             return None
 
-        json_schema: Final[dict | None] = self._extract_json_schema_from_response_format(value)
+        json_schema: dict | None = self._extract_json_schema_from_response_format(value)
         if json_schema is None:
             return None
         """
@@ -1406,7 +1423,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         - Remember that the model will pass the input to the tool, so the name of the tool and description should be from the model’s perspective.
         """
 
-        _tool: Final = self._create_json_tool_call_for_response_format(
+        _tool = self._create_json_tool_call_for_response_format(
             json_schema=json_schema,
         )
 
@@ -1416,16 +1433,16 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         self,
         value: OpenAIWebSearchOptions,
     ) -> AnthropicWebSearchTool:
-        value_typed: Final = cast(OpenAIWebSearchOptions, value)
-        hosted_web_search_tool: Final = AnthropicWebSearchTool(
+        value_typed = cast(OpenAIWebSearchOptions, value)
+        hosted_web_search_tool = AnthropicWebSearchTool(
             type="web_search_20250305",
             name="web_search",
         )
-        user_location: Final = value_typed.get("user_location")
+        user_location = value_typed.get("user_location")
         if user_location is not None:
-            anthropic_user_location: Final = AnthropicWebSearchUserLocation(type="approximate")
-            anthropic_user_location_keys: Final = AnthropicWebSearchUserLocation.__annotations__.keys()
-            user_location_approximate: Final = user_location.get("approximate")
+            anthropic_user_location = AnthropicWebSearchUserLocation(type="approximate")
+            anthropic_user_location_keys = AnthropicWebSearchUserLocation.__annotations__.keys()
+            user_location_approximate = user_location.get("approximate")
             if user_location_approximate is not None:
                 for key, user_location_value in user_location_approximate.items():
                     if key in anthropic_user_location_keys and key != "type":
@@ -1433,7 +1450,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                 hosted_web_search_tool["user_location"] = anthropic_user_location
 
         ## MAP SEARCH CONTEXT SIZE
-        search_context_size: Final = value_typed.get("search_context_size")
+        search_context_size = value_typed.get("search_context_size")
         if search_context_size is not None:
             hosted_web_search_tool["max_uses"] = ANTHROPIC_WEB_SEARCH_TOOL_MAX_USES[search_context_size]
 
@@ -1466,7 +1483,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
 
         # If in OpenAI format (list), transform to Anthropic format
         if isinstance(context_management, list):
-            anthropic_edits: Final = []
+            anthropic_edits = []
             for entry in context_management:
                 if not isinstance(entry, dict):
                     continue
@@ -1503,7 +1520,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         model: str,
         drop_params: bool,
     ) -> dict:
-        is_thinking_enabled: Final = self.is_thinking_enabled(non_default_params=non_default_params)
+        is_thinking_enabled = self.is_thinking_enabled(non_default_params=non_default_params)
 
         # NB: ``map_openai_params`` deliberately does NOT sanitize tool names
         # here. Names are the *original* OpenAI names at this stage, and must
@@ -1716,7 +1733,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         Returns:
             AnthropicMessagesTool: The tool call to send to Anthropic API to get responses in JSON format
         """
-        _input_schema: Final[AnthropicInputSchema] = AnthropicInputSchema(
+        _input_schema: AnthropicInputSchema = AnthropicInputSchema(
             type="object",
         )
 
@@ -1728,7 +1745,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         else:
             _input_schema.update(cast(AnthropicInputSchema, json_schema))
 
-        _tool: Final = AnthropicMessagesTool(name=RESPONSE_FORMAT_TOOL_NAME, input_schema=_input_schema)
+        _tool = AnthropicMessagesTool(name=RESPONSE_FORMAT_TOOL_NAME, input_schema=_input_schema)
         return _tool
 
     def should_strip_billing_metadata(self) -> bool:
@@ -1747,8 +1764,8 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         Removes system message from the original list and returns a new list of anthropic system message content.
         When should_strip_billing_metadata() is True, x-anthropic-billing-header system blocks are dropped.
         """
-        system_prompt_indices: Final = []
-        anthropic_system_message_list: Final[list[AnthropicSystemMessageContent]] = []
+        system_prompt_indices = []
+        anthropic_system_message_list: list[AnthropicSystemMessageContent] = []
         for idx, message in enumerate(messages):
             if message["role"] == "system":
                 system_prompt_indices.append(idx)
@@ -1835,11 +1852,11 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             headers: Dictionary of headers to update
             beta_value: The beta header value to add
         """
-        existing_beta: Final = headers.get("anthropic-beta")
+        existing_beta = headers.get("anthropic-beta")
         if existing_beta is None:
             headers["anthropic-beta"] = beta_value
             return
-        existing_values: Final = [beta.strip() for beta in existing_beta.split(",")]
+        existing_values = [beta.strip() for beta in existing_beta.split(",")]
         if beta_value not in existing_values:
             headers["anthropic-beta"] = f"{existing_beta}, {beta_value}"
 
@@ -1884,11 +1901,11 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
 
         # Skip adding beta headers for Vertex requests
         # Vertex AI handles these headers differently
-        is_vertex_request: Final = optional_params.get("is_vertex_request", False)
+        is_vertex_request = optional_params.get("is_vertex_request", False)
         if is_vertex_request:
             return headers
 
-        _tools: Final = optional_params.get("tools", [])
+        _tools = optional_params.get("tools", [])
         for tool in _tools:
             if tool.get("type", None) and tool.get("type").startswith(ANTHROPIC_HOSTED_TOOLS.WEB_FETCH.value):
                 self._ensure_beta_header(headers, ANTHROPIC_BETA_HEADER_VALUES.WEB_FETCH_2025_09_10.value)
@@ -1899,7 +1916,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                 )
         if optional_params.get("context_management") is not None:
             self._ensure_context_management_beta_header(headers, optional_params["context_management"])
-        output_config: Final = optional_params.get("output_config")
+        output_config = optional_params.get("output_config")
         if optional_params.get("output_format") is not None or (
             isinstance(output_config, dict) and output_config.get("format") is not None
         ):
@@ -1996,7 +2013,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             litellm_params[ANTHROPIC_TOOL_NAME_REVERSE_MAP_KEY] = _name_reverse_map
 
         # Separate system prompt from rest of message
-        anthropic_system_message_list: Final = self.translate_system_message(messages=messages)
+        anthropic_system_message_list = self.translate_system_message(messages=messages)
         # Handling anthropic API Prompt Caching
         if len(anthropic_system_message_list) > 0:
             optional_params["system"] = anthropic_system_message_list
@@ -2015,25 +2032,25 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
 
         ## Auto-strip advisor blocks from history if advisor tool is absent.
         ## Prevents Anthropic 400: advisor_tool_result in history requires advisor tool.
-        _all_tools: Final = optional_params.get("tools") or []
+        _all_tools = optional_params.get("tools") or []
         _has_advisor = any(isinstance(t, dict) and t.get("type") == ANTHROPIC_ADVISOR_TOOL_TYPE for t in _all_tools)
         if not _has_advisor:
             anthropic_messages = strip_advisor_blocks_from_messages(anthropic_messages)
 
         ## Add code_execution tool if container_upload is in messages
-        _tools: Final = (
+        _tools = (
             cast(
                 list[AllAnthropicToolsValues | dict] | None,
                 optional_params.get("tools"),
             )
             or []
         )
-        tools: Final = self.add_code_execution_tool(messages=anthropic_messages, tools=_tools)
+        tools = self.add_code_execution_tool(messages=anthropic_messages, tools=_tools)
         if len(tools) > 1:
             optional_params["tools"] = tools
 
         ## Load Config
-        config: Final = litellm.AnthropicConfig.get_config(model=model)
+        config = litellm.AnthropicConfig.get_config(model=model)
         for k, v in config.items():
             if (
                 k not in optional_params
@@ -2041,7 +2058,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                 optional_params[k] = v
 
         ## Handle user_id in metadata
-        _litellm_metadata: Final = litellm_params.get("metadata", None)
+        _litellm_metadata = litellm_params.get("metadata", None)
         if (
             _litellm_metadata
             and isinstance(_litellm_metadata, dict)
@@ -2053,7 +2070,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
 
         ## Ensure metadata only contains user_id (only documented field in Anthropic Messages API)
         if "metadata" in optional_params and isinstance(optional_params["metadata"], dict):
-            _user_id: Final = optional_params["metadata"].get("user_id")
+            _user_id = optional_params["metadata"].get("user_id")
             if _user_id is not None:
                 optional_params["metadata"] = {"user_id": _user_id}
             else:
@@ -2066,7 +2083,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         # ``top_k`` is a provider-specific kwarg that bypasses
         # ``map_openai_params``; gate it here, the single boundary shared by
         # the direct Anthropic, Bedrock invoke, Vertex, and Azure paths.
-        top_k: Final = optional_params.pop("top_k", None)
+        top_k = optional_params.pop("top_k", None)
         if top_k is not None:
             AnthropicConfig._apply_sampling_param(
                 optional_params=optional_params,
@@ -2077,7 +2094,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                 output_key="top_k",
             )
 
-        data: Final = {
+        data = {
             "model": model,
             "messages": anthropic_messages,
             **optional_params,
@@ -2091,7 +2108,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         """Validate and apply output_config to the request data."""
         if "output_config" not in optional_params:
             return
-        output_config: Final = optional_params.get("output_config")
+        output_config = optional_params.get("output_config")
         if not output_config or not isinstance(output_config, dict):
             return
         if litellm.drop_params is True and not self._model_supports_effort_param(model, self._resolved_provider):
@@ -2102,15 +2119,15 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             optional_params.pop("output_config", None)
             data.pop("output_config", None)
             return
-        effort: Final = output_config.get("effort")
-        valid_efforts: Final = ["high", "medium", "low", "xhigh", "max"]
+        effort = output_config.get("effort")
+        valid_efforts = ["high", "medium", "low", "xhigh", "max"]
         if effort is not None and effort not in valid_efforts:
             raise litellm.exceptions.BadRequestError(
                 message=(f"Invalid effort value: {effort!r}. Must be one of: 'high', 'medium', 'low', 'xhigh', 'max'"),
                 model=model,
                 llm_provider=self._resolved_provider,
             )
-        gate_error: Final = self._validate_effort_for_model(model, effort, self._resolved_provider)
+        gate_error = self._validate_effort_for_model(model, effort, self._resolved_provider)
         if gate_error is not None:
             raise litellm.exceptions.BadRequestError(
                 message=gate_error,
@@ -2132,23 +2149,23 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         if json_mode is not True or not tool_calls:
             return None, tool_calls, None
 
-        json_indices: Final = [
+        json_indices = [
             i for i, t in enumerate(tool_calls) if t.get("function", {}).get("name") == RESPONSE_FORMAT_TOOL_NAME
         ]
         if not json_indices:
             return None, tool_calls, None
 
         if len(json_indices) == len(tool_calls):
-            json_tool: Final = tool_calls[json_indices[0]]
+            json_tool = tool_calls[json_indices[0]]
             if json_tool.get("function", {}).get("arguments") is None:
                 return None, tool_calls, None
-            _message: Final = AnthropicConfig._convert_tool_response_to_message(tool_calls=[json_tool])
+            _message = AnthropicConfig._convert_tool_response_to_message(tool_calls=[json_tool])
             return _message, [], None
 
-        first_json: Final = tool_calls[json_indices[0]]
-        json_msg: Final = AnthropicConfig._convert_tool_response_to_message([first_json])
-        extra_content: Final[str | None] = json_msg.content if json_msg is not None else None
-        filtered_tools: Final = [t for i, t in enumerate(tool_calls) if i not in json_indices]
+        first_json = tool_calls[json_indices[0]]
+        json_msg = AnthropicConfig._convert_tool_response_to_message([first_json])
+        extra_content: str | None = json_msg.content if json_msg is not None else None
+        filtered_tools = [t for i, t in enumerate(tool_calls) if i not in json_indices]
         return None, filtered_tools, extra_content
 
     def extract_response_content(
@@ -2167,7 +2184,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         citations: list[Any] | None = None
         thinking_blocks: list[ChatCompletionThinkingBlock | ChatCompletionRedactedThinkingBlock] | None = None
         reasoning_content: str | None = None
-        tool_calls: Final[list[ChatCompletionToolCallChunk]] = []
+        tool_calls: list[ChatCompletionToolCallChunk] = []
         web_search_results: list[Any] | None = None
         tool_results: list[Any] | None = None
         compaction_blocks: list[Any] | None = None
@@ -2347,11 +2364,11 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         speed: str | None = None,
     ) -> Usage:
         # NOTE: Sometimes the usage object has None set explicitly for token counts, meaning .get() & key access returns None, and we need to account for this
-        raw_prompt_tokens: Final = usage_object.get("input_tokens", 0) or 0
+        raw_prompt_tokens = usage_object.get("input_tokens", 0) or 0
         prompt_tokens: int = int(raw_prompt_tokens) if isinstance(raw_prompt_tokens, (int, float)) else 0
-        raw_completion_tokens: Final = usage_object.get("output_tokens", 0) or 0
+        raw_completion_tokens = usage_object.get("output_tokens", 0) or 0
         completion_tokens: int = int(raw_completion_tokens) if isinstance(raw_completion_tokens, (int, float)) else 0
-        _usage: Final = usage_object
+        _usage = usage_object
         cache_creation_input_tokens: int = 0
         cache_read_input_tokens: int = 0
         cache_creation_token_details: CacheCreationTokenDetails | None = None
@@ -2360,12 +2377,12 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         inference_geo: str | None = None
         if "inference_geo" in _usage and _usage["inference_geo"] is not None:
             inference_geo = _usage["inference_geo"]
-        service_tier: Final = cast(
+        service_tier = cast(
             str | None,
             _usage.get("service_tier"),
         )
 
-        iterations: Final[list[Any] | None] = _usage.get("iterations")
+        iterations: list[Any] | None = _usage.get("iterations")
         if iterations:
             prompt_tokens = sum(it.get("input_tokens", 0) or 0 for it in iterations)
             completion_tokens = sum(it.get("output_tokens", 0) or 0 for it in iterations)
@@ -2410,25 +2427,28 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                 ephemeral_1h_input_tokens=_usage["cache_creation"].get("ephemeral_1h_input_tokens"),
             )
 
-        raw_input_tokens: Final = prompt_tokens - cache_read_input_tokens - cache_creation_input_tokens
-        prompt_tokens_details: Final = PromptTokensDetailsWrapper(
+        raw_input_tokens = prompt_tokens - cache_read_input_tokens - cache_creation_input_tokens
+        prompt_tokens_details = PromptTokensDetailsWrapper(
             cached_tokens=cache_read_input_tokens,
             cache_creation_tokens=cache_creation_input_tokens,
             cache_creation_token_details=cache_creation_token_details,
             text_tokens=raw_input_tokens,
         )
-        # Always populate completion_token_details, not just when there's reasoning_content
-        estimated_reasoning_tokens: Final = (
-            token_counter(text=reasoning_content, count_response_tokens=True) if reasoning_content else 0
+        # Always populate completion_token_details, not just when there's reasoning_content.
+        # See _reasoning_token_share for why Anthropic's reported count beats the
+        # plaintext estimate, and why a reported zero does not.
+        reasoning_tokens = self._reasoning_token_share(
+            self._resolve_reported_thinking_tokens(_usage, iterations),
+            reasoning_content,
+            completion_tokens,
         )
-        reasoning_tokens: Final = min(estimated_reasoning_tokens, completion_tokens)
-        completion_token_details: Final = CompletionTokensDetailsWrapper(
+        completion_token_details = CompletionTokensDetailsWrapper(
             reasoning_tokens=max(0, reasoning_tokens),
             text_tokens=(completion_tokens - reasoning_tokens if reasoning_tokens > 0 else completion_tokens),
         )
-        total_tokens: Final = prompt_tokens + completion_tokens
+        total_tokens = prompt_tokens + completion_tokens
 
-        usage: Final = Usage(
+        usage = Usage(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
@@ -2452,7 +2472,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         return usage
 
     def _build_code_by_id_map(self, tool_calls: list[ChatCompletionToolCallChunk]) -> dict[str, str]:
-        code_by_id: Final[dict[str, str]] = {}
+        code_by_id: dict[str, str] = {}
         for tc in tool_calls:
             try:
                 args = json.loads(tc.get("function", {}).get("arguments", "{}"))
@@ -2470,7 +2490,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         code_by_id: dict[str, str],
         container_id: str | None,
     ) -> list[OutputCodeInterpreterCall]:
-        code_interpreter_results: Final = []
+        code_interpreter_results = []
         for tr in tool_results:
             if tr.get("type") != "bash_code_execution_tool_result":
                 continue
@@ -2499,12 +2519,12 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         compaction_blocks: list[Any] | None,
         tool_calls: list[ChatCompletionToolCallChunk],
     ) -> dict[str, Any]:
-        provider_specific_fields: Final[dict[str, Any]] = {
+        provider_specific_fields: dict[str, Any] = {
             "citations": citations,
             "thinking_blocks": thinking_blocks,
         }
 
-        context_management: Final = completion_response.get("context_management")
+        context_management = completion_response.get("context_management")
         if context_management is not None:
             provider_specific_fields["context_management"] = context_management
 
@@ -2513,16 +2533,16 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
 
         if tool_results is not None:
             provider_specific_fields["tool_results"] = tool_results
-            container_id: Final = (
+            container_id = (
                 completion_response.get("container", {}).get("id")
                 if isinstance(completion_response.get("container"), dict)
                 else None
             )
-            code_by_id: Final = self._build_code_by_id_map(tool_calls)
+            code_by_id = self._build_code_by_id_map(tool_calls)
             code_interpreter_results = self._build_code_interpreter_results(tool_results, code_by_id, container_id)
             provider_specific_fields["code_interpreter_results"] = code_interpreter_results
 
-        container: Final = completion_response.get("container")
+        container = completion_response.get("container")
         if container is not None:
             provider_specific_fields["container"] = container
 
@@ -2541,10 +2561,10 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         speed: str | None = None,
         tool_name_reverse_map: dict[str, str] | None = None,
     ):
-        _hidden_params: Final[dict] = {}
+        _hidden_params: dict = {}
         _hidden_params["additional_headers"] = process_anthropic_headers(dict(raw_response.headers))
         if "error" in completion_response:
-            response_headers: Final = getattr(raw_response, "headers", None)
+            response_headers = getattr(raw_response, "headers", None)
             raise AnthropicError(
                 message=str(completion_response["error"]),
                 status_code=raw_response.status_code,
@@ -2584,7 +2604,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         ):
             text_content = prefix_prompt + text_content
 
-        provider_specific_fields: Final = self._build_provider_specific_fields(
+        provider_specific_fields = self._build_provider_specific_fields(
             completion_response,
             citations,
             thinking_blocks,
@@ -2622,7 +2642,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             map_finish_reason(completion_response["stop_reason"]),
         )
 
-        usage: Final = self.calculate_usage(
+        usage = self.calculate_usage(
             usage_object=completion_response["usage"],
             reasoning_content=reasoning_content,
             completion_response=completion_response,
@@ -2649,8 +2669,8 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         if len(messages) == 0:
             return None
 
-        message: Final = messages[-1]
-        message_content: Final = message.get("content")
+        message = messages[-1]
+        message_content = message.get("content")
         if message["role"] == "assistant" and message.get("prefix", False) and isinstance(message_content, str):
             return message_content
 
@@ -2680,20 +2700,20 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
 
         ## RESPONSE OBJECT
         try:
-            completion_response: Final = raw_response.json()
+            completion_response = raw_response.json()
         except Exception as e:
-            response_headers: Final = getattr(raw_response, "headers", None)
+            response_headers = getattr(raw_response, "headers", None)
             raise AnthropicError(
                 message=f"Unable to get json response - {e}, Original Response: {raw_response.text}",
                 status_code=raw_response.status_code,
                 headers=response_headers,
             )
 
-        prefix_prompt: Final = self.get_prefix_prompt(messages=messages)
-        speed: Final = optional_params.get("speed")
+        prefix_prompt = self.get_prefix_prompt(messages=messages)
+        speed = optional_params.get("speed")
         tool_name_reverse_map: dict[str, str] | None = None
         if isinstance(litellm_params, dict):
-            _candidate: Final = litellm_params.get(ANTHROPIC_TOOL_NAME_REVERSE_MAP_KEY)
+            _candidate = litellm_params.get(ANTHROPIC_TOOL_NAME_REVERSE_MAP_KEY)
             if isinstance(_candidate, dict):
                 tool_name_reverse_map = _candidate
 
@@ -2717,10 +2737,10 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
 
         """
         ## HANDLE JSON MODE - anthropic returns single function call
-        json_mode_content_str: Final[str | None] = tool_calls[0]["function"].get("arguments")
+        json_mode_content_str: str | None = tool_calls[0]["function"].get("arguments")
         try:
             if json_mode_content_str is not None:
-                args: Final = json.loads(json_mode_content_str)
+                args = json.loads(json_mode_content_str)
                 if isinstance(args, dict) and (values := args.get("values")) is not None:
                     _message = litellm.Message(content=json.dumps(values))
                     return _message
@@ -2747,8 +2767,8 @@ def _valid_user_id(user_id: str) -> bool:
     Validate that user_id is not an email or phone number.
     Returns: bool: True if valid (not email or phone), False otherwise
     """
-    email_pattern: Final = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
-    phone_pattern: Final = r"^\+?[\d\s\(\)-]{7,}$"
+    email_pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+    phone_pattern = r"^\+?[\d\s\(\)-]{7,}$"
 
     if re.match(email_pattern, user_id):
         return False

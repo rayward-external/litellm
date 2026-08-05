@@ -7,7 +7,7 @@ Use this to route requests between Teams
 """
 
 import re
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 import litellm
 from litellm._logging import verbose_logger
@@ -105,8 +105,8 @@ def is_valid_deployment_tag(deployment_tags: list[str], request_tags: list[str],
     if not request_tags:
         return False
 
-    dep_set: Final = set(deployment_tags)
-    req_set: Final = set(request_tags)
+    dep_set = set(deployment_tags)
+    req_set = set(request_tags)
 
     if match_any:
         is_valid_deployment = bool(dep_set & req_set)
@@ -150,16 +150,16 @@ def _match_deployment(
     entirely, so a deployment lacking the pin tag can never be selected for a
     pinned request via a spoofable User-Agent — the pin is the SOLE selector.
     """
-    litellm_params: Final = deployment.get("litellm_params", {})
-    deployment_tags: Final[list[str] | None] = litellm_params.get("tags")
-    deployment_tag_regex: Final[list[str] | None] = litellm_params.get("tag_regex")
+    litellm_params = deployment.get("litellm_params", {})
+    deployment_tags: list[str] | None = litellm_params.get("tags")
+    deployment_tag_regex: list[str] | None = litellm_params.get("tag_regex")
 
     # 1. Exact tag match (existing behaviour). For a pinned request request_tags
     # is exactly ``[pin:<provider>]``, so this admits ONLY deployments that carry
     # the pin tag (under both match_any and subset semantics).
     if deployment_tags and request_tags:
         if is_valid_deployment_tag(deployment_tags, request_tags, match_any):
-            matched_value: Final = next(
+            matched_value = next(
                 (t for t in deployment_tags if t in set(request_tags)),
                 deployment_tags[0],
             )
@@ -169,11 +169,13 @@ def _match_deployment(
     # When match_any=False and the deployment has plain tags, the strict tag
     # check either didn't run (no request tags) or failed (step 1 returned
     # None).  Block the regex path so it cannot circumvent the operator's
-    # strict-tag policy.
-    deployment_has_plain_tags: Final = deployment_tags is not None and len(deployment_tags) > 0
-    strict_tag_check_failed: Final = not match_any and deployment_has_plain_tags
-    if deployment_tag_regex and header_strings and not strict_tag_check_failed:
-        regex_match: Final = _is_valid_deployment_tag_regex(deployment_tag_regex, header_strings)
+    # strict-tag policy. For a pinned request the regex path is blocked
+    # UNCONDITIONALLY: a client-controlled User-Agent must never select a
+    # deployment that lacks the pin tag.
+    deployment_has_plain_tags = deployment_tags is not None and len(deployment_tags) > 0
+    strict_tag_check_failed = not match_any and deployment_has_plain_tags
+    if deployment_tag_regex and header_strings and not strict_tag_check_failed and not pin_enforced:
+        regex_match = _is_valid_deployment_tag_regex(deployment_tag_regex, header_strings)
         if regex_match is not None:
             return {"matched_via": "tag_regex", "matched_value": regex_match}
 
@@ -181,8 +183,8 @@ def _match_deployment(
 
 
 def _split_tags(tags: list[str]) -> tuple[list[str], list[str]]:
-    positive: Final = [t for t in tags if not t.startswith("!")]
-    excluded: Final = [tag[1:] for tag in tags if tag.startswith("!") and len(tag) > 1]
+    positive = [t for t in tags if not t.startswith("!")]
+    excluded = [tag[1:] for tag in tags if tag.startswith("!") and len(tag) > 1]
     return positive, excluded
 
 
@@ -230,7 +232,7 @@ def _ban_only_base_pool(
     deployments: list[Any] | dict[Any, Any],
 ) -> list[Any]:
     # Mirrors untagged-request semantics so callers can't use !tags to escape the default pool.
-    defaults: Final = [d for d in deployments if "default" in (d.get("litellm_params", {}).get("tags") or [])]
+    defaults = [d for d in deployments if "default" in (d.get("litellm_params", {}).get("tags") or [])]
     return defaults if defaults else list(deployments)
 
 
@@ -313,8 +315,13 @@ async def get_deployments_for_tag(
     (``assert_tag_filtering_enabled_for_pinned_routes``) is the belt; this is the
     suspenders — the pin holds even if that guard is bypassed.
     """
-    request_enable_tag_filtering: Final = request_kwargs.get("enable_tag_filtering") if request_kwargs else None
-    if request_enable_tag_filtering is not True and llm_router_instance.enable_tag_filtering is not True:
+    pinned_provider = _pinned_provider_from_kwargs(request_kwargs, metadata_variable_name)
+    request_enable_tag_filtering = request_kwargs.get("enable_tag_filtering") if request_kwargs else None
+    if (
+        pinned_provider is None
+        and request_enable_tag_filtering is not True
+        and llm_router_instance.enable_tag_filtering is not True
+    ):
         return healthy_deployments
 
     if request_kwargs is None:
@@ -330,30 +337,36 @@ async def get_deployments_for_tag(
 
     verbose_logger.debug("request metadata: %s", request_kwargs.get(metadata_variable_name))
     if metadata_variable_name in request_kwargs:
-        metadata: Final = request_kwargs[metadata_variable_name]
-        request_tags: Final = metadata.get("tags")
-        match_any: Final = llm_router_instance.tag_filtering_match_any
+        metadata = request_kwargs[metadata_variable_name]
+        request_tags = _resolve_request_tags(metadata)
+        match_any = llm_router_instance.tag_filtering_match_any
+        # A hard provider pin (any ``pin:`` tag) must never spill to the
+        # ``default`` pool: an empty tag match fails loud rather than being
+        # served by a ``default``-tagged deployment.
+        disable_default_fallback = any(
+            isinstance(t, str) and t.startswith(PIN_TAG_PREFIX) for t in (request_tags or [])
+        )
 
         # Build header strings for regex matching from what the proxy already stores.
         # Currently we match against User-Agent; format matches "^User-Agent: claude-code/..."
-        user_agent: Final = metadata.get("user_agent", "")
-        header_strings: Final[list[str]] = [f"User-Agent: {user_agent}"] if user_agent else []
+        user_agent = metadata.get("user_agent", "")
+        header_strings: list[str] = [f"User-Agent: {user_agent}"] if user_agent else []
 
         positive_tags, excluded_patterns = _split_tags(request_tags or [])
 
-        excluded_set: Final = frozenset(excluded_patterns)
-        candidates: Final = _exclude_deployments(healthy_deployments, excluded_set)
+        excluded_set = frozenset(excluded_patterns)
+        candidates = _exclude_deployments(healthy_deployments, excluded_set)
 
-        has_regex_deployments: Final = any(d.get("litellm_params", {}).get("tag_regex") for d in candidates)
-        has_tag_filter: Final = bool(positive_tags) or (bool(header_strings) and has_regex_deployments)
-        ban_only: Final = bool(excluded_set) and not has_tag_filter
+        has_regex_deployments = any(d.get("litellm_params", {}).get("tag_regex") for d in candidates)
+        has_tag_filter = bool(positive_tags) or (bool(header_strings) and has_regex_deployments)
+        ban_only = bool(excluded_set) and not has_tag_filter
 
         if ban_only:
-            pool: Final = _exclude_deployments(_ban_only_base_pool(healthy_deployments), excluded_set)
+            pool = _exclude_deployments(_ban_only_base_pool(healthy_deployments), excluded_set)
             return _require_candidates(pool, model, request_tags)
 
-        new_healthy_deployments: Final[list[Any]] = []
-        default_deployments: Final[list[Any]] = []
+        new_healthy_deployments: list[Any] = []
+        default_deployments: list[Any] = []
 
         if has_tag_filter:
             verbose_logger.debug(
@@ -404,7 +417,7 @@ async def get_deployments_for_tag(
             return new_healthy_deployments if len(new_healthy_deployments) > 0 else default_deployments
 
     # for Untagged requests use default deployments if set
-    _default_deployments_with_tags: Final = []
+    _default_deployments_with_tags = []
     for deployment in healthy_deployments:
         if "default" in deployment.get("litellm_params", {}).get("tags", []):
             _default_deployments_with_tags.append(deployment)
@@ -436,12 +449,12 @@ def _get_tags_from_request_kwargs(
     if request_kwargs is None:
         return []
     if metadata_variable_name in request_kwargs:
-        metadata: Final = request_kwargs[metadata_variable_name] or {}
+        metadata = request_kwargs[metadata_variable_name] or {}
         tags = metadata.get("tags", [])
         return tags if tags is not None else []
     elif "litellm_params" in request_kwargs:
-        litellm_params: Final = request_kwargs["litellm_params"] or {}
-        _metadata: Final = litellm_params.get(metadata_variable_name, {}) or {}
+        litellm_params = request_kwargs["litellm_params"] or {}
+        _metadata = litellm_params.get(metadata_variable_name, {}) or {}
         tags = _metadata.get("tags", [])
         return tags if tags is not None else []
     return []
