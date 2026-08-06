@@ -5,7 +5,7 @@ import re
 import secrets
 from datetime import datetime, timezone
 from datetime import datetime as dt
-from typing import Any, Literal, Optional, cast
+from typing import Any, Final, Literal, Optional, cast
 
 from pydantic import BaseModel
 
