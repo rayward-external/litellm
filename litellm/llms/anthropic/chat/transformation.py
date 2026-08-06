@@ -334,7 +334,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         )
         # Include caller information if present (for programmatic tool calling)
         if "caller" in anthropic_tool_content:
-            tool_call["caller"] = cast(dict[str, Any], anthropic_tool_content["caller"])  # type: ignore[typeddict-item]
+            tool_call["caller"] = cast(dict[str, Any], anthropic_tool_content["caller"])
         return tool_call
 
     @staticmethod
@@ -772,10 +772,10 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             returned_tool = AnthropicHostedTools(
                 type=tool["type"],
                 name=function_name,
-                **additional_tool_params,  # type: ignore
+                **additional_tool_params,
             )
         elif tool["type"] == "url":  # mcp server tool
-            mcp_server = AnthropicMcpServerTool(**tool)  # type: ignore
+            mcp_server = AnthropicMcpServerTool(**tool)
         elif tool["type"] == "mcp":
             mcp_server = self._map_openai_mcp_server_tool(cast(OpenAIMcpServerTool, tool))
         elif tool["type"] == "tool_search_tool_regex_20251119":
@@ -818,7 +818,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                 _advisor_tool["max_uses"] = _tool_dict["max_uses"]
             if _tool_dict.get("caching") is not None:
                 _advisor_tool["caching"] = _tool_dict["caching"]
-            returned_tool = _advisor_tool  # type: ignore[assignment]
+            returned_tool = _advisor_tool
         if returned_tool is None and mcp_server is None:
             raise ValueError(f"Unsupported tool type: {tool['type']}")
 
@@ -833,11 +833,9 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                 "tool_search_tool_bm25_20251119",
             ):
                 if _cache_control is not None:
-                    returned_tool["cache_control"] = _cache_control  # type: ignore[typeddict-item]
+                    returned_tool["cache_control"] = _cache_control
                 elif _cache_control_function is not None and isinstance(_cache_control_function, dict):
-                    returned_tool["cache_control"] = ChatCompletionCachedContent(  # type: ignore[typeddict-item]
-                        **_cache_control_function  # type: ignore
-                    )
+                    returned_tool["cache_control"] = ChatCompletionCachedContent(**_cache_control_function)
 
         ## check if defer_loading is set in the tool
         _defer_loading = tool.get("defer_loading", None)
@@ -854,11 +852,11 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                 if _defer_loading is not None:
                     if not isinstance(_defer_loading, bool):
                         raise ValueError("defer_loading must be a boolean")
-                    returned_tool["defer_loading"] = _defer_loading  # type: ignore[typeddict-item]
+                    returned_tool["defer_loading"] = _defer_loading
                 elif _defer_loading_function is not None:
                     if not isinstance(_defer_loading_function, bool):
                         raise ValueError("defer_loading must be a boolean")
-                    returned_tool["defer_loading"] = _defer_loading_function  # type: ignore[typeddict-item]
+                    returned_tool["defer_loading"] = _defer_loading_function
 
         ## check if allowed_callers is set in the tool
         _allowed_callers = tool.get("allowed_callers", None)
@@ -877,13 +875,13 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                         isinstance(item, str) for item in _allowed_callers
                     ):
                         raise ValueError("allowed_callers must be a list of strings")
-                    returned_tool["allowed_callers"] = _allowed_callers  # type: ignore[typeddict-item]
+                    returned_tool["allowed_callers"] = _allowed_callers
                 elif _allowed_callers_function is not None:
                     if not isinstance(_allowed_callers_function, list) or not all(
                         isinstance(item, str) for item in _allowed_callers_function
                     ):
                         raise ValueError("allowed_callers must be a list of strings")
-                    returned_tool["allowed_callers"] = _allowed_callers_function  # type: ignore[typeddict-item]
+                    returned_tool["allowed_callers"] = _allowed_callers_function
 
         ## check if input_examples is set in the tool
         _input_examples = tool.get("input_examples", None)
@@ -893,9 +891,9 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             tool_type = returned_tool.get("type", "")
             if tool_type == "custom" or (tool_type == "" and "name" in returned_tool):
                 if _input_examples is not None and isinstance(_input_examples, list):
-                    returned_tool["input_examples"] = _input_examples  # type: ignore[typeddict-item]
+                    returned_tool["input_examples"] = _input_examples
                 elif _input_examples_function is not None and isinstance(_input_examples_function, list):
-                    returned_tool["input_examples"] = _input_examples_function  # type: ignore[typeddict-item]
+                    returned_tool["input_examples"] = _input_examples_function
 
         return returned_tool, mcp_server
 
@@ -1446,7 +1444,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             if user_location_approximate is not None:
                 for key, user_location_value in user_location_approximate.items():
                     if key in anthropic_user_location_keys and key != "type":
-                        anthropic_user_location[key] = user_location_value  # type: ignore
+                        anthropic_user_location[key] = user_location_value
                 hosted_web_search_tool["user_location"] = anthropic_user_location
 
         ## MAP SEARCH CONTEXT SIZE
@@ -2262,99 +2260,19 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         )
 
     @staticmethod
-    def _mapping_value(container: object, key: str) -> object:
-        """
-        ``container[key]`` when ``container`` is a mapping, else ``None``.
+    def is_anthropic_usage_object(usage_object: dict) -> bool:
+        """Anthropic reports prompt cache tokens as top-level ``cache_read_input_tokens`` /
+        ``cache_creation_input_tokens``; no other API surface uses those keys, and the
+        Responses API mapping would silently drop them.
 
-        Raw usage payloads are untyped, so every read below has to prove the shape
-        it found. Narrowing here — rather than asserting one with a cast — keeps a
-        malformed provider payload a ``None`` instead of a downstream TypeError.
+        Requiring a cache key is deliberate: Responses API usage also carries top-level
+        ``input_tokens``, so the cache keys are the only shape discriminator between the
+        two. A cache-free Anthropic payload falls through to the Responses API mapping,
+        which is safe because both mappings agree whenever no cache tokens are present.
         """
-        if not isinstance(container, Mapping):
-            return None
-        mapping: Mapping[str, object] = container
-        return mapping.get(key)
-
-    @staticmethod
-    def _reported_thinking_tokens(usage_object: object) -> int | None:
-        """
-        Anthropic's own thinking-token count, from ``usage.output_tokens_details``.
-
-        Adaptive-thinking models (claude-opus-5, claude-opus-4-8/4-7,
-        claude-sonnet-5, claude-fable-5) emit the thinking block with an EMPTY
-        ``thinking`` string — only the encrypted ``signature`` carries data — so
-        token-counting the plaintext scores 0 for output tokens that were
-        generated AND billed. This field is the only recoverable source.
-
-        Returns ``None`` (not 0) when the field is missing or unusable, so callers
-        can tell "Anthropic said zero" from "Anthropic said nothing" and fall back
-        to the plaintext estimate instead of silently reporting 0.
-        """
-        thinking_tokens = AnthropicConfig._coerce_optional_int(
-            AnthropicConfig._mapping_value(
-                AnthropicConfig._mapping_value(usage_object, "output_tokens_details"),
-                "thinking_tokens",
-            )
-        )
-        if thinking_tokens is None:
-            return None
-        return max(thinking_tokens, 0)
-
-    @staticmethod
-    def _sum_reported_thinking_tokens(iterations: Iterable[object]) -> int | None:
-        """
-        Total reported thinking tokens across compaction iterations.
-
-        Mirrors how ``calculate_usage`` sums ``output_tokens`` over ``iterations``:
-        the top-level usage object of a compacted response does not aggregate the
-        per-iteration detail. ``None`` means no iteration reported a count.
-        """
-        total: int | None = None
-        for iteration in iterations:
-            reported = AnthropicConfig._reported_thinking_tokens(iteration)
-            if reported is None:
-                continue
-            total = (total or 0) + reported
-        return total
-
-    @staticmethod
-    def _resolve_reported_thinking_tokens(usage_object: object, iterations: Iterable[object] | None) -> int | None:
-        """
-        Anthropic's reported thinking-token count for the response as a whole.
-
-        A compacted response carries the count per iteration rather than on the
-        top-level usage object, so a per-iteration total wins whenever at least one
-        iteration reported one.
-        """
-        if iterations:
-            summed = AnthropicConfig._sum_reported_thinking_tokens(iterations)
-            if summed is not None:
-                return summed
-        return AnthropicConfig._reported_thinking_tokens(usage_object)
-
-    @staticmethod
-    def _reasoning_token_share(
-        reported_thinking_tokens: int | None,
-        reasoning_content: str | None,
-        completion_tokens: int,
-    ) -> int:
-        """
-        How many of ``completion_tokens`` were thinking tokens.
-
-        Anthropic's own count wins when it reports one: the plaintext estimate
-        reads 0 for adaptive thinking, whose thinking block is signature-only (see
-        ``_reported_thinking_tokens``). A reported ZERO deliberately falls through
-        to the estimate instead — the field may simply not be populated for the
-        older ``thinking.type=enabled`` models, and those must keep the
-        reasoning_tokens they report today. The estimate is itself 0 when there was
-        no thinking text, so nothing is invented.
-        """
-        if reported_thinking_tokens:
-            return min(reported_thinking_tokens, completion_tokens)
-        estimated_reasoning_tokens = (
-            token_counter(text=reasoning_content, count_response_tokens=True) if reasoning_content else 0
-        )
-        return min(estimated_reasoning_tokens, completion_tokens)
+        if "prompt_tokens" in usage_object or "input_tokens" not in usage_object:
+            return False
+        return any(key in usage_object for key in ("cache_read_input_tokens", "cache_creation_input_tokens"))
 
     def calculate_usage(
         self,

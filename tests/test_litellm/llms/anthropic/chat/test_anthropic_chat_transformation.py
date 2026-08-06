@@ -23,7 +23,7 @@ from litellm.llms.anthropic.experimental_pass_through.messages.transformation im
     AnthropicMessagesConfig,
 )
 from litellm.types.llms.anthropic import ANTHROPIC_BETA_HEADER_VALUES
-from litellm.types.utils import ServerToolUse
+from litellm.types.utils import ServerToolUse, Usage
 
 
 def test_response_format_transformation_unit_test():
@@ -6099,127 +6099,39 @@ def test_top_k_forwarded_at_transform_on_models_that_accept_it():
     assert result["top_k"] == 40
 
 
-# ---------------------------------------------------------------------------
-# Effort gate: one rule for every gated level, and a 400 that says what the
-# model does accept.
-# ---------------------------------------------------------------------------
-
-
-def test_effort_gate_is_one_rule_for_xhigh_and_max():
-    """`max` and `xhigh` go through the same predicate.
-
-    Sonnet 4.6 is adaptive and advertises `supports_max_reasoning_effort` but not
-    `supports_xhigh_reasoning_effort`, so `max` is accepted and `xhigh` is
-    refused -- the model's real vocabulary, not an implementation asymmetry.
-    """
-    assert (
-        AnthropicConfig._validate_effort_for_model(
-            "claude-sonnet-4-6", "max", "anthropic"
-        )
-        is None
+def test_is_anthropic_usage_object_distinguishes_chat_usage():
+    """Chat-shaped Usage mirrors cache_read_input_tokens alongside prompt_tokens that already
+    include the cache tokens, so treating it as Anthropic usage would re-add them and
+    double-count the prompt. Only the Anthropic shape, where input_tokens excludes cache
+    tokens, may take the Anthropic mapping."""
+    assert AnthropicConfig.is_anthropic_usage_object(
+        {"input_tokens": 3, "output_tokens": 5, "cache_read_input_tokens": 4014}
     )
-    assert (
-        AnthropicConfig._validate_effort_for_model(
-            "claude-sonnet-5", "xhigh", "anthropic"
-        )
-        is None
+    assert AnthropicConfig.is_anthropic_usage_object(
+        {"input_tokens": 3, "output_tokens": 5, "cache_creation_input_tokens": 10}
     )
-
-    error = AnthropicConfig._validate_effort_for_model(
-        "claude-sonnet-4-6", "xhigh", "anthropic"
+    assert not AnthropicConfig.is_anthropic_usage_object(
+        Usage(
+            prompt_tokens=4017,
+            completion_tokens=5,
+            total_tokens=4022,
+            cache_read_input_tokens=4014,
+        ).model_dump()
     )
-    assert error is not None
-    assert error.startswith("effort='xhigh' is not supported by this model")
-    supported = error.split("Supported values are:")[1]
-    assert "'max'" in supported
-    assert "'xhigh'" not in supported
+    assert not AnthropicConfig.is_anthropic_usage_object({"input_tokens": 3, "output_tokens": 5})
 
 
-def test_effort_gate_error_enumerates_supported_levels():
-    error = AnthropicConfig._validate_effort_for_model(
-        "claude-opus-4-5-20251101", "max", "anthropic"
+def test_is_anthropic_usage_object_rejects_responses_api_usage():
+    """completion_cost checks the Anthropic shape before the Responses API shape, so a
+    Responses API usage payload, whose cache reads live in nested input_tokens_details,
+    must never match; matching would route it past the converter that reads the nested
+    field and its cache reads would be billed at the full input rate."""
+    assert not AnthropicConfig.is_anthropic_usage_object(
+        {
+            "input_tokens": 4017,
+            "output_tokens": 5,
+            "total_tokens": 4022,
+            "input_tokens_details": {"cached_tokens": 4014},
+            "output_tokens_details": {"reasoning_tokens": 0},
+        }
     )
-    assert error is not None
-    supported = error.split("Supported values are:")[1]
-    for level in ("'low'", "'medium'", "'high'"):
-        assert level in supported
-    assert "'max'" not in supported
-    assert "'xhigh'" not in supported
-
-
-def test_effort_gate_error_surfaces_supported_levels_at_transform():
-    config = AnthropicConfig()
-
-    with pytest.raises(litellm.exceptions.BadRequestError) as exc_info:
-        config.transform_request(
-            model="claude-sonnet-4-6",
-            messages=[{"role": "user", "content": "hi"}],
-            optional_params={"output_config": {"effort": "xhigh"}},
-            litellm_params={},
-            headers={},
-        )
-
-    assert "Supported values are:" in str(exc_info.value)
-
-
-# ---------------------------------------------------------------------------
-# The effort-derived thinking budget must stay strictly below max_tokens.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "reasoning_effort, max_tokens, expected_budget",
-    [
-        # Budget already fits -> untouched.
-        ("low", 4096, DEFAULT_REASONING_EFFORT_LOW_THINKING_BUDGET),
-        # Budget exceeds max_tokens -> clamped to max_tokens - 1.
-        ("high", 2000, 1999),
-        ("max", 8192, 8191),
-        ("medium", 1500, 1499),
-    ],
-)
-def test_reasoning_effort_budget_clamped_below_max_tokens(
-    reasoning_effort, max_tokens, expected_budget
-):
-    """Anthropic requires `max_tokens > thinking.budget_tokens`; the derived
-    budget ignores the caller's max_tokens, so these went upstream
-    guaranteed-invalid ("`max_tokens` must be greater than
-    `thinking.budget_tokens`")."""
-    optional_params = litellm.get_optional_params(
-        model="claude-haiku-4-5",
-        custom_llm_provider="anthropic",
-        reasoning_effort=reasoning_effort,
-        max_tokens=max_tokens,
-    )
-
-    assert optional_params["thinking"]["budget_tokens"] == expected_budget
-    assert optional_params["thinking"]["budget_tokens"] < optional_params["max_tokens"]
-
-
-def test_reasoning_effort_rejected_when_max_tokens_cannot_fit_min_budget():
-    """max_tokens <= the 1024-token minimum budget leaves no room for a valid
-    request: reject it here with LiteLLM's own message rather than forwarding a
-    request Anthropic is certain to refuse."""
-    with pytest.raises(litellm.exceptions.BadRequestError) as exc_info:
-        litellm.get_optional_params(
-            model="claude-haiku-4-5",
-            custom_llm_provider="anthropic",
-            reasoning_effort="low",
-            max_tokens=ANTHROPIC_MIN_THINKING_BUDGET_TOKENS,
-        )
-
-    message = str(exc_info.value)
-    assert "max_tokens" in message
-    assert str(ANTHROPIC_MIN_THINKING_BUDGET_TOKENS) in message
-
-
-def test_adaptive_thinking_model_unaffected_by_budget_clamp():
-    """Adaptive models carry no budget_tokens, so a small max_tokens is fine."""
-    optional_params = litellm.get_optional_params(
-        model="claude-sonnet-5",
-        custom_llm_provider="anthropic",
-        reasoning_effort="low",
-        max_tokens=ANTHROPIC_MIN_THINKING_BUDGET_TOKENS,
-    )
-
-    assert optional_params["thinking"] == {"type": "adaptive"}
