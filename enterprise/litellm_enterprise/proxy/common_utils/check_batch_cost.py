@@ -865,7 +865,11 @@ class CheckBatchCost:
                         "user-agent": CHECK_BATCH_COST_USER_AGENT,
                     }
                 },
-                "metadata": metadata,
+                "metadata": {
+                    "user_api_key_user_id": creator_user_id,
+                    "user_api_key_team_id": getattr(job, "team_id", None),
+                    **user_info,
+                },
             },
             optional_params={},
         )
@@ -1115,6 +1119,20 @@ class CheckBatchCost:
                 if not await self._claim_job(job):
                     continue
                 try:
+                    from litellm.proxy.openai_files_endpoints.common_utils import (
+                        _is_base64_encoded_unified_file_id,
+                        ensure_batch_response_managed_file_ids,
+                    )
+
+                    response.id = job.unified_object_id
+                    await ensure_batch_response_managed_file_ids(
+                        response=response,
+                        managed_files_obj=self.proxy_logging_obj.get_proxy_hook("managed_files"),
+                        prisma_client=self.prisma_client,
+                        verbose_proxy_logger=verbose_proxy_logger,
+                        db_batch_object=job,
+                        unified_batch_id=_is_base64_encoded_unified_file_id(job.unified_object_id),
+                    )
                     update_data = {
                         "status": response.status,
                         "file_object": self._finalized_file_object(job, response),
