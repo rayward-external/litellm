@@ -54,6 +54,19 @@ query-filters:
   # not a security decision on an untrusted URL.
   - exclude:
       id: js/incomplete-url-substring-sanitization  # CWE-184
+  # actions/untrusted-checkout: fires on test-litellm-ui-lint.yml and
+  # test-litellm-ui-unit.yml for checking out PR content and running npm ci in a
+  # `pull_request`-triggered job. Both attack vectors this query documents don't
+  # apply here: runs-on is ubuntu-latest (ephemeral GitHub-hosted, not
+  # self-hosted, so there's no runner to persist a compromise on), and no
+  # workflow_run-triggered privileged job in this repo consumes these jobs'
+  # artifacts or caches. Neither file uses pull_request_target or exposes
+  # secrets (permissions: contents: read only) — this is the query's own
+  # documented "correct usage" pattern (isolated pull_request trigger, no
+  # elevated token). No workflow in this repo uses pull_request_target or
+  # workflow_run (verified via search); revisit this exclude if one is added.
+  - exclude:
+      id: actions/untrusted-checkout/medium     # CWE-829
 
 paths-ignore:
   - tests
