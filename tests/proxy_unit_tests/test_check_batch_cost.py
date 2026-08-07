@@ -469,7 +469,9 @@ class TestCheckBatchCost:
         import litellm
         from litellm.proxy.hooks.proxy_track_cost_callback import _ProxyDBLogger
 
-        mock_prisma_client.db.litellm_managedobjecttable.update_many = AsyncMock(return_value=0)
+        mock_prisma_client.db.litellm_managedobjecttable.update_many = AsyncMock(
+            side_effect=_sweep_zero_claim_one
+        )
         mock_prisma_client.db.litellm_managedobjecttable.update = AsyncMock()
         mock_prisma_client.db.litellm_usertable.find_unique = AsyncMock(return_value=None)
 
@@ -573,9 +575,11 @@ class TestCheckBatchCost:
 
         mock_update_database.assert_awaited_once()
         assert mock_update_database.call_args.kwargs["response_cost"] == 0.01
-        assert mock_prisma_client.db.litellm_managedobjecttable.update.call_count == 1, (
-            "the job must still be marked processed once cost tracking succeeds"
-        )
+        finalize_writes = [
+            data for data in _row_writes(mock_prisma_client) if data.get("status") == "complete"
+        ]
+        assert len(finalize_writes) == 1, "the job must still be marked processed once cost tracking succeeds"
+        assert finalize_writes[0]["batch_processed"] is True
 
     @pytest.mark.asyncio
     async def test_cost_tracking_failure_leaves_job_unprocessed(
@@ -741,7 +745,7 @@ class TestCheckBatchCost:
         ).decode()
 
         mock_prisma_client.db.litellm_managedobjecttable.update_many = AsyncMock(
-            return_value=0
+            side_effect=_sweep_zero_claim_one
         )
         mock_prisma_client.db.litellm_managedobjecttable.update = AsyncMock()
         mock_prisma_client.db.litellm_usertable.find_unique = AsyncMock(
@@ -818,11 +822,11 @@ class TestCheckBatchCost:
             assert store_call.kwargs["user_api_key_dict"].user_id == "user-1"
             assert store_call.kwargs["user_api_key_dict"].team_id == "team-1"
 
-        assert mock_prisma_client.db.litellm_managedobjecttable.update.call_count == 1
-        update_call = mock_prisma_client.db.litellm_managedobjecttable.update.call_args
-        assert update_call.kwargs["where"] == {"id": "job-terminal-mint-1"}
-        update_data = update_call.kwargs["data"]
-        assert update_data["status"] == terminal_status
+        finalize_writes = [
+            data for data in _row_writes(mock_prisma_client) if data.get("status") == terminal_status
+        ]
+        assert len(finalize_writes) == 1, f"Expected exactly one finalize write for a {terminal_status} job"
+        update_data = finalize_writes[0]
         assert update_data["batch_processed"] is True
         persisted = json.loads(update_data["file_object"])
         assert persisted["id"] == unified_batch_uid
