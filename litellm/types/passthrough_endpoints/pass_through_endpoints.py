@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Final, Optional
+from typing import Final
 
 from typing_extensions import TypedDict
 

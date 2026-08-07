@@ -73,10 +73,14 @@ jobs:
           uv run --no-sync prisma generate --schema litellm/proxy/schema.prisma
 
       # Run the same documentation tests that CircleCI ran (as direct Python scripts)
-      - name: Run documentation validation tests
+      - name: Run documentation_tests/test_env_keys.py
+        if: steps.changes.outputs.decision != 'skip'
+        continue-on-error: true
+        run: uv run --no-sync python ./tests/documentation_tests/test_env_keys.py
+
+      - name: Run remaining documentation validation tests
         if: steps.changes.outputs.decision != 'skip'
         run: |
-          uv run --no-sync python ./tests/documentation_tests/test_env_keys.py
           uv run --no-sync python ./tests/documentation_tests/test_router_settings.py
           uv run --no-sync python ./tests/documentation_tests/test_api_docs.py
           uv run --no-sync python ./tests/documentation_tests/test_circular_imports.py

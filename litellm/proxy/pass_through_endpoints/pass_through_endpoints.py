@@ -200,7 +200,7 @@ async def chat_completion_pass_through_endpoint(
             data["model"] = user_model
 
         data = await add_litellm_data_to_request(
-            data=data,  # type: ignore
+            data=data,
             request=request,
             general_settings=general_settings,
             user_api_key_dict=user_api_key_dict,
@@ -234,7 +234,7 @@ async def chat_completion_pass_through_endpoint(
             data["model"] = user_api_key_dict.aliases[data["model"]]
 
         ### CALL HOOKS ### - modify incoming data before calling the model
-        data = await proxy_logging_obj.pre_call_hook(  # type: ignore
+        data = await proxy_logging_obj.pre_call_hook(
             user_api_key_dict=user_api_key_dict, data=data, call_type="text_completion"
         )
 
@@ -604,7 +604,7 @@ class HttpPassThroughEndpointHelpers(BasePassthroughUtils):
 
         kwargs = {
             "litellm_params": {
-                **litellm_params_in_body,  # type: ignore
+                **litellm_params_in_body,
                 "metadata": _metadata,
                 "proxy_server_request": {
                     "url": str(request.url),
@@ -1387,7 +1387,7 @@ async def pass_through_request(
             response_body = await proxy_logging_obj.post_call_success_hook(
                 data=hook_data,
                 user_api_key_dict=user_api_key_dict,
-                response=response_body,  # type: ignore[arg-type]
+                response=response_body,
             )
             if isinstance(response_body, dict):
                 content = json.dumps(response_body).encode("utf-8")
@@ -1733,7 +1733,7 @@ def create_pass_through_route(
         adapter_id = str(uuid.uuid4())
         litellm.adapters = [{"id": adapter_id, "adapter": adapter}]
 
-        async def endpoint_func(  # type: ignore
+        async def endpoint_func(
             request: Request,
             fastapi_response: Response,
             user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
@@ -1749,7 +1749,7 @@ def create_pass_through_route(
     except Exception:
         verbose_proxy_logger.debug("Defaulting to target being a url.")
 
-        async def endpoint_func(  # type: ignore
+        async def endpoint_func(
             request: Request,
             fastapi_response: Response,
             user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
@@ -1841,7 +1841,7 @@ def create_pass_through_route(
                 final_custom_body = custom_body_data
 
             try:
-                return await pass_through_request(  # type: ignore
+                return await pass_through_request(
                     request=request,
                     target=full_target,
                     custom_headers=headers_dict,
@@ -2015,7 +2015,7 @@ async def websocket_passthrough_request(
         _parsed_body={},  # WebSocket doesn't have a traditional request body
         passthrough_logging_payload=passthrough_logging_payload,
         litellm_call_id=litellm_call_id,
-        request=dummy_request,  # type: ignore
+        request=dummy_request,
         logging_obj=logging_obj,
     )
 
@@ -2240,8 +2240,8 @@ async def websocket_passthrough_request(
             end_time = datetime.now()
 
             # Update passthrough logging payload with response data
-            passthrough_logging_payload["response_body"] = websocket_messages  # type: ignore
-            passthrough_logging_payload["end_time"] = end_time  # type: ignore
+            passthrough_logging_payload["response_body"] = websocket_messages
+            passthrough_logging_payload["end_time"] = end_time
 
             # Remove logging_obj from kwargs to avoid duplicate keyword argument
             success_kwargs = kwargs.copy()
@@ -2280,8 +2280,8 @@ async def websocket_passthrough_request(
             # Use the same success handler as HTTP passthrough endpoints
             GLOBAL_LOGGING_WORKER.ensure_initialized_and_enqueue(
                 async_coroutine=pass_through_endpoint_logging.pass_through_async_success_handler(
-                    httpx_response=mock_response,  # type: ignore
-                    response_body=websocket_messages,  # type: ignore
+                    httpx_response=mock_response,
+                    response_body=websocket_messages,
                     url_route=endpoint or "",
                     result="websocket_connection_successful",
                     start_time=start_time,
@@ -2298,7 +2298,7 @@ async def websocket_passthrough_request(
                 await proxy_logging_obj.post_call_success_hook(
                     data={},
                     user_api_key_dict=user_api_key_dict,
-                    response={"status": "websocket_connection_successful"},  # type: ignore
+                    response={"status": "websocket_connection_successful"},
                 )
 
     except InvalidStatus as exc:
@@ -2581,7 +2581,7 @@ class InitPassThroughEndpointHelpers:
         SafeRouteAdder.add_api_route_if_not_exists(
             app=app,
             path=path,
-            endpoint=create_pass_through_route(  # type: ignore
+            endpoint=create_pass_through_route(
                 path,
                 target,
                 custom_headers,
@@ -2664,7 +2664,7 @@ class InitPassThroughEndpointHelpers:
         SafeRouteAdder.add_api_route_if_not_exists(
             app=app,
             path=wildcard_path,
-            endpoint=create_pass_through_route(  # type: ignore
+            endpoint=create_pass_through_route(
                 path,
                 target,
                 custom_headers,
@@ -2958,11 +2958,11 @@ async def initialize_pass_through_endpoints(
     combined_pass_through_endpoints: list[dict | PassThroughGenericEndpoint]
 
     if config_passthrough_endpoints is not None:
-        combined_pass_through_endpoints = _get_combined_pass_through_endpoints(  # type: ignore
+        combined_pass_through_endpoints = _get_combined_pass_through_endpoints(
             pass_through_endpoints, config_passthrough_endpoints
         )
     else:
-        combined_pass_through_endpoints = pass_through_endpoints  # type: ignore
+        combined_pass_through_endpoints = pass_through_endpoints
 
     ## clear all existing pass-through endpoints from the FastAPI app routes
     # InitPassThroughEndpointHelpers.clear_all_pass_through_routes()

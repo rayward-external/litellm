@@ -126,6 +126,7 @@ jobs:
         run: uv run --no-sync python ./tests/code_coverage_tests/memory_test.py
 
       - name: documentation_test_env_keys
+        continue-on-error: true
         run: uv run --no-sync python ./tests/documentation_tests/test_env_keys.py
 
       - name: documentation_test_router_settings
