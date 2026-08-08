@@ -180,7 +180,7 @@ jobs:
           LITELLM_IMAGE: litellm-gateway-scan:${{ github.sha }}
           LITELLM_COMPONENT_PORT: "4000"
         run: |
-          python -m pip install "pytest==9.0.3"
+          python -m pip install --no-cache-dir --require-hashes -r .github/scripts/migration-test-requirements.txt
           python -m pytest tests/proxy_migration_tests/test_component_image_serves_offline.py -v
 
   backend-image:
@@ -210,5 +210,5 @@ jobs:
           LITELLM_IMAGE: litellm-backend-scan:${{ github.sha }}
           LITELLM_COMPONENT_PORT: "4001"
         run: |
-          python -m pip install "pytest==9.0.3"
+          python -m pip install --no-cache-dir --require-hashes -r .github/scripts/migration-test-requirements.txt
           python -m pytest tests/proxy_migration_tests/test_component_image_serves_offline.py -v
