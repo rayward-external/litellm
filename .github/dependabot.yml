@@ -77,6 +77,13 @@ updates:
       semver-major-days: 14
     open-pull-requests-limit: 10
 
+  - package-ecosystem: "npm"
+    directory: "/tests/e2e/ui"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+
   - package-ecosystem: "cargo"
     directory: "/litellm-rust"
     schedule:
