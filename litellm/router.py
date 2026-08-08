@@ -126,6 +126,7 @@ from litellm.router_utils.common_utils import (
     filter_team_based_models,
     filter_web_search_deployments,
     resolve_model_group_alias,
+    truncate_fallback_error_detail,
 )
 from litellm.router_utils.cooldown_cache import CooldownCache
 from litellm.router_utils.cooldown_handlers import (
@@ -622,6 +623,12 @@ def _replay_live_router_model_cost() -> None:
 
 
 set_live_deployment_replay(_replay_live_router_model_cost)
+
+
+# Kwargs that log_retry must not copy into a retry breadcrumb. The breadcrumbs reach spend
+# logs and logging callbacks, and these carry either the request payload or router-internal
+# walk state rather than anything that identifies the failed attempt.
+RETRY_BREADCRUMB_EXCLUDED_KWARGS: Final = frozenset(("messages", "original_function", "attempted_targets"))
 
 
 class Router:
@@ -6827,18 +6834,17 @@ class Router:
 
                 return response
         except Exception as new_exception:
-            parent_otel_span = _get_parent_otel_span_from_kwargs(kwargs)
-            fallback_failure_exception_str = redact_string(str(new_exception))
+            parent_otel_span: Final = _get_parent_otel_span_from_kwargs(kwargs)
+            fallback_failure_exception_str = truncate_fallback_error_detail(redact_string(str(new_exception)))
             cooldown_info: Final = await _async_get_cooldown_deployments_with_debug_info(
                 litellm_router_instance=self,
                 parent_otel_span=parent_otel_span,
             )
             verbose_router_logger.error(
                 "litellm.router.py::async_function_with_fallbacks() - "
-                "Error occurred while trying to do fallbacks - %s\n%s\n"
+                "Error occurred while trying to do fallbacks - %s\n"
                 "Debug Information:\nCooldown Deployments=%s",
                 fallback_failure_exception_str,
-                redact_string(traceback.format_exc()),
                 cooldown_info,
             )
 
@@ -7629,7 +7635,7 @@ class Router:
                 k,
                 v,
             ) in kwargs.items():  # log everything in kwargs except the old previous_models value - prevent nesting
-                if k not in [_metadata_var, "messages", "original_function"]:
+                if k != _metadata_var and k not in RETRY_BREADCRUMB_EXCLUDED_KWARGS:
                     previous_model[k] = v
                 elif k == _metadata_var and isinstance(v, dict):
                     previous_model[_metadata_var] = {}
