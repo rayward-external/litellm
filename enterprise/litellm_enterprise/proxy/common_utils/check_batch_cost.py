@@ -899,6 +899,23 @@ class CheckBatchCost:
             function_id=str(uuid.uuid4()),
         )
 
+        # job.api_key/team_id are populated by the OpenAI-dialect /v1/batches route
+        # (managed_files.py); _build_creator_attribution_metadata resolves those columns
+        # plus key_alias/team_alias. Routes that create batches out-of-band
+        # (/v1/messages/batches) never set those columns and stash the submitting key's
+        # identity in file_object.litellm_attribution instead (see _get_job_attribution),
+        # so fill in from the stash whatever the DB-backed columns left empty.
+        metadata = await self._build_creator_attribution_metadata(job, batch_id)
+        attribution = self._get_job_attribution(job)
+        for attribution_key in (
+            "user_api_key",
+            "user_api_key_alias",
+            "user_api_key_team_id",
+            "user_api_key_end_user_id",
+        ):
+            if not metadata.get(attribution_key) and attribution.get(attribution_key):
+                metadata[attribution_key] = attribution[attribution_key]
+
         logging_obj.update_environment_variables(
             litellm_params={
                 # set the user-agent header so that S3 callback consumers can easily identify CheckBatchCost callbacks
@@ -907,7 +924,7 @@ class CheckBatchCost:
                         "user-agent": CHECK_BATCH_COST_USER_AGENT,
                     }
                 },
-                "metadata": await self._build_creator_attribution_metadata(job, batch_id),
+                "metadata": metadata,
             },
             optional_params={},
         )
