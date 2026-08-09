@@ -3,7 +3,7 @@ Unified /v1/messages endpoint - (Anthropic Spec)
 """
 
 from collections.abc import Mapping
-from typing import Final, Optional
+from typing import Final
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -74,7 +74,7 @@ def _missing_required_anthropic_field(
     *,
     server_model: object = None,
     server_max_tokens: object = None,
-) -> Optional[str]:
+) -> str | None:
     """Return the first required /v1/messages field that is absent or null.
 
     ``server_model`` / ``server_max_tokens`` carry the proxy's own defaults, and

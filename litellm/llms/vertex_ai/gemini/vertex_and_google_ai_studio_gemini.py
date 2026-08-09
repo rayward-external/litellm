@@ -816,7 +816,7 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
                 optional_params["response_schema"] = self._map_response_schema(value=schema)
 
     @staticmethod
-    def _raise_invalid_reasoning_effort(reasoning_effort: str, model: Optional[str]) -> NoReturn:
+    def _raise_invalid_reasoning_effort(reasoning_effort: str, model: str | None) -> NoReturn:
         """Reject an unsupported ``reasoning_effort`` as a client error.
 
         Both effort mappers below used to raise a bare ``ValueError``. That escapes

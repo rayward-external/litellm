@@ -5,7 +5,7 @@ import re
 import secrets
 from datetime import datetime, timezone
 from datetime import datetime as dt
-from typing import Any, Final, Literal, Optional, cast
+from typing import Any, Final, Literal, cast
 
 from pydantic import BaseModel
 
@@ -179,7 +179,7 @@ def get_spend_logs_id(call_type: str, response_obj: dict, kwargs: dict) -> str |
         # managed file ids, changing the hash and defeating dedup, so retried
         # pricing would insert distinct spend rows (codex P1 round 4).
         caller_id = cast(
-            Optional[str],
+            str | None,
             kwargs.get("litellm_call_id") or (kwargs.get("litellm_params") or {}).get("litellm_call_id"),
         )
         if call_type == "aretrieve_batch" and caller_id and caller_id.startswith(BATCH_COST_CALL_ID_PREFIX):

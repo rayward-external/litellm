@@ -26,11 +26,9 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Final,
-    List,
     Literal,
     NoReturn,
     Optional,
-    Tuple,
     TypeVar,
     Union,
     cast,
@@ -357,7 +355,7 @@ def _completion_matches_refusal_patterns(response: ModelResponse) -> bool:
     return _text_matches_refusal_patterns(content, patterns)
 
 
-def _get_refusal_fallback_patterns() -> List[str]:
+def _get_refusal_fallback_patterns() -> list[str]:
     """Parse LITELLM_REFUSAL_FALLBACK_PATTERNS into a list of regex strings.
     Empty/unset env => [] (feature inert). A non-JSON value is tolerated as a
     single pattern rather than raising."""
@@ -377,7 +375,7 @@ def _get_refusal_fallback_patterns() -> List[str]:
     return [p for p in patterns if isinstance(p, str) and p.strip()]
 
 
-def _text_matches_refusal_patterns(text: str, patterns: List[str]) -> bool:
+def _text_matches_refusal_patterns(text: str, patterns: list[str]) -> bool:
     """A malformed regex is skipped, never raised, so it can't turn a successful
     completion into a request failure."""
     for pattern in patterns:
@@ -425,19 +423,19 @@ class _RefusalStreamHold:
     sync handler re-invokes the primary without exception-type dispatch, so a
     deterministic refusal there would retry the primary in an unbounded loop."""
 
-    def __init__(self, patterns: List[str], hold_chars: int, model: str):
+    def __init__(self, patterns: list[str], hold_chars: int, model: str):
         self.patterns = patterns
         self.hold_chars = hold_chars
         self.model = model
         self.active = bool(patterns) and hold_chars > 0
-        self._held: List[Any] = []
+        self._held: list[Any] = []
         self._text = ""
         # Reasoning deltas can't contain the client-visible refusal text but must
         # still advance the hold window, otherwise a reasoning model's whole
         # thinking phase (and thus its entire response) would be buffered.
         self._reasoning_len = 0
 
-    def process(self, item: Any) -> List[Any]:
+    def process(self, item: Any) -> list[Any]:
         """Return the chunks safe to emit for this stream item (possibly []).
         Raises MidStreamFallbackError when the held text matches a pattern."""
         if not self.active:
@@ -455,19 +453,19 @@ class _RefusalStreamHold:
             return self._release()
         return []
 
-    def flush(self) -> List[Any]:
+    def flush(self) -> list[Any]:
         """End of stream: a short completion held to the end never matched."""
         if not self.active:
             return []
         return self._release()
 
-    def _release(self) -> List[Any]:
+    def _release(self) -> list[Any]:
         self.active = False
         held, self._held = self._held, []
         return held
 
     @staticmethod
-    def _delta_state(item: Any) -> Tuple[str, int, bool]:
+    def _delta_state(item: Any) -> tuple[str, int, bool]:
         """(matchable text, reasoning char count, saw tool/function call) for one
         stream item. delta.refusal (OpenAI structured-output refusals) counts as
         matchable text alongside delta.content."""

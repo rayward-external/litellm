@@ -5,7 +5,6 @@ Handles cost tracking and logging for OpenAI passthrough endpoints, specifically
 """
 
 from datetime import datetime
-from typing import List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 import httpx
@@ -89,7 +88,7 @@ def _is_classic_azure_deployment_operation(path: str, operation: str) -> bool:
     return _AZURE_DEPLOYMENTS_PATH_MARKER in path and path.rstrip("/").endswith("/" + operation)
 
 
-def _extract_azure_deployment_name(path: str) -> Optional[str]:
+def _extract_azure_deployment_name(path: str) -> str | None:
     """Return `{deployment-id}` from `/openai/deployments/{deployment-id}/...`.
 
     On the classic Azure surface the model lives *only* in the URL: the request
@@ -196,7 +195,7 @@ def _is_openai_compatible_host(hostname: str | None) -> bool:
     return _hostname_matches(hostname, _OPENAI_HOSTNAMES) or _hostname_matches(hostname, _AZURE_OPENAI_HOSTNAMES)
 
 
-def _in_openai_scope(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
+def _in_openai_scope(url_route: str, custom_llm_provider: str | None = None) -> bool:
     """Scope gate shared by every `is_openai_*_route` helper.
 
     Each helper used to gate on `_is_openai_compatible_host`, a hardcoded tuple
@@ -223,7 +222,7 @@ def _build_response_and_cost_for_surface(
     handler_instance: "OpenAIPassthroughLoggingHandler",
     model: str,
     cost_model: str,
-    custom_llm_provider: Optional[str],
+    custom_llm_provider: str | None,
     httpx_response: httpx.Response,
     response_body: dict,
     request_body: dict,
@@ -355,7 +354,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         return OpenAIConfig()
 
     @staticmethod
-    def is_openai_chat_completions_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
+    def is_openai_chat_completions_route(url_route: str, custom_llm_provider: str | None = None) -> bool:
         """Check if the URL route is an OpenAI chat completions endpoint.
 
         Accepts both the OpenAI-v1 shape and the classic Azure OpenAI
@@ -367,7 +366,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         return _in_openai_scope(url_route, custom_llm_provider) and _is_chat_completions_path(parsed_url.path)
 
     @staticmethod
-    def is_openai_image_generation_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
+    def is_openai_image_generation_route(url_route: str, custom_llm_provider: str | None = None) -> bool:
         """Check if the URL route is an OpenAI image generation endpoint.
 
         Accepts both the OpenAI-v1 shape and the classic Azure OpenAI
@@ -379,7 +378,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         return _in_openai_scope(url_route, custom_llm_provider) and _is_image_generation_path(parsed_url.path)
 
     @staticmethod
-    def is_openai_image_editing_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
+    def is_openai_image_editing_route(url_route: str, custom_llm_provider: str | None = None) -> bool:
         """Check if the URL route is an OpenAI image editing endpoint.
 
         Accepts both the OpenAI-v1 shape and the classic Azure OpenAI
@@ -391,7 +390,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         return _in_openai_scope(url_route, custom_llm_provider) and _is_image_editing_path(parsed_url.path)
 
     @staticmethod
-    def is_openai_responses_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
+    def is_openai_responses_route(url_route: str, custom_llm_provider: str | None = None) -> bool:
         """Check if the URL route is an OpenAI responses API endpoint.
 
         Segment-exact — see `_is_responses_path`.
@@ -402,7 +401,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         return _in_openai_scope(url_route, custom_llm_provider) and _is_responses_path(parsed_url.path)
 
     @staticmethod
-    def is_openai_responses_item_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
+    def is_openai_responses_item_route(url_route: str, custom_llm_provider: str | None = None) -> bool:
         """Responses ITEM routes (`/v1/responses/{id}`, `.../cancel`, ...).
 
         These echo the original usage block, so the success dispatch must keep
@@ -415,7 +414,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         return _in_openai_scope(url_route, custom_llm_provider) and _is_responses_item_path(parsed_url.path)
 
     @staticmethod
-    def is_openai_embeddings_route(url_route: str, custom_llm_provider: Optional[str] = None) -> bool:
+    def is_openai_embeddings_route(url_route: str, custom_llm_provider: str | None = None) -> bool:
         """Check if the URL route is an OpenAI embeddings endpoint.
 
         Matches both the OpenAI-v1 surface (`/v1/embeddings`, which is also
@@ -550,7 +549,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         model: str,
         response_body: dict,
         custom_llm_provider: str,
-    ) -> Tuple[EmbeddingResponse, float]:
+    ) -> tuple[EmbeddingResponse, float]:
         """Build an EmbeddingResponse from an embeddings payload and cost it.
 
         Embeddings responses are plain JSON (`data: [...]` plus a standard
@@ -593,7 +592,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         end_time: datetime,
         cache_hit: bool,
         request_body: dict,
-        custom_llm_provider: Optional[str] = None,
+        custom_llm_provider: str | None = None,
         **kwargs,
     ) -> PassThroughEndpointLoggingTypedDict:
         """
@@ -618,7 +617,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         # here, and treating "not POST-shaped" as "not POST" would reject every
         # request in that situation — the exact accidental-enable failure the
         # admission guard's _is_explicitly_true exists to prevent.
-        request_method: Optional[str] = request_method_raw if isinstance(request_method_raw, str) else None
+        request_method: str | None = request_method_raw if isinstance(request_method_raw, str) else None
         if request_method is not None and request_method.upper() != "POST":
             return {
                 "result": None,
@@ -839,8 +838,8 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
     @staticmethod
     def _extract_responses_api_completed_response(
-        all_chunks: List[str],
-    ) -> Optional[dict]:
+        all_chunks: list[str],
+    ) -> dict | None:
         """Return the final `response` object of a Responses-API event stream.
 
         A streamed Responses call does not emit chat-completion chunks — it
@@ -906,7 +905,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             )
             cost_model = normalize_fireworks_model_id(model) or model
 
-            complete_response: Optional[Union[ModelResponse, TextCompletionResponse, ResponsesAPIResponse]] = None
+            complete_response: ModelResponse | TextCompletionResponse | ResponsesAPIResponse | None = None
             responses_api_completed_response = (
                 OpenAIPassthroughLoggingHandler._extract_responses_api_completed_response(all_chunks=all_chunks)
             )

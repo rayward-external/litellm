@@ -9,7 +9,7 @@ Use litellm with Anthropic SDK, Vertex AI SDK, Cohere SDK, etc.
 import json
 import os
 import re
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket
@@ -123,7 +123,7 @@ async def _apply_anthropic_prompt_cache_control_to_request(
         )
 
 
-def _resolve_anthropic_prompt_cache_ttl(headers: dict) -> Optional[str]:
+def _resolve_anthropic_prompt_cache_ttl(headers: dict) -> str | None:
     lower_headers = {str(k).lower(): v for k, v in headers.items()}
     raw_value = lower_headers.get(ANTHROPIC_PROMPT_CACHE_TTL_HEADER)
     if raw_value is None:
@@ -137,7 +137,7 @@ def _resolve_anthropic_prompt_cache_ttl(headers: dict) -> Optional[str]:
 def _normalize_anthropic_prompt_cache_ttl(
     value: Any,
     workload: Any,
-) -> Optional[str]:
+) -> str | None:
     normalized = str(value or "").strip().lower()
     if normalized in {"", "off", "false", "none", "disabled"}:
         return None

@@ -16,7 +16,7 @@ request as authorized.
 """
 
 import os
-from typing import Iterable
+from collections.abc import Iterable
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
