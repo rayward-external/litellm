@@ -4,7 +4,7 @@ Polls LiteLLM_ManagedObjectTable to check if the batch job is complete, and if t
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional
 
 from litellm._logging import verbose_proxy_logger
 from litellm._uuid import uuid
@@ -54,7 +54,7 @@ class CheckBatchCost:
         self._has_batch_processed_column: bool = True
 
     @staticmethod
-    def _get_job_file_object(job: Any) -> Dict[str, Any]:
+    def _get_job_file_object(job: Any) -> dict[str, Any]:
         """The job row's file_object as a dict. The hook write-path stores it
         as a JSON string, so tolerate one level of string encoding; anything
         unparseable returns {}."""
@@ -69,7 +69,7 @@ class CheckBatchCost:
         return file_object if isinstance(file_object, dict) else {}
 
     @classmethod
-    def _get_job_attribution(cls, job: Any) -> Dict[str, Any]:
+    def _get_job_attribution(cls, job: Any) -> dict[str, Any]:
         """Attribution stashed in file_object.litellm_attribution by routes
         that register batches directly (the /v1/messages/batches route) —
         user_api_key (hash), user_api_key_team_id, user_api_key_end_user_id,
@@ -128,7 +128,7 @@ class CheckBatchCost:
             )
 
     @classmethod
-    def _augment_update_with_owner_key(cls, job: Any, update_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _augment_update_with_owner_key(cls, job: Any, update_data: dict[str, Any]) -> dict[str, Any]:
         """Self-heal the owner_key column (which backs the owner-scoped
         /v1/messages/batches listing) in the SAME finalization write — no extra
         query. A row a pre-#335 writer created before the migration backfill, or
@@ -149,7 +149,7 @@ class CheckBatchCost:
             return update_data
         return {**update_data, "owner_key": key_hash}
 
-    async def _finalize_job(self, job: Any, update_data: Dict[str, Any]) -> bool:
+    async def _finalize_job(self, job: Any, update_data: dict[str, Any]) -> bool:
         """Write the terminal row state, fenced to the claim this worker
         holds: a slow ex-owner whose claim was reclaimed must not overwrite
         the new owner's finalization (codex P2 round 3). Legacy schemas
@@ -325,7 +325,7 @@ class CheckBatchCost:
         callers on their own batch after billing (codex P2). spend_recorded
         stamps the row-local dedup marker (also preserved from the stash) so
         finalization never erases evidence that billing ran."""
-        finalized: Dict[str, Any] = json.loads(response.model_dump_json())
+        finalized: dict[str, Any] = json.loads(response.model_dump_json())
         stash = CheckBatchCost._get_job_file_object(job)
         for preserved_key in (
             "litellm_attribution",
@@ -352,11 +352,15 @@ class CheckBatchCost:
             finalized[SPEND_RECORDED_MARKER_KEY] = True
         return json.dumps(finalized)
 
-    async def _get_user_info(self, batch_id, user_id) -> dict:
+    async def _get_user_info(self, batch_id: str, user_id: str | None) -> dict[str, Any]:
         """
         Look up user email and key alias by user_id for enriching the S3 callback metadata.
         Returns a dict with user_api_key_user_email and user_api_key_alias (both may be None).
+        Returns an empty dict when user_id is None: batches created by a team or service
+        account key carry no user id, and find_unique(where={"user_id": None}) raises.
         """
+        if not user_id:
+            return {}
         try:
             user_row = await self.prisma_client.db.litellm_usertable.find_unique(
                 where={"user_id": user_id}
@@ -372,6 +376,66 @@ class CheckBatchCost:
                 f"CheckBatchCost: could not look up user {user_id} for batch {batch_id}: {e}"
             )
             return {}
+
+    async def _get_key_alias(self, batch_id: str, api_key: str | None) -> str | None:
+        """Resolve the creating virtual key's alias from its hashed token."""
+        if not api_key:
+            return None
+        try:
+            key_row = await self.prisma_client.db.litellm_verificationtoken.find_unique(
+                where={"token": api_key}
+            )
+            return getattr(key_row, "key_alias", None) if key_row is not None else None
+        except Exception as e:
+            verbose_proxy_logger.error(f"CheckBatchCost: could not look up key alias for batch {batch_id}: {e}")
+            return None
+
+    async def _get_team_alias(self, team_id: str | None) -> str | None:
+        """Resolve a team's alias from its id."""
+        if not team_id:
+            return None
+        try:
+            team_row = await self.prisma_client.db.litellm_teamtable.find_unique(
+                where={"team_id": team_id}
+            )
+            return getattr(team_row, "team_alias", None) if team_row is not None else None
+        except Exception as e:
+            verbose_proxy_logger.error(f"CheckBatchCost: could not look up team alias for team {team_id}: {e}")
+            return None
+
+    async def _build_creator_attribution_metadata(
+        self, job: "LiteLLM_ManagedObjectTable", batch_id: str
+    ) -> dict[str, Any]:
+        """
+        Rebuild the spend-tracking metadata for the key, team, and tags that created the
+        batch so the batch-cost spend log is attributed the same way a non-batch request
+        is. Rows created before api_key and request_tags were persisted carry only
+        created_by and team_id, and fall back to those. A named creating key owns
+        user_api_key_alias; when it has no alias, or the key has since been rotated or
+        deleted, the field keeps the creating user's alias that _get_user_info filled in,
+        because a resolvable name is more useful on the spend row than a null.
+        """
+        api_key = getattr(job, "api_key", None)
+        team_id = getattr(job, "team_id", None)
+        request_tags = getattr(job, "request_tags", None)
+
+        metadata: dict[str, Any] = {
+            "user_api_key_user_id": job.created_by,
+            "user_api_key": api_key,
+            "user_api_key_team_id": team_id,
+            **(await self._get_user_info(batch_id, job.created_by)),
+        }
+
+        key_alias = await self._get_key_alias(batch_id, api_key)
+        if key_alias is not None:
+            metadata["user_api_key_alias"] = key_alias
+        team_alias = await self._get_team_alias(team_id)
+        if team_alias is not None:
+            metadata["user_api_key_team_alias"] = team_alias
+        if isinstance(request_tags, list) and request_tags:
+            metadata["tags"] = [tag for tag in request_tags if isinstance(tag, str)]
+
+        return metadata
 
     async def _cleanup_stale_managed_objects(self) -> None:
         """
@@ -439,7 +503,7 @@ class CheckBatchCost:
         self,
         job: "LiteLLM_ManagedObjectTable",
         prom_logger: Optional["PrometheusLogger"],
-    ) -> Optional[Tuple[str, str]]:
+    ) -> tuple[str, str] | None:
         """
         Resolve (model_id, batch_id) for a managed-object row, where model_id is a router
         deployment id and batch_id is the raw provider batch id.
@@ -518,7 +582,7 @@ class CheckBatchCost:
         prom_logger: Optional["PrometheusLogger"],
         llm_provider: str,
         bare_model_name: str,
-    ) -> Optional[Tuple[str, str]]:
+    ) -> tuple[str, str] | None:
         deployment_id = self._get_deployment_id_for_bare_model(bare_model_name, llm_provider)
         if deployment_id is None:
             verbose_proxy_logger.info(
@@ -532,7 +596,7 @@ class CheckBatchCost:
 
     def _get_deployment_id_for_bare_model(
         self, bare_model_name: str, llm_provider: str
-    ) -> Optional[str]:
+    ) -> str | None:
         model_group = self.llm_router.resolve_model_name_from_model_id(bare_model_name)
         deployment_id = (
             self._get_deployment_id_for_provider(model_group, llm_provider) if model_group else None
@@ -546,7 +610,7 @@ class CheckBatchCost:
 
     def _get_deployment_id_from_matching_deployments(
         self, bare_model_name: str, llm_provider: str
-    ) -> Optional[str]:
+    ) -> str | None:
         from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 
         for deployment in self.llm_router.get_model_list(model_name=None) or []:
@@ -585,7 +649,7 @@ class CheckBatchCost:
 
     def _get_deployment_id_for_provider(
         self, model_group: str, llm_provider: str
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Returns the first deployment id for `model_group` whose provider is `llm_provider`,
         skipping deployments from other providers that happen to share the model group name.
@@ -612,7 +676,7 @@ class CheckBatchCost:
         cls,
         job: "LiteLLM_ManagedObjectTable",
         deployment_info: "Deployment",
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Public model group name to encode as ``target_model_names`` on unified output file ids.
 
@@ -630,7 +694,7 @@ class CheckBatchCost:
         )
 
     @staticmethod
-    def _get_input_file_id(job: "LiteLLM_ManagedObjectTable") -> Optional[str]:
+    def _get_input_file_id(job: "LiteLLM_ManagedObjectTable") -> str | None:
         import json
 
         from litellm.types.utils import LiteLLMBatch
@@ -655,7 +719,7 @@ class CheckBatchCost:
         model_id: str,
         batch_id: str,
         prom_logger: Optional["PrometheusLogger"],
-    ) -> Optional[Tuple[Optional[str], Optional[str]]]:
+    ) -> tuple[str | None, str | None] | None:
         """
         Fetch a completed batch's results, compute cost/usage, and emit the
         aretrieve_batch spend log. Returns (model_name, llm_provider) on
@@ -835,26 +899,21 @@ class CheckBatchCost:
             function_id=str(uuid.uuid4()),
         )
 
-        creator_user_id = job.created_by
-        user_info = await self._get_user_info(batch_id, job.created_by)
-
-        # The table only carries created_by/team_id, so key-level (and
-        # end-user) spend attribution needs the submitting key's identity.
-        # Routes that create batches out-of-band (/v1/messages/batches) stash
-        # it in file_object.litellm_attribution; rows without the stash keep
-        # the previous user-only attribution. team_id threads through in
-        # either case (it was silently dropped before, so batch spend never
-        # reached team running/daily totals).
+        # job.api_key/team_id are populated by the OpenAI-dialect /v1/batches route
+        # (managed_files.py); _build_creator_attribution_metadata resolves those columns
+        # plus key_alias/team_alias. Routes that create batches out-of-band
+        # (/v1/messages/batches) never set those columns and stash the submitting key's
+        # identity in file_object.litellm_attribution instead (see _get_job_attribution),
+        # so fill in from the stash whatever the DB-backed columns left empty.
+        metadata = await self._build_creator_attribution_metadata(job, batch_id)
         attribution = self._get_job_attribution(job)
-        metadata: Dict[str, Any] = {
-            "user_api_key_user_id": creator_user_id,
-            **user_info,
-        }
-        job_team_id = getattr(job, "team_id", None) or attribution.get("user_api_key_team_id")
-        if job_team_id:
-            metadata["user_api_key_team_id"] = job_team_id
-        for attribution_key in ("user_api_key", "user_api_key_alias", "user_api_key_end_user_id"):
-            if attribution.get(attribution_key):
+        for attribution_key in (
+            "user_api_key",
+            "user_api_key_alias",
+            "user_api_key_team_id",
+            "user_api_key_end_user_id",
+        ):
+            if not metadata.get(attribution_key) and attribution.get(attribution_key):
                 metadata[attribution_key] = attribution[attribution_key]
 
         logging_obj.update_environment_variables(
@@ -865,11 +924,7 @@ class CheckBatchCost:
                         "user-agent": CHECK_BATCH_COST_USER_AGENT,
                     }
                 },
-                "metadata": {
-                    "user_api_key_user_id": creator_user_id,
-                    "user_api_key_team_id": getattr(job, "team_id", None),
-                    **user_info,
-                },
+                "metadata": metadata,
             },
             optional_params={},
         )
@@ -911,7 +966,7 @@ class CheckBatchCost:
             )
             prom_logger = None
 
-        processed_models: List[Tuple[Optional[str], Optional[str]]] = []
+        processed_models: list[tuple[str | None, str | None]] = []
 
         try:
             # Reclaim FIRST: cleanup running first would stale_expire an
@@ -1004,7 +1059,7 @@ class CheckBatchCost:
             # Finalizing them without pricing hands out free tokens via
             # cancel-after-partial-processing (codex P1); salvage-price when
             # an output object was predicted for the job.
-            salvaged_output_file_id: Optional[str] = None
+            salvaged_output_file_id: str | None = None
             if response.status in ("failed", "expired", "cancelled") and response.output_file_id is None:
                 response_metadata = getattr(response, "metadata", None)
                 if isinstance(response_metadata, dict) and response_metadata.get("output_file_uri"):

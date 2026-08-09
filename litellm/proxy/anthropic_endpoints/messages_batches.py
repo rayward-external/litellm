@@ -66,7 +66,8 @@ import json
 import os
 import re
 import uuid
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from collections.abc import Mapping
+from typing import Any
 from urllib.parse import quote as _url_quote
 
 import httpx
@@ -122,7 +123,7 @@ def _get_llm_router():
     return llm_router
 
 
-def _find_bedrock_batch_deployment(model: str) -> Optional[Dict[str, Any]]:
+def _find_bedrock_batch_deployment(model: str) -> dict[str, Any] | None:
     """Return the router deployment dict backing Bedrock batch for `model`.
 
     Accepts either the bare client-facing name ("claude-opus-4-6") or the
@@ -143,7 +144,7 @@ def _find_bedrock_batch_deployment(model: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _any_bedrock_batch_deployment() -> Optional[Dict[str, Any]]:
+def _any_bedrock_batch_deployment() -> dict[str, Any] | None:
     """First Bedrock batch deployment — supplies region/account/bucket for
     id-only operations (retrieve/results/cancel). Assumes one AWS account +
     region for all Bedrock batch deployments (true for this stack; documented)."""
@@ -158,7 +159,7 @@ def _any_bedrock_batch_deployment() -> Optional[Dict[str, Any]]:
     return None
 
 
-def _bedrock_context(deployment: Dict[str, Any]) -> Dict[str, str]:
+def _bedrock_context(deployment: dict[str, Any]) -> dict[str, str]:
     params = deployment.get("litellm_params") or {}
     role_arn = params.get("aws_batch_role_arn") or os.getenv("AWS_BATCH_ROLE_ARN") or ""
     account_match = re.search(r"\Aarn:aws:iam::(\d+):role/", role_arn)
@@ -193,11 +194,11 @@ _aws = BaseAWSLLM()
 def _sign(
     method: str,
     url: str,
-    body: Optional[str],
+    body: str | None,
     service: str,
-    aws_params: Dict[str, Any],
+    aws_params: dict[str, Any],
     region: str,
-) -> Tuple[Dict[str, str], Optional[bytes]]:
+) -> tuple[dict[str, str], bytes | None]:
     from botocore.auth import SigV4Auth
     from botocore.awsrequest import AWSRequest
 
@@ -224,9 +225,9 @@ def _sign(
 async def _aws_call(
     method: str,
     url: str,
-    body: Optional[str],
+    body: str | None,
     service: str,
-    aws_params: Dict[str, Any],
+    aws_params: dict[str, Any],
     region: str,
 ) -> httpx.Response:
     headers, payload = _sign(method, url, body, service, aws_params, region)
@@ -261,7 +262,7 @@ def _is_proxy_admin(user_api_key_dict: UserAPIKeyAuth) -> bool:
     return str(getattr(role, "value", role) or "").startswith("proxy_admin")
 
 
-def _split_bedrock_batch_id(batch_id: str) -> Tuple[str, Optional[str]]:
+def _split_bedrock_batch_id(batch_id: str) -> tuple[str, str | None]:
     """msgbatch_bedrock_<jobid>[_<owner8>] -> (jobid, owner8|None).
 
     Ids minted before owner tags existed have no suffix (jobid itself is
@@ -322,7 +323,7 @@ async def _check_bedrock_batch_owner(batch_id: str, user_api_key_dict: UserAPIKe
     _check_bedrock_batch_owner_tag(batch_id, user_api_key_dict)
 
 
-async def _check_model_access(models: List[str], user_api_key_dict: UserAPIKeyAuth) -> Optional[JSONResponse]:
+async def _check_model_access(models: list[str], user_api_key_dict: UserAPIKeyAuth) -> JSONResponse | None:
     """Enforce the key's model permissions on batch creation (the request
     carries models only in requests[].params.model, which the generic proxy
     auth never inspects). The "<model>-batch" alias also satisfies the check
@@ -350,7 +351,7 @@ async def _check_model_access(models: List[str], user_api_key_dict: UserAPIKeyAu
     return None
 
 
-def _upstream_headers(request: Request) -> Dict[str, str]:
+def _upstream_headers(request: Request) -> dict[str, str]:
     from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
         passthrough_endpoint_router,
     )
@@ -383,7 +384,7 @@ async def _forward_upstream(
     request: Request,
     method: str,
     path: str,
-    body: Optional[bytes] = None,
+    body: bytes | None = None,
 ) -> Response:
     url = f"{_upstream_base()}{path}"
     client = get_async_httpx_client(llm_provider=httpxSpecialProvider.PassThroughEndpoint, params={"timeout": 600.0})
@@ -401,7 +402,7 @@ async def _forward_upstream(
             payload = json.loads(content)
             base = _results_base_url(request)
 
-            def _rewrite(obj: Dict[str, Any]) -> None:
+            def _rewrite(obj: dict[str, Any]) -> None:
                 results_url = obj.get("results_url")
                 batch_id = obj.get("id")
                 if results_url and batch_id:
@@ -443,7 +444,7 @@ def _anthropic_model_is_known(model: str) -> bool:
         return False
 
 
-def _translate_reasoning_effort_params(params: Optional[Mapping[str, Any]]) -> Optional[Mapping[str, Any]]:
+def _translate_reasoning_effort_params(params: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
     """Translate a single batch request's ``params.reasoning_effort`` into the
     model-appropriate native Anthropic thinking shape BEFORE the params are
     forwarded upstream (or staged for Bedrock).
@@ -577,7 +578,7 @@ def _unified_batch_object_id(router_model_id: str, provider_batch_id: str) -> st
     return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
 
 
-def _find_anthropic_deployment_model_id(model: str) -> Optional[str]:
+def _find_anthropic_deployment_model_id(model: str) -> str | None:
     """Deployment id (model_info.id) CheckBatchCost routes its retrieve through.
 
     Preference order:
@@ -593,7 +594,7 @@ def _find_anthropic_deployment_model_id(model: str) -> Optional[str]:
     ANTHROPIC_BATCHES_REQUIRE_BILLING with a row that never bills (codex P1).
     """
     llm_router = _get_llm_router()
-    fallback_any: Optional[str] = None
+    fallback_any: str | None = None
     for deployment in (llm_router.get_model_list() or []) if llm_router is not None else []:
         litellm_params = deployment.get("litellm_params") or {}
         # Both provider spellings occur in the wild: model: "anthropic/<m>",
@@ -613,7 +614,7 @@ def _find_anthropic_deployment_model_id(model: str) -> Optional[str]:
     return fallback_any
 
 
-def _billing_preflight(router_model_id: Optional[str]) -> Optional[JSONResponse]:
+def _billing_preflight(router_model_id: str | None) -> JSONResponse | None:
     """Fail-closed check BEFORE any provider-side job is created: with
     ANTHROPIC_BATCHES_REQUIRE_BILLING=true, refusing up-front closes most of
     the created-but-unbillable window that post-create cancellation can only
@@ -635,7 +636,7 @@ def _billing_preflight(router_model_id: Optional[str]) -> Optional[JSONResponse]
 async def _record_batch_for_billing(
     *,
     provider_batch_id: str,
-    router_model_id: Optional[str],
+    router_model_id: str | None,
     client_batch_id: str,
     model_name: str,
     total_records: int,
@@ -731,7 +732,7 @@ async def _record_batch_for_billing(
         return False
 
 
-async def _get_billing_row(batch_id: str, *, raise_on_error: bool = False) -> Optional[Any]:
+async def _get_billing_row(batch_id: str, *, raise_on_error: bool = False) -> Any | None:
     """The ManagedObjectTable row registered for `batch_id` (Bedrock rows key
     on the jobArn — matched via endswith on the job id — upstream rows on the
     raw msgbatch id). None when the DB is absent or no row exists; DB errors
@@ -765,7 +766,7 @@ async def _get_billing_row(batch_id: str, *, raise_on_error: bool = False) -> Op
         return None
 
 
-def _row_attribution(row: Any) -> Dict[str, Any]:
+def _row_attribution(row: Any) -> dict[str, Any]:
     file_object = getattr(row, "file_object", None)
     for _ in range(2):
         if not isinstance(file_object, str):
@@ -821,7 +822,7 @@ async def _check_upstream_batch_owner(batch_id: str, user_api_key_dict: UserAPIK
 _FINALIZED_ROW_STATUSES = {"complete", "completed", "failed", "expired", "cancelled", "stale_expired"}
 
 
-async def _unbilled_delete_block(batch_id: str, user_api_key_dict: UserAPIKeyAuth) -> Optional[JSONResponse]:
+async def _unbilled_delete_block(batch_id: str, user_api_key_dict: UserAPIKeyAuth) -> JSONResponse | None:
     """Refuse to delete a batch whose cost has not been finalized: deleting
     removes the provider-side output the poller prices from, so an early
     delete would erase the evidence and the spend (codex P1).
@@ -855,11 +856,11 @@ async def _unbilled_delete_block(batch_id: str, user_api_key_dict: UserAPIKeyAut
 # ── Bedrock <-> MessageBatch mapping ─────────────────────────────────────────
 
 
-def _job_arn(job_id: str, ctx: Dict[str, str]) -> str:
+def _job_arn(job_id: str, ctx: dict[str, str]) -> str:
     return f"arn:aws:bedrock:{ctx['region']}:{ctx['account_id']}:model-invocation-job/{job_id}"
 
 
-def _job_url(job_id: str, ctx: Dict[str, str], suffix: str = "") -> str:
+def _job_url(job_id: str, ctx: dict[str, str], suffix: str = "") -> str:
     quoted = httpx.QueryParams()  # noqa: F841 — keep httpx import obvious
     from urllib.parse import quote
 
@@ -872,7 +873,7 @@ def _job_url(job_id: str, ctx: Dict[str, str], suffix: str = "") -> str:
 _ENDED_STATUSES = {"Completed", "PartiallyCompleted", "Failed", "Stopped", "Expired"}
 
 
-def _map_job_to_message_batch(job: Dict[str, Any], batch_id: str, results_base_url: str) -> Dict[str, Any]:
+def _map_job_to_message_batch(job: dict[str, Any], batch_id: str, results_base_url: str) -> dict[str, Any]:
     status = job.get("status", "Submitted")
     total = int(job.get("totalRecordCount") or 0)
     processed = int(job.get("processedRecordCount") or 0)
@@ -933,7 +934,7 @@ def _map_job_to_message_batch(job: Dict[str, Any], batch_id: str, results_base_u
     }
 
 
-def _bedrock_error_to_anthropic(error: Dict[str, Any]) -> Dict[str, Any]:
+def _bedrock_error_to_anthropic(error: dict[str, Any]) -> dict[str, Any]:
     code = error.get("errorCode")
     message = str(error.get("errorMessage") or "batch record failed")
     if code in (400, "400"):
@@ -1000,7 +1001,7 @@ async def create_message_batch(
             # cleanup, no unbillable-job window.
             return refused
         response = await _forward_upstream(request, "POST", "/v1/messages/batches", json.dumps(body).encode())
-        upstream_batch_id: Optional[str] = None
+        upstream_batch_id: str | None = None
         upstream_total = len(requests_list)
         if response.status_code == 200:
             try:
@@ -1052,8 +1053,8 @@ async def create_message_batch(
         return response
 
     # ── Bedrock leg ──
-    custom_ids: List[str] = []
-    records: List[str] = []
+    custom_ids: list[str] = []
+    records: list[str] = []
     for item in requests_list:
         custom_id = str(item.get("custom_id", ""))
         params = dict(item.get("params") or {})
@@ -1175,7 +1176,7 @@ def _results_base_url(request: Request) -> str:
     return f"{request.url.scheme}://{request.url.netloc}"
 
 
-async def _get_bedrock_job(batch_id: str) -> Tuple[Dict[str, Any], Dict[str, str]]:
+async def _get_bedrock_job(batch_id: str) -> tuple[dict[str, Any], dict[str, str]]:
     deployment = _any_bedrock_batch_deployment()
     if deployment is None:
         raise HTTPException(
@@ -1247,7 +1248,7 @@ async def message_batch_results(
     input_basename = input_key.rsplit("/", 1)[-1]
     output_key = f"{output_prefix}{job_id}/{input_basename}.out"
 
-    async def _s3_get(key: str) -> Optional[str]:
+    async def _s3_get(key: str) -> str | None:
         url = f"https://{ctx['bucket']}.s3.{ctx['region']}.amazonaws.com/{key}"
         response = await _aws_call("GET", url, None, "s3", ctx["params"], ctx["region"])
         return response.text if response.status_code == 200 else None
@@ -1265,7 +1266,7 @@ async def message_batch_results(
     if input_text is None and status != "Completed":
         return _anthropic_error(502, "api_error", "batch input is not readable from S3")
 
-    seen: Dict[str, Dict[str, Any]] = {}
+    seen: dict[str, dict[str, Any]] = {}
     if output_text:
         for line in output_text.splitlines():
             if not line.strip():
@@ -1295,7 +1296,7 @@ async def message_batch_results(
             },
         },
     )
-    all_ids: List[str] = []
+    all_ids: list[str] = []
     if input_text:
         for line in input_text.splitlines():
             if line.strip():
@@ -1386,7 +1387,7 @@ def _row_file_object(row: object) -> dict[str, Any]:
     return file_object if isinstance(file_object, dict) else {}
 
 
-def _client_batch_id(row: object) -> Optional[str]:
+def _client_batch_id(row: object) -> str | None:
     """The CLIENT-facing message-batch id for a row THIS route created, or None
     if the row isn't ours (skip it).
 
@@ -1423,7 +1424,7 @@ def _client_batch_id(row: object) -> Optional[str]:
     return None
 
 
-def _to_rfc3339(value: object) -> Optional[str]:
+def _to_rfc3339(value: object) -> str | None:
     """Normalize a stored timestamp to RFC3339. Accepts an RFC3339 string (the
     pre-finalization stash writes created_at that way) OR a Unix epoch int/float
     (LiteLLMBatch.created_at / .expires_at, written when CheckBatchCost finalizes
@@ -1503,7 +1504,7 @@ def _render_ledger_batch(row: object, results_base_url: str, client_id: str) -> 
     }
 
 
-def _list_query_get(request: Request, key: str) -> Optional[str]:
+def _list_query_get(request: Request, key: str) -> str | None:
     value = request.query_params.get(key)
     return value if value else None
 
@@ -1556,7 +1557,7 @@ def _keyset_seek_predicate(seek: tuple[Any, Any], op: str) -> dict[str, Any]:
     }
 
 
-async def _cursor_seek_point(cursor_id: str, user_api_key_dict: UserAPIKeyAuth) -> Optional[tuple[Any, Any]]:
+async def _cursor_seek_point(cursor_id: str, user_api_key_dict: UserAPIKeyAuth) -> tuple[Any, Any] | None:
     """Resolve a client-facing cursor id to its (created_at, unified_object_id)
     keyset point, scoped to the caller's ownership. Inverts the id the same way
     _get_billing_row does (Bedrock ids match on the jobArn suffix, upstream ids
@@ -1586,7 +1587,7 @@ async def _fetch_legacy_owner_batches(
     user_api_key_dict: UserAPIKeyAuth,
     results_base_url: str,
     *,
-    seek: Optional[tuple[Any, Any]],
+    seek: tuple[Any, Any] | None,
     op: str,
     order_dir: str,
 ) -> list[tuple[Any, Any, dict[str, Any]]]:
@@ -1665,7 +1666,7 @@ async def _fetch_owner_page(
     results_base_url: str,
     *,
     limit: int,
-    seek: Optional[tuple[Any, Any]],
+    seek: tuple[Any, Any] | None,
     forward: bool,
 ) -> tuple[list[dict[str, Any]], bool]:
     """One keyset page of the caller's owned message batches, newest-first.
@@ -1753,7 +1754,7 @@ async def _list_owner_scoped_batches(request: Request, user_api_key_dict: UserAP
     forward = before_id is None  # after_id / no-cursor page toward OLDER rows
 
     try:
-        seek: Optional[tuple[Any, Any]] = None
+        seek: tuple[Any, Any] | None = None
         if cursor_id is not None:
             seek = await _cursor_seek_point(cursor_id, user_api_key_dict)
             if seek is None:

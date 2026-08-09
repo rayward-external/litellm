@@ -8,7 +8,7 @@ from base64 import b64encode
 from collections.abc import AsyncGenerator, Mapping
 from datetime import datetime
 from itertools import groupby
-from typing import Any, Optional, cast
+from typing import Any, cast
 from urllib.parse import urlencode, urlparse
 
 import httpx
@@ -349,7 +349,7 @@ class HttpPassThroughEndpointHelpers(BasePassthroughUtils):
         return return_headers
 
     @staticmethod
-    def get_endpoint_type(url: str, custom_llm_provider: Optional[str] = None) -> EndpointType:
+    def get_endpoint_type(url: str, custom_llm_provider: str | None = None) -> EndpointType:
         parsed_url = urlparse(url)
         if (
             ("generateContent") in url

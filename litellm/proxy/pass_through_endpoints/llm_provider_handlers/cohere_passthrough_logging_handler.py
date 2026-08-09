@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import Optional
 
 import httpx
 
@@ -77,7 +76,7 @@ class CoherePassthroughLoggingHandler(BasePassthroughLoggingHandler):
         return complete_streaming_response
 
     @staticmethod
-    def _extract_sse_data_payload(line: str) -> Optional[str]:
+    def _extract_sse_data_payload(line: str) -> str | None:
         """Return the JSON payload of an SSE `data:` line, else None.
 
         Non-`data:` framing lines (`event: ...`, `id: ...`, `:` comments) and
