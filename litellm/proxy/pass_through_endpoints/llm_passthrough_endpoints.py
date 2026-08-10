@@ -62,9 +62,10 @@ from .passthrough_admission import (
 )
 from .passthrough_endpoint_router import PassthroughEndpointRouter
 
-vertex_llm_base = VertexBase()
-router = APIRouter()
-default_vertex_config = None
+vertex_llm_base: Final = VertexBase()
+router: Final[APIRouter] = APIRouter()
+openai_passthrough_router: Final[APIRouter] = APIRouter()
+default_vertex_config: Final = None
 
 passthrough_endpoint_router = PassthroughEndpointRouter()
 
@@ -2051,7 +2052,7 @@ async def vertex_proxy_route(
     )
 
 
-@router.api_route(
+@openai_passthrough_router.api_route(
     "/openai_passthrough/{endpoint:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     tags=["OpenAI Pass-through", "pass-through"],
