@@ -63,8 +63,8 @@ from .passthrough_admission import (
 from .passthrough_endpoint_router import PassthroughEndpointRouter
 
 vertex_llm_base: Final = VertexBase()
-router: Final = APIRouter()
-openai_passthrough_router: Final = APIRouter()
+router: Final[APIRouter] = APIRouter()
+openai_passthrough_router: Final[APIRouter] = APIRouter()
 default_vertex_config: Final = None
 
 passthrough_endpoint_router = PassthroughEndpointRouter()
