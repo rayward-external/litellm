@@ -342,8 +342,8 @@ class ContentFilterGuardrail(CustomGuardrail):
         }
 
     @staticmethod
-    def _assert_within_categories_dir(path: str, categories_dir: str) -> None:
-        """Raise ValueError if path escapes the categories directory."""
+    def _assert_within_categories_dir(path: str, categories_dir: str) -> str:
+        """Raise ValueError if path escapes the categories directory; else return its realpath."""
         resolved: Final = os.path.realpath(path)
         allowed: Final = os.path.realpath(categories_dir)
         try:
@@ -596,12 +596,22 @@ class ContentFilterGuardrail(CustomGuardrail):
                 inherit_yaml_path: Final = os.path.join(categories_dir, f"{inherit_base}.yaml")
                 inherit_json_path: Final = os.path.join(categories_dir, f"{inherit_base}.json")
 
+                # inherit_from is config data (reachable from admin-supplied
+                # guardrail_definitions, same surface as category_file above), so a
+                # "../" value must not let os.path.join walk the resolved candidate
+                # outside categories_dir before it is checked/loaded.
                 inherit_file_path = None
-                if os.path.exists(inherit_yaml_path):
-                    inherit_file_path = inherit_yaml_path
-                elif os.path.exists(inherit_json_path):
-                    inherit_file_path = inherit_json_path
-                else:
+                try:
+                    if os.path.exists(inherit_yaml_path):
+                        inherit_file_path = self._assert_within_categories_dir(inherit_yaml_path, categories_dir)
+                    elif os.path.exists(inherit_json_path):
+                        inherit_file_path = self._assert_within_categories_dir(inherit_json_path, categories_dir)
+                except ValueError as e:
+                    verbose_proxy_logger.warning(
+                        "Category %s: invalid inherit_from '%s' path, skipping. %s", category_name, inherit_from, e
+                    )
+
+                if inherit_file_path is None:
                     verbose_proxy_logger.warning(
                         "Category %s: inherit_from '%s' file not found at %s",
                         category_name,

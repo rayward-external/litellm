@@ -207,3 +207,47 @@ class TestContentFilterPathTraversal:
             _os.environ.pop("LITELLM_CONTENT_FILTER_ALLOW_EXTERNAL_PATHS", None)
             with pytest.raises(ValueError, match="outside the allowed categories"):
                 guardrail._resolve_category_file_path("/etc/passwd")
+
+    def test_inherit_from_traversal_does_not_load_escaped_file(self, tmp_path):
+        """inherit_from must be jailed to categories_dir like category_file is.
+
+        Regression test: _load_conditional_category resolved inherit_from into
+        categories_dir/../<name>.{yaml,json} and, unlike the primary
+        category_file path, never re-checked the result stayed inside
+        categories_dir before calling _load_category_file on it (CodeQL
+        py/path-injection alert #1060). A category file with inherit_from
+        pointing outside categories_dir must not have its target read.
+        """
+        from litellm.proxy.guardrails.guardrail_hooks.litellm_content_filter.content_filter import (
+            CategoryConfig,
+            ContentFilterAction,
+            ContentFilterGuardrail,
+        )
+
+        categories_dir = tmp_path / "categories"
+        categories_dir.mkdir()
+        secret_file = tmp_path / "secret.yaml"
+        secret_file.write_text("category_name: secret\nkeywords: []\n")
+
+        guardrail = ContentFilterGuardrail.__new__(ContentFilterGuardrail)
+        category_config_obj = CategoryConfig(
+            category_name="victim",
+            description="",
+            default_action=ContentFilterAction.BLOCK,
+            keywords=[],
+            exceptions=[],
+            inherit_from="../secret.yaml",
+        )
+
+        with patch.object(
+            guardrail, "_load_category_file", side_effect=AssertionError("must not load a path outside categories_dir")
+        ) as mock_load:
+            guardrail._load_conditional_category(
+                category_name="victim",
+                category_config_obj=category_config_obj,
+                category_action=ContentFilterAction.BLOCK,
+                severity_threshold="medium",
+                categories_dir=str(categories_dir),
+            )
+
+        mock_load.assert_not_called()
