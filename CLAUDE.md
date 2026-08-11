@@ -15,7 +15,7 @@ This repository is **`rayward-external/litellm`**, a private fork of `BerriAI/li
   `--repo rayward-external/litellm` on every `gh pr` and `gh issue` command. A bare
   `gh pr create` here opens a PR against `BerriAI/litellm`.
 
-Do not write comments unless they are:
+Do not write comments unless they are any of:
 - absolutely necessary to explain some very complex business logic (in which case, keep it concise and clear)
 - used as an input for tools to read and act on. For example:
   - entries in `.git-blame-ignore-revs` saying which commit is excluded from git blame

@@ -1,5 +1,6 @@
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { renderWithProviders } from "../../../../../tests/test-utils";
 
 const mockUserDailyActivityCall = vi.fn();
 
@@ -39,7 +40,7 @@ describe("CostOptimizationView daily activity", () => {
   it("fetches daily activity once for the page and shares it with every tab that needs it", async () => {
     mockUserDailyActivityCall.mockResolvedValue(singlePage);
 
-    const { getByRole, getByTestId } = render(
+    const { getByRole, getByTestId } = renderWithProviders(
       <CostOptimizationView accessToken="test-token" userId="u1" userRole="proxy_admin" />,
     );
 
