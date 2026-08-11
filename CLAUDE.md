@@ -1,3 +1,20 @@
+## Rayward fork: PRs go to THIS fork, never upstream
+
+This repository is **`rayward-external/litellm`**, a private fork of `BerriAI/litellm`.
+
+- **Open every pull request against `rayward-external/litellm`**, targeting its own
+  default branch (`litellm_internal_staging`). **Never open a PR against
+  `BerriAI/litellm`.**
+- Contributing a patch upstream is a **publishing decision only the repo owner makes**.
+  It puts the owner's GitHub identity and this fork on a public third-party project and
+  triggers CLA obligations. If a change looks worth upstreaming, recommend it and stop —
+  do not open it. A line in a plan, an option description, or a
+  `.github/fork-patches.txt` "REMOVAL CONDITION" that mentions upstreaming describes an
+  intended end state; it is **not** authorization.
+- **`gh` in this checkout silently targets UPSTREAM.** Pass
+  `--repo rayward-external/litellm` on every `gh pr` and `gh issue` command. A bare
+  `gh pr create` here opens a PR against `BerriAI/litellm`.
+
 Do not write comments unless they are any of:
 - absolutely necessary to explain some very complex business logic (in which case, keep it concise and clear)
 - used as an input for tools to read and act on. For example:
