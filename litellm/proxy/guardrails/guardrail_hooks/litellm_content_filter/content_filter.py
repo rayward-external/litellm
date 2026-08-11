@@ -342,8 +342,8 @@ class ContentFilterGuardrail(CustomGuardrail):
         }
 
     @staticmethod
-    def _assert_within_categories_dir(path: str, categories_dir: str) -> str:
-        """Raise ValueError if path escapes the categories directory; else return its realpath."""
+    def _assert_within_categories_dir(path: str, categories_dir: str) -> None:
+        """Raise ValueError if path escapes the categories directory."""
         resolved: Final = os.path.realpath(path)
         allowed: Final = os.path.realpath(categories_dir)
         try:
@@ -599,17 +599,21 @@ class ContentFilterGuardrail(CustomGuardrail):
                 # inherit_from is config data (reachable from admin-supplied
                 # guardrail_definitions, same surface as category_file above), so a
                 # "../" value must not let os.path.join walk the resolved candidate
-                # outside categories_dir before it is checked/loaded.
+                # outside categories_dir before it is checked/loaded. Written inline
+                # (not via a helper call) to match CodeQL's py/path-injection
+                # documented safe idiom, same as the category_file check above.
+                real_categories_dir = os.path.realpath(categories_dir)
                 inherit_file_path = None
-                try:
-                    if os.path.exists(inherit_yaml_path):
-                        inherit_file_path = self._assert_within_categories_dir(inherit_yaml_path, categories_dir)
-                    elif os.path.exists(inherit_json_path):
-                        inherit_file_path = self._assert_within_categories_dir(inherit_json_path, categories_dir)
-                except ValueError as e:
-                    verbose_proxy_logger.warning(
-                        "Category %s: invalid inherit_from '%s' path, skipping. %s", category_name, inherit_from, e
-                    )
+                if os.path.exists(inherit_yaml_path) or os.path.exists(inherit_json_path):
+                    candidate = inherit_yaml_path if os.path.exists(inherit_yaml_path) else inherit_json_path
+                    real_candidate = os.path.realpath(candidate)
+                    if real_candidate == real_categories_dir or real_candidate.startswith(real_categories_dir + os.sep):
+                        inherit_file_path = real_candidate
+                    else:
+                        verbose_proxy_logger.warning(
+                            "Category %s: resolved inherit_from path escapes categories_dir, skipping",
+                            category_name,
+                        )
 
                 if inherit_file_path is None:
                     verbose_proxy_logger.warning(
