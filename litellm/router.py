@@ -23,7 +23,7 @@ from collections import defaultdict
 from collections.abc import AsyncGenerator, Callable, Generator, Mapping, Sequence
 from functools import lru_cache
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final, Literal, Optional, TypeVar, Union, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn, Optional, TypeVar, Union, cast
 
 import anyio
 import httpx
