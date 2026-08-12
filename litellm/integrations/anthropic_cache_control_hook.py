@@ -498,19 +498,23 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         model: str,
         custom_llm_provider: str | None,
         tools: list | None = None,
+        enable_prompt_caching: bool | None = None,
     ) -> list[CacheControlInjectionPoint]:
         """Default breakpoints when ``litellm.enable_anthropic_prompt_caching`` is on.
 
-        Caches the system prompt and the trailing turn, so the stable prefix
-        (system + tools + history) is reused while the breakpoint advances with
-        the conversation. Returns [] (stand down) when the flag is off, the
-        provider does not consume cache_control breakpoints (only anthropic /
-        bedrock do), the model lacks prompt-caching support, or the request
-        already carries client-supplied cache_control.
+        ``enable_prompt_caching`` is the per-request override (stamped from key
+        metadata by the proxy); True turns auto-injection on for this request
+        even when the global flag is off. Caches the system prompt and the
+        trailing turn, so the stable prefix (system + tools + history) is
+        reused while the breakpoint advances with the conversation. Returns []
+        (stand down) when neither flag is on, the provider does not consume
+        cache_control breakpoints (only anthropic / bedrock do), the model
+        lacks prompt-caching support, or the request already carries
+        client-supplied cache_control.
         """
         import litellm
 
-        if litellm.enable_anthropic_prompt_caching is not True:
+        if litellm.enable_anthropic_prompt_caching is not True and enable_prompt_caching is not True:
             return []
 
         provider = custom_llm_provider
@@ -549,6 +553,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         model: str,
         custom_llm_provider: str | None,
         tools: list | None = None,
+        enable_prompt_caching: bool | None = None,
     ) -> None:
         """For /chat/completions: resolve the injection points the request should carry.
 
@@ -574,6 +579,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
             model=model,
             custom_llm_provider=custom_llm_provider,
             tools=tools,
+            enable_prompt_caching=enable_prompt_caching,
         )
         if points:
             non_default_params["cache_control_injection_points"] = points
@@ -594,13 +600,18 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         judgment happens once per request; points a prior pass wrote back
         carry the judged stamp and are never re-judged (see
         ``_should_stand_down``). When none are configured but
-        ``litellm.enable_anthropic_prompt_caching`` is on, synthesize default
-        breakpoints for the native /v1/messages path. Pops the key from kwargs;
+        ``litellm.enable_anthropic_prompt_caching`` or the per-request
+        ``enable_prompt_caching`` kwarg (stamped from key metadata) is on,
+        synthesize default breakpoints for the native /v1/messages path. Pops
+        both keys from kwargs;
         if remaining (non-message) points exist they are written back so
         downstream transforms can handle them.
         """
         typed_messages = cast(list[AllMessageValues], messages)  # cast-ok: Anthropic-shaped dicts from v1/messages
-        configured = cast(  # cast-ok: kwargs is untyped; this key only holds the documented injection-point list
+        enable_prompt_caching: Final = cast(  # cast-ok: kwargs is untyped; key stamped as bool by the proxy
+            bool | None, kwargs.pop("enable_prompt_caching", None)
+        )
+        configured: Final = cast(  # cast-ok: kwargs is untyped; this key only holds the documented injection-point list
             list[CacheControlInjectionPoint] | None, kwargs.pop("cache_control_injection_points", None)
         )
         if configured and AnthropicCacheControlHook._should_stand_down(configured, typed_messages, system, tools):
@@ -613,6 +624,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
                 tools=tools,
                 model=model,
                 custom_llm_provider=custom_llm_provider,
+                enable_prompt_caching=enable_prompt_caching,
             )
         if not injection_points:
             return messages, system

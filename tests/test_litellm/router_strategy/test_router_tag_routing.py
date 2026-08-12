@@ -429,42 +429,58 @@ def test_get_tags_from_request_kwargs_various_inputs():
 def test_split_tags_positive_only():
     from litellm.router_strategy.tag_based_routing import _split_tags
 
-    positive, excluded = _split_tags(["paid", "teamA"])
+    required, positive, excluded = _split_tags(["paid", "teamA"])
+    assert required == ()
     assert positive == ["paid", "teamA"]
-    assert excluded == []
+    assert excluded == ()
 
 
 def test_split_tags_negation_only():
     from litellm.router_strategy.tag_based_routing import _split_tags
 
-    positive, excluded = _split_tags(["!provider:anthropic"])
+    required, positive, excluded = _split_tags(["!provider:anthropic"])
+    assert required == ()
     assert positive == []
-    assert excluded == ["provider:anthropic"]
+    assert excluded == ("provider:anthropic",)
+
+
+def test_split_tags_required_only():
+    from litellm.router_strategy.tag_based_routing import _split_tags
+
+    required, positive, excluded = _split_tags(["&reasoning_type:high", "&provider:anthropic"])
+    assert required == ("reasoning_type:high", "provider:anthropic")
+    assert positive == []
+    assert excluded == ()
 
 
 def test_split_tags_mixed():
     from litellm.router_strategy.tag_based_routing import _split_tags
 
-    positive, excluded = _split_tags(["paid", "!provider:anthropic", "!inference:cerebras"])
+    required, positive, excluded = _split_tags(
+        ["paid", "!provider:anthropic", "!inference:cerebras", "&reasoning_type:high"]
+    )
+    assert required == ("reasoning_type:high",)
     assert positive == ["paid"]
     assert len(excluded) == 2
 
 
-def test_split_tags_bare_bang_skipped():
+def test_split_tags_bare_bang_and_amp_skipped():
     from litellm.router_strategy.tag_based_routing import _split_tags
 
-    # A bare "!" with nothing after it is not a valid negation tag; skip it
-    positive, excluded = _split_tags(["paid", "!"])
+    # A bare "!" or "&" with nothing after it is not a valid tag; skip it
+    required, positive, excluded = _split_tags(["paid", "!", "&"])
+    assert required == ()
     assert positive == ["paid"]
-    assert excluded == []
+    assert excluded == ()
 
 
 def test_split_tags_empty():
     from litellm.router_strategy.tag_based_routing import _split_tags
 
-    positive, excluded = _split_tags([])
+    required, positive, excluded = _split_tags([])
+    assert required == ()
     assert positive == []
-    assert excluded == []
+    assert excluded == ()
 
 
 # --- get_deployments_for_tag negation integration tests ---
@@ -1117,1110 +1133,1680 @@ async def test_request_level_enable_tag_filtering_false_cannot_disable_global():
         assert response._hidden_params["model_id"] == "team-a-deployment"
 
 
-# ---------------------------------------------------------------------------
-# Regression: a SELECTED deployment's own tags must never leak into the routing
-# decision on a later attempt.
-#
-# Upstream (PR #20769) merges the selected deployment's litellm_params["tags"]
-# into metadata["tags"] for spend attribution, in _update_kwargs_with_deployment.
-# That kwargs dict is REUSED across retries and fallbacks, so on the next attempt
-# get_deployments_for_tag would re-read the leaked deployment tag as if the caller
-# had sent it — filtering an untagged request down to just the failing provider
-# and breaking cross-provider fallback / same-group weighted retry.
-#
-# The fix snapshots the caller's ORIGINAL request tags once, before any
-# per-deployment merge (Router._update_kwargs_before_fallbacks), into
-# ORIGINAL_REQUEST_TAGS_KEY; get_deployments_for_tag prefers that snapshot.
-# Reverting the snapshot-preference in get_deployments_for_tag makes
-# test_deployment_tags_do_not_leak_into_cross_provider_fallback fail.
-# ---------------------------------------------------------------------------
+# --- model_info.enable_tag_filtering per-chain override ---
+
+
+class _FakeRouterForChainOverride:
+    def __init__(self, all_deployments):
+        self._all_deployments = all_deployments
+
+    def _get_all_deployments(self, model_name):
+        return self._all_deployments
+
+
+def test_chain_tag_filtering_override_reads_any_member():
+    from litellm.router_strategy.tag_based_routing import _chain_tag_filtering_override
+
+    deployments = [
+        {"model_info": {}},
+        {"model_info": {"enable_tag_filtering": False}},
+    ]
+    router = _FakeRouterForChainOverride(deployments)
+    assert _chain_tag_filtering_override(router, "gpt-4", deployments) is False
+
+
+def test_chain_tag_filtering_override_none_when_unset_anywhere():
+    from litellm.router_strategy.tag_based_routing import _chain_tag_filtering_override
+
+    deployments = [{"model_info": {}}, {}]
+    router = _FakeRouterForChainOverride(deployments)
+    assert _chain_tag_filtering_override(router, "gpt-4", deployments) is None
+
+
+def test_chain_tag_filtering_override_survives_the_overriding_member_going_unhealthy():
+    # Regression: the per-group override must be resolved from every deployment
+    # configured for the model, not just the ones that survived cooldown/health
+    # filtering. async_get_healthy_deployments filters cooldowns before calling
+    # into get_deployments_for_tag, so healthy_deployments alone can be missing
+    # the one deployment that carries the group's only explicit override.
+    from litellm.router_strategy.tag_based_routing import _chain_tag_filtering_override
+
+    all_deployments = [
+        {"model_info": {"enable_tag_filtering": True}},
+        {"model_info": {}},
+    ]
+    router = _FakeRouterForChainOverride(all_deployments)
+    # The overriding deployment (index 0) is cooled down and absent from
+    # healthy_deployments -- the override must still be found via the full-group
+    # lookup, not silently lost.
+    healthy_deployments = [all_deployments[1]]
+    assert _chain_tag_filtering_override(router, "gpt-4", healthy_deployments) is True
+
+
+def test_chain_tag_filtering_override_falls_back_to_healthy_deployments_on_lookup_error():
+    from litellm.router_strategy.tag_based_routing import _chain_tag_filtering_override
+
+    class _BrokenRouter:
+        def _get_all_deployments(self, model_name):
+            raise RuntimeError("model group not found")
+
+    healthy_deployments = [{"model_info": {"enable_tag_filtering": False}}]
+    assert _chain_tag_filtering_override(_BrokenRouter(), "gpt-4", healthy_deployments) is False
 
 
 @pytest.mark.asyncio()
-async def test_deployment_tags_do_not_leak_into_cross_provider_fallback():
-    """UNTAGGED request whose tagged primary group fails must fall back across
-    providers. Before the fix, the primary deployment's `pin:azure` tag leaked
-    into metadata["tags"] and the fallback group (tagged `pin:openai`) was
-    rejected as not-a-subset, so the untagged request failed instead of failing
-    over. This is the MUTATION-sensitive test."""
+async def test_chain_enable_tag_filtering_true_overrides_router_level_false():
+    # Router-wide tag filtering is off; this model group opts in on its own via
+    # model_info.enable_tag_filtering, so tags still apply to requests for it.
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["teamA"],
+                },
+                "model_info": {"id": "team-a-deployment", "enable_tag_filtering": True},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["teamB"],
+                },
+                "model_info": {"id": "team-b-deployment", "enable_tag_filtering": True},
+            },
+        ],
+        enable_tag_filtering=False,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["teamA"]},
+            mock_response="hi",
+        )
+        assert response._hidden_params["model_id"] == "team-a-deployment"
+
+
+@pytest.mark.asyncio()
+async def test_chain_enable_tag_filtering_false_overrides_router_level_true():
+    # Router-wide tag filtering is on, but this model group opts itself out via
+    # model_info.enable_tag_filtering: tags are ignored for requests to this group,
+    # so an untagged-style request just gets ordinary load-balanced routing.
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["teamA"],
+                },
+                "model_info": {"id": "team-a-deployment", "enable_tag_filtering": False},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["teamB"],
+                },
+                "model_info": {"id": "team-b-deployment", "enable_tag_filtering": False},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    seen_ids = set()
+    for _ in range(10):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["teamA"]},
+            mock_response="hi",
+        )
+        seen_ids.add(response._hidden_params["model_id"])
+
+    assert seen_ids == {"team-a-deployment", "team-b-deployment"}
+
+
+@pytest.mark.asyncio()
+async def test_request_level_enable_tag_filtering_still_wins_over_chain_level_false():
+    # A key/team's own request-level enable_tag_filtering=True must still win over
+    # a chain that opted itself out, exactly as it already wins over the router
+    # default: request-level escalation is the highest-precedence layer.
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["teamA"],
+                },
+                "model_info": {"id": "team-a-deployment", "enable_tag_filtering": False},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["teamB"],
+                },
+                "model_info": {"id": "team-b-deployment", "enable_tag_filtering": False},
+            },
+        ],
+        enable_tag_filtering=False,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["teamA"]},
+            enable_tag_filtering=True,
+            mock_response="hi",
+        )
+        assert response._hidden_params["model_id"] == "team-a-deployment"
+
+
+# --- _require_all_tags / _chain_allows_fail_open unit tests ---
+
+
+def test_require_all_tags_empty_required_set_is_noop():
+    from litellm.router_strategy.tag_based_routing import _require_all_tags
+
+    deployments = [{"litellm_params": {"tags": ["a"]}}, {"litellm_params": {"tags": []}}]
+    assert _require_all_tags(deployments, frozenset()) == tuple(deployments)
+
+
+def test_require_all_tags_keeps_only_deployments_with_every_required_tag():
+    from litellm.router_strategy.tag_based_routing import _require_all_tags
+
+    has_both = {"litellm_params": {"tags": ["reasoning_type:high", "provider:anthropic"]}}
+    has_one = {"litellm_params": {"tags": ["reasoning_type:high"]}}
+    has_neither = {"litellm_params": {"tags": ["provider:openai"]}}
+
+    result = _require_all_tags(
+        [has_both, has_one, has_neither], frozenset({"reasoning_type:high", "provider:anthropic"})
+    )
+    assert result == (has_both,)
+
+
+def test_chain_allows_fail_open_true_when_any_member_sets_flag():
+    from litellm.router_strategy.tag_based_routing import _chain_allows_fail_open
+
+    deployments = [
+        {"model_info": {}, "litellm_params": {"tags": ["provider:anthropic"]}},
+        {"model_info": {"allow_fail_open": True}, "litellm_params": {"tags": ["provider:openai"]}},
+    ]
+    assert _chain_allows_fail_open(deployments, frozenset(), frozenset({"provider:anthropic"}), frozenset()) is True
+
+
+def test_chain_allows_fail_open_false_by_default():
+    from litellm.router_strategy.tag_based_routing import _chain_allows_fail_open
+
+    deployments = [{"model_info": {}}, {}]
+    assert _chain_allows_fail_open(deployments, frozenset(), frozenset(), frozenset()) is False
+
+
+def test_chain_allows_fail_open_true_when_no_required_tag_is_known_at_all():
+    # An entirely-invented required tag with nothing else known to compare against
+    # has no narrower answer to hide; a single-deployment catch-all fallback is a
+    # legitimate use of allow_fail_open, not something to deny.
+    from litellm.router_strategy.tag_based_routing import _chain_allows_fail_open
+
+    deployments = [
+        {"model_info": {"allow_fail_open": True}, "litellm_params": {"tags": ["default", "reasoning_type:low"]}},
+    ]
+    assert _chain_allows_fail_open(deployments, frozenset(), frozenset({"reasoning_type:high"}), frozenset()) is True
+
+
+def test_unknown_required_tag_hides_an_answer_denies_fail_open():
+    from litellm.router_strategy.tag_based_routing import _chain_allows_fail_open
+
+    deployments = [
+        {
+            "model_info": {},
+            "litellm_params": {"tags": ["provider:anthropic", "region:us-east"]},
+        },
+        {
+            "model_info": {"allow_fail_open": True},
+            "litellm_params": {"tags": ["default", "provider:openai"]},
+        },
+    ]
+    # region:us-east is real and satisfiable on the first deployment; the invented tag
+    # alone forces emptiness. Dropping it reveals a specific, non-default answer, so
+    # fail-open must be denied even though the flag is set on the group.
+    assert (
+        _chain_allows_fail_open(
+            deployments, frozenset(), frozenset({"region:us-east", "totally-invented-tag-nobody-has"}), frozenset()
+        )
+        is False
+    )
+
+
+def test_unknown_required_tag_allows_fail_open_when_no_answer_is_hidden():
+    from litellm.router_strategy.tag_based_routing import _chain_allows_fail_open
+
+    deployments = [
+        {
+            "model_info": {"allow_fail_open": True},
+            "litellm_params": {"tags": ["provider:anthropic", "region:us-east"]},
+        },
+        {
+            "model_info": {"allow_fail_open": True},
+            "litellm_params": {"tags": ["provider:eu", "region:eu"]},
+        },
+        {
+            "model_info": {"allow_fail_open": True},
+            "litellm_params": {"tags": ["default", "provider:openai"]},
+        },
+    ]
+    # region:us-east and region:eu are both real, known tags; no single deployment
+    # carries both, so this is a genuinely unsatisfiable combination, not an invented
+    # tag masking a narrower answer. Fail-open must proceed normally.
+    assert (
+        _chain_allows_fail_open(deployments, frozenset(), frozenset({"region:us-east", "region:eu"}), frozenset())
+        is True
+    )
+
+
+# --- _strip_routing_prefix / _bare_tag_value unit tests ---
+
+
+def test_strip_routing_prefix_empty_prefix_is_noop():
+    from litellm.router_strategy.tag_based_routing import _strip_routing_prefix
+
+    tags = ["provider:anthropic", "&region:eu", "!region:us"]
+    rewritten, confirmed = _strip_routing_prefix(tags, "")
+    assert rewritten == tuple(tags)
+    assert confirmed == frozenset()
+
+
+def test_strip_routing_prefix_splits_routed_from_other():
+    from litellm.router_strategy.tag_based_routing import _strip_routing_prefix
+
+    rewritten, confirmed = _strip_routing_prefix(["feature:demo", "route:!provider:openai"], "route:")
+    assert rewritten == ("feature:demo", "!provider:openai")
+    assert confirmed == frozenset({"provider:openai"})
+
+
+def test_strip_routing_prefix_confirmed_matches_bare_required_and_excluded_values():
+    # Regression: confirmed must carry the same bare (marker-stripped) form that
+    # _split_tags produces for required_set/excluded_set downstream. A prior bug
+    # left the "&"/"!" marker in `confirmed`, so `required_set & routing_confirmed`
+    # never intersected for any prefixed "&"/"!" tag -- the entire "trusted,
+    # caller-declared required/excluded tag" mechanism silently no-opped.
+    from litellm.router_strategy.tag_based_routing import _strip_routing_prefix
+
+    _, confirmed = _strip_routing_prefix(["route:&provider:anthropic", "route:!region:eu"], "route:")
+    assert confirmed == frozenset({"provider:anthropic", "region:eu"})
+
+
+def test_strip_routing_prefix_lone_marker_confirms_nothing():
+    from litellm.router_strategy.tag_based_routing import _strip_routing_prefix
+
+    # A lone "&"/"!" with nothing after it parses to nothing in required_set,
+    # excluded_set, or positive_tags (see test_split_tags_bare_bang_and_amp_skipped);
+    # confirmed must not invent a value for it either.
+    _, confirmed = _strip_routing_prefix(["route:&", "route:!"], "route:")
+    assert confirmed == frozenset()
+
+
+def test_chain_allows_fail_open_true_when_prefixed_unknown_required_tag_is_confirmed():
+    # Regression for the same bug: a required tag no deployment carries is normally
+    # treated as invented noise that can hide a narrower answer (see
+    # test_unknown_required_tag_hides_an_answer_denies_fail_open) -- but once the
+    # caller has explicitly marked it via the routing prefix, it counts as a known,
+    # honest ask, and fail-open must proceed rather than get denied.
+    from litellm.router_strategy.tag_based_routing import _chain_allows_fail_open
+
+    deployments = [
+        {
+            "model_info": {"allow_fail_open": True},
+            "litellm_params": {"tags": ["default", "provider:anthropic"]},
+        },
+    ]
+    required_set = frozenset({"provider:anthropic", "typo-tag"})
+    assert _chain_allows_fail_open(deployments, frozenset(), required_set, frozenset()) is False
+    assert _chain_allows_fail_open(deployments, frozenset(), required_set, required_set) is True
+
+
+# --- get_deployments_for_tag required-AND ("&") integration tests ---
+
+
+@pytest.mark.asyncio()
+async def test_required_and_matches_deployment_with_all_tags():
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:high", "provider:anthropic"],
+                },
+                "model_info": {"id": "high-reasoning-anthropic"},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:high", "provider:openai"],
+                },
+                "model_info": {"id": "high-reasoning-openai"},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["&reasoning_type:high", "&provider:anthropic"]},
+            mock_response="hi",
+        )
+        assert response._hidden_params["model_id"] == "high-reasoning-anthropic"
+
+
+@pytest.mark.asyncio()
+async def test_required_and_excludes_deployment_missing_one_tag():
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:high", "provider:anthropic"],
+                },
+                "model_info": {"id": "high-reasoning-anthropic"},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:low", "provider:anthropic"],
+                },
+                "model_info": {"id": "low-reasoning-anthropic"},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["&reasoning_type:high", "&provider:anthropic"]},
+            mock_response="hi",
+        )
+        assert response._hidden_params["model_id"] == "high-reasoning-anthropic"
+
+
+@pytest.mark.asyncio()
+async def test_required_and_composes_with_negation():
+    # &reasoning_type:high requires the tag; !provider:anthropic bans that provider.
+    # Negation applies first, so the anthropic deployment is excluded even though
+    # it satisfies the required tag.
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:high", "provider:anthropic"],
+                },
+                "model_info": {"id": "high-reasoning-anthropic"},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:high", "provider:openai"],
+                },
+                "model_info": {"id": "high-reasoning-openai"},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["&reasoning_type:high", "!provider:anthropic"]},
+            mock_response="hi",
+        )
+        assert response._hidden_params["model_id"] == "high-reasoning-openai"
+
+
+@pytest.mark.asyncio()
+async def test_required_and_combines_with_positive_or_preference():
+    # &reasoning_type:high is a hard requirement; provider:anthropic/provider:openai
+    # is a preference (OR) applied on top of the survivors.
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:high", "provider:anthropic"],
+                },
+                "model_info": {"id": "high-reasoning-anthropic"},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:high", "provider:vertex"],
+                },
+                "model_info": {"id": "high-reasoning-vertex"},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:low", "provider:anthropic"],
+                },
+                "model_info": {"id": "low-reasoning-anthropic"},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["&reasoning_type:high", "provider:anthropic", "provider:openai"]},
+            mock_response="hi",
+        )
+        assert response._hidden_params["model_id"] == "high-reasoning-anthropic"
+
+
+@pytest.mark.asyncio()
+async def test_required_and_single_tag_matches_trivially():
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:high"],
+                },
+                "model_info": {"id": "high-reasoning"},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:low"],
+                },
+                "model_info": {"id": "low-reasoning"},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["&reasoning_type:high"]},
+            mock_response="hi",
+        )
+        assert response._hidden_params["model_id"] == "high-reasoning"
+
+
+@pytest.mark.asyncio()
+async def test_required_and_unmatched_raises_by_default():
+    # allow_fail_open unset -> unmatched required-AND raises, same as today's "!" behavior.
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:low"],
+                },
+                "model_info": {"id": "low-reasoning"},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["&reasoning_type:high"]},
+            mock_response="hi",
+        )
+
+    from litellm.types.router import RouterErrors
+
+    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
+
+
+@pytest.mark.asyncio()
+async def test_required_and_combined_with_positive_unmatched_raises_by_default():
+    # &A eliminates every candidate before the positive-tag preference even runs;
+    # this must be gated by allow_fail_open too, not just the required-AND-only path.
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:low", "provider:anthropic"],
+                },
+                "model_info": {"id": "low-reasoning-anthropic"},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["&reasoning_type:high", "provider:anthropic"]},
+            mock_response="hi",
+        )
+
+    from litellm.types.router import RouterErrors
+
+    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
+
+
+# --- get_deployments_for_tag allow_fail_open integration tests ---
+
+
+@pytest.mark.asyncio()
+async def test_allow_fail_open_required_and_unmatched_falls_back_to_default_pool():
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["default", "reasoning_type:low"],
+                },
+                "model_info": {"id": "default-model", "allow_fail_open": True},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["&reasoning_type:high"]},
+            mock_response="hi",
+        )
+        assert response._hidden_params["model_id"] == "default-model"
+
+
+@pytest.mark.asyncio()
+async def test_allow_fail_open_negation_eliminates_everything_includes_banned_deployment():
+    # The core backwards-compatibility risk: once allow_fail_open opts a chain in,
+    # a "!" ban that eliminates every deployment falls back to the full default
+    # pool, INCLUDING the deployment the request tried to ban. This must never
+    # silently disappear (still raise) nor silently reappear on chains without
+    # the flag set (see test_negation_all_excluded_raises).
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["provider:anthropic"],
+                },
+                "model_info": {"id": "anthropic-model", "allow_fail_open": True},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["!provider:anthropic"]},
+            mock_response="hi",
+        )
+        assert response._hidden_params["model_id"] == "anthropic-model"
+
+
+@pytest.mark.asyncio()
+async def test_allow_fail_open_prefers_default_tagged_deployment_on_fallback():
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["provider:anthropic"],
+                },
+                "model_info": {"id": "anthropic-model", "allow_fail_open": True},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["provider:anthropic", "default"],
+                },
+                "model_info": {"id": "anthropic-default-model", "allow_fail_open": True},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["!provider:anthropic"]},
+            mock_response="hi",
+        )
+        assert response._hidden_params["model_id"] == "anthropic-default-model"
+
+
+@pytest.mark.asyncio()
+async def test_allow_fail_open_per_hop_across_fallback_chain():
+    # required-AND fail-open must be re-evaluated fresh on every hop, the same
+    # per-hop guarantee the negation feature already established.
     router = litellm.Router(
         model_list=[
             {
                 "model_name": "primary",
                 "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["pin:azure"],
-                    "mock_response": Exception("simulated azure failure"),
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:low"],
                 },
-                "model_info": {"id": "azure-dep"},
+                "model_info": {"id": "primary-low-reasoning"},
+            },
+            {
+                "model_name": "fallback",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["default", "reasoning_type:low"],
+                },
+                "model_info": {"id": "fallback-model", "allow_fail_open": True},
+            },
+        ],
+        fallbacks=[{"primary": ["fallback"]}],
+        enable_tag_filtering=True,
+    )
+
+    response = await router.acompletion(
+        model="primary",
+        messages=[{"role": "user", "content": "hi"}],
+        metadata={"tags": ["&reasoning_type:high"]},
+        mock_response="hi",
+    )
+    assert response._hidden_params["model_id"] == "fallback-model"
+
+
+@pytest.mark.asyncio()
+async def test_allow_fail_open_resolves_locally_without_triggering_external_fallback():
+    # allow_fail_open on the primary group's own default deployment absorbs the
+    # exhaustion internally (_resolve_or_fail_open returns a non-empty pool, so
+    # get_deployments_for_tag never raises); router.async_function_with_fallbacks
+    # only invokes the configured "fallbacks" chain on an exception, so a
+    # separate, unrelated fallback group must never be touched even though one is
+    # configured. A fallback deployment that would trivially satisfy the request
+    # tag if it were ever consulted makes this a meaningful negative assertion,
+    # not a vacuous one.
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "primary",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:high"],
+                },
+                "model_info": {"id": "primary-high-reasoning"},
+            },
+            {
+                "model_name": "primary",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["default", "reasoning_type:low"],
+                },
+                "model_info": {"id": "primary-default", "allow_fail_open": True},
+            },
+            {
+                "model_name": "fallback",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["region:eu"],
+                },
+                "model_info": {"id": "fallback-should-never-be-used"},
+            },
+        ],
+        fallbacks=[{"primary": ["fallback"]}],
+        enable_tag_filtering=True,
+    )
+
+    response = await router.acompletion(
+        model="primary",
+        messages=[{"role": "user", "content": "hi"}],
+        metadata={"tags": ["&region:eu"]},
+        mock_response="hi",
+    )
+    assert response._hidden_params["model_id"] == "primary-default"
+
+
+# --- allow_fail_open must also gate "!" exhaustion combined with a plain positive tag ---
+
+
+@pytest.mark.asyncio()
+async def test_negation_combined_with_positive_unmatched_raises_by_default():
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["provider:anthropic", "paid"],
+                },
+                "model_info": {"id": "anthropic-paid"},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["!provider:anthropic", "paid"]},
+            mock_response="hi",
+        )
+
+    from litellm.types.router import RouterErrors
+
+    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
+
+
+@pytest.mark.asyncio()
+async def test_negation_combined_with_positive_unmatched_falls_open_when_allowed():
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["provider:anthropic", "paid", "default"],
+                },
+                "model_info": {"id": "anthropic-paid", "allow_fail_open": True},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["!provider:anthropic", "paid"]},
+            mock_response="hi",
+        )
+        assert response._hidden_params["model_id"] == "anthropic-paid"
+
+
+# --- a required-AND-only request must not be diluted by incidental regex/header preference ---
+
+
+@pytest.mark.asyncio()
+async def test_required_and_only_returns_every_matching_deployment_despite_regex_header():
+    # Deployment A satisfies &reasoning_type:high and also happens to carry a tag_regex
+    # that matches the caller's User-Agent. Deployment B also satisfies the required tag
+    # but has no tag_regex at all. A required-AND-only request (no plain positive tags)
+    # must be free to route to either survivor, not be narrowed down to only the one
+    # that happens to match the incidental regex/header preference.
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:high"],
+                    "tag_regex": ["^User-Agent: claude-code\\/"],
+                },
+                "model_info": {"id": "high-reasoning-with-regex"},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:high"],
+                },
+                "model_info": {"id": "high-reasoning-no-regex"},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    seen_ids = set()
+    for _ in range(30):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["&reasoning_type:high"], "user_agent": "claude-code/1.2.3"},
+            mock_response="hi",
+        )
+        seen_ids.add(response._hidden_params["model_id"])
+
+    assert seen_ids == {"high-reasoning-with-regex", "high-reasoning-no-regex"}
+
+
+@pytest.mark.asyncio()
+async def test_required_and_only_excludes_regex_deployment_missing_the_required_tag():
+    # The tag_regex deployment matches the caller's User-Agent but does NOT carry the
+    # required tag; a required-AND-only request must not let it through on the strength
+    # of the regex/header match alone.
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:low"],
+                    "tag_regex": ["^User-Agent: claude-code\\/"],
+                },
+                "model_info": {"id": "low-reasoning-with-regex"},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:high"],
+                },
+                "model_info": {"id": "high-reasoning-no-regex"},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["&reasoning_type:high"], "user_agent": "claude-code/1.2.3"},
+            mock_response="hi",
+        )
+        assert response._hidden_params["model_id"] == "high-reasoning-no-regex"
+
+
+# --- allow_fail_open must also gate exhaustion after a non-empty required-AND survivor
+# set fails to match a plain preference tag, not just full !/& exhaustion ---
+
+
+@pytest.mark.asyncio()
+async def test_mixed_constraint_survivor_unmatched_by_positive_tag_raises_by_default():
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:high", "provider:anthropic"],
+                },
+                "model_info": {"id": "high-reasoning-anthropic"},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["default", "reasoning_type:low"],
+                },
+                "model_info": {"id": "default-fallback"},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["&reasoning_type:high", "provider:openai"]},
+            mock_response="hi",
+        )
+
+    from litellm.types.router import RouterErrors
+
+    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
+
+
+@pytest.mark.asyncio()
+async def test_mixed_constraint_survivor_unmatched_by_positive_tag_falls_open_when_allowed():
+    # &reasoning_type:high survives to a non-empty candidate set (the anthropic
+    # deployment), but the plain preference tag provider:openai matches none of the
+    # survivors, and the surviving deployment itself is not "default"-tagged (so the
+    # pre-existing in-loop default-collection escape hatch can't mask the fix). Greptile
+    # flagged this exact path as bypassing allow_fail_open by raising unconditionally;
+    # it must instead fall back to the group's actual default-tagged deployment, which
+    # is a different deployment than the one &reasoning_type:high matched.
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:high", "provider:anthropic"],
+                },
+                "model_info": {"id": "high-reasoning-anthropic", "allow_fail_open": True},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["default", "reasoning_type:low"],
+                },
+                "model_info": {"id": "default-fallback", "allow_fail_open": True},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["&reasoning_type:high", "provider:openai"]},
+            mock_response="hi",
+        )
+        assert response._hidden_params["model_id"] == "default-fallback"
+
+
+# --- allow_fail_open must not be triggerable by an invented tag the chain has never
+# carried; a caller-supplied garbage tag must not be able to force an otherwise-
+# satisfiable constraint (e.g. one inherited from the key/team) to be discarded ---
+
+
+@pytest.mark.asyncio()
+async def test_allow_fail_open_denied_when_request_includes_unknown_tag():
+    # region:us-east is a real, satisfiable constraint on anthropic-deployment. Adding
+    # a single invented tag no deployment in this group has ever carried empties the
+    # required-AND set regardless of region:us-east's own satisfiability. allow_fail_open
+    # is set on the default deployment, but must not fire here: none of the *other*
+    # deployments carry the invented tag either, so it is unknown to the chain, and
+    # falling back would silently discard the still-satisfiable region:us-east ask.
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["provider:anthropic", "region:us-east"],
+                },
+                "model_info": {"id": "anthropic-deployment"},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["default", "provider:openai"],
+                },
+                "model_info": {"id": "openai-default", "allow_fail_open": True},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["&region:us-east", "&totally-invented-tag-nobody-has"]},
+            mock_response="hi",
+        )
+
+    from litellm.types.router import RouterErrors
+
+    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
+
+
+@pytest.mark.asyncio()
+async def test_allow_fail_open_still_fires_when_every_requested_tag_is_known():
+    # region:us-east and region:eu are both real tags this chain uses; no single
+    # deployment carries both, so the combination is genuinely unsatisfiable, not
+    # invented. allow_fail_open must still fall back normally in this case.
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["provider:anthropic", "region:us-east"],
+                },
+                "model_info": {"id": "anthropic-deployment", "allow_fail_open": True},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["provider:eu", "region:eu"],
+                },
+                "model_info": {"id": "eu-deployment", "allow_fail_open": True},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "openai/gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["default", "provider:openai"],
+                },
+                "model_info": {"id": "openai-default", "allow_fail_open": True},
+            },
+        ],
+        enable_tag_filtering=True,
+    )
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["&region:us-east", "&region:eu"]},
+            mock_response="hi",
+        )
+        assert response._hidden_params["model_id"] == "openai-default"
+
+
+# --- required-AND, allow_fail_open, and the unknown-tag denial across fallback
+# chains spanning multiple model groups ---
+
+
+@pytest.mark.asyncio()
+async def test_required_and_exhausts_primary_group_falls_through_to_fallback_group():
+    # &reasoning_type:high matches nothing on "primary" (raises internally, same as
+    # negation's own fallback-chain behavior), so the router advances to "fallback"
+    # where the tag is satisfiable. No allow_fail_open involved; this is the plain
+    # fallback-chain mechanics already established for "!" extended to "&".
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "primary",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:low"],
+                },
+                "model_info": {"id": "primary-low-reasoning"},
+            },
+            {
+                "model_name": "fallback",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["reasoning_type:high"],
+                },
+                "model_info": {"id": "fallback-high-reasoning"},
+            },
+        ],
+        fallbacks=[{"primary": ["fallback"]}],
+        enable_tag_filtering=True,
+    )
+
+    response = await router.acompletion(
+        model="primary",
+        messages=[{"role": "user", "content": "hi"}],
+        metadata={"tags": ["&reasoning_type:high"]},
+        mock_response="hi",
+    )
+    assert response._hidden_params["model_id"] == "fallback-high-reasoning"
+
+
+@pytest.mark.asyncio()
+async def test_required_and_negation_and_allow_fail_open_combine_across_three_model_groups():
+    # A single request routes through three independent model groups via two
+    # fallback hops, exercising "!", "&", and allow_fail_open together at each hop:
+    # - "primary" is banned outright by "!provider:anthropic" -> raises, advances.
+    # - "secondary" satisfies the negation but not &reasoning_type:high, and has no
+    #   allow_fail_open -> raises exactly as today, advances.
+    # - "tertiary" has reasoning_type:high, but only on the deployment the same
+    #   "!provider:anthropic" also bans; the tag is known to the chain but its only
+    #   carrier is legitimately excluded, not hidden behind an invented tag, so the
+    #   opted-in allow_fail_open falls back to the group's own default deployment.
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "primary",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["provider:anthropic", "reasoning_type:high"],
+                },
+                "model_info": {"id": "primary-anthropic"},
             },
             {
                 "model_name": "secondary",
                 "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["pin:openai"],
-                    "mock_response": "OK-FROM-OPENAI",
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["provider:openai", "reasoning_type:low"],
                 },
-                "model_info": {"id": "openai-dep"},
+                "model_info": {"id": "secondary-openai"},
+            },
+            {
+                "model_name": "tertiary",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["provider:anthropic", "reasoning_type:high", "region:eu"],
+                },
+                "model_info": {"id": "tertiary-anthropic-high-reasoning"},
+            },
+            {
+                "model_name": "tertiary",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["default", "provider:openai", "reasoning_type:low"],
+                },
+                "model_info": {"id": "tertiary-default", "allow_fail_open": True},
             },
         ],
-        fallbacks=[{"primary": ["secondary"]}],
+        fallbacks=[{"primary": ["secondary"]}, {"secondary": ["tertiary"]}],
         enable_tag_filtering=True,
-        tag_filtering_match_any=False,
-        num_retries=0,
     )
 
-    # No tags in the request: the pin tags belong to the DEPLOYMENTS, not the
-    # caller. The untagged request must be free to fall back to `secondary`.
     response = await router.acompletion(
         model="primary",
         messages=[{"role": "user", "content": "hi"}],
-        metadata={},
+        metadata={"tags": ["!provider:anthropic", "&reasoning_type:high"]},
+        mock_response="hi",
     )
-    assert response._hidden_params["model_id"] == "openai-dep"
+    assert response._hidden_params["model_id"] == "tertiary-default"
 
 
 @pytest.mark.asyncio()
-async def test_deployment_tags_do_not_leak_into_same_group_weighted_retry():
-    """UNTAGGED request in a single model group whose weight-forced primary leg
-    always fails must retry onto the healthy other-provider leg. Before the fix
-    the failing leg's `pin:azure` tag leaked and filtered the retry down to just
-    that leg, so the healthy `pin:openai` leg became unreachable."""
+async def test_unknown_tag_denial_is_scoped_per_hop_not_leaked_across_fallback_groups():
+    # On "primary": region:us-east is real and satisfiable there, but the invented
+    # tag masks it -> denies fail-open -> raises -> advances to "fallback".
+    # On "fallback": neither region:us-east nor the invented tag is known to this
+    # entirely different, unrelated group at all, so there's no answer for the
+    # invented tag to hide -> falls open normally. Each hop must independently
+    # discover what its own group knows; a deny decision from a prior hop's group
+    # must not leak forward and block a later hop that has no relevant knowledge.
     router = litellm.Router(
         model_list=[
             {
-                "model_name": "m",
+                "model_name": "primary",
                 "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["pin:azure"],
-                    "weight": 1000,
-                    "mock_response": Exception("fail azure"),
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["region:us-east"],
                 },
-                "model_info": {"id": "azure-dep"},
+                "model_info": {"id": "primary-us-east", "allow_fail_open": True},
             },
             {
-                "model_name": "m",
+                "model_name": "fallback",
                 "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["pin:openai"],
-                    "weight": 1,
-                    "mock_response": "OK-RETRY-OPENAI",
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["default", "provider:openai"],
                 },
-                "model_info": {"id": "openai-dep"},
+                "model_info": {"id": "fallback-default", "allow_fail_open": True},
             },
         ],
+        fallbacks=[{"primary": ["fallback"]}],
         enable_tag_filtering=True,
-        tag_filtering_match_any=False,
-        num_retries=3,
-        routing_strategy="simple-shuffle",
-        # Weighted intra-group failover excludes the just-failed deployment on
-        # retry; that exclusion re-selects through get_deployments_for_tag, so it
-        # only reaches the healthy leg once the leaked tag no longer filters it out.
-        enable_weighted_failover=True,
     )
 
     response = await router.acompletion(
-        model="m",
+        model="primary",
         messages=[{"role": "user", "content": "hi"}],
-        metadata={},
+        metadata={"tags": ["&region:us-east", "&totally-invented-tag-nobody-has"]},
+        mock_response="hi",
     )
-    assert response._hidden_params["model_id"] == "openai-dep"
+    assert response._hidden_params["model_id"] == "fallback-default"
 
 
 @pytest.mark.asyncio()
-async def test_genuine_pin_still_enforced_and_fails_loud_when_no_matching_leg():
-    """The snapshot must NOT weaken a genuine pin. A request whose ORIGINAL tags
-    are `[pin:bedrock]` (as the proxy's pinned route sets pre-routing) must still
-    filter strictly to a bedrock leg — and, when no bedrock leg exists, fail loud
-    with the tag-routing error rather than silently spilling to another provider."""
+async def test_required_and_only_finds_compliant_non_default_deployment_over_noncompliant_default():
+    # A required-AND-only request must be checked against every deployment in the
+    # group, not just the one tagged "default". A compliant, healthy deployment that
+    # simply isn't the operator's default must win over routing to a noncompliant
+    # default just because allow_fail_open happened to be set.
     router = litellm.Router(
         model_list=[
             {
-                "model_name": "m",
+                "model_name": "gpt-4",
                 "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["pin:azure"],
-                    "mock_response": "should-never-be-reached",
-                },
-                "model_info": {"id": "azure-dep"},
-            },
-        ],
-        enable_tag_filtering=True,
-        tag_filtering_match_any=False,
-        num_retries=0,
-    )
-
-    with pytest.raises(Exception) as exc_info:
-        await router.acompletion(
-            model="m",
-            messages=[{"role": "user", "content": "hi"}],
-            # The pin tag is present in metadata pre-routing, exactly as the
-            # proxy's pinned handler sets it; the snapshot must capture it so
-            # strict subset matching still applies.
-            metadata={"tags": ["pin:bedrock"]},
-        )
-
-    from litellm.types.router import RouterErrors
-
-    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
-
-
-# ---------------------------------------------------------------------------
-# Codex re-review P1-A (part 2): a client-smuggled ORIGINAL_REQUEST_TAGS_KEY
-# must never be trusted as the routing snapshot. Router._update_kwargs_before_
-# fallbacks OVERWRITES the snapshot from the trusted live tags on the FIRST
-# invocation (setdefault would have honored the spoof). Reverting the overwrite
-# back to setdefault makes test_spoofed_original_request_tags_snapshot_is_
-# overwritten route to the spoofed pin instead of failing loud.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio()
-async def test_spoofed_original_request_tags_snapshot_is_overwritten():
-    """A spoofed ``_original_request_tags`` in the caller's metadata must be
-    overwritten by the router from the trusted live ``tags`` on the first
-    invocation. Live pin is ``pin:bedrock``; the spoof claims ``pin:azure``.
-    Routing must honor ``pin:bedrock`` and fail loud — never serve the
-    ``pin:azure`` leg the spoof points at."""
-    from litellm.router_strategy.tag_based_routing import ORIGINAL_REQUEST_TAGS_KEY
-
-    router = litellm.Router(
-        model_list=[
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["pin:azure"],
-                    "mock_response": "should-never-be-reached",
-                },
-                "model_info": {"id": "azure-dep"},
-            },
-        ],
-        enable_tag_filtering=True,
-        tag_filtering_match_any=False,
-        num_retries=0,
-    )
-
-    with pytest.raises(Exception) as exc_info:
-        await router.acompletion(
-            model="m",
-            messages=[{"role": "user", "content": "hi"}],
-            # Live tags are the server-set pin; the client also smuggled a
-            # conflicting pre-merge snapshot pointing at the azure leg.
-            metadata={"tags": ["pin:bedrock"], ORIGINAL_REQUEST_TAGS_KEY: ["pin:azure"]},
-        )
-
-    from litellm.types.router import RouterErrors
-
-    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
-
-
-# ---------------------------------------------------------------------------
-# Codex re-review P1-B: a hard provider pin (any ``pin:`` tag) must NEVER fall
-# through to the ``default``-deployment pool — the fork must not depend on a
-# static config guard in another repo to forbid ``default`` tags. get_deployments
-# _for_tag skips the default fallback for pinned requests. Reverting the
-# ``not disable_default_fallback`` guard makes test_pin_never_falls_back_to_
-# default_pool serve the default deployment instead of failing loud.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio()
-async def test_pin_never_falls_back_to_default_pool():
-    """A ``pin:bedrock`` request with a ``default``-tagged deployment present but
-    NO bedrock leg must fail loud — the pin can never be served by the default
-    pool."""
-    router = litellm.Router(
-        model_list=[
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["default"],
-                    "mock_response": "should-never-be-reached-default",
-                },
-                "model_info": {"id": "default-model"},
-            },
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["pin:azure"],
-                    "mock_response": "should-never-be-reached-azure",
-                },
-                "model_info": {"id": "azure-dep"},
-            },
-        ],
-        enable_tag_filtering=True,
-        tag_filtering_match_any=False,
-        num_retries=0,
-    )
-
-    with pytest.raises(Exception) as exc_info:
-        await router.acompletion(
-            model="m",
-            messages=[{"role": "user", "content": "hi"}],
-            metadata={"tags": ["pin:bedrock"]},
-        )
-
-    from litellm.types.router import RouterErrors
-
-    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
-
-
-@pytest.mark.asyncio()
-async def test_non_pin_tag_still_falls_back_to_default_pool_unchanged():
-    """The pin guard is scoped to ``pin:`` tags: a NON-pin tagged request with no
-    exact match still falls back to the ``default`` pool (vanilla behavior). This
-    guards against the guard over-firing on all tagged requests."""
-    router = litellm.Router(
-        model_list=[
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
+                    "model": "gpt-4o",
                     "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
-                    "tags": ["default"],
+                    "tags": ["provider:anthropic", "region:us-east"],
                 },
-                "model_info": {"id": "default-model"},
+                "model_info": {"id": "anthropic-us-east"},
             },
             {
-                "model_name": "m",
+                "model_name": "gpt-4",
                 "litellm_params": {
-                    "model": "openai/gpt-4o-mini",
+                    "model": "gpt-4o-mini",
                     "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
-                    "tags": ["teamA"],
+                    "tags": ["default", "provider:openai"],
                 },
-                "model_info": {"id": "team-a"},
+                "model_info": {"id": "openai-default", "allow_fail_open": True},
             },
         ],
         enable_tag_filtering=True,
-        tag_filtering_match_any=False,
     )
 
     for _ in range(5):
         response = await router.acompletion(
-            model="m",
+            model="gpt-4",
             messages=[{"role": "user", "content": "hi"}],
-            metadata={"tags": ["team-does-not-exist"]},
-            mock_response="ok",
+            metadata={"tags": ["&region:us-east"]},
+            mock_response="hi",
         )
-        assert response._hidden_params["model_id"] == "default-model"
+        assert response._hidden_params["model_id"] == "anthropic-us-east"
 
 
-@pytest.mark.asyncio()
-async def test_untagged_request_still_uses_default_pool_unchanged():
-    """Vanilla behavior preserved: an UNTAGGED request with a ``default``-tagged
-    deployment still routes to it (the pin guard never fires without a pin)."""
-    router = litellm.Router(
-        model_list=[
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
-                    "tags": ["default"],
-                },
-                "model_info": {"id": "default-model"},
-            },
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o-mini",
-                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
-                    "tags": ["pin:azure"],
-                },
-                "model_info": {"id": "azure-dep"},
-            },
-        ],
-        enable_tag_filtering=True,
-        tag_filtering_match_any=False,
-    )
-
-    for _ in range(5):
-        response = await router.acompletion(
-            model="m",
-            messages=[{"role": "user", "content": "hi"}],
-            metadata={},
-            mock_response="ok",
-        )
-        assert response._hidden_params["model_id"] == "default-model"
+# --- plain positive-tag exhaustion must not be masked by a universally-applied
+# "default" tag; allow_fail_open must still be consulted (or hard-fail without it) ---
 
 
-# ---------------------------------------------------------------------------
-# Codex R4 convergence: the pinned routing decision derives SOLELY from the
-# trusted PINNED_PROVIDER_ROUTE_KEY signal (the provider from the URL), read by
-# get_deployments_for_tag with absolute priority. metadata["tags"] (incl. the
-# appended key/team tags) is IGNORED for routing but still carried for spend
-# attribution. This structurally closes the key/team-tag 400 (P2) and the
-# spoofed-snapshot / forged-tag bypasses (P1): none of them feed the pinned
-# routing decision.
-#
-# Mutation-verify: drop the PINNED_PROVIDER_ROUTE_KEY branch in
-# _resolve_request_tags -> test_pinned_signal_routes_despite_team_tags 400s
-# (team:x re-enters routing and breaks the subset match) and
-# test_pinned_signal_overrides_forged_client_routing routes to / fails on the
-# forged pin instead of the trusted one.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio()
-async def test_pinned_signal_routes_despite_team_tags():
-    """A pinned request whose metadata also carries an appended team tag
-    (``metadata["tags"] == ["pin:bedrock", "team:x"]``) must still route to the
-    pin leg under strict subset matching — the trusted signal makes the routing
-    tag set EXACTLY ``["pin:bedrock"]``, so the team tag never breaks the subset
-    match (previously a 400). The team tag remains in ``metadata["tags"]`` for
-    attribution."""
-    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
-
-    router = litellm.Router(
-        model_list=[
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["pin:bedrock"],
-                },
-                "model_info": {"id": "bedrock-dep"},
-            },
-        ],
-        enable_tag_filtering=True,
-        tag_filtering_match_any=False,
-        num_retries=0,
-    )
-
-    metadata = {"tags": ["pin:bedrock", "team:x"], PINNED_PROVIDER_ROUTE_KEY: "bedrock"}
-    response = await router.acompletion(
-        model="m",
-        messages=[{"role": "user", "content": "hi"}],
-        metadata=metadata,
-        mock_response="ok",
-    )
-    assert response._hidden_params["model_id"] == "bedrock-dep"
-    # Attribution tags untouched: the team tag is still present for spend.
-    assert "team:x" in metadata["tags"]
-
-
-@pytest.mark.asyncio()
-async def test_pinned_signal_overrides_forged_client_routing():
-    """Every client-controllable routing input points at ``azure``; the trusted
-    signal points at ``bedrock``. Routing must honor the signal (bedrock leg),
-    proving no client field can redirect a pinned request."""
-    from litellm.router_strategy.tag_based_routing import (
-        ORIGINAL_REQUEST_TAGS_KEY,
-        PINNED_PROVIDER_ROUTE_KEY,
-    )
-
-    router = litellm.Router(
-        model_list=[
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["pin:bedrock"],
-                },
-                "model_info": {"id": "bedrock-dep"},
-            },
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["pin:azure"],
-                    "mock_response": "should-never-be-reached-azure",
-                },
-                "model_info": {"id": "azure-dep"},
-            },
-        ],
-        enable_tag_filtering=True,
-        tag_filtering_match_any=False,
-        num_retries=0,
-    )
-
-    response = await router.acompletion(
-        model="m",
-        messages=[{"role": "user", "content": "hi"}],
-        metadata={
-            "tags": ["pin:azure"],
-            ORIGINAL_REQUEST_TAGS_KEY: ["pin:azure"],
-            PINNED_PROVIDER_ROUTE_KEY: "bedrock",
-        },
-        mock_response="ok",
-    )
-    assert response._hidden_params["model_id"] == "bedrock-dep"
-
-
-@pytest.mark.asyncio()
-async def test_pinned_signal_still_fails_loud_when_no_matching_leg():
-    """The trusted signal must not weaken a genuine pin: a ``bedrock`` signal
-    with only an ``azure`` leg (and a ``default`` leg present) fails loud — the
-    pin still disables the default-pool fallback."""
-    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
-    from litellm.types.router import RouterErrors
-
-    router = litellm.Router(
-        model_list=[
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["default"],
-                    "mock_response": "should-never-be-reached-default",
-                },
-                "model_info": {"id": "default-model"},
-            },
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["pin:azure"],
-                    "mock_response": "should-never-be-reached-azure",
-                },
-                "model_info": {"id": "azure-dep"},
-            },
-        ],
-        enable_tag_filtering=True,
-        tag_filtering_match_any=False,
-        num_retries=0,
-    )
-
-    with pytest.raises(Exception) as exc_info:
-        await router.acompletion(
-            model="m",
-            messages=[{"role": "user", "content": "hi"}],
-            metadata={"tags": ["pin:bedrock"], PINNED_PROVIDER_ROUTE_KEY: "bedrock"},
-        )
-    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
-
-
-@pytest.mark.asyncio()
-async def test_unified_route_unchanged_without_signal():
-    """Requirement 4: with no pinned signal present, tag routing is identical to
-    vanilla — a team-tagged request still routes to its team leg by subset."""
-    router = litellm.Router(
-        model_list=[
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["team:x"],
-                },
-                "model_info": {"id": "team-dep"},
-            },
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["default"],
-                },
-                "model_info": {"id": "default-dep"},
-            },
-        ],
-        enable_tag_filtering=True,
-        tag_filtering_match_any=False,
-        num_retries=0,
-    )
-
-    response = await router.acompletion(
-        model="m",
-        messages=[{"role": "user", "content": "hi"}],
-        metadata={"tags": ["team:x"]},
-        mock_response="ok",
-    )
-    assert response._hidden_params["model_id"] == "team-dep"
-
-
-# ---------------------------------------------------------------------------
-# P1a: a trusted provider pin must be ENFORCED even when enable_tag_filtering is
-# off. get_deployments_for_tag reads the pin signal BEFORE the enable_tag_
-# filtering early-return, so a pinned request is always restricted to its
-# pin:<provider> legs (or fails loud) — never served by an off-provider leg.
-#
-# Mutation-verify: restore the original early-return
-# (`if request_enable_tag_filtering is not True and llm_router.enable_tag_
-# filtering is not True: return healthy_deployments`, dropping the pinned_provider
-# guard) and test_pin_enforced_with_tag_filtering_disabled would route to the
-# off-provider leg / stop failing loud.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio()
-async def test_pin_enforced_with_tag_filtering_disabled():
-    """enable_tag_filtering=False WITH a trusted pin present: the request must
-    still be restricted to the pin:<provider> leg, never the off-provider one."""
-    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
-
-    router = litellm.Router(
-        model_list=[
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["pin:bedrock"],
-                },
-                "model_info": {"id": "bedrock-dep"},
-            },
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["pin:openai"],
-                    "mock_response": "should-never-be-reached-openai",
-                },
-                "model_info": {"id": "openai-dep"},
-            },
-        ],
-        enable_tag_filtering=False,  # OFF — the pin must hold anyway
-        tag_filtering_match_any=False,
-        num_retries=0,
-    )
-
-    for _ in range(5):
-        response = await router.acompletion(
-            model="m",
-            messages=[{"role": "user", "content": "hi"}],
-            metadata={"tags": ["pin:bedrock"], PINNED_PROVIDER_ROUTE_KEY: "bedrock"},
-            mock_response="ok",
-        )
-        assert response._hidden_params["model_id"] == "bedrock-dep"
-
-
-@pytest.mark.asyncio()
-async def test_pin_fails_loud_with_tag_filtering_disabled_and_no_matching_leg():
-    """enable_tag_filtering=False, a trusted bedrock pin, but only an off-provider
-    leg present: must FAIL LOUD, never silently serve the off-provider leg."""
-    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
-    from litellm.types.router import RouterErrors
-
-    router = litellm.Router(
-        model_list=[
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["pin:openai"],
-                    "mock_response": "should-never-be-reached-openai",
-                },
-                "model_info": {"id": "openai-dep"},
-            },
-        ],
-        enable_tag_filtering=False,
-        tag_filtering_match_any=False,
-        num_retries=0,
-    )
-
-    with pytest.raises(Exception) as exc_info:
-        await router.acompletion(
-            model="m",
-            messages=[{"role": "user", "content": "hi"}],
-            metadata={"tags": ["pin:bedrock"], PINNED_PROVIDER_ROUTE_KEY: "bedrock"},
-        )
-    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
-
-
-def test_pinned_provider_from_kwargs_only_trusts_the_signal():
-    from litellm.router_strategy.tag_based_routing import (
-        PINNED_PROVIDER_ROUTE_KEY,
-        _pinned_provider_from_kwargs,
-    )
-
-    assert _pinned_provider_from_kwargs({"metadata": {PINNED_PROVIDER_ROUTE_KEY: "bedrock"}}, "metadata") == "bedrock"
-    # A pin: TAG alone (no trusted signal) is NOT the trusted pin signal.
-    assert _pinned_provider_from_kwargs({"metadata": {"tags": ["pin:bedrock"]}}, "metadata") is None
-    assert _pinned_provider_from_kwargs(None, "metadata") is None
-    assert _pinned_provider_from_kwargs({"metadata": None}, "metadata") is None
-    assert _pinned_provider_from_kwargs({"metadata": {PINNED_PROVIDER_ROUTE_KEY: ""}}, "metadata") is None
-    assert (
-        _pinned_provider_from_kwargs({"litellm_metadata": {PINNED_PROVIDER_ROUTE_KEY: "vertex_ai"}}, "litellm_metadata")
-        == "vertex_ai"
-    )
-
-
-# ---------------------------------------------------------------------------
-# P1b: a client-controlled User-Agent (tag_regex) must NEVER select a deployment
-# that lacks the pin tag for a pinned request. _match_deployment disables the
-# regex path when pin_enforced, so the pin tag is the SOLE selector.
-#
-# Mutation-verify: drop the `and not pin_enforced` guard in _match_deployment and
-# test_pin_ignores_tag_regex_user_agent_match routes to / is rescued by the regex
-# deployment.
-# ---------------------------------------------------------------------------
-
-
-def test_match_deployment_pin_enforced_blocks_regex():
-    """Unit: with pin_enforced, a regex-only (no plain tag) deployment whose
-    tag_regex matches the User-Agent must NOT match."""
-    from litellm.router_strategy.tag_based_routing import _match_deployment
-
-    deployment = {
-        "model_name": "m",
-        "litellm_params": {"model": "openai/gpt-4o", "tag_regex": ["^User-Agent: claude-code"]},
-    }
-    # Without the pin, the regex matches (baseline).
-    assert (
-        _match_deployment(
-            deployment=deployment,
-            request_tags=["pin:bedrock"],
-            header_strings=["User-Agent: claude-code/1.2.3"],
-            match_any=True,
-            pin_enforced=False,
-        )
-        is not None
-    )
-    # With the pin enforced, the regex path is disabled -> no match.
-    assert (
-        _match_deployment(
-            deployment=deployment,
-            request_tags=["pin:bedrock"],
-            header_strings=["User-Agent: claude-code/1.2.3"],
-            match_any=True,
-            pin_enforced=True,
-        )
-        is None
-    )
-
-
-@pytest.mark.asyncio()
-async def test_pin_ignores_tag_regex_user_agent_match():
-    """A pinned bedrock request whose User-Agent matches an off-provider
-    deployment's tag_regex must route to the pin:bedrock leg, NOT the regex leg."""
-    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
-
-    router = litellm.Router(
-        model_list=[
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tag_regex": ["^User-Agent: claude-code\\/"],
-                    "mock_response": "should-never-be-reached-regex",
-                },
-                "model_info": {"id": "regex-dep"},
-            },
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tags": ["pin:bedrock"],
-                },
-                "model_info": {"id": "bedrock-dep"},
-            },
-        ],
-        enable_tag_filtering=True,
-        tag_filtering_match_any=True,  # regex would normally be allowed to match
-        num_retries=0,
-    )
-
-    for _ in range(5):
-        response = await router.acompletion(
-            model="m",
-            messages=[{"role": "user", "content": "hi"}],
-            metadata={
-                "tags": ["pin:bedrock"],
-                PINNED_PROVIDER_ROUTE_KEY: "bedrock",
-                "user_agent": "claude-code/1.2.3",
-            },
-            mock_response="ok",
-        )
-        assert response._hidden_params["model_id"] == "bedrock-dep"
-
-
-@pytest.mark.asyncio()
-async def test_pin_with_only_regex_deployment_fails_loud():
-    """When the ONLY deployment is a regex (User-Agent) leg lacking the pin tag,
-    a pinned request must fail loud — the spoofable User-Agent cannot rescue it."""
-    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
-    from litellm.types.router import RouterErrors
-
-    router = litellm.Router(
-        model_list=[
-            {
-                "model_name": "m",
-                "litellm_params": {
-                    "model": "openai/gpt-4o",
-                    "api_key": "fake",
-                    "tag_regex": ["^User-Agent: claude-code\\/"],
-                    "mock_response": "should-never-be-reached-regex",
-                },
-                "model_info": {"id": "regex-dep"},
-            },
-        ],
-        enable_tag_filtering=True,
-        tag_filtering_match_any=True,
-        num_retries=0,
-    )
-
-    with pytest.raises(Exception) as exc_info:
-        await router.acompletion(
-            model="m",
-            messages=[{"role": "user", "content": "hi"}],
-            metadata={
-                "tags": ["pin:bedrock"],
-                PINNED_PROVIDER_ROUTE_KEY: "bedrock",
-                "user_agent": "claude-code/1.2.3",
-            },
-        )
-    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
-
-
-# ---------------------------------------------------------------------------
-# P2: on a fallback the reused kwargs dict must not ACCUMULATE each attempt's
-# deployment tags in metadata["tags"] — the successful SpendLogs row's
-# request_tags (read from metadata["tags"]) must reflect ONLY the winning
-# deployment's tags + the caller baseline, never a prior failed attempt's tag.
-#
-# Mutation-verify: revert _update_kwargs_with_deployment to append onto the live
-# tags (drop the ORIGINAL_REQUEST_TAGS_KEY baseline rebuild) and the second call
-# yields ["pin:azure", "pin:openai"] instead of ["pin:openai"].
-# ---------------------------------------------------------------------------
-
-
-def _minimal_router_for_kwargs_merge() -> "litellm.Router":
+def _quality_high_cost_low_router():
     return litellm.Router(
         model_list=[
             {
-                "model_name": "m",
-                "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake"},
-                "model_info": {"id": "seed"},
-            }
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["default", "quality:high"],
+                },
+                "model_info": {"id": "quality-high-1"},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["default", "quality:high"],
+                },
+                "model_info": {"id": "quality-high-2"},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["default", "cost:low"],
+                },
+                "model_info": {"id": "cost-low-1"},
+            },
+            {
+                "model_name": "gpt-4",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["default", "cost:low"],
+                },
+                "model_info": {"id": "cost-low-2"},
+            },
         ],
+        enable_tag_filtering=True,
     )
-
-
-def test_update_kwargs_with_deployment_replaces_prior_attempt_tag_untagged_caller():
-    """UNTAGGED caller, Azure attempt then OpenAI fallback reuse the SAME kwargs:
-    the winning attribution tags must be exactly the winning deployment's tag."""
-    from litellm.router_strategy.tag_based_routing import ORIGINAL_REQUEST_TAGS_KEY
-
-    router = _minimal_router_for_kwargs_merge()
-    azure_dep = {
-        "model_name": "m",
-        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:azure"]},
-        "model_info": {"id": "azure-dep"},
-    }
-    openai_dep = {
-        "model_name": "m",
-        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:openai"]},
-        "model_info": {"id": "openai-dep"},
-    }
-    # Snapshot as _update_kwargs_before_fallbacks would leave it for an untagged caller.
-    kwargs = {"metadata": {ORIGINAL_REQUEST_TAGS_KEY: [], "tags": []}}
-
-    router._update_kwargs_with_deployment(deployment=azure_dep, kwargs=kwargs)
-    assert kwargs["metadata"]["tags"] == ["pin:azure"]
-
-    # Fallback reuses the SAME kwargs dict; must REPLACE, not accumulate.
-    router._update_kwargs_with_deployment(deployment=openai_dep, kwargs=kwargs)
-    assert kwargs["metadata"]["tags"] == ["pin:openai"], (
-        "winning SpendLogs row would carry the failed attempt's tag (double-attribution)"
-    )
-
-
-def test_update_kwargs_with_deployment_keeps_caller_tags_and_swaps_deployment_tag():
-    """Caller/auth tags in the snapshot survive; only the per-deployment tag swaps
-    across attempts."""
-    from litellm.router_strategy.tag_based_routing import ORIGINAL_REQUEST_TAGS_KEY
-
-    router = _minimal_router_for_kwargs_merge()
-    azure_dep = {
-        "model_name": "m",
-        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:azure"]},
-        "model_info": {"id": "azure-dep"},
-    }
-    openai_dep = {
-        "model_name": "m",
-        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:openai"]},
-        "model_info": {"id": "openai-dep"},
-    }
-    kwargs = {"metadata": {ORIGINAL_REQUEST_TAGS_KEY: ["team:x"], "tags": ["team:x"]}}
-
-    router._update_kwargs_with_deployment(deployment=azure_dep, kwargs=kwargs)
-    assert kwargs["metadata"]["tags"] == ["team:x", "pin:azure"]
-
-    router._update_kwargs_with_deployment(deployment=openai_dep, kwargs=kwargs)
-    assert kwargs["metadata"]["tags"] == ["team:x", "pin:openai"]
-
-
-# ---------------------------------------------------------------------------
-# HARD PROVIDER-PIN CHOKEPOINT (P1). Every router path that commits a chosen
-# deployment funnels through _update_kwargs_with_deployment, INCLUDING the
-# early-return dicts (single-deployment-by-id, default_deployment) that skip
-# get_deployments_for_tag's selection-layer enforcement. The chokepoint re-asserts
-# the pin there, so the served provider is a pure function of the URL for EVERY
-# selection path by construction.
-# Mutation-verify: delete the chokepoint block at the top of
-# _update_kwargs_with_deployment and the two "off provider" tests stop raising.
-# ---------------------------------------------------------------------------
-
-
-def test_chokepoint_rejects_off_provider_committed_deployment_for_pinned_request():
-    """Requirement 1: a pinned request (trusted signal -> bedrock) whose COMMITTED
-    deployment is off-provider (``pin:openai`` — e.g. resolved via a
-    single-deployment-by-id early return that never ran tag filtering) fails loud
-    at the commit chokepoint with a non-retryable 400 naming the model and the
-    required ``pin:bedrock`` tag."""
-    from litellm.router_strategy.tag_based_routing import ORIGINAL_REQUEST_TAGS_KEY, PINNED_PROVIDER_ROUTE_KEY
-    from litellm.types.router import RouterErrors
-
-    router = _minimal_router_for_kwargs_merge()
-    off_provider_dep = {
-        "model_name": "m",
-        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:openai"]},
-        "model_info": {"id": "openai-dep"},
-    }
-    kwargs = {"metadata": {PINNED_PROVIDER_ROUTE_KEY: "bedrock", ORIGINAL_REQUEST_TAGS_KEY: [], "tags": []}}
-
-    with pytest.raises(litellm.BadRequestError) as exc_info:
-        router._update_kwargs_with_deployment(deployment=off_provider_dep, kwargs=kwargs)
-    msg = str(exc_info.value)
-    assert RouterErrors.no_deployments_with_tag_routing.value in msg
-    assert "pin:bedrock" in msg
-    # Non-retryable: BadRequestError carries status_code 400.
-    assert getattr(exc_info.value, "status_code", None) == 400
-
-
-def test_chokepoint_reads_pin_from_litellm_metadata_bucket():
-    """The chokepoint must catch a pin recorded in the ``litellm_metadata`` bucket
-    too (the bucket used for /v1/messages, bedrock, batches …), not only
-    ``metadata`` — otherwise a bucket-selection divergence would let a pinned
-    request slip through uncaught."""
-    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
-
-    router = _minimal_router_for_kwargs_merge()
-    off_provider_dep = {
-        "model_name": "m",
-        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:openai"]},
-        "model_info": {"id": "openai-dep"},
-    }
-    kwargs = {"litellm_metadata": {PINNED_PROVIDER_ROUTE_KEY: "bedrock"}}
-    with pytest.raises(litellm.BadRequestError):
-        router._update_kwargs_with_deployment(deployment=off_provider_dep, kwargs=kwargs)
-
-
-def test_chokepoint_passes_correct_pin_and_is_noop_when_unpinned():
-    """Requirement 6: a correctly pin-tagged deployment passes the chokepoint with
-    no false 4xx, and when NO trusted pin is present the chokepoint is a pure
-    no-op — even an off-provider deployment on a unified request is untouched
-    (unified routes behave byte-for-byte as before)."""
-    from litellm.router_strategy.tag_based_routing import ORIGINAL_REQUEST_TAGS_KEY, PINNED_PROVIDER_ROUTE_KEY
-
-    router = _minimal_router_for_kwargs_merge()
-    bedrock_dep = {
-        "model_name": "m",
-        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:bedrock"]},
-        "model_info": {"id": "bedrock-dep"},
-    }
-    # (a) Correctly pin-tagged deployment for a pinned request: no raise.
-    kwargs_pinned = {"metadata": {PINNED_PROVIDER_ROUTE_KEY: "bedrock", ORIGINAL_REQUEST_TAGS_KEY: [], "tags": []}}
-    router._update_kwargs_with_deployment(deployment=bedrock_dep, kwargs=kwargs_pinned)
-    assert "pin:bedrock" in kwargs_pinned["metadata"]["tags"]
-
-    # (b) Unified request (no trusted pin): chokepoint is a no-op even for an
-    # off-provider deployment — unified routing is unaffected.
-    off_provider_dep = {
-        "model_name": "m",
-        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:openai"]},
-        "model_info": {"id": "openai-dep"},
-    }
-    kwargs_unpinned = {"metadata": {ORIGINAL_REQUEST_TAGS_KEY: ["team:x"], "tags": ["team:x"]}}
-    router._update_kwargs_with_deployment(deployment=off_provider_dep, kwargs=kwargs_unpinned)
-    assert kwargs_unpinned["metadata"]["tags"] == ["team:x", "pin:openai"]
-
-
-def test_default_deployment_off_provider_pinned_request_fails_loud():
-    """Requirement 2: with ``default_deployment`` set to an OFF-PROVIDER deployment,
-    a pinned request for an unknown model resolves to that default via the
-    early-return path that SKIPS get_deployments_for_tag — the chokepoint is what
-    stops it from being served off-provider."""
-    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
-
-    router = _minimal_router_for_kwargs_merge()
-    router.default_deployment = {
-        "model_name": "default-model",
-        "litellm_params": {"model": "openai/gpt-4o", "api_key": "fake", "tags": ["pin:openai"]},
-        "model_info": {"id": "default-dep"},
-    }
-    kwargs = {"metadata": {PINNED_PROVIDER_ROUTE_KEY: "bedrock"}}
-
-    # The default_deployment early return hands back the off-provider dict without
-    # any tag filtering — proving the selection layer alone would serve it.
-    _model, deployment = router._common_checks_available_deployment(
-        model="totally-unknown-model", request_kwargs=kwargs
-    )
-    assert isinstance(deployment, dict)
-    assert deployment["litellm_params"]["tags"] == ["pin:openai"]
-
-    # The commit chokepoint refuses it.
-    with pytest.raises(litellm.BadRequestError) as exc_info:
-        router._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
-    assert "pin:bedrock" in str(exc_info.value)
 
 
 @pytest.mark.asyncio()
-async def test_fallback_winning_row_request_tags_exclude_failed_deployment_tag():
-    """End-to-end: Azure leg fails, OpenAI fallback serves. The successful row's
-    request_tags (captured off the standard logging payload) must contain the
-    winning pin:openai tag and NOT the failed attempt's pin:azure tag."""
-    import asyncio as _asyncio
-
-    from litellm.integrations.custom_logger import CustomLogger
-
-    captured: dict = {}
-
-    class _CaptureLogger(CustomLogger):
-        async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
-            slo = kwargs.get("standard_logging_object") or {}
-            captured["request_tags"] = slo.get("request_tags")
-
-    logger = _CaptureLogger()
-    _prev_callbacks = litellm.callbacks
-    litellm.callbacks = [logger]
-    try:
-        router = litellm.Router(
-            model_list=[
-                {
-                    "model_name": "primary",
-                    "litellm_params": {
-                        "model": "openai/gpt-4o",
-                        "api_key": "fake",
-                        "tags": ["pin:azure"],
-                        "mock_response": Exception("simulated azure failure"),
-                    },
-                    "model_info": {"id": "azure-dep"},
-                },
-                {
-                    "model_name": "secondary",
-                    "litellm_params": {
-                        "model": "openai/gpt-4o",
-                        "api_key": "fake",
-                        "tags": ["pin:openai"],
-                        "mock_response": "OK-FROM-OPENAI",
-                    },
-                    "model_info": {"id": "openai-dep"},
-                },
-            ],
-            fallbacks=[{"primary": ["secondary"]}],
-            enable_tag_filtering=True,
-            tag_filtering_match_any=False,
-            num_retries=0,
-        )
-
-        response = await router.acompletion(
-            model="primary",
-            messages=[{"role": "user", "content": "hi"}],
-            metadata={},
-        )
-        assert response._hidden_params["model_id"] == "openai-dep"
-
-        # Async success logging is scheduled as a task; poll briefly for it.
-        for _ in range(40):
-            if "request_tags" in captured:
-                break
-            await _asyncio.sleep(0.05)
-
-        assert "request_tags" in captured, "success logging did not fire"
-        request_tags = captured["request_tags"] or []
-        assert "pin:openai" in request_tags, request_tags
-        assert "pin:azure" not in request_tags, (
-            f"failed Azure attempt's tag leaked into the winning row: {request_tags}"
-        )
-    finally:
-        litellm.callbacks = _prev_callbacks
-
-
-# ---------------------------------------------------------------------------
-# PROMPT-MANAGEMENT ENTRY PIN GUARD (P1 + P2 @ descriptor commit).
-# A hard provider pin and prompt-managed (potentially cross-provider) model
-# resolution are incompatible: inside _prompt_management_factory the prompt
-# manager's optional_params can overwrite kwargs["metadata"], ERASING the trusted
-# pin signal (defeating both the in-factory guard and the deployment chokepoint),
-# and the factory commits a prompt-management DESCRIPTOR (config, not the upstream
-# LLM leg) to the chokepoint, which false-positives when the descriptor lacks the
-# pin tag. Router.acompletion closes the whole class at the ENTRY: when a prompt-
-# management model is detected AND a trusted pin is present, it fails loud with
-# the chokepoint's non-retryable 400 BEFORE the factory runs — so the factory,
-# the optional_params merge, the signal erasure, and the descriptor commit never
-# execute for a pinned request. NON-pinned prompt management is untouched.
-# Mutation-verify: delete the `if pinned_provider is not None:` entry guard in
-# acompletion and case (a) stops raising (the factory would run instead).
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio()
-async def test_prompt_management_pinned_fails_loud_at_entry_and_serves_when_unpinned():
-    """A pinned request to a prompt-management model must fail loud (non-retryable
-    400 naming the model and the pin) at the acompletion ENTRY guard — BEFORE
-    _prompt_management_factory runs, so neither the factory/prompt manager nor a
-    direct litellm.acompletion is ever reached. With NO pin the guard is a pure
-    no-op and the factory runs exactly as before."""
+async def test_plain_tag_exhaustion_with_universal_default_tag_raises_by_default():
+    # Every deployment in the group is tagged "default" (a legitimate cross-cutting
+    # safety-net pattern), so default_deployments is never empty on its own. With
+    # the quality:high deployments unhealthy, a request asking for quality:high
+    # must still hard-fail, not silently get served by a cost:low deployment just
+    # because it happens to also carry "default".
     from unittest.mock import AsyncMock, patch
 
-    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
+    router = _quality_high_cost_low_router()
+
+    with patch(
+        "litellm.router._async_get_cooldown_deployments",
+        new=AsyncMock(return_value=["quality-high-1", "quality-high-2"]),
+    ):
+        with pytest.raises(Exception) as exc_info:
+            await router.acompletion(
+                model="gpt-4",
+                messages=[{"role": "user", "content": "hi"}],
+                metadata={"tags": ["quality:high"]},
+                mock_response="hi",
+            )
+
     from litellm.types.router import RouterErrors
 
-    # A genuine prompt-management model: its single deployment's litellm model
-    # prefix ("langfuse") is a known custom-logger callback, so
-    # _is_prompt_management_model("pm-model") is True and acompletion routes into
-    # the prompt-management branch that carries the entry guard.
-    router = litellm.Router(
+    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
+
+
+@pytest.mark.asyncio()
+async def test_plain_tag_exhaustion_with_universal_default_tag_falls_open_when_allowed():
+    router = _quality_high_cost_low_router()
+    for deployment in router.model_list:
+        deployment["model_info"]["allow_fail_open"] = True
+
+    from unittest.mock import AsyncMock, patch
+
+    with patch(
+        "litellm.router._async_get_cooldown_deployments",
+        new=AsyncMock(return_value=["quality-high-1", "quality-high-2"]),
+    ):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["quality:high"]},
+            mock_response="hi",
+        )
+
+    assert response._hidden_params["model_id"] in ("cost-low-1", "cost-low-2")
+
+
+@pytest.mark.asyncio()
+async def test_plain_tag_unknown_to_group_still_falls_back_silently_unconditionally():
+    # A tag that no deployment in this group has ever carried (foreign to this
+    # group entirely, e.g. an attribution tag meant for an unrelated mechanism
+    # sharing the same request-tags list) must keep falling back to the
+    # "default"-tagged pool unconditionally, exactly like today, regardless of
+    # allow_fail_open. Only a tag that IS part of this group's real vocabulary
+    # triggers the new hard-fail/fail-open gate.
+    router = _quality_high_cost_low_router()
+
+    for _ in range(5):
+        response = await router.acompletion(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["llm-preference-include:some-unrelated-mechanism"]},
+            mock_response="hi",
+        )
+        assert response._hidden_params["model_id"] in (
+            "quality-high-1",
+            "quality-high-2",
+            "cost-low-1",
+            "cost-low-2",
+        )
+
+
+def test_tag_known_to_group_true_for_real_tag():
+    from litellm.router_strategy.tag_based_routing import _tag_known_to_group
+
+    router = _quality_high_cost_low_router()
+    assert _tag_known_to_group(router, "gpt-4", ["quality:high"], frozenset()) is True
+
+
+def test_tag_known_to_group_false_for_foreign_tag():
+    from litellm.router_strategy.tag_based_routing import _tag_known_to_group
+
+    router = _quality_high_cost_low_router()
+    assert _tag_known_to_group(router, "gpt-4", ["llm-preference-include:unrelated"], frozenset()) is False
+
+
+def test_inherited_constraint_sets_none_when_inherited_tags_absent():
+    from litellm.router_strategy.tag_based_routing import _inherited_constraint_sets
+
+    assert _inherited_constraint_sets(None, "") == (None, None)
+
+
+def test_inherited_constraint_sets_splits_required_and_excluded():
+    from litellm.router_strategy.tag_based_routing import _inherited_constraint_sets
+
+    inherited_required_set, inherited_excluded_set = _inherited_constraint_sets(
+        ["&region:eu", "!region:us", "plain"], ""
+    )
+    assert inherited_required_set == frozenset({"region:eu"})
+    assert inherited_excluded_set == frozenset({"region:us"})
+
+
+def test_inherited_constraint_sets_none_for_non_sequence_value():
+    from litellm.router_strategy.tag_based_routing import _inherited_constraint_sets
+
+    # A malformed/unexpected inherited_tags value (anything but a list/tuple) must
+    # be treated the same as "no origin information", never as "nothing is
+    # inherited" -- the two are not interchangeable, see _trusted_only_pool.
+    assert _inherited_constraint_sets("not-a-sequence", "") == (None, None)
+
+
+def test_trusted_only_pool_discards_everything_when_inherited_sets_are_none():
+    from litellm.router_strategy.tag_based_routing import _trusted_only_pool
+
+    deployments = ({"litellm_params": {"tags": ["region:us"]}},)
+    # No origin info at all -> reproduce the pre-provenance unconditional
+    # fall-open: the trusted-only pool ignores excluded_set/required_set entirely.
+    assert _trusted_only_pool(deployments, frozenset({"region:eu"}), frozenset({"region:apac"}), None, None) == deployments
+
+
+def test_trusted_only_pool_keeps_constraint_backed_by_inherited_tags():
+    from litellm.router_strategy.tag_based_routing import _trusted_only_pool
+
+    eu = {"litellm_params": {"tags": ["region:eu"]}}
+    us = {"litellm_params": {"tags": ["region:us"]}}
+    # required_set={"region:eu"} IS in inherited_required_set -> protected, kept.
+    result = _trusted_only_pool(
+        (eu, us), frozenset(), frozenset({"region:eu"}), frozenset(), frozenset({"region:eu"})
+    )
+    assert result == (eu,)
+
+
+def test_trusted_only_pool_discards_a_value_with_no_inherited_backing_even_if_the_caller_also_sent_it():
+    # Regression for the value-collision bypass Greptile and veria-ai both
+    # flagged: a value with zero inherited backing is discardable even when it
+    # happens to be the exact value the caller submitted -- there is nothing here
+    # to distinguish "caller-only" from "caller happened to guess a real policy
+    # value" at this function's level, which is exactly why protection must be
+    # keyed off presence in inherited_required_set, never absence from a
+    # caller-supplied set (see the router-level regression below for the full
+    # bypass this replaces).
+    from litellm.router_strategy.tag_based_routing import _trusted_only_pool
+
+    eu = {"litellm_params": {"tags": ["region:eu"]}}
+    us = {"litellm_params": {"tags": ["region:us"]}}
+    result = _trusted_only_pool((eu, us), frozenset(), frozenset({"region:eu"}), frozenset(), frozenset())
+    assert result == (eu, us)
+
+
+def _eu_region_router():
+    # eu-1 deliberately carries no "default" tag, and us-default is the only
+    # "default"-tagged deployment -- this keeps _default_tagged_pool's outcome a
+    # single, deterministic deployment id in every scenario below, regardless of
+    # which of the two candidate pools (trusted-only vs fully-unconstrained) a
+    # given code path resolves to.
+    return litellm.Router(
         model_list=[
             {
-                "model_name": "pm-model",
-                "litellm_params": {"model": "langfuse/my-prompt", "api_key": "fake", "prompt_id": "pm-prompt"},
-                "model_info": {"id": "pm-dep"},
-            }
+                "model_name": "chat",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["region:eu"],
+                },
+                "model_info": {"id": "eu-1", "allow_fail_open": True},
+            },
+            {
+                "model_name": "chat",
+                "litellm_params": {
+                    "model": "gpt-4o-mini",
+                    "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                    "tags": ["region:us", "default"],
+                },
+                "model_info": {"id": "us-default", "allow_fail_open": True},
+            },
         ],
+        enable_tag_filtering=True,
     )
 
-    messages = [{"role": "user", "content": "hi"}]
 
-    # (a) Pinned request: the entry guard fails loud with the chokepoint's
-    #     non-retryable 400 — and NEITHER the factory NOR litellm.acompletion runs.
-    with (
-        patch.object(router, "_prompt_management_factory", new_callable=AsyncMock) as mock_factory,
-        patch("litellm.acompletion", new_callable=AsyncMock) as mock_acompletion,
-    ):
-        mock_factory.return_value = "SHOULD-NOT-RUN"
-        mock_acompletion.return_value = "SHOULD-NOT-RUN"
-        with pytest.raises(litellm.BadRequestError) as exc_info:
-            await router.acompletion(
-                model="pm-model",
-                messages=messages,
-                metadata={PINNED_PROVIDER_ROUTE_KEY: "bedrock"},
-            )
-        msg = str(exc_info.value)
-        assert RouterErrors.no_deployments_with_tag_routing.value in msg
-        assert "pin:bedrock" in msg
-        assert "pm-model" in msg
-        assert getattr(exc_info.value, "status_code", None) == 400
-        mock_factory.assert_not_awaited()
-        mock_acompletion.assert_not_awaited()
+@pytest.mark.asyncio()
+async def test_allow_fail_open_preserves_inherited_constraint_when_caller_tag_causes_exhaustion():
+    # &region:eu simulates a key/team-inherited hard requirement, captured in
+    # inherited_tags (a snapshot taken before the caller's own tags are merged
+    # in); !region:eu simulates the caller's own tag. Combined they exhaust the
+    # pool (nothing can both carry and not carry region:eu), but allow_fail_open
+    # must fall back to what still satisfies the inherited requirement, not the
+    # fully-unconstrained default pool (us-default), and not raise either.
+    router = _eu_region_router()
 
-    # (b) Unpinned request: the guard is a pure no-op and the factory runs exactly
-    #     as before (prompt-management resolution is unchanged).
-    with patch.object(router, "_prompt_management_factory", new_callable=AsyncMock) as mock_factory:
-        mock_factory.return_value = "OK-FROM-FACTORY"
-        result = await router.acompletion(model="pm-model", messages=messages)
-        assert result == "OK-FROM-FACTORY"
-        mock_factory.assert_awaited_once()
-        assert mock_factory.await_args.kwargs["model"] == "pm-model"
+    response = await router.acompletion(
+        model="chat",
+        messages=[{"role": "user", "content": "hi"}],
+        metadata={
+            "tags": ["&region:eu", "!region:eu"],
+            "inherited_tags": ["&region:eu"],
+            "caller_tags": ["!region:eu"],
+        },
+        mock_response="hi",
+    )
+
+    assert response._hidden_params["model_id"] == "eu-1"
+
+
+@pytest.mark.asyncio()
+async def test_allow_fail_open_stays_protected_when_caller_duplicates_the_inherited_tag():
+    # Regression for the value-collision bypass Greptile and veria-ai both
+    # flagged: a caller who resubmits the exact value of an inherited "&" tag
+    # (here alongside a conflicting "!" for the same value) must not be able to
+    # strip that value's protection just because it now also appears in
+    # caller_tags. Protection is keyed off presence in inherited_tags, not
+    # absence from caller_tags -- if it were the latter, subtracting
+    # caller_required_set={"region:eu"} from required_set would zero out the
+    # inherited requirement entirely and this would incorrectly resolve to
+    # us-default instead of eu-1.
+    router = _eu_region_router()
+
+    response = await router.acompletion(
+        model="chat",
+        messages=[{"role": "user", "content": "hi"}],
+        metadata={
+            "tags": ["&region:eu", "!region:eu"],
+            "inherited_tags": ["&region:eu"],
+            "caller_tags": ["&region:eu", "!region:eu"],
+        },
+        mock_response="hi",
+    )
+
+    assert response._hidden_params["model_id"] == "eu-1"
+
+
+@pytest.mark.asyncio()
+async def test_allow_fail_open_raises_when_inherited_constraint_alone_is_unsatisfiable():
+    # Both region:eu and region:us are known to the group (so the unknown-tag
+    # masking guard does not apply), but no single deployment carries both, and
+    # inherited_tags confirms the entire required-AND set traces back to policy.
+    # allow_fail_open must not paper over an inherited requirement that is
+    # unsatisfiable on its own; it should raise exactly as it would with
+    # allow_fail_open unset.
+    router = _eu_region_router()
+
+    with pytest.raises(Exception) as exc_info:
+        await router.acompletion(
+            model="chat",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={
+                "tags": ["&region:eu", "&region:us"],
+                "inherited_tags": ["&region:eu", "&region:us"],
+                "caller_tags": [],
+            },
+            mock_response="hi",
+        )
+
+    from litellm.types.router import RouterErrors
+
+    assert RouterErrors.no_deployments_with_tag_routing.value in str(exc_info.value)
+
+
+@pytest.mark.asyncio()
+async def test_allow_fail_open_unconditional_discard_when_inherited_tags_key_absent():
+    # No "inherited_tags" key at all (e.g. a direct SDK Router call that never
+    # went through the proxy's litellm_pre_call_utils.py) must reproduce the exact
+    # pre-provenance behavior: unconditional fall-open to the default pool, even
+    # though region:eu here would otherwise look like an inherited requirement.
+    router = _eu_region_router()
+
+    response = await router.acompletion(
+        model="chat",
+        messages=[{"role": "user", "content": "hi"}],
+        metadata={"tags": ["&region:eu", "!region:eu"]},
+        mock_response="hi",
+    )
+
+    assert response._hidden_params["model_id"] == "us-default"
+
+
+# --- tag_routing_prefix must be configurable through every settings-update
+# path the router already supports for its sibling enable_tag_filtering, not
+# just the config.yaml constructor argument ---
+
+
+def test_router_update_settings_applies_tag_routing_prefix():
+    # Regression: tag_routing_prefix was missing from Router.update_settings's
+    # _allowed_settings, so an operator configuring it via the DB-backed
+    # router_settings path (proxy_server.py's _add_router_settings_from_db_config,
+    # which calls update_settings directly) had the value silently ignored.
+    router = litellm.Router(model_list=[{"model_name": "x", "litellm_params": {"model": "openai/gpt-4o-mini"}}])
+    assert router.tag_routing_prefix == ""
+
+    router.update_settings(tag_routing_prefix="route:")
+
+    assert router.tag_routing_prefix == "route:"
+
+
+def test_router_get_settings_includes_tag_routing_prefix():
+    router = litellm.Router(model_list=[{"model_name": "x", "litellm_params": {"model": "openai/gpt-4o-mini"}}])
+    router.update_settings(tag_routing_prefix="route:")
+
+    assert router.get_settings()["tag_routing_prefix"] == "route:"
+
+
+def test_update_router_config_schema_includes_tag_routing_prefix():
+    # The Admin UI's POST /config/update path validates through
+    # UpdateRouterConfig before calling update_settings; a field missing here
+    # causes model_dump(exclude_none=True) to silently drop it before
+    # update_settings is ever called -- the same bug shape LIT-3152 fixed for
+    # retry_policy (see tests/test_litellm/test_router_retry_policy_update.py).
+    from litellm.types.router import UpdateRouterConfig
+
+    config = UpdateRouterConfig(tag_routing_prefix="route:")
+    assert config.model_dump(exclude_none=True)["tag_routing_prefix"] == "route:"
