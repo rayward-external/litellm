@@ -845,17 +845,19 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
         A streamed Responses call does not emit chat-completion chunks — it
         emits typed events (`response.created`, `response.output_text.delta`,
-        ..., `response.completed`). `OpenAIChatCompletionResponseIterator`
-        understands only the chat shape, so these streams reassemble to
-        nothing and the request is billed at $0. Only the terminal
-        `response.completed` event carries the finished `response` object with
-        `usage.input_tokens` / `usage.output_tokens`, so that is the one we
-        cost from.
+        ..., a terminal `response.completed` / `response.incomplete` /
+        `response.failed`). `OpenAIChatCompletionResponseIterator` understands
+        only the chat shape, so these streams reassemble to nothing and the
+        request is billed at $0. Any of the three terminal events carries the
+        finished `response` object with `usage.input_tokens` /
+        `usage.output_tokens`, so that is the one we cost from — an
+        incomplete or failed generation still consumed tokens and must still
+        be billed.
 
         Detection is on the JSON payload's own `type` field, not the SSE
         `event:` line: `_convert_raw_bytes_to_str_lines` splits the stream on
         newlines, so `event: response.completed` and its `data: {...}` arrive
-        as separate entries. Scanned in reverse because the completed event is
+        as separate entries. Scanned in reverse because the terminal event is
         the last one on the wire.
 
         Returns None when these chunks are not a Responses event stream, which
@@ -873,7 +875,11 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 continue
             if not isinstance(parsed_chunk, dict):
                 continue
-            if parsed_chunk.get("type") == "response.completed":
+            if parsed_chunk.get("type") in (
+                "response.completed",
+                "response.incomplete",
+                "response.failed",
+            ):
                 completed_response = parsed_chunk.get("response")
                 if isinstance(completed_response, dict):
                     return completed_response
@@ -935,6 +941,17 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                     logging_obj=litellm_logging_obj,
                     custom_llm_provider=custom_llm_provider,
                 )
+            elif OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route, custom_llm_provider):
+                # A Responses-API stream with no terminal event among the
+                # collected chunks yet (still in progress, or the terminal
+                # event failed to parse) — the chat-completions builder below
+                # understands the chat chunk shape only, and running Responses
+                # events through it produces a bogus, non-billable
+                # ModelResponse instead of a clean no-op. Nothing to log yet.
+                return {
+                    "result": None,
+                    "kwargs": {},
+                }
             else:
                 # Build complete response from chunks using our streaming handler
                 complete_response = handler._build_complete_streaming_response(

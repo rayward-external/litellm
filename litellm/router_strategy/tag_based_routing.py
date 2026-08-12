@@ -372,9 +372,7 @@ def _resolve_or_fail_open(
         )
         if trusted_pool:
             return _default_tagged_pool(trusted_pool)
-    raise ValueError(
-        f"{RouterErrors.no_deployments_with_tag_routing.value}. Passed model={model} and tags={request_tags}"
-    )
+    _raise_no_deployments_for_tags(model=model, request_tags=request_tags)
 
 
 def _resolve_constraint_only_pool(
