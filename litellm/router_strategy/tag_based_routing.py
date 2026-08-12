@@ -10,7 +10,7 @@ Use this to route requests between Teams
 import re
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn
 
 import litellm
 from litellm._logging import verbose_logger
@@ -236,6 +236,27 @@ def _exclude_deployments(
     if not excluded_set:
         return list(deployments)
     return [d for d in deployments if not excluded_set.intersection(d.get("litellm_params", {}).get("tags") or [])]
+
+
+def _raise_no_deployments_for_tags(model: str, request_tags: Any) -> NoReturn:
+    """No deployment matches the request's tags: raise a typed, NON-retryable
+    client error.
+
+    ``litellm.BadRequestError`` carries ``status_code=400``, so
+    ``Router.should_retry_this_error`` re-raises it immediately
+    (``litellm._should_retry(400)`` is False) instead of burning
+    ``num_retries`` on a request that can never succeed — a plain
+    ``ValueError`` here previously cost multiple retry sleeps before
+    surfacing. The message keeps the
+    ``RouterErrors.no_deployments_with_tag_routing`` marker plus the model
+    and tags so callers (and the proxy's ProxyException mapping) can name
+    what was pinned.
+    """
+    raise litellm.BadRequestError(
+        message=(f"{RouterErrors.no_deployments_with_tag_routing.value}. Passed model={model} and tags={request_tags}"),
+        model=model,
+        llm_provider="",
+    )
 
 
 def _require_all_tags(
@@ -528,6 +549,15 @@ async def get_deployments_for_tag(
     group, if set on any of its deployments, overrides the router-wide default.
     A request-level False never disables either of those, so per-request settings
     cannot escape an operator's or a chain owner's tag-routing policy.
+
+    HARD PROVIDER PIN (P1): a trusted, URL-derived ``PINNED_PROVIDER_ROUTE_KEY``
+    signal forces pin filtering REGARDLESS of the effective enable_tag_filtering
+    value above — read and applied BEFORE that early-return. So a pinned request
+    is ALWAYS restricted to its ``pin:<provider>`` deployments (or fails loud),
+    never served by an off-provider deployment just because tag filtering happens
+    to be disabled. The proxy's startup guard
+    (``assert_tag_filtering_enabled_for_pinned_routes``) is the belt; this is the
+    suspenders — the pin holds even if that guard is bypassed.
     """
     if request_kwargs is None or not healthy_deployments:
         verbose_logger.debug(
@@ -537,6 +567,7 @@ async def get_deployments_for_tag(
         )
         return healthy_deployments
 
+    pinned_provider: Final = _pinned_provider_from_kwargs(request_kwargs, metadata_variable_name)
     request_enable_tag_filtering: Final = request_kwargs.get("enable_tag_filtering")
     chain_enable_tag_filtering: Final = _chain_tag_filtering_override(llm_router_instance, model, healthy_deployments)
     chain_default: Final = (
@@ -544,13 +575,19 @@ async def get_deployments_for_tag(
         if chain_enable_tag_filtering is not None
         else llm_router_instance.enable_tag_filtering
     )
-    if request_enable_tag_filtering is not True and chain_default is not True:
+    if pinned_provider is None and request_enable_tag_filtering is not True and chain_default is not True:
         return healthy_deployments
 
     verbose_logger.debug("request metadata: %s", request_kwargs.get(metadata_variable_name))
     if metadata_variable_name in request_kwargs:
         metadata: Final = request_kwargs[metadata_variable_name]
-        request_tags: Final = metadata.get("tags")
+        request_tags: Final = _resolve_request_tags(metadata)
+        # A hard provider pin (any ``pin:`` tag) must never spill to the
+        # ``default`` pool: an empty tag match fails loud rather than being
+        # served by a ``default``-tagged deployment.
+        disable_default_fallback: Final = any(
+            isinstance(t, str) and t.startswith(PIN_TAG_PREFIX) for t in (request_tags or [])
+        )
         match_any: Final = llm_router_instance.tag_filtering_match_any
         routing_prefix: Final = llm_router_instance.tag_routing_prefix or ""
 

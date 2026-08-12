@@ -11,7 +11,7 @@ Supported for both `v1/chat/completions` (via the prompt-management hook) and
 
 import copy
 import os
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from litellm._logging import verbose_logger
 from litellm.integrations.custom_logger import CustomLogger
