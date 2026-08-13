@@ -46,7 +46,7 @@ describe("Guardrails Monitor page access by role", () => {
       renderAs(userRole);
 
       expect(await screen.findByText("Guardrails Monitor is only available to admin users.")).toBeInTheDocument();
-      expect(requestedUrls().filter((url) => url.includes("/guardrails/usage"))).toEqual([]);
+      await waitFor(() => expect(requestedUrls().filter((url) => url.includes("/guardrails/usage"))).toEqual([]));
     },
   );
 });
