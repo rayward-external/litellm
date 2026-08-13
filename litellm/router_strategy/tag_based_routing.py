@@ -501,7 +501,7 @@ def _pinned_provider_from_kwargs(
     return pinned_provider if isinstance(pinned_provider, str) and pinned_provider else None
 
 
-def _base_request_tags(metadata: Mapping[Any, Any]) -> Any:
+def _base_request_tags(metadata: Mapping[Any, Any]) -> object:
     """Return the caller-tags snapshot routing should start from, IGNORING any
     provider pin (see ``_resolve_request_tags`` for the pin-aware entry point).
 
@@ -519,7 +519,7 @@ def _base_request_tags(metadata: Mapping[Any, Any]) -> Any:
     return metadata.get("tags")
 
 
-def _resolve_request_tags(metadata: Mapping[Any, Any]) -> Any:
+def _resolve_request_tags(metadata: Mapping[Any, Any]) -> object:
     """Return the request tags to route on, IGNORING router-consumption (see
     ``_request_tags_after_router_consumption`` for that layered on top).
 
