@@ -1,6 +1,6 @@
 {
   "reportAny": {
-    "limit": 26391
+    "limit": 23914
   },
   "reportArgumentType": {
     "limit": 2614
@@ -84,7 +84,7 @@
     "limit": 21
   },
   "reportPrivateUsage": {
-    "limit": 1828
+    "limit": 1832
   },
   "reportRedeclaration": {
     "limit": 8
