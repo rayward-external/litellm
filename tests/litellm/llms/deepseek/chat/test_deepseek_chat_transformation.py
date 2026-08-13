@@ -4,7 +4,6 @@ Unit tests for DeepSeek chat transformation.
 Tests the thinking and reasoning_effort parameter handling for DeepSeek models.
 """
 
-import pytest
 from litellm.llms.deepseek.chat.transformation import DeepSeekChatConfig
 
 
@@ -94,7 +93,7 @@ class TestDeepSeekThinkingParams:
         assert result["thinking"] == {"type": "enabled"}
 
     def test_map_reasoning_effort_none_does_not_enable_thinking(self):
-        """Test that reasoning_effort='none' does not enable thinking."""
+        """Test that reasoning_effort='none' disables thinking rather than enabling it."""
         non_default_params = {"reasoning_effort": "none"}
         optional_params = {}
 
@@ -105,7 +104,7 @@ class TestDeepSeekThinkingParams:
             drop_params=False,
         )
 
-        assert "thinking" not in result
+        assert result["thinking"] == {"type": "disabled"}
 
     def test_map_reasoning_effort_null_does_not_enable_thinking(self):
         """Test that reasoning_effort=None does not enable thinking."""
@@ -122,7 +121,7 @@ class TestDeepSeekThinkingParams:
         assert "thinking" not in result
 
     def test_thinking_takes_precedence_over_reasoning_effort(self):
-        """Test that thinking param takes precedence when both are provided."""
+        """Test that thinking decides the on/off switch when both are provided."""
         non_default_params = {
             "thinking": {"type": "enabled"},
             "reasoning_effort": "high",
@@ -136,8 +135,9 @@ class TestDeepSeekThinkingParams:
             drop_params=False,
         )
 
-        # thinking should be set, reasoning_effort should not override
+        # thinking decides the switch; the graded effort is still forwarded
         assert result["thinking"] == {"type": "enabled"}
+        assert result["reasoning_effort"] == "high"
 
     def test_invalid_thinking_type_ignored(self):
         """Test that invalid thinking type values are ignored."""
@@ -182,8 +182,6 @@ class TestDeepSeekThinkingParams:
 
         result = self.config._drop_unsupported_tools(optional_params)
 
-        assert result["tools"] == [
-            {"type": "function", "function": {"name": "get_weather"}}
-        ]
+        assert result["tools"] == [{"type": "function", "function": {"name": "get_weather"}}]
         assert "tool_choice" not in result
         assert result["parallel_tool_calls"] is True

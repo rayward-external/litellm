@@ -4,9 +4,11 @@ DeepSeek's reasoner defaults thinking ON and surfaces the chain as
 ``message.reasoning_content``. Two documented ways to disable it are
 ``reasoning_effort="none"`` and ``thinking={"type": "disabled"}``. The DeepSeek
 param mapper (``litellm/llms/deepseek/chat/transformation.py``
-``map_openai_params``) forwards both as ``thinking={"type": "disabled"}`` so the
+``map_openai_params``) derives ``thinking={"type": "disabled"}`` from both, so the
 outbound body carries a real disable signal and the reasoning model returns no
 ``reasoning_content``. This is the behavior tracked by LIT-3686 / GH #27453.
+(``reasoning_effort`` is also forwarded verbatim alongside that switch, which
+grades reasoning within the enabled state and does not re-enable a disabled one.)
 
 The control case proves the model and path work (reasoning is returned when
 nothing asks to disable it), so the two disable assertions are meaningful.
