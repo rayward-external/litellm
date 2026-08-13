@@ -164,6 +164,12 @@ class TestRequestCompliance:
         assert text_schema["properties"]["type"].get("const") == "text"
         print("✓ TextContent schema is correct")
 
+    @pytest.mark.xfail(
+        reason="Google's live interactions.openapi.json no longer has a top-level 'Turn' "
+        "schema as of 2026-08-13 (KeyError on spec_dict['components']['schemas']['Turn']); "
+        "see .github/fork-patches.txt for tracking.",
+        strict=False,
+    )
     def test_turn_schema(self, spec_dict):
         """Verify Turn schema for multi-turn conversations."""
         turn_schema = spec_dict["components"]["schemas"]["Turn"]
