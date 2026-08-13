@@ -480,6 +480,44 @@ def _tag_known_to_group(
     )
 
 
+def _pinned_provider_from_kwargs(
+    request_kwargs: dict[Any, Any] | None,
+    metadata_variable_name: Literal["metadata", "litellm_metadata"],
+) -> str | None:
+    """Return the trusted, URL-derived provider pin from the routing metadata
+    bucket, or ``None`` when the request is not pinned.
+
+    Only the single server-authoritative ``PINNED_PROVIDER_ROUTE_KEY`` signal
+    counts (set from the URL by the proxy's pinned routes, re-asserted from
+    ``request.state``); a client can never set it. Used to enforce pin filtering
+    even when ``enable_tag_filtering`` is off.
+    """
+    if not request_kwargs:
+        return None
+    metadata = request_kwargs.get(metadata_variable_name)
+    if not isinstance(metadata, dict):
+        return None
+    pinned_provider = metadata.get(PINNED_PROVIDER_ROUTE_KEY)
+    return pinned_provider if isinstance(pinned_provider, str) and pinned_provider else None
+
+
+def _base_request_tags(metadata: Mapping[Any, Any]) -> Any:
+    """Return the caller-tags snapshot routing should start from.
+
+    Prefers ``Router._update_kwargs_before_fallbacks``'s pre-merge snapshot
+    (``ORIGINAL_REQUEST_TAGS_KEY``) over the live ``metadata["tags"]``, so a
+    selected deployment's own tags — merged into ``metadata["tags"]`` by
+    ``_update_kwargs_with_deployment`` for spend attribution, then reused as the
+    kwargs dict is reused across retries/fallbacks — can never leak back in as
+    routing input on a later attempt. Falls back to the live ``metadata["tags"]``
+    for back-compat when no snapshot was taken (e.g. direct router use in tests
+    that bypasses ``_update_kwargs_before_fallbacks``).
+    """
+    if ORIGINAL_REQUEST_TAGS_KEY in metadata:
+        return metadata.get(ORIGINAL_REQUEST_TAGS_KEY)
+    return metadata.get("tags")
+
+
 def _request_tags_after_router_consumption(metadata: Mapping[Any, Any], model: str) -> Sequence[str] | None:
     # The pre-routing hook stamps which tags selected the router it rewrote the request
     # to: those tags already did their job and must not also constrain deployment choice
@@ -487,11 +525,11 @@ def _request_tags_after_router_consumption(metadata: Mapping[Any, Any], model: s
     # inherited_tags snapshot that keeps key/team policy applying. Every other model
     # group keeps the full list.
     stamp: Final = metadata.get(CONSUMED_REQUEST_TAGS_METADATA_KEY)
+    base_tags: Final = _base_request_tags(metadata)
     if not isinstance(stamp, ConsumedRequestTagsStamp) or stamp.model_group != model:
-        return metadata.get("tags")
-    request_tags: Final = metadata.get("tags")
+        return base_tags
     leftover: Final = tuple(
-        tag for tag in (request_tags if isinstance(request_tags, (list, tuple)) else ()) if tag not in stamp.tags
+        tag for tag in (base_tags if isinstance(base_tags, (list, tuple)) else ()) if tag not in stamp.tags
     )
     inherited_tags: Final = metadata.get("inherited_tags")
     if not isinstance(inherited_tags, (list, tuple)):
@@ -549,7 +587,16 @@ async def get_deployments_for_tag(
     verbose_logger.debug("request metadata: %s", request_kwargs.get(metadata_variable_name))
     if metadata_variable_name in request_kwargs:
         metadata: Final = request_kwargs[metadata_variable_name]
-        request_tags: Final = _request_tags_after_router_consumption(metadata, model)
+        # A hard provider pin derives the routing tag set SOLELY from the pin —
+        # ignoring tags/inherited_tags/router-consumption entirely — and must never
+        # spill to the ``default`` pool: an empty tag match fails loud rather than
+        # being served by a ``default``-tagged deployment.
+        request_tags: Final = (
+            [PIN_TAG_PREFIX + pinned_provider]
+            if pinned_provider is not None
+            else _request_tags_after_router_consumption(metadata, model)
+        )
+        disable_default_fallback: Final = pinned_provider is not None
         match_any: Final = llm_router_instance.tag_filtering_match_any
         routing_prefix: Final = llm_router_instance.tag_routing_prefix or ""
 
