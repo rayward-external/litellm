@@ -60,7 +60,7 @@ class DeepSeekChatConfig(OpenAIGPTConfig):
             optional_params["thinking"] = {"type": "disabled" if reasoning_effort == "none" else "enabled"}
 
         if reasoning_effort is not None:
-            optional_params["reasoning_effort"] = reasoning_effort
+            optional_params["reasoning_effort"] = reasoning_effort  # rebind-ok: as the thinking stores above
 
         return optional_params
 
