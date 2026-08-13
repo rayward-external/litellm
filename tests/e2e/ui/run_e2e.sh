@@ -168,7 +168,7 @@ cd "$DASHBOARD_DIR"
 # EBADENGINE ("dashboard requires node >=24, you have v20") into the
 # considerably less helpful "sh: next: command not found" from the build below,
 # because the deps that provide `next` were never installed.
-npm install
+npm ci
 npm run build
 # Copy the fresh build to the proxy's static UI directory
 cp -r "$DASHBOARD_DIR/out/" "$REPO_ROOT/litellm/proxy/_experimental/out/"
@@ -250,7 +250,7 @@ echo "=== Installing Playwright dependencies ==="
 cd "$SCRIPT_DIR"
 # Same reasoning as the dashboard install above: a failure here means the suite
 # has no @playwright/test, and the run should say that rather than fail later.
-npm install
+npm ci
 npx playwright install chromium --with-deps 2>/dev/null || npx playwright install chromium
 
 # Authoring a new spec means running it over and over against a stack that is
