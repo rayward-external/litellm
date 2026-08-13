@@ -165,9 +165,11 @@ class TestRequestCompliance:
         print("✓ TextContent schema is correct")
 
     @pytest.mark.xfail(
-        reason="Google's live interactions.openapi.json no longer has a top-level 'Turn' "
-        "schema as of 2026-08-13 (KeyError on spec_dict['components']['schemas']['Turn']); "
-        "see .github/fork-patches.txt for tracking.",
+        reason="2026-08-13: Google's live spec no longer has a top-level 'Turn' schema "
+        "(KeyError), a drift outside this fork's control; ai.google.dev is blocked by "
+        "this CI environment's egress policy so the replacement/renamed shape could not "
+        "be inspected to update this assertion. Remove this marker once someone with "
+        "spec access confirms the new schema name/shape and updates the test to match.",
         strict=False,
     )
     def test_turn_schema(self, spec_dict):

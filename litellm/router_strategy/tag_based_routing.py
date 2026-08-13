@@ -502,7 +502,8 @@ def _pinned_provider_from_kwargs(
 
 
 def _base_request_tags(metadata: Mapping[Any, Any]) -> Any:
-    """Return the caller-tags snapshot routing should start from.
+    """Return the caller-tags snapshot routing should start from, IGNORING any
+    provider pin (see ``_resolve_request_tags`` for the pin-aware entry point).
 
     Prefers ``Router._update_kwargs_before_fallbacks``'s pre-merge snapshot
     (``ORIGINAL_REQUEST_TAGS_KEY``) over the live ``metadata["tags"]``, so a
@@ -516,6 +517,29 @@ def _base_request_tags(metadata: Mapping[Any, Any]) -> Any:
     if ORIGINAL_REQUEST_TAGS_KEY in metadata:
         return metadata.get(ORIGINAL_REQUEST_TAGS_KEY)
     return metadata.get("tags")
+
+
+def _resolve_request_tags(metadata: Mapping[Any, Any]) -> Any:
+    """Return the request tags to route on, IGNORING router-consumption (see
+    ``_request_tags_after_router_consumption`` for that layered on top).
+
+    ABSOLUTE-PRIORITY provider pin. If the trusted, URL-derived
+    ``PINNED_PROVIDER_ROUTE_KEY`` signal is present, the routing tag set is
+    EXACTLY ``["pin:<that provider>"]`` — derived from that single
+    server-authoritative field alone, IGNORING ``tags``,
+    ``ORIGINAL_REQUEST_TAGS_KEY`` and any key/team tags for the routing
+    decision. The proxy's pinned routes set the signal from the URL and nowhere
+    else, overwriting any client-supplied copy in any form, so no client input
+    can change a pinned routing decision. (``metadata["tags"]`` is left intact
+    for SPEND ATTRIBUTION.)
+
+    Otherwise, falls back to ``_base_request_tags`` (the pre-merge snapshot when
+    taken, else the live ``metadata["tags"]``).
+    """
+    pinned_provider = metadata.get(PINNED_PROVIDER_ROUTE_KEY)
+    if isinstance(pinned_provider, str) and pinned_provider:
+        return [PIN_TAG_PREFIX + pinned_provider]
+    return _base_request_tags(metadata)
 
 
 def _request_tags_after_router_consumption(metadata: Mapping[Any, Any], model: str) -> Sequence[str] | None:
@@ -588,11 +612,12 @@ async def get_deployments_for_tag(
     if metadata_variable_name in request_kwargs:
         metadata: Final = request_kwargs[metadata_variable_name]
         # A hard provider pin derives the routing tag set SOLELY from the pin —
-        # ignoring tags/inherited_tags/router-consumption entirely — and must never
-        # spill to the ``default`` pool: an empty tag match fails loud rather than
-        # being served by a ``default``-tagged deployment.
+        # ignoring tags/inherited_tags/router-consumption entirely (see
+        # _resolve_request_tags) — and must never spill to the ``default`` pool:
+        # an empty tag match fails loud rather than being served by a
+        # ``default``-tagged deployment.
         request_tags: Final = (
-            [PIN_TAG_PREFIX + pinned_provider]
+            _resolve_request_tags(metadata)
             if pinned_provider is not None
             else _request_tags_after_router_consumption(metadata, model)
         )
