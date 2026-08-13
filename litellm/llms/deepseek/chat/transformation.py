@@ -36,9 +36,10 @@ class DeepSeekChatConfig(OpenAIGPTConfig):
         Map OpenAI params to DeepSeek params.
 
         Handles `thinking` and `reasoning_effort` parameters for DeepSeek reasoner models.
-        DeepSeek supports `{"type": "enabled"}` and `{"type": "disabled"}` - no budget_tokens
-        like Anthropic. `reasoning_effort="none"` is the OpenAI-style way to ask for thinking
-        off, so it maps to `{"type": "disabled"}`; any other effort keeps thinking on.
+        `thinking` gates reasoning on/off (`{"type": "enabled"}` / `{"type": "disabled"}` - no
+        budget_tokens like Anthropic). `reasoning_effort` grades it *within* the enabled state
+        over DeepSeek's own enum (none/minimal/low/medium/high/xhigh/max), so both are
+        forwarded: deriving only the switch collapses seven levels to two.
 
         Reference: https://api-docs.deepseek.com/guides/thinking_mode
         """
@@ -57,6 +58,11 @@ class DeepSeekChatConfig(OpenAIGPTConfig):
         # Otherwise fall back to reasoning_effort: "none" disables, anything else enables
         elif reasoning_effort is not None:
             optional_params["thinking"] = {"type": "disabled" if reasoning_effort == "none" else "enabled"}
+
+        # "default" is LiteLLM's own "no explicit level" sentinel (see completion() in
+        # litellm/main.py); it is not one of DeepSeek's levels and would be rejected.
+        if reasoning_effort is not None and reasoning_effort != "default":
+            optional_params["reasoning_effort"] = reasoning_effort  # rebind-ok: as the thinking stores above
 
         return optional_params
 
