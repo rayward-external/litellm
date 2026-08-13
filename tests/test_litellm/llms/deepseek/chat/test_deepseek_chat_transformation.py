@@ -36,6 +36,16 @@ def test_graded_reasoning_effort_is_forwarded_alongside_the_thinking_switch(effo
     assert result["thinking"] == {"type": expected_switch}
 
 
+def test_litellm_default_sentinel_is_not_put_on_the_wire():
+    # completion() accepts reasoning_effort="default" (litellm/main.py) as "no explicit
+    # level". DeepSeek has no such level, so forwarding it would turn a request that
+    # works today into a 400. It still drives the thinking switch, as before.
+    result = _map({"reasoning_effort": "default"})
+
+    assert "reasoning_effort" not in result
+    assert result["thinking"] == {"type": "enabled"}
+
+
 def test_out_of_vocabulary_reasoning_effort_is_forwarded_not_policed():
     # The value must reach DeepSeek so DeepSeek's own 400 names the vocabulary;
     # re-checking the enum here would be a second copy that can disagree with it.

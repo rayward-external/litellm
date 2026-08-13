@@ -59,7 +59,9 @@ class DeepSeekChatConfig(OpenAIGPTConfig):
         elif reasoning_effort is not None:
             optional_params["thinking"] = {"type": "disabled" if reasoning_effort == "none" else "enabled"}
 
-        if reasoning_effort is not None:
+        # "default" is LiteLLM's own "no explicit level" sentinel (see completion() in
+        # litellm/main.py); it is not one of DeepSeek's levels and would be rejected.
+        if reasoning_effort is not None and reasoning_effort != "default":
             optional_params["reasoning_effort"] = reasoning_effort  # rebind-ok: as the thinking stores above
 
         return optional_params
