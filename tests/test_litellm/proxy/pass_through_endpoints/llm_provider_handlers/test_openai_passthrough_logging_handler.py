@@ -1629,11 +1629,15 @@ class TestOpenAIPassthroughIntegration:
         assert self.handler._is_supported_openai_endpoint("https://api.openai.com/v1/images/edits") is True
         # Unsupported OpenAI endpoints (e.g. /v1/models) still return False.
         assert self.handler._is_supported_openai_endpoint("https://api.openai.com/v1/models") is False
+        # The classic Azure deployment embeddings path has no /v1/ segment, but
+        # is still an OpenAI embeddings endpoint (is_openai_embeddings_route's
+        # bare "/embeddings" suffix match covers it deliberately) and must stay
+        # supported so it gets costed instead of silently falling through at $0.
         assert (
             self.handler._is_supported_openai_endpoint(
                 "https://my-resource.openai.azure.com/openai/deployments/text-embedding-3-small/embeddings"
             )
-            is False
+            is True
         )
 
     def test_is_supported_openai_endpoint_includes_embeddings(self):
