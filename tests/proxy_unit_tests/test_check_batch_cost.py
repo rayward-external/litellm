@@ -2009,13 +2009,18 @@ class TestPollPageStarvation:
         await self._instance(prisma, MagicMock()).check_batch_cost()
 
         calls = prisma.db.litellm_managedobjecttable.update_many.call_args_list
-        assert len(calls) == 2, "expected the staleness sweep plus the never-costed sweep"
-        where = calls[1][1]["where"]
+        # Identified by shape, not a fixed index: the abandoned-pricing-claim
+        # reclaim sweep (codex P1 round 2) also calls update_many, ahead of
+        # both the staleness sweep and this never-costed sweep.
+        never_costed_calls = [
+            c for c in calls if c[1].get("where", {}).get("status") == {"in": ["complete", "completed"]}
+        ]
+        assert len(never_costed_calls) == 1, "expected exactly one never-costed sweep call"
+        where = never_costed_calls[0][1]["where"]
         assert where["file_purpose"] == "batch"
         assert where["batch_processed"] is False
-        assert where["status"] == {"in": ["complete", "completed"]}
         assert "created_at" in where
-        assert calls[1][1]["data"] == {"batch_processed": True}
+        assert never_costed_calls[0][1]["data"] == {"batch_processed": True}
 
     @pytest.mark.asyncio
     async def test_newer_batch_is_polled_once_dead_rows_are_retired(self):

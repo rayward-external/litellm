@@ -456,7 +456,9 @@ class CheckBatchCost:
         result: Final = await self.prisma_client.db.litellm_managedobjecttable.update_many(
             where={
                 "file_purpose": "batch",
-                "status": {"not_in": list(TERMINAL_MANAGED_OBJECT_STATUSES)},
+                # claim-held rows belong to the reclaim sweep, never stale cleanup
+                # (codex P1 round 3)
+                "status": {"not_in": [*TERMINAL_MANAGED_OBJECT_STATUSES, "pricing"]},
                 "created_at": {"lt": cutoff},
             },
             data={"status": "stale_expired"},
