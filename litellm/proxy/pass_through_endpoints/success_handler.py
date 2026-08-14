@@ -494,21 +494,14 @@ class PassThroughEndpointLogging:
                 return True
         return False
 
-    def is_cohere_route(self, url_route: str):
-        # Host-gated like is_cohere_streaming_url. Path containment alone is a
-        # trap: "/v1/embed" is a substring of "/v1/embeddings", and this branch
-        # runs BEFORE the OpenAI one, so every OpenAI-shaped embeddings call
-        # would be fed to the Cohere transform — which crashes the spend-logging
-        # path instead of recording a row.
-        from .common_utils import COHERE_HOSTNAMES, hostname_matches
-
-        parsed_url = urlparse(url_route)
-        hostname = parsed_url.hostname
-        if not hostname or not hostname_matches(hostname, COHERE_HOSTNAMES):
-            return False
+    def is_cohere_route(self, url_route: str) -> bool:
         for route in self.TRACKED_COHERE_ROUTES:
-            if route in parsed_url.path:
-                return True
+            if route not in url_route:
+                continue
+            if route == "/v1/embed" and "/v1/embeddings" in url_route:
+                continue
+            return True
+        return False
 
     def is_assemblyai_route(self, url_route: str):
         parsed_url: Final = urlparse(url_route)
@@ -593,11 +586,11 @@ class PassThroughEndpointLogging:
         )
 
         return (
-            OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url_route, custom_llm_provider)
-            or OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url_route, custom_llm_provider)
-            or OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url_route, custom_llm_provider)
-            or OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route, custom_llm_provider)
-            or OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route, custom_llm_provider)
+            OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url_route)
+            or OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route)
+            or OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url_route)
+            or OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url_route)
+            or OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route)
         )
 
     def _resolve_generic_model(
