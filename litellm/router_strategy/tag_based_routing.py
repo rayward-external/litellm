@@ -10,7 +10,7 @@ Use this to route requests between Teams
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn, TypedDict
 
 from typing_extensions import ReadOnly
 
@@ -168,6 +168,8 @@ def _match_deployment(
     request_tags: Sequence[str] | None,
     header_strings: Sequence[str],
     match_any: bool,
+    *,
+    pin_enforced: bool = False,
 ) -> Mapping[str, str] | None:
     """
     Determine whether *deployment* matches the current request.
@@ -179,10 +181,6 @@ def _match_deployment(
       1. Exact tag match (respects match_any semantics).
       2. Regex match — skipped when match_any=False and the tag check already
          ran and failed, so the regex cannot override strict-tag policy.
-    """
-    litellm_params: Final = deployment.get("litellm_params", {})
-    deployment_tags: Final[Sequence[str] | None] = litellm_params.get("tags")
-    deployment_tag_regex: Final[Sequence[str] | None] = litellm_params.get("tag_regex")
 
     ``pin_enforced`` (P1 hard-pin guard): when the request carries a trusted
     provider pin, the ONLY acceptable match is exact membership of the
@@ -191,16 +189,16 @@ def _match_deployment(
     entirely, so a deployment lacking the pin tag can never be selected for a
     pinned request via a spoofable User-Agent — the pin is the SOLE selector.
     """
-    litellm_params = deployment.get("litellm_params", {})
-    deployment_tags: list[str] | None = litellm_params.get("tags")
-    deployment_tag_regex: list[str] | None = litellm_params.get("tag_regex")
+    litellm_params: Final = deployment.get("litellm_params", {})
+    deployment_tags: Final[Sequence[str] | None] = litellm_params.get("tags")
+    deployment_tag_regex: Final[Sequence[str] | None] = litellm_params.get("tag_regex")
 
     # 1. Exact tag match (existing behaviour). For a pinned request request_tags
     # is exactly ``[pin:<provider>]``, so this admits ONLY deployments that carry
     # the pin tag (under both match_any and subset semantics).
     if deployment_tags and request_tags:
         if is_valid_deployment_tag(deployment_tags, request_tags, match_any):
-            matched_value = next(
+            matched_value: Final = next(
                 (t for t in deployment_tags if t in set(request_tags)),
                 deployment_tags[0],
             )
@@ -213,10 +211,10 @@ def _match_deployment(
     # strict-tag policy. For a pinned request the regex path is blocked
     # UNCONDITIONALLY: a client-controlled User-Agent must never select a
     # deployment that lacks the pin tag.
-    deployment_has_plain_tags = deployment_tags is not None and len(deployment_tags) > 0
-    strict_tag_check_failed = not match_any and deployment_has_plain_tags
+    deployment_has_plain_tags: Final = deployment_tags is not None and len(deployment_tags) > 0
+    strict_tag_check_failed: Final = not match_any and deployment_has_plain_tags
     if deployment_tag_regex and header_strings and not strict_tag_check_failed and not pin_enforced:
-        regex_match = _is_valid_deployment_tag_regex(deployment_tag_regex, header_strings)
+        regex_match: Final = _is_valid_deployment_tag_regex(deployment_tag_regex, header_strings)
         if regex_match is not None:
             return {"matched_via": "tag_regex", "matched_value": regex_match}
 
@@ -517,6 +515,68 @@ def _tag_known_to_group(
     )
 
 
+def _pinned_provider_from_kwargs(
+    request_kwargs: dict[Any, Any] | None,
+    metadata_variable_name: Literal["metadata", "litellm_metadata"],
+) -> str | None:
+    """Return the trusted, URL-derived provider pin from the routing metadata
+    bucket, or ``None`` when the request is not pinned.
+
+    Only the single server-authoritative ``PINNED_PROVIDER_ROUTE_KEY`` signal
+    counts (set from the URL by the proxy's pinned routes, re-asserted from
+    ``request.state``); a client can never set it. Used to enforce pin filtering
+    even when ``enable_tag_filtering`` is off.
+    """
+    if not request_kwargs:
+        return None
+    metadata = request_kwargs.get(metadata_variable_name)
+    if not isinstance(metadata, dict):
+        return None
+    pinned_provider = metadata.get(PINNED_PROVIDER_ROUTE_KEY)
+    return pinned_provider if isinstance(pinned_provider, str) and pinned_provider else None
+
+
+def _base_request_tags(metadata: Mapping[Any, Any]) -> object:
+    """Return the caller-tags snapshot routing should start from, IGNORING any
+    provider pin (see ``_resolve_request_tags`` for the pin-aware entry point).
+
+    Prefers ``Router._update_kwargs_before_fallbacks``'s pre-merge snapshot
+    (``ORIGINAL_REQUEST_TAGS_KEY``) over the live ``metadata["tags"]``, so a
+    selected deployment's own tags — merged into ``metadata["tags"]`` by
+    ``_update_kwargs_with_deployment`` for spend attribution, then reused as the
+    kwargs dict is reused across retries/fallbacks — can never leak back in as
+    routing input on a later attempt. Falls back to the live ``metadata["tags"]``
+    for back-compat when no snapshot was taken (e.g. direct router use in tests
+    that bypasses ``_update_kwargs_before_fallbacks``).
+    """
+    if ORIGINAL_REQUEST_TAGS_KEY in metadata:
+        return metadata.get(ORIGINAL_REQUEST_TAGS_KEY)
+    return metadata.get("tags")
+
+
+def _resolve_request_tags(metadata: Mapping[Any, Any]) -> object:
+    """Return the request tags to route on, IGNORING router-consumption (see
+    ``_request_tags_after_router_consumption`` for that layered on top).
+
+    ABSOLUTE-PRIORITY provider pin. If the trusted, URL-derived
+    ``PINNED_PROVIDER_ROUTE_KEY`` signal is present, the routing tag set is
+    EXACTLY ``["pin:<that provider>"]`` — derived from that single
+    server-authoritative field alone, IGNORING ``tags``,
+    ``ORIGINAL_REQUEST_TAGS_KEY`` and any key/team tags for the routing
+    decision. The proxy's pinned routes set the signal from the URL and nowhere
+    else, overwriting any client-supplied copy in any form, so no client input
+    can change a pinned routing decision. (``metadata["tags"]`` is left intact
+    for SPEND ATTRIBUTION.)
+
+    Otherwise, falls back to ``_base_request_tags`` (the pre-merge snapshot when
+    taken, else the live ``metadata["tags"]``).
+    """
+    pinned_provider = metadata.get(PINNED_PROVIDER_ROUTE_KEY)
+    if isinstance(pinned_provider, str) and pinned_provider:
+        return [PIN_TAG_PREFIX + pinned_provider]
+    return _base_request_tags(metadata)
+
+
 def _request_tags_after_router_consumption(metadata: _TagRoutingMetadata, model: str) -> Sequence[str] | None:
     # The pre-routing hook stamps which tags selected the router it rewrote the request
     # to: those tags already did their job and must not also constrain deployment choice
@@ -587,7 +647,17 @@ async def get_deployments_for_tag(
     if metadata_variable_name in request_kwargs:
         metadata: Final[_TagRoutingMetadata] = request_kwargs[metadata_variable_name]
         stampable_metadata: Final[dict[str, object]] = request_kwargs[metadata_variable_name]
-        request_tags: Final = _request_tags_after_router_consumption(metadata, model)
+        # A hard provider pin derives the routing tag set SOLELY from the pin —
+        # ignoring tags/inherited_tags/router-consumption entirely (see
+        # _resolve_request_tags) — and must never spill to the ``default`` pool:
+        # an empty tag match fails loud rather than being served by a
+        # ``default``-tagged deployment.
+        request_tags: Final = (
+            _resolve_request_tags(metadata)
+            if pinned_provider is not None
+            else _request_tags_after_router_consumption(metadata, model)
+        )
+        disable_default_fallback: Final = pinned_provider is not None
         match_any: Final = llm_router_instance.tag_filtering_match_any
         routing_prefix: Final = llm_router_instance.tag_routing_prefix or ""
 

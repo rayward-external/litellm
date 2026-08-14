@@ -34,6 +34,14 @@ TERMINAL_MANAGED_OBJECT_STATUSES: Final[Tuple[str, ...]] = (
     "stale_expired",
 )
 
+# Row-local dedup marker set the moment spend side effects have run. The
+# SpendLogs request_id lookup is the primary dedup, but it is inert when the
+# operator sets disable_spend_logs — the counters (key/user/team/daily spend)
+# still increment, so without a marker on the billing row itself a worker
+# dying between spend emission and finalization would re-bill them after
+# claim reclamation (codex P1 round 5).
+SPEND_RECORDED_MARKER_KEY = "batch_cost_spend_recorded"
+
 
 class CheckBatchCost:
     def __init__(
