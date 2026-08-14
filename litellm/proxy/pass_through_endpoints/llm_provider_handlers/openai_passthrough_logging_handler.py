@@ -578,7 +578,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             completion_response=litellm_model_response,
             model=model,
             custom_llm_provider=custom_llm_provider,
-            call_type="embedding",
+            call_type="aembedding",
         )
         return litellm_model_response, response_cost
 

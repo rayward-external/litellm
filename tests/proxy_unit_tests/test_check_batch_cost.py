@@ -1852,129 +1852,244 @@ class TestBatchCostAttribution:
         assert metadata["user_api_key_alias"] == "prod-key"
 
 
-class TestBatchCostAttributionStashOverlayReachesLoggingCall:
-    """Regression: /v1/messages/batches rows never populate the managed-object row's
-    api_key/team_id columns (they stash the submitting key's identity in
-    file_object.litellm_attribution instead, per messages_batches.py). The metadata
-    ``_track_completed_batch_cost`` builds from the stash must actually reach the
-    logging call that records spend attribution, not just get computed and discarded."""
+class TestPollPageStarvation:
+    """LIT-5462 regression: a row that can never be costed used to keep its slot in the
+    MAX_OBJECTS_PER_POLL_CYCLE page forever, so once enough of them accumulated no newer
+    batch was ever polled or costed."""
+
+    def _instance(self, prisma, llm_router):
+        from litellm_enterprise.proxy.common_utils.check_batch_cost import CheckBatchCost
+
+        proxy_logging_obj = MagicMock()
+        proxy_logging_obj.get_proxy_hook.return_value = None
+        return CheckBatchCost(
+            proxy_logging_obj=proxy_logging_obj,
+            prisma_client=prisma,
+            llm_router=llm_router,
+        )
+
+    def _prisma(self, jobs):
+        prisma = MagicMock()
+        prisma.db.litellm_managedobjecttable.update_many = AsyncMock(return_value=0)
+        prisma.db.litellm_managedobjecttable.update = AsyncMock()
+        prisma.db.litellm_managedobjecttable.find_many = AsyncMock(return_value=jobs)
+        prisma.db.litellm_usertable.find_unique = AsyncMock(return_value=None)
+        return prisma
+
+    def _job(self, job_id, unified_object_id):
+        job = MagicMock()
+        job.id = job_id
+        job.unified_object_id = unified_object_id
+        job.created_by = "user-1"
+        return job
+
+    @staticmethod
+    def _encode(unified_id: str) -> str:
+        import base64
+
+        return base64.urlsafe_b64encode(unified_id.encode()).decode().rstrip("=")
 
     @pytest.mark.asyncio
-    async def test_stash_attribution_reaches_update_environment_variables(self):
-        import json as _json
-
-        from litellm.types.utils import LiteLLMBatch
-        from litellm_enterprise.proxy.common_utils.check_batch_cost import (
-            CheckBatchCost,
+    async def test_unified_id_without_model_id_is_retired(self):
+        """A unified id that decodes but carries no model_id is unroutable no matter what
+        the config says, so it must leave the poll page instead of being retried forever."""
+        prisma = self._prisma(
+            [self._job("job-no-model", self._encode("litellm_proxy;llm_batch_id:poison-no-model"))]
         )
+        llm_router = MagicMock()
+        llm_router.aretrieve_batch = AsyncMock()
 
-        job = MagicMock()
-        job.id = "job-stash-1"
-        job.unified_object_id = "dW5pZmllZF9iYXRjaF9pZA=="
-        job.created_by = None
-        job.team_id = None
-        job.api_key = None
-        job.request_tags = None
-        job.file_object = _json.dumps(
-            {
-                **_json.loads(
-                    LiteLLMBatch(
-                        id="batch-789",
-                        completion_window="24h",
-                        created_at=1,
-                        endpoint="/v1/chat/completions",
-                        input_file_id="file-raw-provider-input",
-                        object="batch",
-                        status="completed",
-                    ).model_dump_json()
-                ),
-                "litellm_attribution": {
-                    "user_api_key": "hash-stash-key",
-                    "user_api_key_user_id": "stash-user",
-                    "user_api_key_team_id": "team-stash",
-                    "user_api_key_end_user_id": "end-user-stash",
-                    "user_api_key_alias": "stash-key-alias",
-                },
-            }
+        await self._instance(prisma, llm_router).check_batch_cost()
+
+        llm_router.aretrieve_batch.assert_not_awaited()
+        prisma.db.litellm_managedobjecttable.update.assert_awaited_once()
+        call = prisma.db.litellm_managedobjecttable.update.call_args[1]
+        assert call["where"] == {"id": "job-no-model"}
+        assert call["data"] == {"batch_processed": True}
+
+    @pytest.mark.asyncio
+    async def test_provider_404_retires_job(self):
+        """The provider dropping its record of the batch is permanent: no later retrieve
+        can succeed, so the row must stop occupying a slot."""
+        import litellm
+
+        prisma = self._prisma(
+            [
+                self._job(
+                    "job-gone",
+                    self._encode("litellm_proxy;model_id:model-123;llm_batch_id:batch_deadbeef"),
+                )
+            ]
         )
-
-        router = MagicMock()
-        router.get_deployment_credentials_with_provider = MagicMock(
-            return_value={"api_key": "sk-test"}
-        )
-        deployment = MagicMock()
-        deployment.litellm_params.custom_llm_provider = "azure"
-        deployment.litellm_params.model = "azure/gpt-5.5"
-        deployment.model_name = "gpt-5-batch"
-        deployment.model_info.model_dump.return_value = {}
-        router.get_deployment = MagicMock(return_value=deployment)
-
-        hook = MagicMock()
-        hook.get_unified_output_file_id = (
-            lambda output_file_id, model_id, model_name: output_file_id
-        )
-        hook.store_unified_file_id = AsyncMock()
-        proxy_logging_obj = MagicMock()
-        proxy_logging_obj.get_proxy_hook.return_value = hook
-
-        prisma_client = MagicMock()
-        prisma_client.db.litellm_usertable.find_unique = AsyncMock(return_value=None)
-        prisma_client.db.litellm_verificationtoken.find_unique = AsyncMock(return_value=None)
-        prisma_client.db.litellm_teamtable.find_unique = AsyncMock(return_value=None)
-
-        instance = CheckBatchCost(
-            proxy_logging_obj=proxy_logging_obj,
-            prisma_client=prisma_client,
-            llm_router=router,
-        )
-
-        response = LiteLLMBatch(
-            id="batch-789",
-            completion_window="24h",
-            created_at=1,
-            endpoint="/v1/chat/completions",
-            input_file_id="file-raw-provider-input",
-            object="batch",
-            status="completed",
-        )
-        response.output_file_id = "file-batch-output-stash"
-
-        file_content = MagicMock()
-        file_content.content = b'{"id":"req-1"}'
-
-        with (
-            patch(
-                "litellm.files.main.afile_content",
-                new_callable=AsyncMock,
-                return_value=file_content,
-            ),
-            patch(
-                "litellm.batches.batch_utils._get_file_content_as_dictionary",
-                return_value=[{"id": "req-1"}],
-            ),
-            patch(
-                "litellm.batches.batch_utils.calculate_batch_cost_and_usage",
-                new_callable=AsyncMock,
-                return_value=(0.01, {"prompt_tokens": 10}, ["gpt-5.5"]),
-            ),
-            patch("litellm.litellm_core_utils.litellm_logging.Logging") as logging_cls,
-        ):
-            logging_obj = MagicMock()
-            logging_obj.async_success_handler = AsyncMock()
-            logging_cls.return_value = logging_obj
-
-            await instance._track_completed_batch_cost(
-                job=job,
-                response=response,
-                model_id="model-123",
-                batch_id="batch-789",
-                prom_logger=None,
+        llm_router = MagicMock()
+        llm_router.aretrieve_batch = AsyncMock(
+            side_effect=litellm.NotFoundError(
+                message="No batch found with id 'batch_deadbeef'.",
+                model="model-123",
+                llm_provider="openai",
             )
+        )
 
-            update_kwargs = logging_obj.update_environment_variables.call_args.kwargs
-            metadata = update_kwargs["litellm_params"]["metadata"]
+        await self._instance(prisma, llm_router).check_batch_cost()
 
-        assert metadata["user_api_key"] == "hash-stash-key"
-        assert metadata["user_api_key_alias"] == "stash-key-alias"
-        assert metadata["user_api_key_team_id"] == "team-stash"
-        assert metadata["user_api_key_end_user_id"] == "end-user-stash"
+        prisma.db.litellm_managedobjecttable.update.assert_awaited_once()
+        assert prisma.db.litellm_managedobjecttable.update.call_args[1]["data"] == {
+            "batch_processed": True
+        }
+
+    @pytest.mark.asyncio
+    async def test_provider_404_with_deployment_gone_keeps_job(self):
+        """With the batch's own deployment removed from the router, default fallbacks can
+        send the retrieve to a provider that never saw the batch. That 404 proves nothing,
+        so the row must stay unprocessed instead of losing its spend forever."""
+        import litellm
+
+        prisma = self._prisma(
+            [
+                self._job(
+                    "job-misrouted",
+                    self._encode("litellm_proxy;model_id:model-gone;llm_batch_id:batch_alive"),
+                )
+            ]
+        )
+        llm_router = MagicMock()
+        llm_router.get_deployment = MagicMock(return_value=None)
+        llm_router.aretrieve_batch = AsyncMock(
+            side_effect=litellm.NotFoundError(
+                message="No batch found with id 'batch_alive'.",
+                model="model-gone",
+                llm_provider="openai",
+            )
+        )
+
+        await self._instance(prisma, llm_router).check_batch_cost()
+
+        prisma.db.litellm_managedobjecttable.update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_transient_provider_error_keeps_job_for_retry(self):
+        """A failure that may clear up (timeout, 5xx) must still leave the row unprocessed."""
+        prisma = self._prisma(
+            [
+                self._job(
+                    "job-flaky",
+                    self._encode("litellm_proxy;model_id:model-123;llm_batch_id:batch_flaky"),
+                )
+            ]
+        )
+        llm_router = MagicMock()
+        llm_router.aretrieve_batch = AsyncMock(side_effect=Exception("connection reset"))
+
+        await self._instance(prisma, llm_router).check_batch_cost()
+
+        prisma.db.litellm_managedobjecttable.update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_retirement_falls_back_to_status_without_batch_processed_column(self):
+        """Older schemas have no batch_processed column, so the only way to stop selecting
+        the row is the status filter the poll query already applies."""
+        prisma = self._prisma(
+            [self._job("job-legacy", self._encode("litellm_proxy;llm_batch_id:poison-no-model"))]
+        )
+        instance = self._instance(prisma, MagicMock())
+        instance._has_batch_processed_column = False
+
+        await instance.check_batch_cost()
+
+        assert prisma.db.litellm_managedobjecttable.update.call_args[1]["data"] == {
+            "status": "stale_expired"
+        }
+
+    @pytest.mark.asyncio
+    async def test_stale_cleanup_gives_up_on_never_costed_completed_rows(self):
+        """A row already in a terminal status is never rewritten by the staleness sweep, so
+        it needs its own bound or it starves newer batches indefinitely."""
+        prisma = self._prisma([])
+
+        await self._instance(prisma, MagicMock()).check_batch_cost()
+
+        calls = prisma.db.litellm_managedobjecttable.update_many.call_args_list
+        # Identified by shape, not a fixed index: the abandoned-pricing-claim
+        # reclaim sweep (codex P1 round 2) also calls update_many, ahead of
+        # both the staleness sweep and this never-costed sweep.
+        never_costed_calls = [
+            c for c in calls if c[1].get("where", {}).get("status") == {"in": ["complete", "completed"]}
+        ]
+        assert len(never_costed_calls) == 1, "expected exactly one never-costed sweep call"
+        where = never_costed_calls[0][1]["where"]
+        assert where["file_purpose"] == "batch"
+        assert where["batch_processed"] is False
+        assert "created_at" in where
+        assert never_costed_calls[0][1]["data"] == {"batch_processed": True}
+
+    @pytest.mark.asyncio
+    async def test_newer_batch_is_polled_once_dead_rows_are_retired(self):
+        """The end state the customer cares about: dead rows retire on the cycle they are
+        first seen, and the healthy batch behind them keeps getting polled."""
+        dead_rows = [
+            self._job("job-no-model", self._encode("litellm_proxy;llm_batch_id:poison-no-model")),
+            self._job(
+                "job-gone",
+                self._encode("litellm_proxy;model_id:model-123;llm_batch_id:batch_deadbeef"),
+            ),
+        ]
+        live_row = self._job(
+            "job-live",
+            self._encode("litellm_proxy;model_id:model-123;llm_batch_id:batch_live"),
+        )
+        prisma = self._prisma(dead_rows + [live_row])
+
+        import litellm
+
+        in_progress = MagicMock()
+        in_progress.status = "in_progress"
+
+        async def _retrieve(model, batch_id, litellm_metadata):
+            if batch_id == "batch_deadbeef":
+                raise litellm.NotFoundError(
+                    message=f"No batch found with id '{batch_id}'.",
+                    model=model,
+                    llm_provider="openai",
+                )
+            return in_progress
+
+        llm_router = MagicMock()
+        llm_router.aretrieve_batch = AsyncMock(side_effect=_retrieve)
+
+        await self._instance(prisma, llm_router).check_batch_cost()
+
+        retired = [
+            call[1]["where"]["id"]
+            for call in prisma.db.litellm_managedobjecttable.update.call_args_list
+        ]
+        assert retired == ["job-no-model", "job-gone"]
+        assert (
+            llm_router.aretrieve_batch.await_args_list[-1][1]["batch_id"] == "batch_live"
+        ), "the newer healthy batch must still be polled in the same cycle"
+
+    @pytest.mark.asyncio
+    async def test_404_that_does_not_name_the_batch_keeps_job_for_retry(self):
+        """A 404 about something other than the batch, e.g. a renamed Azure deployment, is
+        fixable in config, so the row must survive to be costed after the fix."""
+        import litellm
+
+        prisma = self._prisma(
+            [
+                self._job(
+                    "job-bad-deployment",
+                    self._encode("litellm_proxy;model_id:model-123;llm_batch_id:batch_real"),
+                )
+            ]
+        )
+        llm_router = MagicMock()
+        llm_router.aretrieve_batch = AsyncMock(
+            side_effect=litellm.NotFoundError(
+                message="Error code: 404 - DeploymentNotFound",
+                model="model-123",
+                llm_provider="azure",
+            )
+        )
+
+        await self._instance(prisma, llm_router).check_batch_cost()
+
+        prisma.db.litellm_managedobjecttable.update.assert_not_awaited()

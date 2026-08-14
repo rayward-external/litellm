@@ -509,6 +509,7 @@ class PassThroughEndpointLogging:
         for route in self.TRACKED_COHERE_ROUTES:
             if route in parsed_url.path:
                 return True
+        return False
 
     def is_assemblyai_route(self, url_route: str):
         parsed_url: Final = urlparse(url_route)
