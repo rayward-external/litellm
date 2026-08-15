@@ -1,6 +1,6 @@
 {
   "ANN001": {
-    "limit": 3046
+    "limit": 3045
   },
   "ANN002": {
     "limit": 70
@@ -108,7 +108,7 @@
     "limit": 3
   },
   "F401": {
-    "limit": 15
+    "limit": 14
   },
   "LOG015": {
     "limit": 5
@@ -246,7 +246,7 @@
     "limit": 403
   },
   "TRY203": {
-    "limit": 112
+    "limit": 111
   },
   "TRY300": {
     "limit": 861
