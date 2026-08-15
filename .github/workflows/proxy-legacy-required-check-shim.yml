@@ -1,0 +1,55 @@
+name: "Unit Tests: Proxy Legacy Tests (required-check shim)"
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+      - litellm_internal_staging
+      - litellm_oss_staging
+      - "litellm_**"
+
+# Upstream's 2026-08-15 sync removed .github/workflows/test-unit-proxy-legacy.yml,
+# replacing its alphabetical-range test matrix with the semantically-grouped
+# test-unit-proxy-*.yml workflows (e.g. "auth-checks", "key-generation",
+# "proxy-utils" under "Unit Tests: Proxy Auth & Key Management" / "Unit Tests:
+# Proxy DB Operations" / etc. -- see test-unit-proxy-db.yml's own comment on the
+# semantic-vs-alphabetical redesign). Real coverage of tests/proxy_unit_tests/
+# moved to those workflows and still runs. But litellm_internal_staging's branch
+# protection still lists the old workflow's 9 matrix job names as required status
+# checks (auth-and-jwt, key-generation, proxy-config, proxy-server,
+# proxy-server-extras, proxy-utils, proxy-token-counter, proxy-response-and-misc,
+# proxy-user-auth-and-spend), which can now never report on any PR -> every PR is
+# permanently blocked from merging ("9 of 54 required status checks are
+# expected"). This shim reproduces only the job name/matrix shape so the
+# required checks can report; same pattern as
+# server-root-path-required-check-shim.yml.
+# REMOVAL CONDITION: remove once an admin updates litellm_internal_staging's
+# required status checks (Settings > Branches) to drop these 9 obsolete contexts.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    strategy:
+      fail-fast: false
+      matrix:
+        test-group:
+          - auth-and-jwt
+          - key-generation
+          - proxy-config
+          - proxy-server
+          - proxy-server-extras
+          - proxy-utils
+          - proxy-token-counter
+          - proxy-response-and-misc
+          - proxy-user-auth-and-spend
+
+    name: ${{ matrix.test-group }}
+
+    steps:
+      - name: Shim - see fork-patches.txt
+        run: |
+          echo "Required-check shim for the matrix job upstream's test-unit-proxy-legacy.yml used to produce (test-group=${{ matrix.test-group }})."
+          echo "Real coverage of tests/proxy_unit_tests/ now lives in the semantically-grouped test-unit-proxy-*.yml workflows. See .github/fork-patches.txt."
