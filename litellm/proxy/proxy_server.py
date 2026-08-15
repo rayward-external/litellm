@@ -367,7 +367,10 @@ from litellm.proxy.config_resolvers.alerting import (
 )
 from litellm.proxy.container_endpoints.endpoints import router as container_router
 from litellm.proxy.credential_endpoints.endpoints import router as credential_router
-from litellm.proxy.db.db_transaction_queue.spend_log_cleanup import SpendLogCleanup
+from litellm.proxy.db.db_transaction_queue.spend_log_cleanup import (
+    SPEND_LOG_CLEANUP_BOUND_SETTINGS,
+    SpendLogCleanup,
+)
 from litellm.proxy.db.exception_handler import (
     PrismaDBExceptionHandler,
     call_with_db_reconnect_retry,
@@ -2332,8 +2335,11 @@ def load_from_azure_key_vault(use_azure_key_vault: bool = False):
 def cost_tracking():
     global prisma_client
     if prisma_client is not None:
+        from litellm.integrations.shadow_eval_logger import ShadowEvalLogger
+
         litellm.logging_callback_manager.add_litellm_callback(_ProxyDBLogger())
         litellm.logging_callback_manager.add_litellm_async_success_callback(_ProxyDBLogger())
+        litellm.logging_callback_manager.add_litellm_callback(ShadowEvalLogger())
 
 
 # Bounds authoritative DB re-reads when enforcing a budget against a
@@ -4079,6 +4085,7 @@ class ProxyConfig:
         # precedence over stale DB-cached values for these specific keys
         # during periodic config reloads (_update_general_settings).
         self._yaml_general_settings_keys: set[str] = set()  # mutable-ok: populated once at startup, read-only thereafter  # fmt: skip
+        self._yaml_spend_log_cleanup_bounds: dict[str, object] = {}  # mutable-ok: snapshot of YAML bounds at load time  # fmt: skip
 
     def is_yaml(self, config_file_path: str) -> bool:
         if not os.path.isfile(config_file_path):
@@ -5015,6 +5022,12 @@ class ProxyConfig:
             # These keys take precedence over DB-cached values during periodic
             # reloads (see _update_general_settings).
             self._yaml_general_settings_keys = set(general_settings.keys())  # mutable-ok: snapshot of YAML keys at load time  # fmt: skip
+            # The VALUES matter for the cleanup bounds, not just which keys were
+            # set: clearing one from the dashboard has to fall back to what the
+            # YAML declared, and a set of names cannot answer that.
+            self._yaml_spend_log_cleanup_bounds = {  # mutable-ok: snapshot of YAML bounds at load time  # fmt: skip
+                key: general_settings[key] for key in SPEND_LOG_CLEANUP_BOUND_SETTINGS if key in general_settings
+            }
 
             ### LOAD KEY MANAGEMENT SETTINGS FIRST (needed for custom secret manager) ###
             key_management_settings: Final = general_settings.get("key_management_settings", None)
@@ -6325,6 +6338,18 @@ class ProxyConfig:
             general_settings["maximum_autorouter_session_retention_period"] = new_session_value
             if old_session_value != new_session_value:
                 await self._reschedule_spend_log_cleanup_job()
+
+        ## SPEND LOG CLEANUP BOUNDS ##
+        # The dashboard writes these straight to the DB, so without copying them
+        # here the running cleanup job never sees them. A key the DB no longer
+        # carries was cleared from the dashboard, and falls back to whatever
+        # config.yaml declared, or to None (the shipped default) when it declared
+        # nothing. Leaving the deleted DB value in memory would keep enforcing the
+        # bound the operator just removed.
+        for cleanup_key in SPEND_LOG_CLEANUP_BOUND_SETTINGS:
+            general_settings[cleanup_key] = _general_settings.get(
+                cleanup_key, self._yaml_spend_log_cleanup_bounds.get(cleanup_key)
+            )
 
         for key in (
             "user_url_allowed_hosts",
@@ -9498,6 +9523,7 @@ class ProxyStartupEvent:
     "/models", dependencies=[Depends(user_api_key_auth)], tags=["model management"]
 )  # if project requires model list
 async def model_list(
+    request: Request = None,  # pyright: ignore[reportArgumentType]  # FastAPI always injects the Request; the None default only serves direct in-process callers
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
     return_wildcard_routes: bool | None = False,
     team_id: str | None = None,
@@ -9534,12 +9560,21 @@ async def model_list(
 
     settings: Final = cast(dict[str, object], general_settings)  # any-ok: legacy settings
 
+    from litellm.llms.anthropic.common_utils import (
+        create_anthropic_model_list_response,
+    )
     from litellm.proxy.management_endpoints.common_utils import (
         _user_has_admin_privileges,
     )
     from litellm.proxy.utils import (
         create_model_info_response,
         get_available_models_for_user,
+    )
+    from litellm.types.proxy.model_listing import ModelInfoResponse
+
+    http_request: Final = cast(Request | None, request)  # cast-ok: in-process callers pass no request
+    wants_anthropic_format: Final = (
+        http_request is not None and http_request.headers.get("anthropic-version") is not None
     )
 
     # Validate scope parameter if provided
@@ -9624,6 +9659,10 @@ async def model_list(
             model_info["id"] = response_id
             model_data.append(model_info)
 
+        if wants_anthropic_format:
+            admin_listing: Final = cast(Sequence[ModelInfoResponse], model_data)  # cast-ok: rows built above
+            return create_anthropic_model_list_response(admin_listing)
+
         return dict(
             data=model_data,
             object="list",
@@ -9663,6 +9702,10 @@ async def model_list(
         )
         model_info["id"] = response_id
         model_data.append(model_info)
+
+    if wants_anthropic_format:
+        listing: Final = cast(Sequence[ModelInfoResponse], model_data)  # cast-ok: rows built above
+        return create_anthropic_model_list_response(listing)
 
     return dict(
         data=model_data,
@@ -15556,6 +15599,10 @@ _GENERAL_SETTINGS_CONFIG_LIST_FIELD_TYPES: Final[Mapping[str, str]] = MappingPro
         "store_model_in_db": "Boolean",
         "store_prompts_in_spend_logs": "Boolean",
         "maximum_spend_logs_retention_period": "String",
+        "maximum_spend_logs_cleanup_batch_size": "Integer",
+        "maximum_spend_logs_cleanup_max_batches": "Integer",
+        "maximum_spend_logs_cleanup_run_budget": "String",
+        "maximum_spend_logs_cleanup_batch_timeout": "String",
         "mcp_internal_ip_ranges": "List",
         "mcp_trusted_proxy_ranges": "List",
         "mcp_xff_num_trusted_hops": "Integer",
@@ -17263,6 +17310,29 @@ async def _stream_mcp_asgi_response(handle_fn, scope: dict, receive) -> "Streami
 ########################################################
 # MCP Server
 ########################################################
+
+
+@app.api_route(
+    BASE_MCP_ROUTE,
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+)
+async def aggregate_mcp_route(request: Request):
+    """Serve the aggregate MCP endpoint on the bare ``/mcp`` spelling: the
+    ``/mcp`` mount cannot match its bare prefix, and the resulting 307 breaks
+    MCP clients behind TLS-terminating proxies."""
+    from litellm.proxy._experimental.mcp_server.utils import is_mcp_available
+
+    if not is_mcp_available():
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    from litellm.proxy._experimental.mcp_server.server import (
+        handle_streamable_http_mcp,
+    )
+
+    scope = dict(request.scope)
+    scope["_original_path"] = scope.get("path", "")
+    scope["path"] = BASE_MCP_ROUTE
+    return await _stream_mcp_asgi_response(handle_streamable_http_mcp, scope, request.receive)
 
 
 # Toolset-namespaced MCP routes - handle /toolset/{toolset_name}/mcp

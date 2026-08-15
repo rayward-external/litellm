@@ -2782,11 +2782,13 @@ RoutingDecisionCause = Literal[
 ]
 
 
-InternalCallOrigin = Literal["autorouter_classifier"]
+InternalCallOrigin = Literal["autorouter_classifier", "shadow_eval_router", "shadow_eval_judge"]
 """Which internal litellm feature originated a billed sub-call, so a spend log row
 records that it is not traffic the caller sent."""
 
 AUTOROUTER_CLASSIFIER_CALL_ORIGIN: Final[InternalCallOrigin] = "autorouter_classifier"
+SHADOW_EVAL_ROUTER_CALL_ORIGIN: Final[InternalCallOrigin] = "shadow_eval_router"
+SHADOW_EVAL_JUDGE_CALL_ORIGIN: Final[InternalCallOrigin] = "shadow_eval_judge"
 
 
 class StandardLoggingRoutingDecision(TypedDict, total=False):
@@ -3260,6 +3262,7 @@ class MirroredPricingParams(BaseModel):
     output_cost_per_character: float | None = None
     cache_read_input_token_cost: float | None = None
     cache_creation_input_token_cost: float | None = None
+    tiered_pricing: list[dict[str, Any]] | None = None
 
 
 class CustomPricingLiteLLMParams(MirroredPricingParams):
@@ -3327,7 +3330,6 @@ class CustomPricingLiteLLMParams(MirroredPricingParams):
     output_cost_per_audio_per_second: float | None = None
     search_context_cost_per_query: dict[str, Any] | None = None
     citation_cost_per_token: float | None = None
-    tiered_pricing: list[dict[str, Any]] | None = None
     cache_read_input_token_cost_above_272k_tokens: float | None = None
     cache_read_input_token_cost_above_512k_tokens: float | None = None
     input_cost_per_image_token: float | None = None
@@ -3756,6 +3758,7 @@ class SearchProviders(str, Enum):
     YOU_COM = "you_com"
     APISERPENT = "apiserpent"
     TINYFISH = "tinyfish"
+    NIMBLE = "nimble"
 
 
 # Create a set of all search provider values for quick lookup
