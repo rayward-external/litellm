@@ -627,7 +627,7 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({ accessToken, publicPage, 
                     <div className="flex flex-wrap gap-1 mt-1">
                       {selectedModel.providers.map((provider) => (
                         <Badge key={provider} variant="secondary">
-                          {provider}
+                          {getProviderLogoAndName(provider).displayName}
                         </Badge>
                       ))}
                     </div>
