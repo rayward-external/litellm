@@ -860,7 +860,7 @@ class TestCheckBatchCost:
         from unittest.mock import patch
 
         mock_prisma_client.db.litellm_managedobjecttable.update_many = AsyncMock(
-            return_value=0
+            side_effect=_sweep_zero_claim_one
         )
         mock_prisma_client.db.litellm_managedobjecttable.update = AsyncMock()
         mock_prisma_client.db.litellm_usertable.find_unique = AsyncMock(
@@ -900,16 +900,13 @@ class TestCheckBatchCost:
         ) as mock_afile_content:
             await check_batch_cost_instance.check_batch_cost()
 
+        finalize_writes = [
+            data for data in _row_writes(mock_prisma_client) if data.get("status") == completed_status
+        ]
+        assert len(finalize_writes) == 1, "a completed batch with no output file must be marked processed exactly once"
         assert (
-            mock_prisma_client.db.litellm_managedobjecttable.update.call_count == 1
-        ), "a completed batch with no output file must be marked processed exactly once"
-        update_data = mock_prisma_client.db.litellm_managedobjecttable.update.call_args[
-            1
-        ]["data"]
-        assert update_data["status"] == completed_status
-        assert (
-            update_data["batch_processed"] is True
-        ), "completed-without-output update() must set batch_processed=True so polling stops"
+            finalize_writes[0]["batch_processed"] is True
+        ), "completed-without-output finalize must set batch_processed=True so polling stops"
         assert (
             mock_afile_content.await_count == 0
         ), "a batch with no output file must not be billed"
@@ -979,7 +976,7 @@ class TestCheckBatchCost:
         from unittest.mock import patch
 
         mock_prisma_client.db.litellm_managedobjecttable.update_many = AsyncMock(
-            return_value=0
+            side_effect=_sweep_zero_claim_one
         )
         mock_prisma_client.db.litellm_managedobjecttable.update = AsyncMock()
         mock_prisma_client.db.litellm_usertable.find_unique = AsyncMock(
@@ -1068,15 +1065,13 @@ class TestCheckBatchCost:
             mock_afile_content.await_count == 1
         ), "expired batch with an output file must fetch results and be billed"
         mock_logging_obj.async_success_handler.assert_awaited_once()
+        finalize_writes = [
+            data for data in _row_writes(mock_prisma_client) if data.get("status") == "expired"
+        ]
+        assert len(finalize_writes) == 1, "the billed expired batch must be marked processed exactly once"
+        assert finalize_writes[0]["batch_processed"] is True
         assert (
-            mock_prisma_client.db.litellm_managedobjecttable.update.call_count == 1
-        )
-        update_data = mock_prisma_client.db.litellm_managedobjecttable.update.call_args[
-            1
-        ]["data"]
-        assert update_data["batch_processed"] is True
-        assert (
-            update_data["status"] == "expired"
+            finalize_writes[0]["status"] == "expired"
         ), "billed expired batch must keep its real terminal status in the DB"
 
     @pytest.mark.asyncio

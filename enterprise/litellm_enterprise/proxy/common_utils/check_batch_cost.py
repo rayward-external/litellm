@@ -1255,6 +1255,9 @@ class CheckBatchCost:
                 "expired",
                 "cancelled",
             ):
+                # Terminal with no output object at all — nothing to price.
+                if not await self._claim_job(job):
+                    continue
                 try:
                     from litellm.proxy.openai_files_endpoints.common_utils import (
                         _is_base64_encoded_unified_file_id,
