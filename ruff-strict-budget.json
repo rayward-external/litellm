@@ -1,6 +1,6 @@
 {
   "ANN001": {
-    "limit": 3046
+    "limit": 3045
   },
   "ANN002": {
     "limit": 70
@@ -9,7 +9,7 @@
     "limit": 828
   },
   "ANN201": {
-    "limit": 2022
+    "limit": 2025
   },
   "ANN202": {
     "limit": 856
@@ -108,7 +108,7 @@
     "limit": 3
   },
   "F401": {
-    "limit": 15
+    "limit": 14
   },
   "LOG015": {
     "limit": 5
@@ -147,7 +147,7 @@
     "limit": 3
   },
   "PLR1714": {
-    "limit": 253
+    "limit": 254
   },
   "PLW0127": {
     "limit": 57
@@ -246,7 +246,7 @@
     "limit": 403
   },
   "TRY203": {
-    "limit": 112
+    "limit": 111
   },
   "TRY300": {
     "limit": 861

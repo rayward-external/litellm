@@ -1148,7 +1148,7 @@ class CheckBatchCost:
                     response.output_file_id = salvaged_output_file_id
 
             if response.output_file_id is not None and (
-                response.status == "completed" or salvaged_output_file_id is not None
+                response.status in ("completed", "complete", "expired") or salvaged_output_file_id is not None
             ):
                 terminal_status = "complete" if response.status == "completed" else response.status
                 if not await self._claim_job(job):
@@ -1237,10 +1237,8 @@ class CheckBatchCost:
                 # finalize, fenced to the claim this worker holds
                 try:
                     update_data: dict = {
-                        "status": terminal_status,
-                        "file_object": self._finalized_file_object(
-                            job, response, spend_recorded=tracked is not None
-                        ),
+                        "status": response.status if response.status != "completed" else "complete",
+                        "file_object": response.model_dump_json(),
                     }
                     if self._has_batch_processed_column:
                         update_data["batch_processed"] = True
@@ -1250,7 +1248,13 @@ class CheckBatchCost:
                         f"CheckBatchCost: failed to mark job {job.id} {terminal_status} in DB: {db_err}"
                     )
 
-            elif response.status in ("failed", "expired", "cancelled"):
+            elif response.status in (
+                "completed",
+                "complete",
+                "failed",
+                "expired",
+                "cancelled",
+            ):
                 # Terminal with no output object at all — nothing to price.
                 if not await self._claim_job(job):
                     continue
