@@ -141,21 +141,8 @@ LITELLM_UI_ALLOW_HEADERS: Final = [
     "x-litellm-semantic-filter",
     "x-litellm-semantic-filter-tools",
     "x-litellm-adaptive-router-model",
-    # RAYWARD FORK PATCH (#491): the neutral usage contract. This list is what
-    # proxy_server.py hands CORSMiddleware as expose_headers, and a cross-origin
-    # browser client can only read a response header that appears in it —
-    # everything else comes back as null from response.headers, with no error to
-    # notice. Emitting the headers is therefore not enough on its own for a
-    # browser caller on the internal hostname, which is the audience this issue
-    # added them for.
-    #
-    # The external leg does not depend on this: its middleware REPLACES
-    # access-control-expose-headers with the neutral names, because LiteLLM
-    # advertises literal x-litellm-* names here and the list itself is a
-    # disclosure. So these entries serve internal browser callers only.
-    "x-usage-cost",
-    "x-usage-spend",
-    "x-usage-budget",
+    "x-litellm-applied-guardrails",
+    "x-litellm-guardrail-scan-id",
 ]
 
 # Gemini model-specific minimal thinking budget constants
