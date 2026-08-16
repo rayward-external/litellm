@@ -144,9 +144,23 @@ def _get_spend_logs_metadata(
 
 
 BATCH_COST_REQUEST_ID_SUFFIX: Final = "_batch_cost"
+BATCH_COST_CALL_ID_PREFIX: Final = "batch-cost-"
 
 
 def get_spend_logs_id(call_type: str, response_obj: dict, kwargs: dict) -> str | None:
+    if call_type == CallTypes.aretrieve_batch.value:
+        # RAYWARD FORK PATCH: CheckBatchCost supplies its own deterministic
+        # per-batch call id (prefixed so ordinary user polls, whose random
+        # call ids never carry this prefix, are unaffected) and dedups its
+        # SpendLogs row against it directly — honor it verbatim instead of
+        # falling through to the suffix below, which would compute a
+        # different request_id than the one CheckBatchCost looks up.
+        caller_id = cast(
+            str | None,
+            kwargs.get("litellm_call_id") or (kwargs.get("litellm_params") or {}).get("litellm_call_id"),
+        )
+        if caller_id and caller_id.startswith(BATCH_COST_CALL_ID_PREFIX):
+            return caller_id
     standard_logging_payload = kwargs.get("standard_logging_object")
     candidate_ids: Final = (
         response_obj.get("id"),
