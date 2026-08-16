@@ -141,6 +141,8 @@ LITELLM_UI_ALLOW_HEADERS: Final = [
     "x-litellm-semantic-filter",
     "x-litellm-semantic-filter-tools",
     "x-litellm-adaptive-router-model",
+    "x-litellm-applied-guardrails",
+    "x-litellm-guardrail-scan-id",
     # RAYWARD FORK PATCH (#491): the neutral usage contract. This list is what
     # proxy_server.py hands CORSMiddleware as expose_headers, and a cross-origin
     # browser client can only read a response header that appears in it —
