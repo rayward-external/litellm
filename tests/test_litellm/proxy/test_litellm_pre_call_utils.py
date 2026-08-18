@@ -11,7 +11,7 @@ from pydantic import ValidationError as PydanticValidationError
 from starlette.datastructures import Headers
 
 import litellm
-from litellm.proxy._types import AddTeamCallback, TeamCallbackMetadata, UserAPIKeyAuth
+from litellm.proxy._types import AddTeamCallback, ProxyException, TeamCallbackMetadata, UserAPIKeyAuth
 from litellm.proxy.litellm_pre_call_utils import (
     KeyAndTeamLoggingSettings,
     LiteLLMProxyRequestSetup,
@@ -230,75 +230,40 @@ async def test_add_litellm_data_to_request_parses_string_metadata():
 
 
 @pytest.mark.asyncio
-async def test_add_litellm_data_to_request_sanitizes_conflicting_pin_tags_on_pinned_route():
-    """P2: a pinned request whose key/team attribution tags carry a NON-authoritative
-    pin:* tag must NOT leave that stray pin in request_tags — it would double-count /
-    misattribute spend under a pin-grouped report. When the trusted pin signal is
-    present (set on request.state by the pinned route), the merged attribution ``tags``
-    are reduced to EXACTLY the one authoritative pin:<provider>, while ALL non-pin
-    attribution tags (cost-center:*, customer:*, …) are preserved. Routing is untouched
-    (it reads the signal, not tags).
-
-    Mutation-verify: delete the sanitize block after the pin re-assertion in
-    add_litellm_data_to_request and this test fails (pin:openai / pin:vertex_ai leak).
+async def test_stamped_auth_object_reflects_header_derived_identity():
     """
-    from types import SimpleNamespace
-
-    from litellm.router_strategy.tag_based_routing import PINNED_PROVIDER_ROUTE_KEY
+    Regression (LIT-5487): the stamped object is a copy taken partway through request setup,
+    so it only carries header-derived identity if the stamp still runs after those fields are
+    resolved. Moving the stamp earlier would silently misattribute spend.
+    """
+    from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request
 
     request_mock = MagicMock(spec=Request)
     request_mock.url = MagicMock()
-    request_mock.url.path = "/bedrock/v1/chat/completions"
-    request_mock.url.__str__.return_value = "http://localhost/bedrock/v1/chat/completions"
+    request_mock.url.path = "/v1/chat/completions"
+    request_mock.url.__str__.return_value = "http://localhost/v1/chat/completions"
     request_mock.method = "POST"
     request_mock.query_params = {}
-    request_mock.headers = {"Content-Type": "application/json"}
+    request_mock.headers = {"Content-Type": "application/json", "user": "end-user-from-header"}
     request_mock.client = MagicMock()
     request_mock.client.host = "127.0.0.1"
-    # request.state is server-only; the pinned route stashed the trusted provider there.
-    request_mock.state = SimpleNamespace()
-    setattr(request_mock.state, PINNED_PROVIDER_ROUTE_KEY, "bedrock")
 
-    # Body-root tags as the pinned route left them: legit attribution + the
-    # authoritative pin. Key + team each carry a STRAY, non-authoritative pin.
-    data = {
-        "model": "claude",
-        "tags": ["cost-center:x", "pin:bedrock"],
-    }
-    user_api_key_dict = UserAPIKeyAuth(
-        api_key="hashed-key",
-        metadata={"tags": ["pin:openai", "customer:acme"]},
-        team_metadata={"tags": ["pin:vertex_ai", "team-tag:eng"]},
-        spend=0.0,
-        max_budget=100.0,
-        model_max_budget={},
-        team_spend=0.0,
-        team_max_budget=200.0,
-    )
+    user_api_key_dict = UserAPIKeyAuth(api_key="hashed-key", metadata={}, team_metadata={})
 
-    updated = await add_litellm_data_to_request(
-        data=data,
+    updated_data = await add_litellm_data_to_request(
+        data={"model": "gpt-3.5-turbo"},
         request=request_mock,
         user_api_key_dict=user_api_key_dict,
         proxy_config=MagicMock(),
-        general_settings={},
+        general_settings={"user_header_name": "user"},
         version="test-version",
     )
 
-    # The pinned /bedrock route selects the litellm_metadata bucket; read whichever
-    # bucket the proxy's own path-based selector picked so the assertion is robust.
-    bucket = _get_metadata_variable_name(request_mock)
-    tags = updated[bucket]["tags"]
-    # Exactly the authoritative pin survives the pin:* namespace.
-    assert [t for t in tags if t.startswith("pin:")] == ["pin:bedrock"]
-    assert "pin:openai" not in tags
-    assert "pin:vertex_ai" not in tags
-    # Non-pin attribution tags are all preserved.
-    assert "cost-center:x" in tags
-    assert "customer:acme" in tags
-    assert "team-tag:eng" in tags
-    # Routing signal itself is set from the trusted source.
-    assert updated[bucket][PINNED_PROVIDER_ROUTE_KEY] == "bedrock"
+    # precondition: the header was actually resolved onto the live object
+    assert user_api_key_dict.end_user_id == "end-user-from-header"
+
+    stamped = updated_data["metadata"]["user_api_key_auth"]
+    assert stamped.end_user_id == "end-user-from-header"
 
 
 @pytest.mark.asyncio
@@ -487,6 +452,91 @@ async def test_add_litellm_data_to_request_string_metadata_does_not_crash():
     # from a raw string snapshot).
     assert isinstance(updated["metadata"], dict)
     assert updated["metadata"].get("generation_name") == "test"
+
+
+def _batches_request_mock() -> MagicMock:
+    request_mock = MagicMock(spec=Request)
+    request_mock.url = MagicMock()
+    request_mock.url.__str__.return_value = "http://localhost/v1/batches"
+    request_mock.url.path = "/v1/batches"
+    request_mock.method = "POST"
+    request_mock.query_params = {}
+    request_mock.headers = {"Content-Type": "application/json"}
+    request_mock.client = MagicMock()
+    request_mock.client.host = "127.0.0.1"
+    return request_mock
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,value,received_type",
+    [
+        ("metadata", "abc", "a string"),
+        ("litellm_metadata", "abc", "a string"),
+        ("metadata", 42, "an integer"),
+        ("litellm_metadata", [1, 2], "an array"),
+        ("metadata", True, "a boolean"),
+    ],
+)
+async def test_add_litellm_data_to_request_rejects_non_object_metadata(field, value, received_type):
+    """Regression for https://github.com/BerriAI/litellm/issues/37147: a
+    non-object metadata was silently dropped with a 200, and a non-object
+    litellm_metadata crashed later with a 500 ('str' object has no attribute
+    'update'). Both must be a 400 naming the field, like OpenAI returns."""
+    data = {"input_file_id": "file-abc", "endpoint": "/v1/chat/completions", field: value}
+
+    with pytest.raises(ProxyException) as exc_info:
+        await add_litellm_data_to_request(
+            data=data,
+            request=_batches_request_mock(),
+            user_api_key_dict=UserAPIKeyAuth(api_key="hashed-key"),
+            proxy_config=MagicMock(),
+            general_settings={},
+            version="test-version",
+        )
+
+    assert exc_info.value.code == "400"
+    assert exc_info.value.param == field
+    assert exc_info.value.message == f"Invalid type for '{field}': expected an object, but got {received_type} instead."
+    assert field not in data
+
+
+@pytest.mark.asyncio
+async def test_add_litellm_data_to_request_removes_every_invalid_metadata_field_before_raising():
+    """When both fields are invalid, the raise for the first must not leave the
+    second invalid value in data, or failure-logging hooks that inspect the body
+    can crash on it and mask the 400 as a 500."""
+    data = {"input_file_id": "file-abc", "metadata": "abc", "litellm_metadata": "xyz"}
+
+    with pytest.raises(ProxyException) as exc_info:
+        await add_litellm_data_to_request(
+            data=data,
+            request=_batches_request_mock(),
+            user_api_key_dict=UserAPIKeyAuth(api_key="hashed-key"),
+            proxy_config=MagicMock(),
+            general_settings={},
+            version="test-version",
+        )
+
+    assert exc_info.value.param == "metadata"
+    assert "metadata" not in data
+    assert "litellm_metadata" not in data
+
+
+@pytest.mark.asyncio
+async def test_add_litellm_data_to_request_parses_json_object_string_litellm_metadata():
+    data = {"input_file_id": "file-abc", "litellm_metadata": json.dumps({"cost_centre": "research"})}
+
+    updated = await add_litellm_data_to_request(
+        data=data,
+        request=_batches_request_mock(),
+        user_api_key_dict=UserAPIKeyAuth(api_key="hashed-key"),
+        proxy_config=MagicMock(),
+        general_settings={},
+        version="test-version",
+    )
+
+    assert updated["litellm_metadata"]["cost_centre"] == "research"
 
 
 @pytest.mark.asyncio
@@ -2291,6 +2341,129 @@ def test_add_user_api_key_auth_to_request_metadata():
     # Verify original data is preserved
     assert result["model"] == "gpt-3.5-turbo"
     assert result["messages"] == [{"role": "user", "content": "Hello"}]
+
+
+def _auth_with_callback_credentials() -> UserAPIKeyAuth:
+    return UserAPIKeyAuth(
+        api_key="hashed-test-key-123",
+        key_alias="test-key-alias",
+        team_id="test-team-789",
+        team_alias="test-team-alias",
+        metadata={
+            "logging": [{"callback_name": "langfuse", "callback_vars": {"langfuse_secret_key": "sk-KEY-CANARY"}}],
+            "rpm_limit_type": "guaranteed_throughput",
+        },
+        team_metadata={
+            "callback_settings": {"langfuse": {"callback_vars": {"langfuse_secret_key": "sk-TEAM-CANARY"}}},
+            "secret_manager_settings": {"vault_token": "vt-TEAM-CANARY"},
+            "model_rpm_limit": {"gpt-4": 10},
+        },
+        project_metadata={
+            "logging": [{"callback_vars": {"langfuse_secret_key": "sk-PROJECT-CANARY"}}],
+            "project_tier": "gold",
+        },
+        organization_metadata={
+            "secret_manager_settings": {"vault_token": "vt-ORG-CANARY"},
+            "org_tier": "platinum",
+        },
+    )
+
+
+def test_stamped_auth_object_carries_no_callback_credentials():
+    """
+    Regression (LIT-5487): the UserAPIKeyAuth stamped into request metadata reaches every
+    raw-metadata logging integration, so it must not carry team/key callback credentials.
+    """
+    user_api_key_dict = _auth_with_callback_credentials()
+    otel_span = object()
+    user_api_key_dict.parent_otel_span = otel_span
+    user_api_key_dict.budget_reservation = {"amount": 1.0}
+    user_api_key_dict.via_virtual_key = True
+    data = {"litellm_metadata": {}}
+
+    result = LiteLLMProxyRequestSetup.add_user_api_key_auth_to_request_metadata(
+        data=data,
+        user_api_key_dict=user_api_key_dict,
+        _metadata_variable_name="litellm_metadata",
+    )
+
+    stamped = result["litellm_metadata"]["user_api_key_auth"]
+    emitted = json.dumps(
+        {
+            "metadata": stamped.metadata,
+            "team_metadata": stamped.team_metadata,
+            "project_metadata": stamped.project_metadata,
+            "organization_metadata": stamped.organization_metadata,
+        },
+        default=str,
+    )
+    assert "sk-KEY-CANARY" not in emitted
+    assert "sk-TEAM-CANARY" not in emitted
+    assert "vt-TEAM-CANARY" not in emitted
+    assert "sk-PROJECT-CANARY" not in emitted
+    assert "vt-ORG-CANARY" not in emitted
+
+    # consumers keep the type and the non-credential slots they read
+    assert isinstance(stamped, UserAPIKeyAuth)
+    assert stamped.key_alias == "test-key-alias"
+    assert stamped.team_id == "test-team-789"
+    assert stamped.team_alias == "test-team-alias"
+    assert stamped.api_key == "hashed-test-key-123"
+    assert stamped.metadata["rpm_limit_type"] == "guaranteed_throughput"
+    assert stamped.team_metadata["model_rpm_limit"] == {"gpt-4": 10}
+    assert stamped.project_metadata["project_tier"] == "gold"
+    assert stamped.organization_metadata["org_tier"] == "platinum"
+
+    # server-only markers are excluded from model_dump, so rebuilding the object
+    # instead of copying it would silently drop them
+    assert stamped.via_virtual_key is True
+    assert stamped.budget_reservation == {"amount": 1.0}
+    assert stamped.parent_otel_span is otel_span
+
+
+def test_stamping_does_not_mutate_the_cached_auth_object():
+    """
+    Regression (LIT-5487): UserAPIKeyAuth is cached and model_copy is shallow, so stripping
+    in place would poison the shared dicts and silently kill team callbacks fleet-wide.
+    """
+    user_api_key_dict = _auth_with_callback_credentials()
+    metadata_before = copy.deepcopy(user_api_key_dict.metadata)
+    team_metadata_before = copy.deepcopy(user_api_key_dict.team_metadata)
+
+    LiteLLMProxyRequestSetup.add_user_api_key_auth_to_request_metadata(
+        data={"litellm_metadata": {}},
+        user_api_key_dict=user_api_key_dict,
+        _metadata_variable_name="litellm_metadata",
+    )
+
+    assert user_api_key_dict.metadata == metadata_before
+    assert user_api_key_dict.team_metadata == team_metadata_before
+
+
+def test_management_endpoint_metadata_drops_callback_credentials():
+    """
+    Regression (LIT-5487): user_api_key_auth_metadata is part of StandardLoggingPayload, so a
+    callback_settings-shaped team must not push credentials into it.
+    """
+    data = {"litellm_metadata": {}}
+
+    result = LiteLLMProxyRequestSetup.add_management_endpoint_metadata_to_request_metadata(
+        data=data,
+        management_endpoint_metadata={
+            "callback_settings": {"langfuse": {"callback_vars": {"langfuse_secret_key": "sk-TEAM-CANARY"}}},
+            "secret_manager_settings": {"vault_token": "vt-TEAM-CANARY"},
+            "logging": [{"callback_vars": {"langfuse_secret_key": "sk-LOGGING-CANARY"}}],
+            "other_field": "value",
+        },
+        _metadata_variable_name="litellm_metadata",
+    )
+
+    auth_metadata = result["litellm_metadata"]["user_api_key_auth_metadata"]
+    emitted = json.dumps(auth_metadata, default=str)
+    assert "sk-TEAM-CANARY" not in emitted
+    assert "vt-TEAM-CANARY" not in emitted
+    assert "sk-LOGGING-CANARY" not in emitted
+    assert auth_metadata["other_field"] == "value"
 
 
 @pytest.mark.parametrize(

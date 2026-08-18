@@ -1,22 +1,11 @@
-import { InfoCircleOutlined, UserAddOutlined } from "@ant-design/icons";
+import { InfoCircleOutlined } from "@ant-design/icons";
 import { useQueryClient } from "@tanstack/react-query";
 import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
+import { Button } from "@/components/ui/button";
 import { Accordion, AccordionBody, AccordionHeader, SelectItem, TextInput } from "@tremor/react";
-import {
-  Alert,
-  Button,
-  Checkbox,
-  Form,
-  Input,
-  Modal,
-  Select,
-  Select as Select2,
-  Space,
-  Tooltip,
-  Typography,
-} from "antd";
+import { Alert, Checkbox, Form, Input, Modal, Select, Select as Select2, Space, Tooltip, Typography } from "antd";
+import { UserPlus } from "lucide-react";
 import React, { useEffect, useState } from "react";
-import BulkCreateUsers from "./bulk_create_users_button";
 import TeamDropdown from "./common_components/team_dropdown";
 import { getModelDisplayName } from "./key_team_helpers/fetch_available_models_team_key";
 import NotificationsManager from "./molecules/notifications_manager";
@@ -51,7 +40,6 @@ export const generateUUID = (): string => {
 interface CreateuserProps {
   userID: string;
   accessToken: string;
-  teams: any[] | null;
   possibleUIRoles: null | Record<string, Record<string, string>>;
   onUserCreated?: (userId: string) => void;
   isEmbedded?: boolean;
@@ -68,7 +56,6 @@ interface UISettings {
 export const CreateUserButton: React.FC<CreateuserProps> = ({
   userID,
   accessToken,
-  teams,
   possibleUIRoles,
   onUserCreated,
   isEmbedded = false,
@@ -83,8 +70,6 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
   const [invitationLinkData, setInvitationLinkData] = useState<InvitationLink | null>(null);
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const { data: organizations = [] } = useOrganizations();
-
-  // Derive teams from the user's organizations, falling back to the teams prop
 
   useEffect(() => {
     const fetchData = async () => {
@@ -242,7 +227,7 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
         </Form.Item>
 
         <div style={{ textAlign: "right", marginTop: "10px" }}>
-          <Button htmlType="submit">Create User</Button>
+          <Button type="submit">Create User</Button>
         </div>
       </Form>
     );
@@ -250,11 +235,10 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
 
   // Original return for standalone mode
   return (
-    <div className="flex gap-2">
-      <Button type="primary" className="mb-0" onClick={() => setIsModalVisible(true)}>
+    <>
+      <Button type="button" onClick={() => setIsModalVisible(true)}>
         + Invite User
       </Button>
-      <BulkCreateUsers accessToken={accessToken} teams={teams} possibleUIRoles={possibleUIRoles} />
       <Modal
         title="Invite User"
         open={isModalVisible}
@@ -382,7 +366,8 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
           </Accordion>
 
           <div style={{ textAlign: "right", marginTop: "10px" }}>
-            <Button type="primary" icon={<UserAddOutlined />} htmlType="submit">
+            <Button type="submit">
+              <UserPlus />
               Invite User
             </Button>
           </div>
@@ -396,6 +381,6 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
           invitationLinkData={invitationLinkData}
         />
       )}
-    </div>
+    </>
   );
 };
