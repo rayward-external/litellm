@@ -1370,14 +1370,13 @@ class TestCheckBatchCost:
 
         assert mock_afile_content.await_count == 1
         mock_calculate.assert_not_awaited()
+        finalize_writes = [
+            data for data in _row_writes(mock_prisma_client) if data.get("status") == "failed"
+        ]
         assert (
-            mock_prisma_client.db.litellm_managedobjecttable.update.call_count == 1
+            len(finalize_writes) == 1
         ), "a terminal batch with a 404ing output file must be retired, not retried forever"
-        update_data = mock_prisma_client.db.litellm_managedobjecttable.update.call_args[
-            1
-        ]["data"]
-        assert update_data["status"] == "failed"
-        assert update_data["batch_processed"] is True
+        assert finalize_writes[0]["batch_processed"] is True
 
     @pytest.mark.asyncio
     async def test_raw_output_file_id_converted_to_managed_id(
