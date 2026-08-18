@@ -484,9 +484,9 @@ async def guardrails_usage_overview(
         metrics_prev_where: Final[prisma_types.LiteLLM_DailyGuardrailMetricsWhereInput] = {
             "date": {"gte": start_prev, "lt": start}
         }
-        metrics_prev: Final[Sequence[prisma_models.LiteLLM_DailyGuardrailMetrics]] = await _find_daily_guardrail_metrics(
-            prisma_client, where=metrics_prev_where
-        )
+        metrics_prev: Final[
+            Sequence[prisma_models.LiteLLM_DailyGuardrailMetrics]
+        ] = await _find_daily_guardrail_metrics(prisma_client, where=metrics_prev_where)
 
         units_where: Final[prisma_types.LiteLLM_DailyGuardrailUsageUnitsWhereInput] = {
             "date": {"gte": start, "lte": end}
