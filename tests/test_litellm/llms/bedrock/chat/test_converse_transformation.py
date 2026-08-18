@@ -85,7 +85,7 @@ def test_transform_usage_clamps_reasoning_estimate_to_output_tokens():
         }
     )
     config = AmazonConverseConfig()
-    openai_usage = config._transform_usage(
+    openai_usage = config.transform_usage(
         usage,
         reasoning_content="This reasoning text intentionally tokenizes above one output token.",
     )
@@ -97,7 +97,7 @@ def test_transform_usage_clamps_reasoning_estimate_to_output_tokens():
 def test_converse_streaming_usage_accounts_for_streamed_reasoning():
     """
     The Converse stream decoder buffered reasoning deltas but never handed them to
-    _transform_usage, so a streamed reasoning response reported reasoning_tokens=0
+    transform_usage, so a streamed reasoning response reported reasoning_tokens=0
     while the non-streaming response for the same content reported them correctly.
     """
     from litellm.llms.bedrock.chat.invoke_handler import AWSEventStreamDecoder

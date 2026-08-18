@@ -566,7 +566,10 @@ class AWSEventStreamDecoder:
             elif "stopReason" in chunk_data:
                 finish_reason = map_finish_reason(chunk_data.get("stopReason", "stop"))
             elif "usage" in chunk_data:
-                usage = converse_config.transform_usage(chunk_data.get("usage", {}))
+                usage = converse_config.transform_usage(
+                    chunk_data.get("usage", {}),
+                    reasoning_content=(self.accumulated_reasoning_content or None),
+                )
 
             model_response_provider_specific_fields: Final = {}
             if "trace" in chunk_data:
