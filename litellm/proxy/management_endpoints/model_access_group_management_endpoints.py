@@ -7,6 +7,7 @@ Endpoints here:
 
 import json
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -195,7 +196,9 @@ async def update_deployments_with_access_group(
         The (model_id, updated model_info) pair of every deployment actually written,
         so callers can verify each one survived the post-write reload
     """
-    deployments: Final = await _model_table(prisma_client).find_many(where={"model_name": {"in": model_names}})
+    deployments: Final = await _model_table(prisma_client).find_many(
+        where=MappingProxyType({"model_name": MappingProxyType({"in": model_names})})
+    )
     verbose_proxy_logger.debug("Found %s deployments for model_names: %s", len(deployments), model_names)
 
     found_names: Final = {deployment.model_name for deployment in deployments}
@@ -247,7 +250,7 @@ async def update_specific_deployments_with_access_group(
 
 
 async def _find_deployment_or_400(model_id: str, prisma_client: PrismaClient) -> object:
-    deployment: Final = await _model_table(prisma_client).find_unique(where={"model_id": model_id})
+    deployment: Final = await _model_table(prisma_client).find_unique(where=MappingProxyType({"model_id": model_id}))
     if deployment is None:
         raise HTTPException(
             status_code=400,

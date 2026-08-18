@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any, Final, cast
 
 import orjson
@@ -64,8 +65,8 @@ def _with_request_format(data: Mapping[str, Any], request: Request) -> Mapping[s
             raw_value.strip().lower() if isinstance(raw_value, str) else raw_value
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail={"error": f"{e}"})
-    return {**data, OCR_REQUEST_FORMAT_PARAM: request_format}
+        raise HTTPException(status_code=400, detail=MappingProxyType({"error": f"{e}"}))
+    return MappingProxyType({**data, OCR_REQUEST_FORMAT_PARAM: request_format})
 
 
 def _native_response(response: object, fastapi_response: Response) -> Response | None:
@@ -82,11 +83,13 @@ def _native_response(response: object, fastapi_response: Response) -> Response |
     return Response(
         content=orjson.dumps(native_payload),
         media_type="application/json",
-        headers={
-            key: value
-            for key, value in fastapi_response.headers.items()
-            if key.lower() not in ("content-length", "content-type")
-        },
+        headers=MappingProxyType(
+            {
+                key: value
+                for key, value in fastapi_response.headers.items()
+                if key.lower() not in ("content-length", "content-type")
+            }
+        ),
     )
 
 

@@ -63,7 +63,9 @@ async def _upsert_rows_with_retry(
     sleep: Callable[[float], Awaitable[None]],
     retries_left: int = _UPSERT_RETRY_TIMES,
 ) -> None:
-    outcomes: Final = {key: await _attempt_upsert(upsert_row, key, value) for key, value in rows.items()}
+    outcomes: Final = MappingProxyType(
+        {key: await _attempt_upsert(upsert_row, key, value) for key, value in rows.items()}
+    )
     for key, error in outcomes.items():
         if error is not None and not isinstance(error, DB_RETRY_SAFE_ERROR_TYPES):
             verbose_proxy_logger.warning(
@@ -192,25 +194,29 @@ async def _upsert_usage_unit_row(prisma_client: PrismaClient, key: _UsageUnitKey
 
 async def _upsert_metrics_row(prisma_client: PrismaClient, key: _MetricsKey, agg: Mapping[str, int]) -> None:
     n: Final = int(agg["requests_evaluated"])
-    await DailyGuardrailMetricsRepository(prisma_client).table.upsert(
-        where={"guardrail_id_date": {"guardrail_id": key.guardrail_id, "date": key.date}},
-        data={
-            "create": {
-                "guardrail_id": key.guardrail_id,
-                "date": key.date,
-                "requests_evaluated": n,
-                "passed_count": int(agg["passed_count"]),
-                "blocked_count": int(agg["blocked_count"]),
-                "flagged_count": int(agg["flagged_count"]),
-            },
-            "update": {
-                "requests_evaluated": {"increment": n},
-                "passed_count": {"increment": int(agg["passed_count"])},
-                "blocked_count": {"increment": int(agg["blocked_count"])},
-                "flagged_count": {"increment": int(agg["flagged_count"])},
-            },
+    passed: Final = int(agg["passed_count"])
+    blocked: Final = int(agg["blocked_count"])
+    flagged: Final = int(agg["flagged_count"])
+    where: Final[prisma_types.LiteLLM_DailyGuardrailMetricsWhereUniqueInput] = {
+        "guardrail_id_date": {"guardrail_id": key.guardrail_id, "date": key.date}
+    }
+    data: Final[prisma_types.LiteLLM_DailyGuardrailMetricsUpsertInput] = {
+        "create": {
+            "guardrail_id": key.guardrail_id,
+            "date": key.date,
+            "requests_evaluated": n,
+            "passed_count": passed,
+            "blocked_count": blocked,
+            "flagged_count": flagged,
         },
-    )
+        "update": {
+            "requests_evaluated": {"increment": n},
+            "passed_count": {"increment": passed},
+            "blocked_count": {"increment": blocked},
+            "flagged_count": {"increment": flagged},
+        },
+    }
+    await DailyGuardrailMetricsRepository(prisma_client).table.upsert(where=where, data=data)
 
 
 async def process_spend_logs_guardrail_usage(
