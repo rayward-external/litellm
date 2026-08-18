@@ -1218,6 +1218,19 @@ class CheckBatchCost:
                 continue
 
             ## RETRIEVE THE BATCH JOB OUTPUT FILE
+            # Terminal-but-not-completed jobs (stopped/failed/expired) can
+            # still carry billable partial output — Bedrock writes whatever
+            # records finished, and the batch route serves those results.
+            # Finalizing them without pricing hands out free tokens via
+            # cancel-after-partial-processing (codex P1); salvage-price when
+            # an output object was predicted for the job.
+            salvaged_output_file_id: str | None = None
+            if response.status in ("failed", "expired", "cancelled") and response.output_file_id is None:
+                response_metadata = getattr(response, "metadata", None)
+                if isinstance(response_metadata, dict) and response_metadata.get("output_file_uri"):
+                    salvaged_output_file_id = str(response_metadata["output_file_uri"])
+                    response.output_file_id = salvaged_output_file_id
+
             if (
                 response.status in PROVIDER_TERMINAL_BATCH_STATUSES
                 and response.output_file_id is not None
@@ -1271,6 +1284,18 @@ class CheckBatchCost:
                     verbose_proxy_logger.error(
                         f"CheckBatchCost: failed to track cost for batch {batch_id} "
                         f"(job {job.id}); leaving it unprocessed so the next poll retries: {tracking_err}"
+                    )
+                    # S3-specific missing-object signatures ONLY: generic
+                    # markers ("not found", "404") also match pricing errors
+                    # like "Model not found in cost map" and would finalize
+                    # billable partial output at zero (codex P1 round 3).
+                    # Unrecognized errors retry — the reclaim sweep keeps
+                    # retries alive, so the safe direction is to never
+                    # zero-finalize on ambiguity.
+                    error_text = str(tracking_err).lower()
+                    output_definitively_missing = any(
+                        marker in error_text
+                        for marker in ("nosuchkey", "no such key", "specified key does not exist")
                     )
                     if salvaged_output_file_id is not None and output_definitively_missing:
                         # Salvage path, output object confirmed absent: the
