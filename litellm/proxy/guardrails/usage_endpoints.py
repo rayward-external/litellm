@@ -884,12 +884,6 @@ async def policies_usage_overview(
         metrics: Final[Sequence[prisma_models.LiteLLM_DailyPolicyMetrics]] = await _find_daily_policy_metrics(
             prisma_client, where=policy_metrics_where
         )
-        policy_metrics_prev_where: Final[prisma_types.LiteLLM_DailyPolicyMetricsWhereInput] = {
-            "date": {
-                "gte": (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d"),
-                "lt": start,
-            }
-        }
         metrics_prev: Final[Sequence[prisma_models.LiteLLM_DailyPolicyMetrics]] = await _find_daily_policy_metrics(
             prisma_client,
             where={

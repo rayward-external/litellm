@@ -742,4 +742,44 @@ describe("CreateUserButton", () => {
       expect(submittedPayload().models).toEqual(["no-default-models"]);
     });
   });
+
+  describe("generateUUID", () => {
+    it("uses crypto.getRandomValues, never Math.random, when crypto.randomUUID is unavailable", () => {
+      const originalRandomUUID = crypto.randomUUID;
+      // @ts-expect-error simulating an environment without crypto.randomUUID
+      crypto.randomUUID = undefined;
+      const getRandomValuesSpy = vi.spyOn(crypto, "getRandomValues");
+      const mathRandomSpy = vi.spyOn(Math, "random");
+
+      try {
+        const id = generateUUID();
+        expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+        expect(getRandomValuesSpy).toHaveBeenCalled();
+        expect(mathRandomSpy).not.toHaveBeenCalled();
+      } finally {
+        crypto.randomUUID = originalRandomUUID;
+        getRandomValuesSpy.mockRestore();
+        mathRandomSpy.mockRestore();
+      }
+    });
+
+    it("throws instead of falling back to Math.random when no secure RNG is available", () => {
+      const originalRandomUUID = crypto.randomUUID;
+      const originalGetRandomValues = crypto.getRandomValues;
+      // @ts-expect-error simulating an environment without any Web Crypto API
+      crypto.randomUUID = undefined;
+      // @ts-expect-error simulating an environment without any Web Crypto API
+      crypto.getRandomValues = undefined;
+      const mathRandomSpy = vi.spyOn(Math, "random");
+
+      try {
+        expect(() => generateUUID()).toThrow();
+        expect(mathRandomSpy).not.toHaveBeenCalled();
+      } finally {
+        crypto.randomUUID = originalRandomUUID;
+        crypto.getRandomValues = originalGetRandomValues;
+        mathRandomSpy.mockRestore();
+      }
+    });
+  });
 });
