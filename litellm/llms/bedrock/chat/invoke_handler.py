@@ -330,10 +330,7 @@ class AWSEventStreamDecoder:
         self.response_id: str | None = None
         self.json_mode = json_mode
         self._current_tool_name: str | None = None
-        # Accumulate streamed reasoning text so the terminal metadata event can split
-        # reasoning tokens out of output tokens, the way the non-streaming Converse
-        # response already does. Without it a streamed reasoning response reports
-        # reasoning_tokens=0 no matter how much thinking it did.
+        self._thinking_ran = False
         self.accumulated_reasoning_content: str = ""
 
     def check_empty_tool_call_args(self) -> bool:
@@ -569,7 +566,10 @@ class AWSEventStreamDecoder:
                 usage = converse_config.transform_usage(
                     chunk_data.get("usage", {}),
                     reasoning_content=(self.accumulated_reasoning_content or None),
+                    thinking_ran=self._thinking_ran,
                 )
+            if thinking_blocks:
+                self._thinking_ran = True
 
             model_response_provider_specific_fields: Final = {}
             if "trace" in chunk_data:

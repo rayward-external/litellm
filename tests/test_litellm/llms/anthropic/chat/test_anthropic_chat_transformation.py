@@ -221,193 +221,160 @@ def test_calculate_usage_clamps_text_tokens_when_reasoning_estimate_exceeds_outp
     assert usage.completion_tokens_details.text_tokens == 0
 
 
-def test_calculate_usage_prefers_reported_thinking_tokens_for_adaptive_thinking():
-    """
-    Adaptive-thinking models (claude-opus-5, claude-opus-4-8/4-7, claude-sonnet-5,
-    claude-fable-5) return the thinking block with an EMPTY `thinking` string —
-    only the encrypted `signature` carries data — so token-counting the plaintext
-    scores 0 for output tokens that were generated and billed. The real count is
-    reported in usage.output_tokens_details.thinking_tokens and must win.
-
-    Shape below is a live claude-opus-5 response (2026-07-25).
-    """
+def test_calculate_usage_prefers_provider_reported_thinking_tokens():
     config = AnthropicConfig()
 
     usage = config.calculate_usage(
         usage_object={
-            "input_tokens": 18,
-            "output_tokens": 162,
-            "output_tokens_details": {"thinking_tokens": 32},
-        },
-        # signature-only thinking block -> the plaintext extractor yields ""
-        reasoning_content="",
-    )
-
-    assert usage.completion_tokens == 162
-    assert usage.completion_tokens_details is not None
-    assert usage.completion_tokens_details.reasoning_tokens == 32
-    assert usage.completion_tokens_details.text_tokens == 162 - 32
-
-
-def test_calculate_usage_estimates_reasoning_tokens_when_not_reported():
-    """
-    Regression guard for the models that report correct reasoning_tokens today:
-    without output_tokens_details, the plaintext estimate must still be used.
-    """
-    config = AnthropicConfig()
-
-    usage = config.calculate_usage(
-        usage_object={"input_tokens": 18, "output_tokens": 162},
-        reasoning_content="Let me work through the cases one at a time before answering.",
-    )
-
-    assert usage.completion_tokens == 162
-    assert usage.completion_tokens_details is not None
-    assert usage.completion_tokens_details.reasoning_tokens > 0
-    assert usage.completion_tokens_details.text_tokens == (
-        162 - usage.completion_tokens_details.reasoning_tokens
-    )
-
-
-def test_calculate_usage_reported_thinking_tokens_beat_the_plaintext_estimate():
-    """
-    Anthropic's count is authoritative even when a plaintext estimate is also
-    available - our tokenizer is not the model's.
-    """
-    config = AnthropicConfig()
-
-    usage = config.calculate_usage(
-        usage_object={
-            "input_tokens": 18,
-            "output_tokens": 162,
-            "output_tokens_details": {"thinking_tokens": 90},
-        },
-        reasoning_content="Short summary.",
-    )
-
-    assert usage.completion_tokens_details is not None
-    assert usage.completion_tokens_details.reasoning_tokens == 90
-    assert usage.completion_tokens_details.text_tokens == 162 - 90
-
-
-def test_calculate_usage_reported_thinking_tokens_never_exceed_completion_tokens():
-    config = AnthropicConfig()
-
-    usage = config.calculate_usage(
-        usage_object={
-            "input_tokens": 10,
-            "output_tokens": 5,
-            "output_tokens_details": {"thinking_tokens": 4000},
+            "input_tokens": 32,
+            "output_tokens": 421,
+            "output_tokens_details": {"thinking_tokens": 372},
         },
         reasoning_content="",
+        completion_response={
+            "content": [
+                {"type": "thinking", "thinking": "", "signature": "sig"},
+                {"type": "text", "text": "10"},
+            ]
+        },
     )
 
     assert usage.completion_tokens_details is not None
-    assert usage.completion_tokens_details.reasoning_tokens == 5
-    assert usage.completion_tokens_details.text_tokens == 0
+    assert usage.completion_tokens_details.reasoning_tokens == 372
+    assert usage.completion_tokens_details.text_tokens == 49
 
 
-@pytest.mark.parametrize(
-    "output_tokens_details",
-    [
-        None,
-        {},
-        {"thinking_tokens": None},
-        {"thinking_tokens": "not-a-number"},
-        {"thinking_tokens": -7},
-        "not-a-mapping",
-    ],
-)
-def test_calculate_usage_tolerates_unusable_output_tokens_details(output_tokens_details):
-    """An absent / null / malformed thinking count must never crash or go negative."""
+def test_calculate_usage_provider_thinking_tokens_win_over_visible_reasoning_estimate():
+    config = AnthropicConfig()
+
+    usage = config.calculate_usage(
+        usage_object={
+            "input_tokens": 50,
+            "output_tokens": 811,
+            "output_tokens_details": {"thinking_tokens": 747},
+        },
+        reasoning_content="short visible reasoning that tokenizes to far fewer than 747 tokens",
+    )
+
+    assert usage.completion_tokens_details is not None
+    assert usage.completion_tokens_details.reasoning_tokens == 747
+    assert usage.completion_tokens_details.text_tokens == 64
+
+
+def test_calculate_usage_sums_provider_thinking_tokens_across_iterations():
     config = AnthropicConfig()
 
     usage = config.calculate_usage(
         usage_object={
             "input_tokens": 10,
-            "output_tokens": 100,
-            "output_tokens_details": output_tokens_details,
-        },
-        reasoning_content=None,
-    )
-
-    assert usage.completion_tokens == 100
-    assert usage.completion_tokens_details is not None
-    assert usage.completion_tokens_details.reasoning_tokens == 0
-    assert usage.completion_tokens_details.text_tokens == 100
-
-
-def test_calculate_usage_reported_zero_does_not_wipe_a_legacy_thinking_estimate():
-    """
-    Regression guard: a reported thinking_tokens of 0 must NOT suppress the
-    plaintext estimate. output_tokens_details may be emitted with an unpopulated
-    thinking count for the older `thinking.type=enabled` models, and those report
-    correct reasoning_tokens today - taking the 0 literally would regress them.
-    """
-    config = AnthropicConfig()
-
-    usage = config.calculate_usage(
-        usage_object={
-            "input_tokens": 10,
-            "output_tokens": 100,
-            "output_tokens_details": {"thinking_tokens": 0},
-        },
-        reasoning_content="Let me work through the cases one at a time before answering.",
-    )
-
-    assert usage.completion_tokens_details is not None
-    assert usage.completion_tokens_details.reasoning_tokens > 0
-    assert usage.completion_tokens_details.text_tokens == (
-        100 - usage.completion_tokens_details.reasoning_tokens
-    )
-
-
-def test_calculate_usage_reported_zero_without_thinking_text_stays_zero():
-    """thinking_tokens=0 with no thinking plaintext must not invent reasoning tokens."""
-    config = AnthropicConfig()
-
-    usage = config.calculate_usage(
-        usage_object={
-            "input_tokens": 10,
-            "output_tokens": 100,
-            "output_tokens_details": {"thinking_tokens": 0},
-        },
-        reasoning_content=None,
-    )
-
-    assert usage.completion_tokens_details is not None
-    assert usage.completion_tokens_details.reasoning_tokens == 0
-    assert usage.completion_tokens_details.text_tokens == 100
-
-
-def test_calculate_usage_sums_reported_thinking_tokens_across_compaction_iterations():
-    """Compaction reports per-iteration usage; the thinking counts sum like output_tokens."""
-    config = AnthropicConfig()
-
-    usage = config.calculate_usage(
-        usage_object={
-            "input_tokens": 5,
-            "output_tokens": 10,
+            "output_tokens": 300,
             "iterations": [
-                {
-                    "input_tokens": 100,
-                    "output_tokens": 200,
-                    "output_tokens_details": {"thinking_tokens": 40},
-                },
-                {
-                    "input_tokens": 50,
-                    "output_tokens": 100,
-                    "output_tokens_details": {"thinking_tokens": 10},
-                },
+                {"input_tokens": 5, "output_tokens": 100, "output_tokens_details": {"thinking_tokens": 60}},
+                {"input_tokens": 5, "output_tokens": 200, "output_tokens_details": {"thinking_tokens": 90}},
             ],
         },
-        reasoning_content="",
+        reasoning_content=None,
     )
 
     assert usage.completion_tokens == 300
     assert usage.completion_tokens_details is not None
-    assert usage.completion_tokens_details.reasoning_tokens == 50
-    assert usage.completion_tokens_details.text_tokens == 250
+    assert usage.completion_tokens_details.reasoning_tokens == 150
+    assert usage.completion_tokens_details.text_tokens == 150
+
+
+def test_calculate_usage_falls_back_when_only_some_iterations_report_thinking_tokens():
+    config = AnthropicConfig()
+
+    usage = config.calculate_usage(
+        usage_object={
+            "input_tokens": 10,
+            "output_tokens": 300,
+            "output_tokens_details": {"thinking_tokens": 240},
+            "iterations": [
+                {"input_tokens": 5, "output_tokens": 100, "output_tokens_details": {"thinking_tokens": 60}},
+                {"input_tokens": 5, "output_tokens": 200},
+            ],
+        },
+        reasoning_content=None,
+    )
+
+    assert usage.completion_tokens == 300
+    assert usage.completion_tokens_details is not None
+    assert usage.completion_tokens_details.reasoning_tokens == 240
+    assert usage.completion_tokens_details.text_tokens == 60
+
+
+def test_calculate_usage_reports_unknown_split_when_only_some_iterations_report_thinking_tokens():
+    config = AnthropicConfig()
+
+    usage = config.calculate_usage(
+        usage_object={
+            "input_tokens": 10,
+            "output_tokens": 300,
+            "iterations": [
+                {"input_tokens": 5, "output_tokens": 100, "output_tokens_details": {"thinking_tokens": 60}},
+                {"input_tokens": 5, "output_tokens": 200},
+            ],
+        },
+        reasoning_content="",
+        completion_response={"content": [{"type": "thinking", "thinking": "", "signature": "sig"}]},
+    )
+
+    assert usage.completion_tokens == 300
+    assert usage.completion_tokens_details is not None
+    assert usage.completion_tokens_details.reasoning_tokens is None
+    assert usage.completion_tokens_details.text_tokens is None
+
+
+def test_calculate_usage_reports_unknown_split_when_thinking_ran_without_a_count():
+    config = AnthropicConfig()
+
+    usage = config.calculate_usage(
+        usage_object={"input_tokens": 32, "output_tokens": 580},
+        reasoning_content="",
+        completion_response={
+            "content": [
+                {"type": "redacted_thinking", "data": "encrypted"},
+                {"type": "text", "text": "10"},
+            ]
+        },
+    )
+
+    assert usage.completion_tokens == 580
+    assert usage.completion_tokens_details is not None
+    assert usage.completion_tokens_details.reasoning_tokens is None
+    assert usage.completion_tokens_details.text_tokens is None
+
+
+def test_calculate_usage_without_thinking_reports_all_output_as_text():
+    config = AnthropicConfig()
+
+    usage = config.calculate_usage(
+        usage_object={"input_tokens": 32, "output_tokens": 171},
+        reasoning_content=None,
+        completion_response={"content": [{"type": "text", "text": "10"}]},
+    )
+
+    assert usage.completion_tokens_details is not None
+    assert usage.completion_tokens_details.reasoning_tokens == 0
+    assert usage.completion_tokens_details.text_tokens == 171
+
+
+def test_calculate_usage_ignores_malformed_provider_thinking_tokens():
+    config = AnthropicConfig()
+
+    usage = config.calculate_usage(
+        usage_object={
+            "input_tokens": 32,
+            "output_tokens": 100,
+            "output_tokens_details": {"thinking_tokens": "not-a-number"},
+        },
+        reasoning_content=None,
+    )
+
+    assert usage.completion_tokens_details is not None
+    assert usage.completion_tokens_details.reasoning_tokens == 0
+    assert usage.completion_tokens_details.text_tokens == 100
 
 
 def test_calculate_usage_handles_mocked_output_tokens_with_reasoning_content():

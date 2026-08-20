@@ -1,5 +1,5 @@
 import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Sequence
 from typing import Any, Final, TypedDict, cast
 
 from typing_extensions import ReadOnly
@@ -28,6 +28,7 @@ from litellm.types.utils import (
     ModelResponse,
     ModelResponseStream,
     StreamingChoices,
+    Usage,
 )
 
 
@@ -44,6 +45,29 @@ class _GenAIPart(TypedDict, total=False):
     functionCall: ReadOnly[dict[str, object]]
 
 
+class _GenAIFunctionDeclaration(TypedDict, total=False):
+    name: ReadOnly[str]
+    description: ReadOnly[str]
+    parametersJsonSchema: ReadOnly[dict[str, object]]
+
+
+class _GenAITool(TypedDict, total=False):
+    functionDeclarations: ReadOnly[list[_GenAIFunctionDeclaration]]
+
+
+class _GenAIFunctionCallingConfig(TypedDict, total=False):
+    mode: ReadOnly[str]
+
+
+class _GenAIToolConfig(TypedDict, total=False):
+    functionCallingConfig: ReadOnly[_GenAIFunctionCallingConfig]
+
+
+def _decode_tool_call_arguments(raw_arguments: str) -> object:
+    """Decode a tool call's JSON-encoded arguments into the value Google GenAI expects."""
+    return json.loads(raw_arguments)
+
+
 class GoogleGenAIStreamWrapper(AdapterCompletionStreamWrapper):
     """
     Wrapper for streaming Google GenAI generate_content responses.
@@ -52,7 +76,7 @@ class GoogleGenAIStreamWrapper(AdapterCompletionStreamWrapper):
 
     sent_first_chunk: bool = False
     # State tracking for accumulating partial tool calls
-    accumulated_tool_calls: dict[str, dict[str, str]]
+    accumulated_tool_calls: dict[int, dict[str, str]]
 
     def __init__(self, completion_stream: object):
         self.sent_first_chunk = False
@@ -125,7 +149,7 @@ class GoogleGenAIStreamWrapper(AdapterCompletionStreamWrapper):
                         try:
                             # For tool calls with no arguments, accumulated_args will be "", which is not valid JSON.
                             # We default to an empty JSON object in this case.
-                            parsed_args = json.loads(tool_call_data["arguments"] or "{}")
+                            parsed_args = _decode_tool_call_arguments(tool_call_data["arguments"] or "{}")
                             function_call_part: _GenAIPart = {
                                 "functionCall": {
                                     "name": tool_call_data["name"] or "undefined_tool_name",
@@ -340,7 +364,7 @@ class GoogleGenAIAdapter:
 
     def _transform_google_genai_tools_to_openai(
         self,
-        tools: list[dict[str, Any]],
+        tools: Sequence[_GenAITool],
     ) -> list[ChatCompletionToolParam]:
         """Transform Google GenAI tools to OpenAI tools format"""
         openai_tools: Final[list[dict[str, object]]] = []
@@ -367,7 +391,7 @@ class GoogleGenAIAdapter:
 
     def _transform_google_genai_tool_config_to_openai(
         self,
-        tool_config: dict[str, Any],
+        tool_config: _GenAIToolConfig,
     ) -> ChatCompletionToolChoiceValues | None:
         """Transform Google GenAI tool_config to OpenAI tool_choice"""
         function_calling_config: Final = tool_config.get("functionCallingConfig", {})
@@ -584,7 +608,7 @@ class GoogleGenAIAdapter:
                 parts = self._transform_openai_delta_to_google_genai_parts_with_accumulation(choice.delta, wrapper)
             else:
                 parts = []
-            finish_reason = getattr(choice, "finish_reason", None)
+            finish_reason: str | None = getattr(choice, "finish_reason", None)
         else:
             # Fallback for generic choice objects
             message_content: Final = getattr(choice, "delta", {}).get("content", "")
@@ -646,7 +670,11 @@ class GoogleGenAIAdapter:
             for tool_call in message.tool_calls:
                 if hasattr(tool_call, "function") and tool_call.function:
                     try:
-                        args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+                        args = (
+                            _decode_tool_call_arguments(tool_call.function.arguments)
+                            if tool_call.function.arguments
+                            else {}
+                        )
                     except json.JSONDecodeError:
                         args = {}
 
@@ -682,7 +710,7 @@ class GoogleGenAIAdapter:
                 continue
 
             # 3. Use `index` as the primary key for accumulation
-            tool_call_index = getattr(tool_call, "index", None)
+            tool_call_index: int | None = getattr(tool_call, "index", None)
             if tool_call_index is None:
                 continue  # Index is essential for tracking streaming tool calls
 
@@ -716,7 +744,7 @@ class GoogleGenAIAdapter:
             # 5. Attempt to parse arguments even if name hasn't arrived.
             try:
                 # Attempt to parse the accumulated arguments string
-                parsed_args = json.loads(accumulated_args)
+                parsed_args = _decode_tool_call_arguments(accumulated_args)
 
                 # If parsing succeeds, but we don't have a name yet, wait.
                 # The part will be created by a later chunk that brings the name.
@@ -750,7 +778,7 @@ class GoogleGenAIAdapter:
 
         return mapping.get(finish_reason, "STOP")
 
-    def _map_usage(self, usage: Any) -> dict[str, int]:
+    def _map_usage(self, usage: Usage | None) -> dict[str, int]:
         """Map OpenAI usage to Google GenAI usage format"""
         return {
             "promptTokenCount": getattr(usage, "prompt_tokens", 0) or 0,
