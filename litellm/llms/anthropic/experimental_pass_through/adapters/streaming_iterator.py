@@ -640,6 +640,12 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                     return self.chunk_queue.popleft()
 
                 if processed_chunk["type"] == "content_block_delta" and not self._delta_has_content(processed_chunk):
+                    # A tool_use block opens with empty arguments (Bedrock Converse's
+                    # ``contentBlockStart``, OpenAI's ``arguments: ""``), so flush the
+                    # block start queued above instead of waiting for the next upstream
+                    # chunk, which on a trailing-burst provider is the whole generation.
+                    if self.chunk_queue:
+                        return self.chunk_queue.popleft()
                     continue
 
                 if processed_chunk["type"] == "message_delta" and self.sent_content_block_finish is False:
@@ -879,6 +885,9 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                     if processed_chunk["type"] == "content_block_delta" and not self._delta_has_content(
                         processed_chunk
                     ):
+                        # See ``__next__``: flush the queued block start (issue #32004).
+                        if self.chunk_queue:
+                            return self.chunk_queue.popleft()
                         continue
 
                     if processed_chunk["type"] == "message_delta" and self.sent_content_block_finish is False:

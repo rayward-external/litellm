@@ -869,6 +869,7 @@ def test_aaamodel_prices_and_context_window_json_is_valid():
                         "container",
                         "image_edit",
                         "embedding",
+                        "guardrail",
                         "image_generation",
                         "video_generation",
                         "moderation",
@@ -975,6 +976,10 @@ def test_aaamodel_prices_and_context_window_json_is_valid():
                     "items": {
                         "type": "string",
                     },
+                },
+                "guardrail_cost_per_unit": {
+                    "type": "object",
+                    "additionalProperties": {"type": "number"},
                 },
                 "search_context_cost_per_query": {
                     "type": "object",
@@ -3761,6 +3766,20 @@ class TestValidateAndFixThinkingParam:
         assert "budgetTokens" in thinking
         assert "budget_tokens" not in thinking
 
+    def test_bool_true_maps_to_enabled_with_default_budget(self):
+        from litellm.constants import DEFAULT_REASONING_EFFORT_MEDIUM_THINKING_BUDGET
+        from litellm.utils import validate_and_fix_thinking_param
+
+        assert validate_and_fix_thinking_param(thinking=True) == {
+            "type": "enabled",
+            "budget_tokens": DEFAULT_REASONING_EFFORT_MEDIUM_THINKING_BUDGET,
+        }
+
+    def test_bool_false_returns_none(self):
+        from litellm.utils import validate_and_fix_thinking_param
+
+        assert validate_and_fix_thinking_param(thinking=False) is None
+
 
 def test_deepseek_v4_models_in_cost_map():
     """
@@ -4794,6 +4813,24 @@ def test_bedrock_batch_params_never_reach_the_provider():
     assert all(normalized.get(field) == configured[field] for field in bedrock_batch_litellm_params), (
         "credential normalization dropped batch params before the transformation: "
         f"{sorted(f for f in bedrock_batch_litellm_params if normalized.get(f) != configured[f])}"
+    )
+
+
+def test_client_side_timeout_marker_never_reaches_the_provider():
+    """The proxy stamps kwargs["client_side_timeout"] = True whenever a request carries
+    a caller-supplied timeout (body timeout / request_timeout / stream_timeout or the
+    x-litellm-timeout headers) so the router can skip cooldowns on the resulting 408s.
+    The marker is only meaningful to the router, so it must be filtered out of the
+    provider params: swept into extra_body / additionalModelRequestFields it turns every
+    timed-out request into a provider 400 (`client_side_timeout: Extra inputs are not
+    permitted`)."""
+    kwargs = {"a_real_provider_specific_param": 1, "client_side_timeout": True}
+
+    non_default = get_non_default_completion_params(kwargs)
+
+    assert non_default == {"a_real_provider_specific_param": 1}, (
+        "client_side_timeout leaked into the provider params: "
+        f"{sorted(set(non_default) - {'a_real_provider_specific_param'})}"
     )
 
 

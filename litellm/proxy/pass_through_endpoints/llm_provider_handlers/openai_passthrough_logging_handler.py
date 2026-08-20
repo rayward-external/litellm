@@ -510,6 +510,25 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             return 0.0
 
     @staticmethod
+    def _calculate_embeddings_cost(
+        litellm_model_response: EmbeddingResponse,
+        model: str,
+        custom_llm_provider: str,
+    ) -> float:
+        try:
+            return litellm.completion_cost(
+                completion_response=litellm_model_response,
+                model=model,
+                custom_llm_provider=custom_llm_provider,
+                call_type="aembedding",
+            )
+        except Exception as e:  # noqa: BLE001  # completion_cost raises bare Exception for unmapped models; cost failure must never drop the spend log
+            verbose_proxy_logger.warning(
+                "Error calculating embeddings cost for model %s, logging spend with cost 0: %s", model, e
+            )
+            return 0.0
+
+    @staticmethod
     def _build_responses_api_response_and_cost(
         model: str,
         httpx_response: httpx.Response,
@@ -559,6 +578,14 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         object only carries `prompt_tokens` / `total_tokens`; there are no
         completion tokens, so `completion_tokens` is pinned to 0 rather than
         left unset, which keeps `completion_cost` from inferring a value.
+        A response with no `data` at all is malformed, not merely empty, and
+        is raised (KeyError) so the caller's error path returns `None`
+        instead of logging a fabricated zero-vector response.
+
+        Cost calculation is isolated in its own try/except: an unmapped
+        model must still produce a spend row (at cost 0.0), not discard the
+        already-built response the same way a genuinely malformed payload
+        does.
 
         Returns (litellm_model_response, response_cost), symmetric with
         `_build_responses_api_response_and_cost`.
@@ -567,19 +594,25 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         prompt_tokens = usage.get("prompt_tokens", 0) or 0
         litellm_model_response = EmbeddingResponse(
             model=model,
-            data=response_body.get("data", []),
+            data=response_body["data"],
             usage=Usage(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=0,
                 total_tokens=usage.get("total_tokens", prompt_tokens) or prompt_tokens,
             ),
         )
-        response_cost = litellm.completion_cost(
-            completion_response=litellm_model_response,
-            model=model,
-            custom_llm_provider=custom_llm_provider,
-            call_type="aembedding",
-        )
+        try:
+            response_cost = litellm.completion_cost(
+                completion_response=litellm_model_response,
+                model=model,
+                custom_llm_provider=custom_llm_provider,
+                call_type="aembedding",
+            )
+        except Exception as e:  # noqa: BLE001  # completion_cost raises bare Exception for unmapped models; cost failure must never drop the spend log
+            verbose_proxy_logger.warning(
+                "Error calculating embeddings cost for model %s, logging spend with cost 0: %s", model, e
+            )
+            response_cost = 0.0
         return litellm_model_response, response_cost
 
     @staticmethod
@@ -766,6 +799,12 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
         except Exception as e:
             verbose_proxy_logger.error("Error in OpenAI passthrough cost tracking: %s", e)
+            if not is_chat_completions:
+                unbilled_result: Final[PassThroughEndpointLoggingTypedDict] = {
+                    "result": None,
+                    "kwargs": kwargs,
+                }
+                return unbilled_result
             # Fall back to base handler without cost tracking
             base_handler = OpenAIPassthroughLoggingHandler()
             return base_handler.passthrough_chat_handler(
