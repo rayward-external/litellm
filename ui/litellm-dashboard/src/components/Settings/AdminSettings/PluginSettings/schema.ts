@@ -16,7 +16,7 @@ const DOMAIN = "(?:\\.(?:[a-z\\u00a1-\\uffff0-9]-*)*[a-z\\u00a1-\\uffff0-9]+)*";
 const TLD = "(?:\\.(?:[a-z\\u00a1-\\uffff]{2,}))";
 
 const URL_RULE_PATTERN = new RegExp(
-  `(?:^(?:(?:(?:[a-z]+:)?//)|www\\.)(?:\\S+(?::\\S*)?@)?` +
+  `(?:^(?:(?:https?:)?//|www\\.)(?:\\S+(?::\\S*)?@)?` +
     `(?:localhost|${IPV4}|${IPV6}|${HOST}${DOMAIN}${TLD})` +
     `(?::\\d{2,5})?(?:[/?#][^\\s"]*)?$)`,
   "i",
