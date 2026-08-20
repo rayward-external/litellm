@@ -331,6 +331,7 @@ class AWSEventStreamDecoder:
         self.json_mode = json_mode
         self._current_tool_name: str | None = None
         self._thinking_ran = False
+        self.accumulated_reasoning_content: str = ""
 
     def check_empty_tool_call_args(self) -> bool:
         """
@@ -564,6 +565,7 @@ class AWSEventStreamDecoder:
             elif "usage" in chunk_data:
                 usage = converse_config.transform_usage(
                     chunk_data.get("usage", {}),
+                    reasoning_content=(self.accumulated_reasoning_content or None),
                     thinking_ran=self._thinking_ran,
                 )
             if thinking_blocks:
