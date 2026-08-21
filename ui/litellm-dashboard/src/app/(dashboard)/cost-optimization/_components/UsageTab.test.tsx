@@ -116,18 +116,19 @@ const renderWith = (results: DailyData[], options: RenderOptions = {}) => {
   useAuthorizedMock.mockReturnValue({ accessToken: "test-token", userId: "u1", userRole });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={queryClient}>
-      <UsageTab
-        accessToken="test-token"
-        activity={{
-          dateValue: { from, to },
-          onDateChange: vi.fn(),
-          results,
-          loading: false,
-          isFetchingMore: false,
-        }}
-      />
-    </QueryClientProvider>,
+    <UsageTab
+      accessToken="test-token"
+      activity={{
+        dateValue: { from, to },
+        onDateChange: vi.fn(),
+        results,
+        loading: false,
+        isFetchingMore: false,
+        progress: { currentPage: 1, totalPages: 1 },
+        cancelled: false,
+        cancel: vi.fn(),
+      }}
+    />,
   );
 };
 

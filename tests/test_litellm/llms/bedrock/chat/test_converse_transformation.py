@@ -3069,7 +3069,7 @@ def test_request_metadata_validation():
             litellm_params={},
             headers={},
         )
-        assert False, "Should have raised validation error for too many items"
+        pytest.fail("Should have raised validation error for too many items")
     except Exception as e:
         assert "maximum of 16 items" in str(e).lower()
 
@@ -3092,7 +3092,7 @@ def test_request_metadata_key_constraints():
             litellm_params={},
             headers={},
         )
-        assert False, "Should have raised validation error for key too long"
+        pytest.fail("Should have raised validation error for key too long")
     except Exception as e:
         assert "key length" in str(e).lower() or "256 characters" in str(e).lower()
 
@@ -3107,7 +3107,7 @@ def test_request_metadata_key_constraints():
             litellm_params={},
             headers={},
         )
-        assert False, "Should have raised validation error for empty key"
+        pytest.fail("Should have raised validation error for empty key")
     except Exception as e:
         assert "key length" in str(e).lower() or "empty" in str(e).lower()
 
@@ -3130,7 +3130,7 @@ def test_request_metadata_value_constraints():
             litellm_params={},
             headers={},
         )
-        assert False, "Should have raised validation error for value too long"
+        pytest.fail("Should have raised validation error for value too long")
     except Exception as e:
         assert "value length" in str(e).lower() or "256 characters" in str(e).lower()
 
