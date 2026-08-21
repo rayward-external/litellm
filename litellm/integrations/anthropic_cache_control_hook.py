@@ -194,6 +194,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
             messages=processed_messages,
             max_blocks=MAX_CACHE_CONTROL_BLOCKS - reserved_blocks,
             openai_dialect=openai_dialect,
+            default_control=default_control,
         )
         if (
             openai_dialect
@@ -246,6 +247,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         messages: list[AllMessageValues],
         max_blocks: int,
         openai_dialect: bool = False,
+        default_control: ChatCompletionCachedContent | None = None,
     ) -> list[AllMessageValues]:
         """Apply message-level cache control injection points in order.
 
@@ -264,7 +266,9 @@ class AnthropicCacheControlHook(CustomPromptManagement):
                 limit_reached = True
                 break
 
-            control: ChatCompletionCachedContent = point.get("control", None) or default_control
+            control: ChatCompletionCachedContent = (
+                point.get("control", None) or default_control or ChatCompletionCachedContent(type="ephemeral")
+            )
 
             for target_index in AnthropicCacheControlHook._resolve_target_indices(point=point, messages=messages):
                 if used_blocks >= max_blocks:
@@ -572,6 +576,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
             messages=cast(list[AllMessageValues], processed_messages),
             max_blocks=max_blocks - system_blocks,
             openai_dialect=openai_dialect,
+            default_control=ChatCompletionCachedContent(type="ephemeral"),
         )
 
         return processed_messages, processed_system, remaining_points
