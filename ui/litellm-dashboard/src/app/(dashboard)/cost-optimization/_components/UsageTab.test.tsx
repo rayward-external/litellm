@@ -1,4 +1,3 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,7 +21,6 @@ vi.mock("@/app/(dashboard)/hooks/useIsOrgAdmin", () => ({
 
 vi.mock("@/components/networking", () => ({
   getToolSpend: (...args: unknown[]) => mockGetToolSpend(...args),
-  organizationListCall: () => Promise.resolve([]),
 }));
 
 vi.mock("@/components/shared/advanced_date_picker", () => ({
@@ -114,7 +112,6 @@ const renderWith = (results: DailyData[], options: RenderOptions = {}) => {
   } = options;
   mockGetToolSpend.mockResolvedValue(toolSpend);
   useAuthorizedMock.mockReturnValue({ accessToken: "test-token", userId: "u1", userRole });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <UsageTab
       accessToken="test-token"
