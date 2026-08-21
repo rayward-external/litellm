@@ -125,7 +125,15 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PRISMA_BINARY_CACHE_DIR=/opt/prisma/binaries \
     PRISMA_CLI_PATH=/opt/prisma/binaries/node_modules/.bin/prisma \
     PRISMA_CLI_QUERY_ENGINE_TYPE=binary \
-    PRISMA_OFFLINE_MODE=true
+    PRISMA_OFFLINE_MODE=true \
+    LITELLM_PRISMA_CLIENT_PREBAKED=true
+# LITELLM_PRISMA_CLIENT_PREBAKED skips litellm/proxy/prisma_migration.py's own
+# `prisma generate` at runtime: the client below is already generated from this
+# same schema.prisma. Regenerating is not just redundant, it always fails as a
+# non-root uid — prisma-python's generate() unconditionally re-copies
+# schema.prisma into the installed package and chmod's the copy, and chmod
+# requires owning the file, which no arbitrary runtime uid does for a file
+# baked at build time (#37692 made that failure fatal instead of log-only).
 
 # Copy only what runtime needs. The application is installed inside the venv;
 # the rest of the builder's /app is source and build metadata that must not

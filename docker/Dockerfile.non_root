@@ -167,7 +167,16 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PRISMA_SKIP_POSTINSTALL_GENERATE=1 \
     PRISMA_HIDE_UPDATE_MESSAGE=1 \
     PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1 \
-    PRISMA_OFFLINE_MODE=true
+    PRISMA_OFFLINE_MODE=true \
+    LITELLM_PRISMA_CLIENT_PREBAKED=true
+# LITELLM_PRISMA_CLIENT_PREBAKED skips litellm/proxy/prisma_migration.py's own
+# `prisma generate` at runtime: the client below is already generated from this
+# same schema.prisma. Regenerating is not just redundant, it always fails as a
+# non-root uid — prisma-python's generate() unconditionally re-copies
+# schema.prisma into the installed package and chmod's the copy, and chmod
+# requires owning the file, which no arbitrary runtime uid does for a file
+# baked at build time, even with the group-write grant below (#37692 made
+# that failure fatal instead of log-only).
 
 RUN mkdir -p /nonexistent /app/.cache /var/lib/litellm/assets /var/lib/litellm/ui && \
     chown -R nobody:nogroup /app /var/lib/litellm/ui /var/lib/litellm/assets /nonexistent && \

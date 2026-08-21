@@ -66,3 +66,26 @@ class TestPrismaMigration:
                 prisma_migration.main()
 
         mock_subprocess_run.assert_not_called()
+
+    @patch("litellm.proxy.prisma_migration.subprocess.run")
+    @patch("litellm.proxy.prisma_migration.run_server")
+    def test_main_skips_prisma_generate_when_prebaked(
+        self, mock_run_server: MagicMock, mock_subprocess_run: MagicMock
+    ) -> None:
+        with patch.dict(os.environ, {"LITELLM_PRISMA_CLIENT_PREBAKED": "true"}, clear=True):
+            assert prisma_migration.main() == 0
+
+        mock_run_server.assert_called_once()
+        mock_subprocess_run.assert_not_called()
+
+    @patch("litellm.proxy.prisma_migration.subprocess.run")
+    @patch("litellm.proxy.prisma_migration.run_server")
+    def test_main_runs_prisma_generate_when_not_prebaked(
+        self, mock_run_server: MagicMock, mock_subprocess_run: MagicMock
+    ) -> None:
+        mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch.dict(os.environ, {"LITELLM_PRISMA_CLIENT_PREBAKED": "false"}, clear=True):
+            assert prisma_migration.main() == 0
+
+        mock_subprocess_run.assert_called_once()
