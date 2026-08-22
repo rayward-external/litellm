@@ -1720,8 +1720,7 @@ class ProxyLogging:
                         data = result
 
                     elif (
-                        not guardrails_only
-                        and _callback is not None
+                        _callback is not None
                         and isinstance(_callback, CustomLogger)
                         and (not guardrails_only or _callback.enforces_request_content)
                         and "async_pre_call_hook" in vars(_callback.__class__)
