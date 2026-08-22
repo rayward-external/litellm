@@ -1123,8 +1123,8 @@ class CheckBatchCost:
         # duplicated fetch; the winner bills exactly once.
         if not await self._claim_job(job):
             verbose_proxy_logger.info(
-                f"CheckBatchCost: another worker claimed batch {batch_id} while this one "
-                f"fetched its results; skipping the spend log"
+                f"CheckBatchCost: batch {batch_id} (job {job.id}) was claimed by another pod "
+                "in this window, so its cost is already being tracked there"
             )
             return CLAIM_LOST
 

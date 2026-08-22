@@ -84,7 +84,7 @@
     "limit": 21
   },
   "reportPrivateUsage": {
-    "limit": 1833
+    "limit": 1822
   },
   "reportRedeclaration": {
     "limit": 8
@@ -114,7 +114,7 @@
     "limit": 30569
   },
   "reportUnnecessaryCast": {
-    "limit": 117
+    "limit": 118
   },
   "reportUnnecessaryComparison": {
     "limit": 700
