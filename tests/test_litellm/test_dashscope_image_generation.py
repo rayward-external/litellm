@@ -17,6 +17,7 @@ from litellm.llms.dashscope.image_generation.transformation import (
 )
 from litellm.types.utils import ImageObject, ImageResponse
 from litellm.utils import get_llm_provider
+from litellm.llms.base_llm.chat.transformation import BaseLLMException
 
 # ---------------------------------------------------------------------------
 # 1. Provider detection
@@ -246,7 +247,7 @@ class TestDashScopeImageGenerationConfig:
             "message": "Size not supported",
         }
 
-        with pytest.raises(Exception):
+        with pytest.raises(BaseLLMException):
             self.cfg.transform_image_generation_response(
                 model="qwen-image-2.0",
                 raw_response=mock_resp,
@@ -267,7 +268,7 @@ class TestDashScopeImageGenerationConfig:
             "message": "Size not supported",
         }
 
-        with pytest.raises(Exception):
+        with pytest.raises(BaseLLMException):
             self.cfg.transform_image_generation_response(
                 model="qwen-image-2.0",
                 raw_response=mock_resp,

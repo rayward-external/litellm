@@ -28,23 +28,6 @@ RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline
 COPY ui/litellm-dashboard/ ./
 RUN npm run build
 
-# Admin UI builder. Pinned to the build platform so the architecture-independent
-# Next.js static export compiles once natively even in a multi-arch build,
-# instead of once per target arch under QEMU.
-FROM --platform=$BUILDPLATFORM node:20.18-alpine3.20@sha256:3488b10bf958af7125a176419d2d8a9937d895bf124012aae811651988d2ffe6 AS ui-builder
-
-ENV NEXT_TELEMETRY_DISABLED=1 \
-    npm_config_fund=false \
-    npm_config_audit=false
-
-WORKDIR /ui
-
-COPY ui/litellm-dashboard/package.json ui/litellm-dashboard/package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline
-
-COPY ui/litellm-dashboard/ ./
-RUN npm run build
-
 # Builder stage
 FROM cgr.dev/chainguard/wolfi-base@sha256:31da6565f35af6401031c1d7aa91dc84ac76c5c48edd17fb90f0ed9e3173c7a9 AS builder
 
@@ -125,7 +108,15 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PRISMA_BINARY_CACHE_DIR=/opt/prisma/binaries \
     PRISMA_CLI_PATH=/opt/prisma/binaries/node_modules/.bin/prisma \
     PRISMA_CLI_QUERY_ENGINE_TYPE=binary \
-    PRISMA_OFFLINE_MODE=true
+    PRISMA_OFFLINE_MODE=true \
+    LITELLM_PRISMA_CLIENT_PREBAKED=true
+# LITELLM_PRISMA_CLIENT_PREBAKED skips litellm/proxy/prisma_migration.py's own
+# `prisma generate` at runtime: the client below is already generated from this
+# same schema.prisma. Regenerating is not just redundant, it always fails as a
+# non-root uid — prisma-python's generate() unconditionally re-copies
+# schema.prisma into the installed package and chmod's the copy, and chmod
+# requires owning the file, which no arbitrary runtime uid does for a file
+# baked at build time (#37692 made that failure fatal instead of log-only).
 
 # Copy only what runtime needs. The application is installed inside the venv;
 # the rest of the builder's /app is source and build metadata that must not

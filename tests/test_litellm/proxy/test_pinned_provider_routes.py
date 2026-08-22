@@ -800,7 +800,7 @@ class TestStartupTagFilteringGuard:
             assert_tag_filtering_enabled_for_pinned_routes,
         )
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValueError, match="enable_tag_filtering") as exc_info:
             assert_tag_filtering_enabled_for_pinned_routes(
                 general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]},
                 router_settings={},  # enable_tag_filtering missing -> off
@@ -814,7 +814,7 @@ class TestStartupTagFilteringGuard:
             assert_tag_filtering_enabled_for_pinned_routes,
         )
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="enable_tag_filtering"):
             assert_tag_filtering_enabled_for_pinned_routes(
                 general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]},
                 router_settings={"enable_tag_filtering": False},
@@ -855,7 +855,7 @@ class TestStartupTagFilteringGuard:
             assert_tag_filtering_enabled_for_pinned_routes,
         )
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValueError, match="enable_tag_filtering") as exc_info:
             assert_tag_filtering_enabled_for_pinned_routes(
                 general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"]},
                 router_settings={"enable_tag_filtering": bad_value},
@@ -872,7 +872,7 @@ class TestStartupTagFilteringGuard:
             assert_tag_filtering_enabled_for_pinned_routes,
         )
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValueError, match="pass_through_all_models") as exc_info:
             assert_tag_filtering_enabled_for_pinned_routes(
                 general_settings={
                     PINNED_PROVIDER_ROUTES_SETTING: ["bedrock"],
@@ -910,7 +910,7 @@ class TestStartupTagFilteringGuard:
 
         _remove_pinned_routes(app)
         try:
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="enable_tag_filtering"):
                 await ProxyConfig().load_config(router=None, config_file_path=str(f))
             assert _pinned_paths_of(app) == set()
         finally:

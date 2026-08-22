@@ -34,6 +34,9 @@ import { Copy, Inbox } from "lucide-react";
 import { useRouter } from "next/navigation";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { prism } from "react-syntax-highlighter/dist/esm/styles/prism";
+
+import { useSyntaxTheme } from "@/hooks/useSyntaxTheme";
 import { useUISettings } from "@/app/(dashboard)/hooks/uiSettings/useUISettings";
 import { checkTokenValidity } from "@/utils/jwtUtils";
 import { getCookie } from "@/utils/cookieUtils";
@@ -59,6 +62,7 @@ function HubEmptyState({ title, body }: { title: string; body: string }) {
 }
 
 const ModelHubTable: React.FC<ModelHubTableProps> = ({ accessToken, publicPage, premiumUser, userRole }) => {
+  const syntaxTheme = useSyntaxTheme(prism);
   // Admin Viewer follows the read-parity rule: see the AI Hub catalog, but
   // cannot toggle public visibility (write).
   const canModify = isProxyAdminRole(userRole || "");
@@ -737,7 +741,7 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({ accessToken, publicPage, 
               {/* Usage Example */}
               <div>
                 <p className="text-lg font-semibold mb-4">Usage Example</p>
-                <SyntaxHighlighter language="python" className="text-sm">
+                <SyntaxHighlighter language="python" className="text-sm" style={syntaxTheme}>
                   {`import openai
 
 client = openai.OpenAI(
@@ -1058,7 +1062,7 @@ print(response.choices[0].message.content)`}
               {/* Usage Example */}
               <div>
                 <p className="text-lg font-semibold mb-4">Usage Example</p>
-                <SyntaxHighlighter language="python" className="text-sm">
+                <SyntaxHighlighter language="python" className="text-sm" style={syntaxTheme}>
                   {`from fastmcp import Client
 import asyncio
 

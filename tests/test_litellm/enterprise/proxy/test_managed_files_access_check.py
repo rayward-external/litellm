@@ -192,12 +192,7 @@ async def test_check_batch_cost_should_call_afile_content_directly_with_credenti
         return_value=[mock_job]
     )
     mock_prisma.db.litellm_managedobjecttable.update = AsyncMock()
-    # The claim/reclaim/finalize path (PR #136) awaits update_many; return 1 so
-    # this worker wins the claim and reaches the afile_content call.
     mock_prisma.db.litellm_managedobjecttable.update_many = AsyncMock(return_value=1)
-    # No prior spend row / no user row for the enrichment lookup.
-    mock_prisma.db.litellm_spendlogs.find_unique = AsyncMock(return_value=None)
-    mock_prisma.db.litellm_usertable.find_unique = AsyncMock(return_value=None)
 
     # Mock proxy_logging_obj — should NOT be called for file content
     mock_proxy_logging = MagicMock()
