@@ -215,37 +215,6 @@ class TestOpenAIPassthroughLoggingHandler:
         )
         assert OpenAIPassthroughLoggingHandler.is_openai_responses_route("") == False
 
-    def test_is_openai_embeddings_route(self):
-        assert (
-            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route("https://api.openai.com/v1/embeddings") is True
-        )
-        assert (
-            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route("https://openai.azure.com/v1/embeddings") is True
-        )
-        assert (
-            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
-                "https://my-resource.cognitiveservices.azure.com/v1/embeddings"
-            )
-            is True
-        )
-        assert (
-            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
-                "https://my-resource.openai.azure.com/openai/deployments/text-embedding-3-small/embeddings"
-            )
-            is False
-        )
-        assert (
-            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route("https://api.openai.com/v1/chat/completions")
-            is False
-        )
-        assert (
-            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
-                "http://localhost:4000/openai_passthrough/v1/embeddings"
-            )
-            is False
-        )
-        assert OpenAIPassthroughLoggingHandler.is_openai_embeddings_route("") is False
-
     def test_is_openai_route_recognizes_cognitiveservices_azure_com(self):
         """Azure OpenAI resources created via the newer "Azure AI Foundry" /
         Cognitive Services pathway live on `*.cognitiveservices.azure.com`
@@ -1295,6 +1264,16 @@ class TestOpenAIPassthroughLoggingHandler:
             )
             is True
         )
+        assert (
+            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route("https://openai.azure.com/v1/embeddings")
+            is True
+        )
+        assert (
+            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
+                "https://my-resource.cognitiveservices.azure.com/v1/embeddings"
+            )
+            is True
+        )
 
         # Negative cases — other endpoints and non-OpenAI hosts
         assert (
@@ -1310,6 +1289,21 @@ class TestOpenAIPassthroughLoggingHandler:
             is False
         )
         assert OpenAIPassthroughLoggingHandler.is_openai_embeddings_route("") is False
+        # A classic Azure deployment path missing `?api-version=` is not recognized
+        # (contrast with the positive deployment-path case above, which has it).
+        assert (
+            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
+                "https://my-resource.openai.azure.com/openai/deployments/text-embedding-3-small/embeddings"
+            )
+            is False
+        )
+        # The proxy's own passthrough path prefix must not be misdetected as OpenAI's.
+        assert (
+            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
+                "http://localhost:4000/openai_passthrough/v1/embeddings"
+            )
+            is False
+        )
 
     def test_openai_passthrough_handler_embeddings_cost_tracking(self):
         """Regression test: pass-through embeddings must not record $0.
