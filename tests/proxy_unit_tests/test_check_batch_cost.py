@@ -886,18 +886,11 @@ class TestCheckBatchCost:
         ):
             await check_batch_cost_instance.check_batch_cost()
 
-        # A failed cost-tracking attempt must leave the row claimable for the
-        # next poll: besides the claim itself, the only row write allowed is
-        # the claim RELEASE (batch_processed back to False) — never a
-        # processed/complete write.
-        writes = [
-            data
-            for data in _row_writes(mock_prisma_client)
-            if data != {"batch_processed": True, "status": "pricing"}  # the claim
-        ]
-        assert len(writes) == 1, writes
-        assert writes[0].get("batch_processed") is False, writes
-        assert writes[0].get("status") == "validating", writes
+        # A failed results fetch must leave the row claimable for the next
+        # poll. The claim is taken after the fetch, so a fetch that raises
+        # never took one and the row is left untouched outright — no claim, no
+        # release, and above all no processed/complete write.
+        assert _row_writes(mock_prisma_client) == []
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("terminal_status", ["failed", "expired", "cancelled"])
@@ -2682,6 +2675,12 @@ class _FakeManagedObjectTable:
             if key == "created_at":
                 return False
             if key == "status":
+                # The claim fences on an exact status ("pricing"); the poll and
+                # deletion-guard queries use in/not_in filters.
+                if not isinstance(value, dict):
+                    if self.row.status != value:
+                        return False
+                    continue
                 if self.row.status in value.get("not_in", []):
                     return False
                 if "in" in value and self.row.status not in value["in"]:
@@ -2690,11 +2689,23 @@ class _FakeManagedObjectTable:
                 return False
         return True
 
+    @staticmethod
+    def _classify(where: dict, data: dict) -> str:
+        """Name the write by what it does to the row, so a journal entry means the
+        same thing regardless of which fenced update_many issued it."""
+        if data.get("batch_processed") is True and where.get("batch_processed") is False:
+            return "claim"
+        if data.get("batch_processed") is False:
+            return "release"
+        if "status" in data:
+            return "finalize"
+        return "mark"
+
     async def _update_many(self, *, where: dict, data: dict) -> int:
         if not self._matches(where):
             return 0
         if "batch_processed" in where:
-            self.journal.append("claim" if data.get("batch_processed") else "release")
+            self.journal.append(self._classify(where, data))
         for key, value in data.items():
             setattr(self.row, key, value)
         return 1
@@ -2821,10 +2832,16 @@ class TestMultiPodBatchCostClaim:
 
     @staticmethod
     def _claim_calls(prisma) -> list:
+        """Row-scoped writes that move the claim flag itself. Excludes the marker and
+        finalization writes, which ride on an already-held claim, and the sweep, which
+        is not row-scoped. Records attempts, so a compare-and-swap that matched no row
+        still shows up."""
         return [
             call.kwargs
             for call in prisma.db.litellm_managedobjecttable.update_many.call_args_list
             if "id" in call.kwargs["where"]
+            and "batch_processed" in call.kwargs["data"]
+            and "file_object" not in call.kwargs["data"]
         ]
 
     @staticmethod
@@ -2853,11 +2870,11 @@ class TestMultiPodBatchCostClaim:
         with self._billing_patches(journal) as logging_obj:
             await self._instance(prisma, self._router()).check_batch_cost()
 
-        assert journal == ["fetch", "claim", "bill", "finalize"]
+        assert journal == ["fetch", "claim", "bill", "mark", "finalize"]
         assert self._claim_calls(prisma) == [
             {
                 "where": {"id": "job-claim-1", "batch_processed": False},
-                "data": {"batch_processed": True},
+                "data": {"batch_processed": True, "status": "pricing"},
             }
         ]
         logging_obj.async_success_handler.assert_awaited_once()
@@ -2882,7 +2899,7 @@ class TestMultiPodBatchCostClaim:
         assert self._claim_calls(prisma) == [
             {
                 "where": {"id": "job-claim-1", "batch_processed": False},
-                "data": {"batch_processed": True},
+                "data": {"batch_processed": True, "status": "pricing"},
             }
         ]
 
@@ -2899,9 +2916,10 @@ class TestMultiPodBatchCostClaim:
 
         assert journal == ["fetch", "claim", "bill", "release"]
         assert row.batch_processed is False
+        assert row.status == "validating", "a released row must be selectable again"
         assert self._claim_calls(prisma)[-1] == {
-            "where": {"id": "job-claim-1", "batch_processed": True},
-            "data": {"batch_processed": False},
+            "where": {"id": "job-claim-1", "status": "pricing", "batch_processed": True},
+            "data": {"batch_processed": False, "status": "validating"},
         }
 
     @pytest.mark.asyncio
@@ -2936,7 +2954,7 @@ class TestMultiPodBatchCostClaim:
         with self._billing_patches(survivor_journal) as survivor_logging:
             await self._instance(survivor_prisma, self._router()).check_batch_cost()
 
-        assert survivor_journal == ["fetch", "claim", "bill", "finalize"]
+        assert survivor_journal == ["fetch", "claim", "bill", "mark", "finalize"]
         survivor_logging.async_success_handler.assert_awaited_once()
         assert row.batch_processed is True
 
@@ -2969,7 +2987,7 @@ class TestMultiPodBatchCostClaim:
             finish_fetch.set()
             await asyncio.wait_for(costing, timeout=5)
 
-        assert journal == ["fetch", "claim", "bill", "finalize"]
+        assert journal == ["fetch", "claim", "bill", "mark", "finalize"]
         assert row.batch_processed is True
         await self._run_deletion_guard(prisma, _CLAIM_OUTPUT_FILE_ID)
 

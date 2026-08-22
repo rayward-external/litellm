@@ -48,6 +48,18 @@ TERMINAL_MANAGED_OBJECT_STATUSES: Final[Tuple[str, ...]] = (
 SPEND_RECORDED_MARKER_KEY = "batch_cost_spend_recorded"
 
 
+class _ClaimLost:
+    """Distinguishes 'another worker won this row' from _track_completed_batch_cost's
+    other no-cost outcomes, which are unclaimed and must be handled differently: an
+    unroutable row (None) is left for a config fix, whereas a lost claim means the
+    winner is already billing and finalizing it."""
+
+    __slots__ = ()
+
+
+CLAIM_LOST: Final = _ClaimLost()
+
+
 class CheckBatchCost:
     def __init__(
         self,
@@ -120,10 +132,13 @@ class CheckBatchCost:
         return attribution if isinstance(attribution, dict) else {}
 
     async def _claim_job(self, job: Any) -> bool:
-        """Atomically claim a row before pricing: every proxy process runs
-        this poller, and pricing + flag-flip were previously non-atomic, so
-        concurrent workers could each bill the same batch (codex P1). The
-        conditional update_many means exactly one worker wins the claim.
+        """Atomically claim a row immediately before its spend log is written:
+        every proxy process runs this poller, and billing + flag-flip were
+        previously non-atomic, so concurrent workers could each bill the same
+        batch (codex P1). The conditional update_many means exactly one worker
+        wins the claim. Called from _track_completed_batch_cost once the
+        results are in hand — claiming any earlier makes the output file
+        deletable and a batch unbillable while it is still being costed.
         Schemas without the batch_processed column cannot claim atomically
         and keep the legacy single-worker assumption."""
         if not self._has_batch_processed_column:
@@ -881,13 +896,16 @@ class CheckBatchCost:
         model_id: str,
         batch_id: str,
         prom_logger: Optional["PrometheusLogger"],
-    ) -> tuple[str | None, str | None] | None:
+    ) -> tuple[str | None, str | None] | _ClaimLost | None:
         """
-        Fetch a completed batch's results, compute cost/usage, and emit the
-        aretrieve_batch spend log. Returns (model_name, llm_provider) on
-        success, None when the job can't be routed to a deployment. Raises on
-        results-fetch or cost-computation failures so the caller can leave the
-        job unprocessed and retry it on a later poll.
+        Fetch a completed batch's results, compute cost/usage, claim the row,
+        and emit the aretrieve_batch spend log. Returns (model_name,
+        llm_provider) with the claim held for the caller to finalize,
+        CLAIM_LOST when another worker claimed the row first (nothing billed,
+        nothing to release), or None when the job can't be routed to a
+        deployment. Raises on results-fetch or cost-computation failures so
+        the caller can leave the job unprocessed and retry it on a later poll;
+        a failure of the spend-log write itself releases the claim first.
         """
         from litellm.batches.batch_utils import (
             _get_file_content_as_dictionary,
@@ -1095,12 +1113,33 @@ class CheckBatchCost:
             optional_params={},
         )
 
-        await logging_obj.async_success_handler(
-            result=response,
-            batch_cost=batch_cost,
-            batch_usage=batch_usage,
-            batch_models=batch_models,
-        )
+        # Claim HERE, after the results are in hand and immediately before the
+        # spend log is written, not before the fetch. batch_processed is also
+        # what keeps an unbilled row selectable by later poll cycles and what
+        # makes the managed-files deletion guard hold the output file, so
+        # flipping it early let a concurrent delete remove the very file this
+        # fetch reads, and left a worker killed mid-fetch's batch billable by
+        # nobody until the reclaim sweep. Losing the race here costs only a
+        # duplicated fetch; the winner bills exactly once.
+        if not await self._claim_job(job):
+            verbose_proxy_logger.info(
+                f"CheckBatchCost: another worker claimed batch {batch_id} while this one "
+                f"fetched its results; skipping the spend log"
+            )
+            return CLAIM_LOST
+
+        try:
+            await logging_obj.async_success_handler(
+                result=response,
+                batch_cost=batch_cost,
+                batch_usage=batch_usage,
+                batch_models=batch_models,
+            )
+        except Exception:
+            # Hand the row back so the next cycle retries it, rather than
+            # leaving a claimed-but-unbilled row for the reclaim sweep.
+            await self._release_job_claim(job)
+            raise
 
         # Record batch duration (completed_at - created_at)
         if prom_logger and response.completed_at and response.created_at:
@@ -1236,14 +1275,14 @@ class CheckBatchCost:
                 and response.output_file_id is not None
             ):
                 terminal_status = "complete" if response.status == "completed" else response.status
-                if not await self._claim_job(job):
-                    # Another worker owns this row (or the claim errored) —
-                    # never price without holding the claim.
-                    continue
                 if await self._spend_already_recorded(batch_id, job):
                     # A prior worker billed this batch but died before
                     # finalizing (or was reclaimed) — finalize WITHOUT
-                    # re-running spend side effects.
+                    # re-running spend side effects. Finalization is fenced to
+                    # a held claim and the claim is only taken inside
+                    # _track_completed_batch_cost, so take one here first.
+                    if not await self._claim_job(job):
+                        continue
                     verbose_proxy_logger.warning(
                         f"CheckBatchCost: spend already recorded for batch {batch_id}; "
                         f"finalizing job {job.id} without re-billing"
@@ -1302,26 +1341,33 @@ class CheckBatchCost:
                         # job died before writing any records — finalize
                         # without cost instead of retrying a fetch that can
                         # never succeed. Any OTHER error (transient S3,
-                        # credentials, pricing) releases and retries — it
-                        # must not zero out billable partial output (codex
-                        # P1 round 2). The claim stays held; finalization
-                        # happens below.
+                        # credentials, pricing) retries — it must not zero out
+                        # billable partial output (codex P1 round 2). The
+                        # claim for the finalization below is taken there,
+                        # since the fetch failed before this worker took one.
                         verbose_proxy_logger.warning(
                             f"CheckBatchCost: no salvageable output for terminal batch {batch_id} "
                             f"(job {job.id}, status {response.status}): {tracking_err}"
                         )
                         tracked = None
                     else:
-                        await self._release_job_claim(job)
+                        # No claim is held here: it is taken after the results
+                        # fetch inside _track_completed_batch_cost, and
+                        # released there when the spend-log write itself is
+                        # what failed. So there is nothing to hand back.
                         verbose_proxy_logger.error(
                             f"CheckBatchCost: failed to track cost for batch {batch_id} "
-                            f"(job {job.id}); released the claim so the next poll retries: {tracking_err}"
+                            f"(job {job.id}); left it unclaimed so the next poll retries: {tracking_err}"
                         )
                         self._record_error(prom_logger, "cost_tracking_error")
                         continue
+                if isinstance(tracked, _ClaimLost):
+                    # Another worker won the row between this worker's fetch
+                    # and its spend-log write; it billed and finalizes.
+                    continue
                 if tracked is None and salvaged_output_file_id is None:
-                    # Unroutable row: release so a config fix can still bill it.
-                    await self._release_job_claim(job)
+                    # Unroutable row: never claimed, so a config fix can still
+                    # make a later cycle bill it.
                     continue
 
                 # Track this job for the final metrics summary
@@ -1331,6 +1377,11 @@ class CheckBatchCost:
                     # finalizing so a crash in between can't re-bill after
                     # reclamation, even with disable_spend_logs set.
                     await self._mark_spend_recorded(job)
+                elif not await self._claim_job(job):
+                    # Salvage path only: nothing was billed and no claim was
+                    # taken, so fence the zero-cost finalization below behind
+                    # one rather than racing another worker's costing run.
+                    continue
 
                 # finalize, fenced to the claim this worker holds
                 try:
