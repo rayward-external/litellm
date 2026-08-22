@@ -121,6 +121,57 @@ def _carries_cache_breakpoint(block: object) -> bool:
 def _accepts_prompt_cache_breakpoint(block: object) -> bool:
     return isinstance(block, dict) and block.get("type") in OPENAI_PROMPT_CACHE_BREAKPOINT_BLOCK_TYPES
 
+CACHE_BREAKPOINT_KEYS: Final = ("cache_control", "prompt_cache_breakpoint")
+OPENAI_PROMPT_CACHE_BREAKPOINT_MIN_GPT_VERSION: Final = (5, 6)
+_GPT_VERSION_PATTERN: Final = re.compile(r"^gpt-(\d+)(?:\.(\d+))?")
+OPENAI_PROMPT_CACHE_BREAKPOINT_BLOCK_TYPES: Final = frozenset(
+    {"text", "image", "image_url", "file", "input_audio", "input_text", "input_image", "input_file"}
+)
+OPENAI_API_HOST: Final = "api.openai.com"
+OPENAI_API_BASE_ENV_VARS: Final = ("OPENAI_BASE_URL", "OPENAI_API_BASE")
+
+AllToolParamValues = ChatCompletionToolParam | AllAnthropicToolsValues
+
+
+def supports_openai_prompt_cache_breakpoint(model: str) -> bool:
+    model_map_flag: Final = _model_map_prompt_cache_breakpoint_flag(model)
+    if model_map_flag is not None:
+        return model_map_flag
+    version_match: Final = _GPT_VERSION_PATTERN.match(model.rsplit("/", 1)[-1].lower())
+    if version_match is None:
+        return False
+    version: Final = (int(version_match.group(1)), int(version_match.group(2) or 0))
+    return version >= OPENAI_PROMPT_CACHE_BREAKPOINT_MIN_GPT_VERSION
+
+
+def _model_map_prompt_cache_breakpoint_flag(model: str) -> bool | None:
+    import litellm
+
+    entries: Final = (litellm.model_cost.get(key) for key in (model, model.rsplit("/", 1)[-1]))
+    flags: Final = (entry.get("supports_prompt_cache_breakpoint") for entry in entries if isinstance(entry, dict))
+    return next((bool(flag) for flag in flags if flag is not None), None)
+
+
+def targets_openai_api(api_base: object) -> bool:
+    import litellm
+
+    resolved: Final = next(
+        (value for value in (api_base, litellm.api_base, *map(os.getenv, OPENAI_API_BASE_ENV_VARS)) if value),
+        None,
+    )
+    if not isinstance(resolved, str):
+        return True
+    host: Final = urlparse(resolved).hostname
+    return host is not None and (host == OPENAI_API_HOST or host.endswith(f".{OPENAI_API_HOST}"))
+
+
+def _carries_cache_breakpoint(block: object) -> bool:
+    return isinstance(block, dict) and any(block.get(key) is not None for key in CACHE_BREAKPOINT_KEYS)
+
+
+def _accepts_prompt_cache_breakpoint(block: object) -> bool:
+    return isinstance(block, dict) and block.get("type") in OPENAI_PROMPT_CACHE_BREAKPOINT_BLOCK_TYPES
+
 
 class AnthropicCacheControlHook(CustomPromptManagement):
     def get_chat_completion_prompt(
@@ -194,7 +245,6 @@ class AnthropicCacheControlHook(CustomPromptManagement):
             messages=processed_messages,
             max_blocks=MAX_CACHE_CONTROL_BLOCKS - reserved_blocks,
             openai_dialect=openai_dialect,
-            default_control=default_control,
         )
         if (
             openai_dialect
@@ -247,7 +297,6 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         messages: list[AllMessageValues],
         max_blocks: int,
         openai_dialect: bool = False,
-        default_control: ChatCompletionCachedContent | None = None,
     ) -> list[AllMessageValues]:
         """Apply message-level cache control injection points in order.
 
@@ -576,7 +625,6 @@ class AnthropicCacheControlHook(CustomPromptManagement):
             messages=cast(list[AllMessageValues], processed_messages),
             max_blocks=max_blocks - system_blocks,
             openai_dialect=openai_dialect,
-            default_control=ChatCompletionCachedContent(type="ephemeral"),
         )
 
         return processed_messages, processed_system, remaining_points

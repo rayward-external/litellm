@@ -583,6 +583,52 @@ class CheckBatchCost:
             "so it will no longer be polled"
         )
 
+    async def _claim_job_for_costing(self, job: "LiteLLM_ManagedObjectTable") -> bool:
+        """
+        Atomically flip batch_processed from false to true, returning whether this pod won
+        the row. Every pod and uvicorn worker schedules its own poller against the shared
+        table, so without this compare-and-swap two of them can select the same completed
+        batch in one window and both emit an aretrieve_batch spend log for it. Schemas
+        without the column can't be claimed, so they keep the pre-existing behavior.
+
+        Called immediately before the spend log is written rather than before the results
+        fetch, because batch_processed is also what holds off deletion of the files that
+        fetch reads and what keeps an unbilled row selectable by the next poll cycle.
+        """
+        if not self._has_batch_processed_column:
+            return True
+        try:
+            claimed: Final = await self.prisma_client.db.litellm_managedobjecttable.update_many(
+                where={"id": job.id, "batch_processed": False},
+                data={"batch_processed": True},
+            )
+        except Exception as db_err:
+            verbose_proxy_logger.error(
+                f"CheckBatchCost: failed to claim job {job.id} for cost tracking: {db_err}"
+            )
+            return False
+        return claimed > 0
+
+    async def _release_job_claim(self, job: "LiteLLM_ManagedObjectTable") -> None:
+        """Give a claimed row back once billing it failed, so a later poll cycle retries it.
+
+        Safe to match on batch_processed=True: while this poller is active the retrieve
+        path leaves the column alone (batch_cost_poller_is_active), so a true value here
+        is always this pod's own claim.
+        """
+        if not self._has_batch_processed_column:
+            return
+        try:
+            await self.prisma_client.db.litellm_managedobjecttable.update_many(
+                where={"id": job.id, "batch_processed": True},
+                data={"batch_processed": False},
+            )
+        except Exception as db_err:
+            verbose_proxy_logger.error(
+                f"CheckBatchCost: failed to release the claim on job {job.id}, "
+                f"so its cost will not be retried: {db_err}"
+            )
+
     @staticmethod
     def _has_unified_id_without_model(job: "LiteLLM_ManagedObjectTable") -> bool:
         """A unified id that decodes but carries no model_id can never be routed."""
@@ -898,14 +944,12 @@ class CheckBatchCost:
         prom_logger: Optional["PrometheusLogger"],
     ) -> tuple[str | None, str | None] | _ClaimLost | None:
         """
-        Fetch a completed batch's results, compute cost/usage, claim the row,
-        and emit the aretrieve_batch spend log. Returns (model_name,
-        llm_provider) with the claim held for the caller to finalize,
-        CLAIM_LOST when another worker claimed the row first (nothing billed,
-        nothing to release), or None when the job can't be routed to a
-        deployment. Raises on results-fetch or cost-computation failures so
-        the caller can leave the job unprocessed and retry it on a later poll;
-        a failure of the spend-log write itself releases the claim first.
+        Fetch a completed batch's results, compute cost/usage, and emit the
+        aretrieve_batch spend log. Returns (model_name, llm_provider) on
+        success, None when the job can't be routed to a deployment or when
+        another pod claimed it. Raises on results-fetch or cost-computation
+        failures so the caller can leave the job unprocessed and retry it on a
+        later poll.
         """
         from litellm.batches.batch_utils import (
             _get_file_content_as_dictionary,
@@ -1113,20 +1157,12 @@ class CheckBatchCost:
             optional_params={},
         )
 
-        # Claim HERE, after the results are in hand and immediately before the
-        # spend log is written, not before the fetch. batch_processed is also
-        # what keeps an unbilled row selectable by later poll cycles and what
-        # makes the managed-files deletion guard hold the output file, so
-        # flipping it early let a concurrent delete remove the very file this
-        # fetch reads, and left a worker killed mid-fetch's batch billable by
-        # nobody until the reclaim sweep. Losing the race here costs only a
-        # duplicated fetch; the winner bills exactly once.
-        if not await self._claim_job(job):
+        if not await self._claim_job_for_costing(job):
             verbose_proxy_logger.info(
-                f"CheckBatchCost: another worker claimed batch {batch_id} while this one "
-                f"fetched its results; skipping the spend log"
+                f"CheckBatchCost: batch {batch_id} (job {job.id}) was claimed by another pod "
+                "in this window, so its cost is already being tracked there"
             )
-            return CLAIM_LOST
+            return None
 
         try:
             await logging_obj.async_success_handler(
@@ -1136,8 +1172,6 @@ class CheckBatchCost:
                 batch_models=batch_models,
             )
         except Exception:
-            # Hand the row back so the next cycle retries it, rather than
-            # leaving a claimed-but-unbilled row for the reclaim sweep.
             await self._release_job_claim(job)
             raise
 
