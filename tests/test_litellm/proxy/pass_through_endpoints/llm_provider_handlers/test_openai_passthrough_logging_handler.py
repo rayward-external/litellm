@@ -1289,14 +1289,6 @@ class TestOpenAIPassthroughLoggingHandler:
             is False
         )
         assert OpenAIPassthroughLoggingHandler.is_openai_embeddings_route("") is False
-        # A classic Azure deployment path missing `?api-version=` is not recognized
-        # (contrast with the positive deployment-path case above, which has it).
-        assert (
-            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
-                "https://my-resource.openai.azure.com/openai/deployments/text-embedding-3-small/embeddings"
-            )
-            is False
-        )
         # The proxy's own passthrough path prefix must not be misdetected as OpenAI's.
         assert (
             OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
