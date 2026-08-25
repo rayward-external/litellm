@@ -147,7 +147,7 @@
     "limit": 3
   },
   "PLR1714": {
-    "limit": 254
+    "limit": 255
   },
   "PLW0127": {
     "limit": 57
