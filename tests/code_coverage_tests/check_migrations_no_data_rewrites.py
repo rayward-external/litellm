@@ -104,6 +104,7 @@ GRANDFATHERED = frozenset(
     {
         "20260817000000_shadow_eval_multi_key",
         "20260818224500_add_shadow_eval_stopped_by",
+        "20260724000000_add_owner_key_to_managed_object",
     }
 )
 
