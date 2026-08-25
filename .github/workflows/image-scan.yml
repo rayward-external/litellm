@@ -220,7 +220,7 @@ jobs:
         env:
           LITELLM_IMAGE: litellm-ui-scan:${{ github.sha }}
         run: |
-          python -m pip install "pytest==9.0.3"
+          python -m pip install --no-cache-dir --require-hashes -r .github/scripts/migration-test-requirements.txt
           python -m pytest tests/proxy_migration_tests/test_ui_image_serves_offline.py -v
 
   backend-image:
