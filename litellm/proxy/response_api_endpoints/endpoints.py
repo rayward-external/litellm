@@ -1257,8 +1257,6 @@ async def _enforce_responses_ws_first_frame_model_auth(
     )
 
 
-@router.websocket("/v1/responses")
-@router.websocket("/responses")
 async def responses_websocket_endpoint(
     websocket: WebSocket,
     model: str | None = fastapi.Query(None, description="The model to use for the responses WebSocket session."),

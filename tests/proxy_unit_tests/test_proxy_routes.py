@@ -11,6 +11,7 @@ import logging
 
 import pytest
 from fastapi import Request
+from fastapi.routing import APIRoute, APIWebSocketRoute
 from starlette.datastructures import URL, Headers, QueryParams
 
 import litellm
@@ -89,6 +90,13 @@ def test_routes_on_litellm_proxy():
             ), f"Wildcard pattern {route} requires base path {base_path} to exist"
         else:
             assert route in _all_routes
+
+
+def test_responses_api_does_not_register_websocket_mode():
+    responses_routes = [route for route in app.routes if getattr(route, "path", None) == "/v1/responses"]
+
+    assert any(isinstance(route, APIRoute) and "POST" in route.methods for route in responses_routes)
+    assert not any(isinstance(route, APIWebSocketRoute) for route in responses_routes)
 
 
 @pytest.mark.parametrize(
