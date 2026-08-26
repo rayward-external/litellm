@@ -744,8 +744,25 @@ class FallbackAwareAnthropicMessagesStream:
         }
 
 
-class RoutingArgs(enum.Enum):
-    ttl = 60  # 1min (RPM/TPM expire key)
+async def _maybe_abandon_refused_stream_source(e: Any, source: Any, log_label: str) -> None:
+    """When a mid-stream error wraps a ContentPolicyViolationError (the refusal /
+    content-filter hold), early-release the source stream the hold abandoned:
+    close its HTTP connection now instead of holding it through the fallback
+    stream (the outer finally re-close is a no-op), and clear any latched
+    terminal event so the abandoned blocked response is never reported as the
+    rescued request's completed response. No-op for other mid-stream errors."""
+    if not isinstance(getattr(e, "original_exception", None), litellm.ContentPolicyViolationError):
+        return
+    if hasattr(source, "aclose"):
+        with anyio.CancelScope(shield=True):
+            try:
+                await source.aclose()
+            except BaseException as close_err:  # noqa: BLE001 — shielded cleanup must never raise
+                verbose_router_logger.debug("%s: error closing refused source: %s", log_label, close_err)
+    try:
+        source.completed_response = None
+    except (AttributeError, TypeError):
+        pass
 
 
 # Routers that are still in use, so a price data reload can rebuild the cost-map
