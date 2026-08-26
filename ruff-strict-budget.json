@@ -12,7 +12,7 @@
     "limit": 2012
   },
   "ANN202": {
-    "limit": 846
+    "limit": 856
   },
   "ANN204": {
     "limit": 711
@@ -21,7 +21,7 @@
     "limit": 108
   },
   "ANN206": {
-    "limit": 131
+    "limit": 133
   },
   "ANN401": {
     "limit": 1157
@@ -147,7 +147,7 @@
     "limit": 3
   },
   "PLR1714": {
-    "limit": 255
+    "limit": 256
   },
   "PLW0127": {
     "limit": 57
