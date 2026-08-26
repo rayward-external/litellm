@@ -1882,7 +1882,7 @@ class AmazonConverseConfig(BaseConfig):
         reasoning_tokens: Final = (
             min(max(0, provider_reasoning_tokens), output_tokens)
             if provider_reasoning_tokens is not None
-            else estimated_reasoning_tokens
+            else min(estimated_reasoning_tokens, output_tokens)
         )
         completion_tokens_details: Final = (
             CompletionTokensDetailsWrapper(
