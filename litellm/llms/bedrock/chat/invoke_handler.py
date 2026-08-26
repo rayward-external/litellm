@@ -332,6 +332,7 @@ class AWSEventStreamDecoder:
         self._current_tool_name: str | None = None
         self._thinking_ran = False
         self._provider_reasoning_tokens: int | None = None
+        self.accumulated_reasoning_content: str = ""
 
     def check_empty_tool_call_args(self) -> bool:
         """
