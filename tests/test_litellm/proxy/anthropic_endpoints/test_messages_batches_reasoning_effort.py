@@ -49,7 +49,7 @@ def test_reasoning_effort_high_on_adaptive_model(monkeypatch):
     out = mb._translate_reasoning_effort_params(params)
 
     assert "reasoning_effort" not in out
-    assert out["thinking"] == {"type": "adaptive"}
+    assert out["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert out["output_config"] == {"effort": "high"}
     # untouched fields survive
     assert out["model"] == "claude-opus-4-8"
@@ -184,7 +184,7 @@ def test_reasoning_effort_dict_shape_is_coerced(monkeypatch):
     out = mb._translate_reasoning_effort_params(params)
 
     assert "reasoning_effort" not in out
-    assert out["thinking"] == {"type": "adaptive"}
+    assert out["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert out["output_config"] == {"effort": "medium"}
 
 
