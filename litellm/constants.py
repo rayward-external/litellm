@@ -150,6 +150,9 @@ LITELLM_UI_ALLOW_HEADERS: Final = [
     "x-litellm-applied-guardrails",
     "x-litellm-guardrail-scan-id",
     "x-litellm-cache-key",
+    "x-usage-cost",
+    "x-usage-spend",
+    "x-usage-budget",
 ]
 
 # Gemini model-specific minimal thinking budget constants
