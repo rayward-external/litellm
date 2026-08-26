@@ -1257,6 +1257,30 @@ async def _enforce_responses_ws_first_frame_model_auth(
     )
 
 
+# FORK PATCH (rayward-internal/llm-gateway-infra#645): the upstream decorators
+#
+#     @router.websocket("/v1/responses")
+#     @router.websocket("/responses")
+#
+# are deliberately REMOVED, so Responses WebSocket mode is not served. Every
+# non-Vertex leg fails after the upgrade (Azure/OpenAI-class 404 on the upstream
+# wss handshake -> client close 1011; Bedrock "Invalid API Key format";
+# Fireworks BadRequestError), so a client sees a session open and then die and
+# burns its reconnect budget before falling back to HTTPS. With the route
+# unregistered, starlette closes an unrouted websocket scope before accept() and
+# uvicorn turns that into a definitive HTTP 403 on the handshake — no 101 is
+# ever sent.
+#
+# The handler body is left intact so re-enabling is just restoring the two
+# decorators. A `-X theirs` upstream sync restores them with NO conflict, so
+# this is guarded by test_responses_api_does_not_register_websocket_mode in
+# tests/proxy_unit_tests/test_proxy_routes.py and recorded in
+# .github/fork-patches.txt. Do not reinstate the decorators to make that test
+# pass.
+#
+# REMOVAL CONDITION: restore both decorators once Responses-over-WebSocket works
+# on the Azure, Bedrock and Fireworks legs, with integration coverage per
+# provider family.
 async def responses_websocket_endpoint(
     websocket: WebSocket,
     model: str | None = fastapi.Query(None, description="The model to use for the responses WebSocket session."),
