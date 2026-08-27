@@ -93,20 +93,21 @@ def test_routes_on_litellm_proxy():
 
 
 @pytest.mark.parametrize("path", ["/v1/responses", "/responses"])
-def test_responses_api_does_not_register_websocket_mode(path):
-    """FORK PATCH GUARD (rayward-internal/llm-gateway-infra#645).
+def test_responses_api_registers_websocket_mode(path):
+    """FORK PATCH GUARD (rayward-internal/llm-gateway-infra#645, #650).
 
-    Responses WebSocket mode is unusable on our deployment, so the
-    ``@router.websocket`` decorators are removed from
-    ``responses_websocket_endpoint``. Both aliases upstream decorates must stay
-    unregistered, and the HTTPS POST route must survive on each of them.
+    Responses WebSocket mode was disabled 2026-08-27 (#214) because every
+    non-Vertex leg failed after the upgrade, then re-enabled (#650) once the
+    upstream fixes were backported: BerriAI/litellm#34253 (preserve the
+    caller's ``api_key`` instead of forcing a bearer token onto Bedrock),
+    #33101 (stop leaking ``litellm_params`` into the provider request body),
+    and #33463 (apply deployment defaults to websocket frames). Both aliases
+    upstream decorates must stay registered, with the HTTPS POST route
+    surviving alongside the WebSocket route on each of them.
 
-    An unrouted websocket scope makes starlette close before ``accept()``,
-    which uvicorn turns into a definitive ``HTTP 403`` on the handshake — no
-    ``101`` is ever sent, so a client cannot see a session open and then die.
-
-    A ``-X theirs`` upstream sync restores those decorators with no conflict.
-    When this test goes red, RE-APPLY the deletion; never flip the assertion.
+    A ``-X theirs`` upstream sync could drop these decorators again with no
+    conflict. When this test goes red, RE-APPLY the two ``@router.websocket``
+    decorators on ``responses_websocket_endpoint``; never flip the assertion.
     See ``.github/fork-patches.txt``.
     """
     responses_routes = [route for route in app.routes if getattr(route, "path", None) == path]
@@ -115,9 +116,9 @@ def test_responses_api_does_not_register_websocket_mode(path):
     assert any(
         isinstance(route, APIRoute) and "POST" in route.methods for route in responses_routes
     ), f"HTTPS POST {path} must remain available"
-    assert not any(
+    assert any(
         isinstance(route, APIWebSocketRoute) for route in responses_routes
-    ), f"{path} must not register a WebSocket route"
+    ), f"{path} must register a WebSocket route"
 
 
 @pytest.mark.parametrize("path", ["/v1/realtime", "/realtime", "/openai/v1/realtime"])

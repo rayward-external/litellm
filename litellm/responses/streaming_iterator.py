@@ -1478,6 +1478,7 @@ class ResponsesWebSocketStreaming:
         output_guardrail_callbacks: list[PresidioGuardrailCallback] | None = None,
         quota_callbacks: Sequence[ProjectQuotaCallback] | None = None,
         authorized_model: str | None = None,
+        request_defaults: dict[str, object] | None = None,
     ):
         self.websocket = websocket
         self.backend_ws = backend_ws
@@ -1493,6 +1494,7 @@ class ResponsesWebSocketStreaming:
         # Model name authorized at connection time; enforced on every
         # response.create frame to prevent deployment-substitution attacks.
         self.authorized_model: str | None = authorized_model
+        self.request_defaults: dict[str, object] = request_defaults or {}
 
     def _should_store_event(self, event_obj: Mapping[str, object]) -> bool:
         return event_obj.get("type") in RESPONSES_WS_LOGGED_EVENT_TYPES
@@ -1635,6 +1637,19 @@ class ResponsesWebSocketStreaming:
             modified = True
         return modified
 
+    def _apply_request_defaults(self, msg_obj: dict[str, object]) -> bool:
+        nested = msg_obj.get("response")
+        request = (
+            {key: value for key, value in nested.items() if isinstance(key, str)}
+            if isinstance(nested, dict)
+            else msg_obj
+        )
+        if request is not msg_obj:
+            msg_obj["response"] = request
+        missing_defaults = {key: value for key, value in self.request_defaults.items() if key not in request}
+        request.update(missing_defaults)
+        return bool(missing_defaults)
+
     async def _mask_response_create(self, message: str) -> str:
         """
         Enforce the authorized model and apply Presidio PII masking to a
@@ -1657,16 +1672,17 @@ class ResponsesWebSocketStreaming:
         if msg_obj.get("type") != "response.create":
             return message
 
+        defaults_modified: Final = self._apply_request_defaults(msg_obj)
         # Always enforce the authorized model, even when PII masking is off.
         model_modified: Final = self._enforce_authorized_model(msg_obj)
 
         if not self.guardrail_callbacks:
-            return json.dumps(msg_obj) if model_modified else message
+            return json.dumps(msg_obj) if defaults_modified or model_modified else message
 
         if "metadata" not in self.request_data:
             self.request_data["metadata"] = {}
 
-        modified = model_modified
+        modified = defaults_modified or model_modified
         guardrail_cbs: Final[tuple[PresidioGuardrailCallback, ...]] = tuple(self.guardrail_callbacks)
         for cb in guardrail_cbs:
             presidio_config = cb.get_presidio_settings_from_request_data(self.request_data)
@@ -2352,8 +2368,7 @@ class ManagedResponsesWebSocketHandler:
         if "litellm_metadata" not in call_kwargs:
             call_kwargs["litellm_metadata"] = {}
         call_kwargs["litellm_metadata"]["proxy_server_request"] = proxy_server_request
-        call_kwargs.setdefault("litellm_params", {})
-        call_kwargs["litellm_params"]["proxy_server_request"] = proxy_server_request
+        call_kwargs["proxy_server_request"] = proxy_server_request
 
     async def _stream_and_forward(self, model: str, call_kwargs: dict[str, Any]) -> dict[str, object] | None:
         """
