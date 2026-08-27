@@ -46,7 +46,6 @@ else:
     ResponseText = str  # Fallback for ResponseText import
 from litellm.litellm_core_utils.get_litellm_params import get_litellm_params
 from litellm.llms.openai.data_residency import infer_openai_data_residency
-from litellm.secret_managers.main import get_secret_str
 from litellm.types.responses.main import *
 from litellm.types.router import GenericLiteLLMParams
 from litellm.utils import (
@@ -2175,14 +2174,17 @@ async def _aresponses_websocket(
         )
 
     resolved_api_base: Final = dynamic_api_base or litellm_params.api_base or litellm.api_base or None
-    resolved_api_key: Final = (
-        dynamic_api_key
-        or api_key
-        or litellm_params.api_key
-        or litellm.api_key
-        or litellm.openai_key
-        or get_secret_str("OPENAI_API_KEY")
-    )
+    # No cross-provider secret-store fallback here (unlike the OpenAI-only
+    # fallback chains inside litellm/main.py's completion() branches and
+    # provider validate_environment() implementations): this value is threaded
+    # into ManagedResponsesWebSocketHandler and, from there, into
+    # litellm.aresponses()'s own litellm_params.api_key, so it must stay `None`
+    # for a Bedrock/Vertex/SageMaker-style deployment exactly like the HTTP
+    # path leaves it `None` -- letting each provider resolve its own
+    # credentials (SigV4, ADC, boto3 env) instead of racing an OpenAI key in
+    # as a bearer token (bedrock/base_aws_llm.py:get_request_headers treats
+    # any non-None api_key as `Authorization: Bearer <api_key>`).
+    resolved_api_key: Final = dynamic_api_key or api_key or litellm_params.api_key
 
     # Extract params that we're passing explicitly to avoid duplicates in **kwargs
     _explicit_keys: Final = {
