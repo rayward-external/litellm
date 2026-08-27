@@ -102,6 +102,32 @@ class TestResponsesAPIWebSocketSupport:
     def test_openai_model_in_websocket_url_default(self):
         assert OpenAIResponsesAPIConfig().model_in_websocket_url() is True
 
+    @pytest.mark.asyncio
+    async def test_openai_websocket_forwards_explicit_api_key(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        import litellm
+        from litellm.responses import main as responses_main
+
+        websocket_handler = AsyncMock()
+        monkeypatch.setattr(litellm, "api_key", None)
+        monkeypatch.setattr(litellm, "openai_key", None)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            responses_main.base_llm_http_handler,
+            "async_responses_websocket",
+            websocket_handler,
+        )
+
+        await responses_main._aresponses_websocket.__wrapped__(
+            model="gpt-4o",
+            websocket=MagicMock(),
+            api_key="explicit-api-key",
+            litellm_logging_obj=MagicMock(),
+        )
+
+        assert websocket_handler.await_args.kwargs["api_key"] == "explicit-api-key"
+
     def test_xai_uses_managed_websocket(self):
         """XAI should use managed websocket handler"""
         config = XAIResponsesAPIConfig()
@@ -658,6 +684,59 @@ class TestChunkTransformation:
         assert ManagedResponsesWebSocketHandler._input_to_messages(None) == []
         assert ManagedResponsesWebSocketHandler._input_to_messages([]) == []
         assert ManagedResponsesWebSocketHandler._input_to_messages({}) == []
+
+
+class TestUpdateProxyRequest:
+    """Regression tests for ManagedResponsesWebSocketHandler._update_proxy_request.
+
+    The managed WebSocket path calls ``litellm.aresponses(model=..., **call_kwargs)``.
+    ``litellm_params`` is not a Responses API request field, so passing it as a
+    top-level kwarg leaks it into the provider request body and providers that
+    forbid extra inputs (e.g. Anthropic) reject the call with
+    ``litellm_params: Extra inputs are not permitted``. The request-tracking data
+    must ride along as ``proxy_server_request`` instead, which litellm consumes
+    internally and never forwards to the provider.
+    """
+
+    def test_does_not_inject_litellm_params_kwarg(self):
+        from litellm.responses.streaming_iterator import (
+            ManagedResponsesWebSocketHandler,
+        )
+
+        call_kwargs = {
+            "input": "hello",
+            "store": True,
+            "litellm_metadata": {
+                "proxy_server_request": {"headers": {}, "body": {}},
+            },
+        }
+
+        ManagedResponsesWebSocketHandler._update_proxy_request(
+            call_kwargs, "anthropic/claude-sonnet-4-5"
+        )
+
+        assert "litellm_params" not in call_kwargs
+        assert call_kwargs["proxy_server_request"]["body"]["model"] == (
+            "anthropic/claude-sonnet-4-5"
+        )
+        assert call_kwargs["proxy_server_request"]["body"]["input"] == "hello"
+
+    def test_proxy_server_request_matches_metadata(self):
+        from litellm.responses.streaming_iterator import (
+            ManagedResponsesWebSocketHandler,
+        )
+
+        call_kwargs = {
+            "input": "hi",
+            "litellm_metadata": {"proxy_server_request": {"body": {}}},
+        }
+
+        ManagedResponsesWebSocketHandler._update_proxy_request(call_kwargs, "gpt-4o")
+
+        assert (
+            call_kwargs["proxy_server_request"]
+            == call_kwargs["litellm_metadata"]["proxy_server_request"]
+        )
 
 
 class TestWebSocketEventTypes:
@@ -1221,6 +1300,61 @@ class TestNativeWebSocketGuardrails:
         assert (
             json.loads(nested_message)["response"]["model"] == "authorized-deployment"
         )
+
+    @pytest.mark.asyncio
+    async def test_native_websocket_merges_deployment_defaults(self):
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from litellm.responses.main import _aresponses_websocket
+
+        class FakeBackendWebSocket:
+            def __init__(self):
+                self.send = AsyncMock()
+                self.close = AsyncMock()
+
+            async def recv(self, decode=False):
+                await asyncio.Future()
+
+        backend_websocket = FakeBackendWebSocket()
+
+        class FakeConnect:
+            def __init__(self, url, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return backend_websocket
+
+            async def __aexit__(self, *args):
+                pass
+
+        first_message = json.dumps(
+            {
+                "type": "response.create",
+                "model": "gpt-4o-mini",
+                "input": "hi",
+                "service_tier": "default",
+            }
+        )
+        websocket = MagicMock()
+        websocket.receive_text = AsyncMock(side_effect=RuntimeError("disconnect"))
+
+        with patch("websockets.connect", FakeConnect):
+            await _aresponses_websocket.__wrapped__(
+                model="openai/gpt-4o-mini",
+                websocket=websocket,
+                api_key="sk-test",
+                litellm_logging_obj=MagicMock(),
+                first_message=first_message,
+                reasoning_effort="high",
+                service_tier="priority",
+                extra_body={"provider_default": "configured"},
+            )
+
+        sent_message = json.loads(backend_websocket.send.await_args.args[0])
+        assert sent_message["reasoning"] == {"effort": "high"}
+        assert sent_message["service_tier"] == "default"
+        assert sent_message["provider_default"] == "configured"
 
     @pytest.mark.asyncio
     async def test_completed_event_with_null_response_passes_through(self):
