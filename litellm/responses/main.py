@@ -3,6 +3,7 @@ import contextvars
 from collections.abc import Coroutine, Generator, Iterable, Mapping
 from contextlib import contextmanager
 from functools import partial
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Literal, Optional, cast
 
 import httpx
@@ -2090,23 +2091,31 @@ def _build_litellm_metadata_for_ws(kwargs: dict) -> dict:
     return metadata
 
 
-def _build_responses_websocket_request_defaults(kwargs: Mapping[str, object]) -> dict[str, object]:
-    valid_keys = ResponsesAPIOptionalRequestParams.__annotations__.keys()
-    optional_params = {key: value for key, value in kwargs.items() if key in valid_keys and value is not None}
-    reasoning_effort = kwargs.get("reasoning_effort")
-    if "reasoning" not in optional_params and isinstance(reasoning_effort, str):
-        reasoning = LiteLLMResponsesTransformationHandler()._map_reasoning_effort(reasoning_effort)
-        if reasoning is not None:
-            optional_params["reasoning"] = reasoning
-    elif "reasoning" not in optional_params and isinstance(reasoning_effort, dict):
-        optional_params["reasoning"] = reasoning_effort
-    extra_body = kwargs.get("extra_body")
-    provider_defaults = (
-        {key: value for key, value in extra_body.items() if isinstance(key, str)}
-        if isinstance(extra_body, dict)
-        else {}
+def _build_responses_websocket_request_defaults(kwargs: Mapping[str, object]) -> Mapping[str, object]:
+    valid_keys: Final = ResponsesAPIOptionalRequestParams.__annotations__.keys()
+    base_params: Final = MappingProxyType(
+        {key: value for key, value in kwargs.items() if key in valid_keys and value is not None}
     )
-    return {**optional_params, **provider_defaults}
+    reasoning_effort: Final = kwargs.get("reasoning_effort")
+    reasoning_override: Final = (
+        LiteLLMResponsesTransformationHandler()._map_reasoning_effort(reasoning_effort)
+        if "reasoning" not in base_params and isinstance(reasoning_effort, str)
+        else reasoning_effort
+        if "reasoning" not in base_params and isinstance(reasoning_effort, dict)
+        else None
+    )
+    optional_params: Final = (
+        MappingProxyType({**base_params, "reasoning": reasoning_override})
+        if reasoning_override is not None
+        else base_params
+    )
+    extra_body: Final = kwargs.get("extra_body")
+    provider_defaults: Final = (
+        MappingProxyType({key: value for key, value in extra_body.items() if isinstance(key, str)})
+        if isinstance(extra_body, dict)
+        else MappingProxyType({})
+    )
+    return MappingProxyType({**optional_params, **provider_defaults})
 
 
 @client

@@ -6369,7 +6369,7 @@ class BaseLLMHTTPHandler:
         litellm_metadata: dict[str, object] | None = None,
         custom_llm_provider: str | None = None,
         first_message: str | None = None,
-        request_defaults: dict[str, object] | None = None,
+        request_defaults: Mapping[str, object] | None = None,
         **kwargs: Any,
     ):
         """
