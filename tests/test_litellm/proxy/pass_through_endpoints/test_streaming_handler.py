@@ -86,7 +86,12 @@ def _logging_obj() -> LiteLLMLoggingObj:
 @pytest.mark.parametrize(
     "endpoint_type, expected_provider, expected_cost",
     [
-        (EndpointType.GEMINI, "gemini", GEMINI_COST),
+        # EndpointType.GEMINI is deliberately absent: get_endpoint_type never
+        # returns it (every generateContent/streamGenerateContent URL,
+        # Gemini's AI Studio host included, classifies as VERTEX_AI), and this
+        # fork keeps the corresponding dispatch branch removed as dead code.
+        # test_vertex_generate_content_payload_prices_gemini_urls_at_gemini_rates
+        # below covers Gemini pricing through the real, reachable path.
         (EndpointType.VERTEX_AI, "vertex_ai", VERTEX_COST),
     ],
 )
