@@ -11013,6 +11013,34 @@ async def realtime_websocket_endpoint(
     ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth_websocket),
 ):
+    # FORK PATCH (rayward-internal/llm-gateway-infra#646): Realtime WebSocket mode
+    # is NOT served on this deployment. No realtime-capable model exists here —
+    # GET /v1/models returns 37 models, none matching "realtime", and none is
+    # declared in gcp/envs/prod/model-providers/*.tf. Upstream accepts the
+    # upgrade and only then resolves the model, so a client got a handshake that
+    # succeeded and a socket that closed empty on its first real frame (measured
+    # live 2026-08-27: 101 Switching Protocols, then CLOSED (empty) after
+    # {"type":"session.update"}). That is the accept-then-die shape of #645 on a
+    # different path.
+    #
+    # Closing BEFORE accept() makes uvicorn fail the handshake with a definitive
+    # HTTP 403 — no 101 is ever sent, so a client cannot see a session open and
+    # then die. The route stays REGISTERED on purpose: LiteLLMRoutes.openai_routes
+    # lists the realtime paths and test_routes_on_litellm_proxy asserts a bare
+    # /realtime route exists whenever any realtime path is listed (and
+    # /realtime/client_secrets, /calls and /transcription_sessions legitimately
+    # remain), so deleting the decorators would make that upstream test lie.
+    #
+    # Guarded by test_realtime_websocket_refuses_the_upgrade in
+    # tests/proxy_unit_tests/test_proxy_routes.py and recorded in
+    # .github/fork-patches.txt. A `-X theirs` sync drops this block with NO
+    # conflict — re-apply it; never delete the guard instead.
+    #
+    # REMOVAL CONDITION: delete this block as soon as a realtime-capable model is
+    # actually declared and served.
+    await websocket.close(code=1008, reason="Realtime WebSocket mode is not supported on this gateway")
+    return
+
     requested_protocols: Final = [
         p.strip() for p in (websocket.headers.get("sec-websocket-protocol") or "").split(",") if p.strip()
     ]
