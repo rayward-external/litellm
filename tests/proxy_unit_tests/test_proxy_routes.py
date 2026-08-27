@@ -120,6 +120,56 @@ def test_responses_api_does_not_register_websocket_mode(path):
     ), f"{path} must not register a WebSocket route"
 
 
+@pytest.mark.parametrize("path", ["/v1/realtime", "/realtime", "/openai/v1/realtime"])
+def test_realtime_websocket_refuses_the_upgrade(path):
+    """FORK PATCH GUARD (rayward-internal/llm-gateway-infra#646).
+
+    No realtime-capable model is served on this deployment, so
+    ``realtime_websocket_endpoint`` closes BEFORE ``accept()`` — uvicorn turns
+    that into a definitive ``HTTP 403`` on the handshake, and no ``101`` is ever
+    sent. Upstream accepted first and resolved the model afterwards, so a client
+    got a handshake that succeeded and a socket that died on its first frame.
+
+    The route deliberately stays REGISTERED: ``LiteLLMRoutes.openai_routes``
+    lists the realtime paths and ``test_routes_on_litellm_proxy`` asserts a bare
+    ``/realtime`` route exists whenever any realtime path is listed, so removing
+    the decorators would make that upstream test lie.
+
+    A ``-X theirs`` sync drops the refusal with no conflict. When this goes red,
+    RE-APPLY it; never delete this guard instead. See ``.github/fork-patches.txt``.
+    """
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    routes = [
+        route
+        for route in app.routes
+        if isinstance(route, APIWebSocketRoute) and getattr(route, "path", None) == path
+    ]
+    assert routes, f"{path} must stay registered so LiteLLMRoutes.openai_routes stays honest"
+
+    client = TestClient(app)
+    with pytest.raises(WebSocketDisconnect) as excinfo:
+        with client.websocket_connect(path) as ws:
+            ws.receive_text()
+    assert excinfo.value.code == 1008, (
+        f"{path} should refuse the upgrade with close code 1008 before accept(); "
+        f"got {excinfo.value.code}"
+    )
+
+
+def test_vertex_ai_live_websocket_is_untouched():
+    """Blast-radius guard: #646 is about realtime only.
+
+    ``/vertex_ai/live`` is a different pass-through surface and must keep its
+    WebSocket route, so a future sweep does not quietly take it with the others.
+    """
+    assert any(
+        isinstance(route, APIWebSocketRoute) and getattr(route, "path", None) == "/vertex_ai/live"
+        for route in app.routes
+    ), "/vertex_ai/live must remain a registered WebSocket route"
+
+
 @pytest.mark.parametrize(
     "route,expected",
     [
