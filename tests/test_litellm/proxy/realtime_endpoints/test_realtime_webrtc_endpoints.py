@@ -20,6 +20,9 @@ from litellm.proxy.common_utils.encrypt_decrypt_utils import (
     encrypt_value_helper,
 )
 from litellm.proxy.realtime_endpoints.endpoints import (
+    _decode_realtime_token_payload,
+    _encode_realtime_token_payload,
+)
 
 # FORK PATCH (rayward-internal/llm-gateway-infra#646): realtime_websocket_endpoint
 # now closes BEFORE accept() because no realtime-capable model is served on this
@@ -30,9 +33,6 @@ from litellm.proxy.realtime_endpoints.endpoints import (
 _REALTIME_WS_DISABLED = pytest.mark.skip(
     reason="Realtime WebSocket mode is disabled on this fork "
     "(rayward-internal/llm-gateway-infra#646); see .github/fork-patches.txt"
-)
-    _decode_realtime_token_payload,
-    _encode_realtime_token_payload,
 )
 
 # --- Unit tests: token encode/decode helpers ---
