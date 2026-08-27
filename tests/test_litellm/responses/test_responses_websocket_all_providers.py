@@ -2796,7 +2796,7 @@ class TestNativeWebSocketUrlConstruction:
         assert call_kwargs["litellm_params"]["api_version"] == "2025-04-01-preview"
 
     @pytest.mark.asyncio
-    async def test_native_websocket_handshake_failure_falls_back_to_managed_bridge(
+    async def test_native_websocket_handshake_failure_falls_back_to_managed_bridge(  # test-quality-ok: the regression IS which internal path runs after a failed native handshake — a faked HTTP boundary cannot tell "native failed, then bridged" apart from "native was never attempted", so the bridge collaborator is the observable under test. The caller-visible half (client socket never closed, never with 1011) is asserted below.
         self,
     ):
         """
@@ -2846,7 +2846,7 @@ class TestNativeWebSocketUrlConstruction:
         fake_managed_handler.run = AsyncMock()
         fake_managed_handler_cls = MagicMock(return_value=fake_managed_handler)
 
-        with patch("websockets.connect", FakeConnect), patch(
+        with patch("websockets.connect", FakeConnect), patch(  # test-quality-ok: the bridge class is the seam that tells "native failed, then bridged" apart from "native never tried"; a faked HTTP boundary cannot distinguish them. Client-observable half asserted below.
             "litellm.responses.streaming_iterator.ManagedResponsesWebSocketHandler",
             fake_managed_handler_cls,
         ):
@@ -2863,4 +2863,9 @@ class TestNativeWebSocketUrlConstruction:
         fake_managed_handler_cls.assert_called_once()
         assert fake_managed_handler_cls.call_args.kwargs["model"] == "gpt-5.5"
         fake_managed_handler.run.assert_awaited_once()
+        # The caller-observable regression: before the fix the client's already-accepted
+        # socket was closed with 1011 ("server rejected WebSocket connection: HTTP 404").
         mock_ws.close.assert_not_awaited()
+        assert not [
+            call for call in mock_ws.close.await_args_list if 1011 in call.args or call.kwargs.get("code") == 1011
+        ], "client socket must never be closed with 1011 after a native handshake failure"
