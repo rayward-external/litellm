@@ -18,6 +18,21 @@ import os
 import httpx
 import pytest
 
+# FORK PATCH (rayward-internal/llm-gateway-infra#645): Responses WebSocket mode
+# is not served on this fork — the @router.websocket decorators are removed from
+# litellm/proxy/response_api_endpoints/endpoints.py, so ws://<proxy>/v1/responses
+# now fails the handshake with HTTP 403 by design. Both tests below call
+# pytest.fail() on a connection error ("Ensure proxy is running"), so they would
+# report a deliberate design decision as an infrastructure outage rather than
+# skipping. Skipped rather than deleted so restoring the decorators restores the
+# coverage with them.
+#
+# REMOVAL CONDITION: drop this skip together with the decorators' restoration.
+pytestmark = pytest.mark.skip(
+    reason="Responses WebSocket mode is disabled on this fork "
+    "(rayward-internal/llm-gateway-infra#645); see .github/fork-patches.txt"
+)
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 PROXY_BASE_URL = os.environ.get("LITELLM_PROXY_BASE_URL", "ws://0.0.0.0:4000")
 PROXY_MASTER_KEY = os.environ.get("LITELLM_PROXY_KEY", "sk-1234")

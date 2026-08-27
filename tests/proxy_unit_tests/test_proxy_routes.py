@@ -11,6 +11,7 @@ import logging
 
 import pytest
 from fastapi import Request
+from fastapi.routing import APIRoute, APIWebSocketRoute
 from starlette.datastructures import URL, Headers, QueryParams
 
 import litellm
@@ -89,6 +90,34 @@ def test_routes_on_litellm_proxy():
             ), f"Wildcard pattern {route} requires base path {base_path} to exist"
         else:
             assert route in _all_routes
+
+
+@pytest.mark.parametrize("path", ["/v1/responses", "/responses"])
+def test_responses_api_does_not_register_websocket_mode(path):
+    """FORK PATCH GUARD (rayward-internal/llm-gateway-infra#645).
+
+    Responses WebSocket mode is unusable on our deployment, so the
+    ``@router.websocket`` decorators are removed from
+    ``responses_websocket_endpoint``. Both aliases upstream decorates must stay
+    unregistered, and the HTTPS POST route must survive on each of them.
+
+    An unrouted websocket scope makes starlette close before ``accept()``,
+    which uvicorn turns into a definitive ``HTTP 403`` on the handshake — no
+    ``101`` is ever sent, so a client cannot see a session open and then die.
+
+    A ``-X theirs`` upstream sync restores those decorators with no conflict.
+    When this test goes red, RE-APPLY the deletion; never flip the assertion.
+    See ``.github/fork-patches.txt``.
+    """
+    responses_routes = [route for route in app.routes if getattr(route, "path", None) == path]
+
+    assert responses_routes, f"{path} is not registered at all"
+    assert any(
+        isinstance(route, APIRoute) and "POST" in route.methods for route in responses_routes
+    ), f"HTTPS POST {path} must remain available"
+    assert not any(
+        isinstance(route, APIWebSocketRoute) for route in responses_routes
+    ), f"{path} must not register a WebSocket route"
 
 
 @pytest.mark.parametrize(
