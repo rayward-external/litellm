@@ -3,7 +3,7 @@ import json
 import os
 import ssl
 from collections.abc import AsyncIterator, Coroutine, Iterator, Mapping, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from functools import lru_cache
 from types import MappingProxyType, ModuleType
 from typing import TYPE_CHECKING, Any, Final, Literal, Optional, TypedDict, TypeVar, Union, cast, get_type_hints
@@ -6478,7 +6478,44 @@ class BaseLLMHTTPHandler:
                 ) as backend:
                     yield backend
 
-            async with _backend_connection() as backend_ws:
+            async with AsyncExitStack() as backend_stack:
+                try:
+                    backend_ws: Final = await backend_stack.enter_async_context(_backend_connection())
+                except Exception as handshake_exc:  # noqa: BLE001  # any handshake failure (bad status, DNS, TLS, timeout) must fall back to the managed bridge, not just InvalidStatus
+                    # The native upstream never completed the WebSocket handshake
+                    # (e.g. this deployment doesn't expose a wss:// Responses
+                    # endpoint, or a transient network failure). Our own client
+                    # already got its 101 from `responses_websocket_endpoint` but
+                    # has not received a single frame yet, so bridging through
+                    # the HTTP-backed managed handler is strictly better than
+                    # closing the client connection with 1011.
+                    verbose_logger.warning(
+                        "Responses WebSocket: native upstream handshake failed for "
+                        "model=%s (%s); falling back to the managed bridge",
+                        model,
+                        handshake_exc,
+                    )
+                    from litellm.responses.streaming_iterator import (
+                        ManagedResponsesWebSocketHandler,
+                    )
+
+                    fallback_handler: Final = ManagedResponsesWebSocketHandler(
+                        websocket=websocket,
+                        model=model,
+                        logging_obj=logging_obj,
+                        user_api_key_dict=user_api_key_dict,
+                        litellm_metadata=litellm_metadata,
+                        api_key=api_key,
+                        api_base=api_base,
+                        timeout=timeout,
+                        custom_llm_provider=custom_llm_provider,
+                        first_message=first_message,
+                        quota_callbacks=_ws_quota_callbacks,
+                        **kwargs,
+                    )
+                    await fallback_handler.run()
+                    return
+
                 _request_data: Final[dict[str, object]] = {}
                 if litellm_metadata:
                     _request_data["litellm_metadata"] = litellm_metadata
@@ -6528,9 +6565,6 @@ class BaseLLMHTTPHandler:
                 )
                 await streaming.bidirectional_forward()
 
-        except websockets.exceptions.InvalidStatusCode as e:
-            verbose_logger.exception("Error connecting to responses WS backend: %s", e)
-            await websocket.close(code=e.status_code, reason=_redact_string(str(e)))
         except Exception as e:
             verbose_logger.exception("Error in responses WS: %s", e)
             try:

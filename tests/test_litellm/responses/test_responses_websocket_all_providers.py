@@ -128,6 +128,47 @@ class TestResponsesAPIWebSocketSupport:
 
         assert websocket_handler.await_args.kwargs["api_key"] == "explicit-api-key"
 
+    @pytest.mark.asyncio
+    async def test_bedrock_websocket_does_not_leak_openai_key_as_bearer_token(
+        self, monkeypatch
+    ):
+        """
+        Regression test for rayward-internal/llm-gateway-infra#645.
+
+        A Bedrock deployment carries no `api_key` of its own (boto3 reads AWS
+        credentials from the environment/IAM role), so `_aresponses_websocket`
+        must leave `resolved_api_key` at `None` for it, exactly like the HTTP
+        path leaves `litellm_params.api_key` at `None` for bedrock.
+        `bedrock/base_aws_llm.py`'s `get_request_headers` treats ANY non-None
+        `api_key` as an AWS bearer token and skips SigV4 entirely, so a
+        left-over generic fallback (previously `litellm.api_key or
+        litellm.openai_key or get_secret_str("OPENAI_API_KEY")`) here fails
+        Bedrock with "Invalid API Key format: Must start with pre-defined
+        prefix".
+        """
+        from unittest.mock import AsyncMock
+
+        import litellm
+        from litellm.responses import main as responses_main
+
+        websocket_handler = AsyncMock()
+        monkeypatch.setattr(litellm, "api_key", None)
+        monkeypatch.setattr(litellm, "openai_key", None)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-should-never-reach-bedrock")
+        monkeypatch.setattr(
+            responses_main.base_llm_http_handler,
+            "async_responses_websocket",
+            websocket_handler,
+        )
+
+        await responses_main._aresponses_websocket.__wrapped__(
+            model="bedrock/anthropic.claude-haiku-4-5-v1:0",
+            websocket=MagicMock(),
+            litellm_logging_obj=MagicMock(),
+        )
+
+        assert websocket_handler.await_args.kwargs["api_key"] is None
+
     def test_xai_uses_managed_websocket(self):
         """XAI should use managed websocket handler"""
         config = XAIResponsesAPIConfig()
@@ -2753,3 +2794,78 @@ class TestNativeWebSocketUrlConstruction:
         mock_config.get_websocket_url.assert_called_once()
         _, call_kwargs = mock_config.get_websocket_url.call_args
         assert call_kwargs["litellm_params"]["api_version"] == "2025-04-01-preview"
+
+    @pytest.mark.asyncio
+    async def test_native_websocket_handshake_failure_falls_back_to_managed_bridge(  # test-quality-ok: the regression IS which internal path runs after a failed native handshake — a faked HTTP boundary cannot tell "native failed, then bridged" apart from "native was never attempted", so the bridge collaborator is the observable under test. The caller-visible half (client socket never closed, never with 1011) is asserted below.
+        self,
+    ):
+        """
+        Regression test for rayward-internal/llm-gateway-infra#645's "HTTP 404
+        during connection" row.
+
+        Azure exposes `supports_native_websocket() == True`, but our Azure
+        deployments don't expose a real `wss://` Responses endpoint, so the
+        handshake fails (websockets raises `InvalidStatus`, not the deprecated
+        `InvalidStatusCode` the old code caught, so it used to fall into the
+        generic `except Exception` and close the client's already-accepted
+        WebSocket with code 1011). The handshake failure must instead bridge
+        through `ManagedResponsesWebSocketHandler`, since the client hasn't
+        received a single frame yet and every other managed provider already
+        proves that bridge works end-to-end.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        class FakeConnect:
+            def __init__(self, url, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                raise Exception("server rejected WebSocket connection: HTTP 404")
+
+            async def __aexit__(self, *args):
+                pass
+
+        mock_config = MagicMock(spec=AzureOpenAIResponsesAPIConfig)
+        mock_config.supports_native_websocket.return_value = True
+        mock_config.get_websocket_url.return_value = (
+            "wss://myresource.cognitiveservices.azure.com/openai/v1/responses"
+        )
+        mock_config.model_in_websocket_url.return_value = False
+        mock_config.validate_environment.return_value = {}
+
+        mock_logging = MagicMock()
+        mock_logging.pre_call = MagicMock()
+
+        from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
+
+        handler = BaseLLMHTTPHandler()
+        mock_ws = MagicMock()
+        mock_ws.close = AsyncMock()
+
+        fake_managed_handler = MagicMock()
+        fake_managed_handler.run = AsyncMock()
+        fake_managed_handler_cls = MagicMock(return_value=fake_managed_handler)
+
+        with patch("websockets.connect", FakeConnect), patch(  # test-quality-ok: the bridge class is the seam that tells "native failed, then bridged" apart from "native never tried"; a faked HTTP boundary cannot distinguish them. Client-observable half asserted below.
+            "litellm.responses.streaming_iterator.ManagedResponsesWebSocketHandler",
+            fake_managed_handler_cls,
+        ):
+            await handler.async_responses_websocket(
+                model="gpt-5.5",
+                websocket=mock_ws,
+                logging_obj=mock_logging,
+                responses_api_provider_config=mock_config,
+                api_key="sk-azure-test",
+                api_base="https://myresource.cognitiveservices.azure.com",
+                custom_llm_provider="azure",
+            )
+
+        fake_managed_handler_cls.assert_called_once()
+        assert fake_managed_handler_cls.call_args.kwargs["model"] == "gpt-5.5"
+        fake_managed_handler.run.assert_awaited_once()
+        # The caller-observable regression: before the fix the client's already-accepted
+        # socket was closed with 1011 ("server rejected WebSocket connection: HTTP 404").
+        mock_ws.close.assert_not_awaited()
+        assert not [
+            call for call in mock_ws.close.await_args_list if 1011 in call.args or call.kwargs.get("code") == 1011
+        ], "client socket must never be closed with 1011 after a native handshake failure"
