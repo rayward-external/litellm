@@ -2140,6 +2140,21 @@ async def _aresponses_websocket(
     litellm_params: Final = GenericLiteLLMParams(**kwargs)
     litellm_params_dict: Final = get_litellm_params(**kwargs)
 
+    # The router (or a direct caller) may have already resolved
+    # custom_llm_provider onto the deployment's litellm_params -- e.g. Azure,
+    # Azure AI Foundry and Vertex deployments deliberately configure a BARE
+    # litellm_params.model (no "azure/"/"azure_ai/"/"vertex_ai/" prefix) and
+    # rely entirely on this separate field for routing (see
+    # gcp/modules/gateway_cloud_run/litellm.config.yaml.tmpl in
+    # llm-gateway-infra). Unlike aresponses()/responses(), which both accept
+    # custom_llm_provider as an explicit parameter and only call
+    # get_llm_provider when it is still None, this function used to always
+    # re-derive the provider from the bare model string alone, discarding an
+    # already-correct resolution. That silently mis-infers "openai" for a
+    # bare "gpt-5.5" (litellm's own OpenAI model-name heuristic) and raises
+    # an uncaught BadRequestError for a bare "kimi-k2.6" (no heuristic
+    # matches at all) -- passing it through here mirrors aresponses()'s own
+    # "custom_llm_provider is None" gate.
     (
         provider_model,
         _custom_llm_provider,
@@ -2147,6 +2162,7 @@ async def _aresponses_websocket(
         dynamic_api_base,
     ) = litellm.get_llm_provider(
         model=model,
+        custom_llm_provider=litellm_params.custom_llm_provider,
         api_base=api_base,
         api_key=api_key,
     )

@@ -169,6 +169,101 @@ class TestResponsesAPIWebSocketSupport:
 
         assert websocket_handler.await_args.kwargs["api_key"] is None
 
+    @pytest.mark.asyncio
+    async def test_azure_websocket_honors_router_resolved_custom_llm_provider(
+        self, monkeypatch
+    ):
+        """
+        Regression test for rayward-internal/llm-gateway-infra#650's Azure
+        WS-bridge 404.
+
+        Azure OpenAI deployments deliberately configure a BARE
+        litellm_params.model (no "azure/" prefix) and rely entirely on the
+        separate custom_llm_provider field for routing (see
+        gcp/modules/gateway_cloud_run/litellm.config.yaml.tmpl in
+        llm-gateway-infra: "Keep model_name and litellm_params.model bare").
+        The router already resolves and forwards custom_llm_provider="azure"
+        for such a deployment, but `_aresponses_websocket` used to call
+        `litellm.get_llm_provider(model=model, ...)` without it, forcing a
+        fresh re-derivation from the bare model string alone. "gpt-5.5"
+        matches litellm's own OpenAI model-name heuristic, so the connection
+        silently got provider="openai" and OpenAIResponsesAPIConfig instead
+        of Azure's -- an OpenAI-shaped request against an Azure api_base,
+        which Azure answers with `OpenAIException - 404 Resource not found`
+        (the exact string measured live 2026-08-27). Passing the
+        already-resolved custom_llm_provider through must keep it "azure".
+        """
+        from unittest.mock import AsyncMock
+
+        from litellm.responses import main as responses_main
+
+        websocket_handler = AsyncMock()
+        monkeypatch.setattr(
+            responses_main.base_llm_http_handler,
+            "async_responses_websocket",
+            websocket_handler,
+        )
+
+        await responses_main._aresponses_websocket.__wrapped__(
+            model="gpt-5.5",
+            websocket=MagicMock(),
+            api_base="https://myresource.openai.azure.com",
+            api_key="sk-azure-key",
+            api_version="2025-04-01-preview",
+            custom_llm_provider="azure",
+            litellm_logging_obj=MagicMock(),
+        )
+
+        assert websocket_handler.await_args.kwargs["custom_llm_provider"] == "azure"
+        assert isinstance(
+            websocket_handler.await_args.kwargs["responses_api_provider_config"],
+            AzureOpenAIResponsesAPIConfig,
+        )
+
+    @pytest.mark.asyncio
+    async def test_azure_ai_foundry_websocket_does_not_crash_on_bare_model_name(
+        self, monkeypatch
+    ):
+        """
+        Regression test for rayward-internal/llm-gateway-infra#650's
+        kimi-k2.6 "no frames at all" symptom.
+
+        Azure AI Foundry deployments use the same bare-model-name +
+        custom_llm_provider="azure_ai" config shape as Azure OpenAI (see
+        gcp/modules/gateway_cloud_run/litellm.config.yaml.tmpl in
+        llm-gateway-infra). Unlike "gpt-5.5", a bare model like "kimi-k2.6"
+        matches NONE of litellm.get_llm_provider's model-name heuristics, so
+        re-deriving the provider from scratch (ignoring the router's
+        already-resolved custom_llm_provider) raised an uncaught
+        `litellm.BadRequestError: LLM Provider NOT provided` before a single
+        WebSocket frame was ever sent -- measured live as "no frames at all".
+        Passing the already-resolved custom_llm_provider through must let
+        this connection set up without raising.
+        """
+        from unittest.mock import AsyncMock
+
+        from litellm.responses import main as responses_main
+
+        websocket_handler = AsyncMock()
+        monkeypatch.setattr(
+            responses_main.base_llm_http_handler,
+            "async_responses_websocket",
+            websocket_handler,
+        )
+
+        await responses_main._aresponses_websocket.__wrapped__(
+            model="kimi-k2.6",
+            websocket=MagicMock(),
+            api_base="https://rayward-foundry-east-aif.cognitiveservices.azure.com/models",
+            api_key="sk-foundry-key",
+            api_version="2024-05-01-preview",
+            custom_llm_provider="azure_ai",
+            litellm_logging_obj=MagicMock(),
+        )
+
+        assert websocket_handler.await_args.kwargs["custom_llm_provider"] == "azure_ai"
+        assert websocket_handler.await_args.kwargs["model"] == "kimi-k2.6"
+
     def test_xai_uses_managed_websocket(self):
         """XAI should use managed websocket handler"""
         config = XAIResponsesAPIConfig()
