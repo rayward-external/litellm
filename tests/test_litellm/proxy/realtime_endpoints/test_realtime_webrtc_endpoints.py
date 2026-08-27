@@ -20,6 +20,17 @@ from litellm.proxy.common_utils.encrypt_decrypt_utils import (
     encrypt_value_helper,
 )
 from litellm.proxy.realtime_endpoints.endpoints import (
+
+# FORK PATCH (rayward-internal/llm-gateway-infra#646): realtime_websocket_endpoint
+# now closes BEFORE accept() because no realtime-capable model is served on this
+# deployment. The four tests below drive the handler directly and assert the
+# upstream accept-then-check behaviour that no longer runs, so they are skipped
+# rather than deleted: restoring the handler restores them with it.
+# REMOVAL CONDITION: drop this mark together with the refusal block.
+_REALTIME_WS_DISABLED = pytest.mark.skip(
+    reason="Realtime WebSocket mode is disabled on this fork "
+    "(rayward-internal/llm-gateway-infra#646); see .github/fork-patches.txt"
+)
     _decode_realtime_token_payload,
     _encode_realtime_token_payload,
 )
@@ -750,6 +761,7 @@ async def test_transcription_sessions_rejects_disallowed_team_member_model_scope
         proxy_app.dependency_overrides.pop(user_api_key_auth, None)
 
 
+@_REALTIME_WS_DISABLED
 @pytest.mark.asyncio
 async def test_realtime_transcription_websocket_default_model_checks_key_scope():
     from litellm.proxy import proxy_server
@@ -773,6 +785,7 @@ async def test_realtime_transcription_websocket_default_model_checks_key_scope()
     assert "not allowed to access model" in close_kwargs["reason"]
 
 
+@_REALTIME_WS_DISABLED
 @pytest.mark.asyncio
 async def test_realtime_transcription_websocket_default_model_checks_team_scope():
     from litellm.proxy import proxy_server
@@ -815,6 +828,7 @@ async def test_realtime_transcription_websocket_default_model_checks_team_scope(
     assert "not allowed to access model" in close_kwargs["reason"]
 
 
+@_REALTIME_WS_DISABLED
 @pytest.mark.asyncio
 async def test_realtime_websocket_phase2_failure_sends_error_event_and_reasoned_close():
     """Regression for the realtime accept-then-silence hang: a phase-2 failure
@@ -874,6 +888,7 @@ async def test_realtime_websocket_phase2_failure_sends_error_event_and_reasoned_
     assert len(close_kwargs["reason"].encode("utf-8")) <= 123
 
 
+@_REALTIME_WS_DISABLED
 @pytest.mark.asyncio
 async def test_realtime_websocket_phase2_failure_on_closed_socket_does_not_escape():
     """The lower handler layer may have already closed the client socket before
