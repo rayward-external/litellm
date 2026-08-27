@@ -1,9 +1,9 @@
 {
   "reportAny": {
-    "limit": 17052
+    "limit": 18483
   },
   "reportArgumentType": {
-    "limit": 2571
+    "limit": 2582
   },
   "reportAssignmentType": {
     "limit": 318
@@ -12,7 +12,7 @@
     "limit": 483
   },
   "reportCallIssue": {
-    "limit": 112
+    "limit": 113
   },
   "reportConstantRedefinition": {
     "limit": 40
@@ -24,7 +24,7 @@
     "limit": 13
   },
   "reportExplicitAny": {
-    "limit": 5912
+    "limit": 5960
   },
   "reportFunctionMemberAccess": {
     "limit": 7
@@ -57,7 +57,7 @@
     "limit": 5655
   },
   "reportMissingTypeArgument": {
-    "limit": 15471
+    "limit": 15484
   },
   "reportMissingTypeStubs": {
     "limit": 40
@@ -84,7 +84,7 @@
     "limit": 21
   },
   "reportPrivateUsage": {
-    "limit": 1804
+    "limit": 1808
   },
   "reportRedeclaration": {
     "limit": 8
@@ -99,19 +99,19 @@
     "limit": 0
   },
   "reportUnknownArgumentType": {
-    "limit": 44435
+    "limit": 44528
   },
   "reportUnknownLambdaType": {
     "limit": 107
   },
   "reportUnknownMemberType": {
-    "limit": 38723
+    "limit": 38804
   },
   "reportUnknownParameterType": {
-    "limit": 19820
+    "limit": 19829
   },
   "reportUnknownVariableType": {
-    "limit": 30244
+    "limit": 30355
   },
   "reportUnnecessaryCast": {
     "limit": 118
@@ -135,7 +135,7 @@
     "limit": 21
   },
   "reportUnusedFunction": {
-    "limit": 147
+    "limit": 138
   },
   "reportUnusedImport": {
     "limit": 544
