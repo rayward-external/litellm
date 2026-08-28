@@ -18,6 +18,7 @@ from typing_extensions import TypeIs
 import litellm
 from litellm.constants import (
     LITELLM_MAX_STREAMING_DURATION_SECONDS,
+    LOGGING_WORKER_MAX_TIME_PER_COROUTINE,
     STREAM_SSE_DONE_STRING,
 )
 from litellm.exceptions import MidStreamFallbackError, RateLimitError
@@ -34,6 +35,9 @@ from litellm.responses.utils import ResponseAPILoggingUtils, ResponsesAPIRequest
 from litellm.types.llms.openai import (
     PART_UNION_TYPES,
     ResponseAPIUsage,
+    ResponseCompletedEvent,
+    ResponseFailedEvent,
+    ResponseIncompleteEvent,
     ResponsesAPIResponse,
     ResponsesAPIStreamEvents,
     ResponsesAPIStreamingResponse,
@@ -1452,6 +1456,24 @@ RESPONSES_WS_LOGGED_EVENT_TYPES: Final = [
 
 RESPONSES_WS_MASKABLE_TEXT_BLOCK_TYPES: Final = frozenset({"input_text", "output_text", "text"})
 
+# Terminal Responses API events that carry a final `response` object with
+# usage -- the only frames a completed/failed/incomplete turn can be costed
+# from. Maps the wire `type` string to the pydantic event class so each one
+# can be reconstructed and hand it to LiteLLMLoggingObj.dispatch_success_handlers,
+# which routes it through _get_assembled_streaming_response's existing
+# ResponseCompletedEvent/ResponseIncompleteEvent/ResponseFailedEvent branch
+# (litellm/litellm_core_utils/litellm_logging.py:3672-3673) for real cost/usage
+# computation -- rather than the raw event-list shape that branch cannot parse.
+RESPONSES_WS_TERMINAL_EVENT_CLASSES: Final[
+    Mapping[str, type[ResponseCompletedEvent | ResponseFailedEvent | ResponseIncompleteEvent]]
+] = MappingProxyType(
+    {  # mutable-ok: immediately frozen by MappingProxyType
+        "response.completed": ResponseCompletedEvent,
+        "response.failed": ResponseFailedEvent,
+        "response.incomplete": ResponseIncompleteEvent,
+    }
+)
+
 
 class ResponsesWebSocketStreaming:
     """
@@ -1495,6 +1517,16 @@ class ResponsesWebSocketStreaming:
         # response.create frame to prevent deployment-substitution attacks.
         self.authorized_model: str | None = authorized_model
         self.request_defaults: Mapping[str, object] = request_defaults or MappingProxyType({})
+        # Strong references to in-flight per-turn cost dispatch tasks
+        # (_dispatch_turn_cost). asyncio only holds a WEAK reference to a
+        # bare create_task() result -- per the stdlib docs, a task whose
+        # result is not retained anywhere can be garbage-collected mid-run.
+        # These tasks are now the ENTIRE billing path for the native WS
+        # bridge (rayward-internal/llm-gateway-infra#657), so losing one
+        # silently is the same bug in a new place. Retained here and drained
+        # with a bounded wait in bidirectional_forward's finally: before the
+        # connection tears down.
+        self._pending_cost_tasks: set[asyncio.Task] = set()  # mutable-ok: instance-owned task registry, entries removed via add_done_callback
 
     def _should_store_event(self, event_obj: Mapping[str, object]) -> bool:
         return event_obj.get("type") in RESPONSES_WS_LOGGED_EVENT_TYPES
@@ -1554,12 +1586,130 @@ class ResponsesWebSocketStreaming:
             self.logging_obj.pre_call(input=message, api_key="")
 
     async def _log_messages(self) -> None:
+        """Connection-close bookkeeping only. Per-turn cost/usage dispatch
+        happens in _dispatch_turn_cost, called from backend_to_client as each
+        terminal event (response.completed/failed/incomplete) arrives -- NOT
+        here. This used to ALSO dispatch self.messages (a raw list of stored
+        WS event dicts) as the "response" for the connection's logging_obj,
+        once, at connection close. That shape cannot be costed at all
+        (_get_assembled_streaming_response has no branch for a bare list, so
+        it silently computed $0 -- rayward-internal/llm-gateway-infra#657)
+        and, now that _dispatch_turn_cost costs every completed turn as it
+        happens, would ALSO double-count. Dropped entirely; only the input
+        message trace (harmless bookkeeping some loggers may read) remains.
+        """
         if not self.logging_obj:
             return
         if self.input_messages:
             self.logging_obj.model_call_details["messages"] = self.input_messages
-        if self.messages:
-            asyncio.create_task(self.logging_obj.dispatch_success_handlers(self.messages, prefer_async_handlers=True))
+
+    def _build_per_turn_logging_obj(self, model_name: str) -> LiteLLMLoggingObj:
+        """Fresh LiteLLMLoggingObj for ONE completed/failed/incomplete turn.
+
+        MUST be a new instance per turn, not the connection-level
+        self.logging_obj: dispatch_success_handlers's stream-success dedup
+        guard (model_call_details["has_dispatched_final_stream_success"],
+        set the first time _is_assembled_stream_success(result) is True for
+        a given logging_obj) silently drops every call after the first on a
+        shared object once stream=True -- verified by running a 3-turn
+        simulation against one shared Logging(stream=True) instance: only
+        turn 1 fired, kwargs showed has_dispatched_final_stream_success go
+        None -> True after it. A fresh Logging(...) per turn (mirroring what
+        litellm.utils.function_setup builds per real HTTP/managed-path
+        completion call) does not carry that guard's state across turns.
+
+        stream=True is required: _get_assembled_streaming_response
+        (litellm/litellm_core_utils/litellm_logging.py:3670-3672) returns
+        None outright when self.stream is not True, before it ever reaches
+        the ResponseCompletedEvent/ResponseIncompleteEvent/ResponseFailedEvent
+        branch that computes real cost.
+
+        litellm_metadata mirrors self.request_data["litellm_metadata"] (the
+        SAME connection-level dict _build_litellm_metadata_for_ws built from
+        add_litellm_data_to_request's user_api_key-carrying metadata --
+        litellm/responses/main.py:2085-2090) into BOTH litellm_params
+        "metadata" and "litellm_metadata", exactly like
+        litellm.utils.function_setup does for a real call
+        (litellm/utils.py:1143-1154), so _PROXY_track_cost_callback and the
+        active rate limiter attribute this turn's cost/usage to the right key.
+        """
+        start_time: Final = datetime.now()  # noqa: DTZ005  # naive datetime, matching every other LiteLLMLoggingObj start_time in this file (e.g. line 206, 426)
+        turn_logging_obj: Final = LiteLLMLoggingObj(
+            model=model_name,
+            messages=[],  # mutable-ok: this turn's own text lives in the typed event handed to dispatch_success_handlers, not here
+            stream=True,
+            call_type=CallTypes.aresponses_websocket.value,
+            start_time=start_time,
+            litellm_call_id=str(uuid.uuid4()),
+            function_id="ResponsesWebSocketStreaming._dispatch_turn_cost",
+        )
+        _raw_turn_metadata: Final = self.request_data.get("litellm_metadata")
+        turn_metadata: Final[dict[str, object]] = (  # mutable-ok: copied so per-turn mutation by downstream callbacks never leaks back into self.request_data
+            dict(_raw_turn_metadata) if isinstance(_raw_turn_metadata, dict) else {}  # mutable-ok: see above
+        )
+        turn_logging_obj.update_environment_variables(
+            model=model_name,
+            user=None,
+            optional_params={},  # mutable-ok: no optional params to carry for a cost-only synthetic dispatch
+            litellm_params={  # mutable-ok: built fresh per turn, matching function_setup's own litellm_params construction
+                "metadata": turn_metadata,
+                "litellm_metadata": turn_metadata,
+            },
+        )
+        return turn_logging_obj
+
+    def _dispatch_turn_cost(self, output_masked_str: str) -> None:
+        """Cost and log ONE completed/failed/incomplete turn as it happens.
+
+        Reads output_masked_str -- the SAME string already sent to the
+        client (post output-masking) -- so a masked text block never gets
+        billed as if it were the unmasked original, and no event is ever
+        parsed or forwarded before this reads it. Masking only rewrites text
+        content, never the response's usage object, so read-after-mask does
+        not change what gets costed either way; ordering is kept this way
+        purely so this never races ahead of what the client actually saw.
+        """
+        try:
+            evt_obj: Final = _load_json_object(output_masked_str)
+        except (json.JSONDecodeError, TypeError) as exc:
+            # A terminal frame we cannot even parse as JSON is a silently
+            # unbilled turn -- the exact failure class rayward-internal/
+            # llm-gateway-infra#657 is about. Warn (not debug) so this is
+            # visible instead of repeating the original bug in a new place.
+            verbose_logger.warning(
+                "ResponsesWebSocketStreaming: could not parse a WS frame for cost logging, "
+                "this turn will NOT be billed: %s",
+                exc,
+            )
+            return
+        event_type: Final = evt_obj.get("type") if _is_json_object(evt_obj) else None
+        event_cls: Final = RESPONSES_WS_TERMINAL_EVENT_CLASSES.get(event_type) if isinstance(event_type, str) else None
+        if event_cls is None:
+            return
+        try:
+            typed_event: Final = event_cls.model_validate(evt_obj)
+        except Exception as exc:  # noqa: BLE001  # a malformed/unexpected terminal-event shape must never crash frame forwarding; skip costing this turn and keep the connection alive
+            verbose_logger.warning(
+                "ResponsesWebSocketStreaming: could not build %s for cost logging, "
+                "this turn will NOT be billed: %s",
+                event_type,
+                exc,
+            )
+            return
+        model_name: Final = typed_event.response.model or self.authorized_model or ""
+        turn_logging_obj: Final = self._build_per_turn_logging_obj(model_name)
+        # Retain a strong reference (see self._pending_cost_tasks in __init__)
+        # and self-discard on completion -- create_task() alone leaves this
+        # task reachable only via the event loop's WEAK reference, so it can
+        # be garbage-collected mid-run per asyncio's own documentation. These
+        # tasks carry the entire billing path for this code path; unowned is
+        # not acceptable here. Drained with a bounded wait in
+        # bidirectional_forward's finally: before the connection tears down.
+        cost_task: Final = asyncio.create_task(
+            turn_logging_obj.dispatch_success_handlers(typed_event, prefer_async_handlers=True)
+        )
+        self._pending_cost_tasks.add(cost_task)
+        cost_task.add_done_callback(self._pending_cost_tasks.discard)
 
     async def backend_to_client(self) -> None:
         """Forward events from backend WebSocket to the client."""
@@ -1600,6 +1750,12 @@ class ResponsesWebSocketStreaming:
                 # Log the output-masked form so PII redacted by apply_to_output
                 # guardrails does not appear in success logs.
                 self._store_event(output_masked_str)
+
+                # Cost/log this turn now, from the SAME (already masked)
+                # string just stored above -- not at connection close (see
+                # _log_messages). A no-op for every event type except the
+                # three terminal ones (response.completed/failed/incomplete).
+                self._dispatch_turn_cost(output_masked_str)
 
                 await self.websocket.send_text(output_masked_str)
 
@@ -1978,6 +2134,44 @@ class ResponsesWebSocketStreaming:
         except Exception as e:
             verbose_logger.debug("Responses WS client_to_backend ended: %s", e)
 
+    async def _drain_pending_cost_tasks(self) -> None:
+        """Wait (bounded) for every in-flight per-turn cost dispatch
+        (self._pending_cost_tasks, populated by _dispatch_turn_cost) before
+        the connection tears down. Call only once nothing can add MORE tasks
+        to the set (i.e. after backend_to_client has stopped running) --
+        otherwise this could return while a fresh dispatch is still being
+        registered.
+
+        These tasks are the entire billing path for this code path
+        (rayward-internal/llm-gateway-infra#657); returning without waiting on
+        them risks the exact teardown-before-write-lands gap that motivated
+        retaining them in the first place, e.g. Cloud Run scaling the
+        instance down (we run on Cloud Run and scale to zero) or a deploy
+        killing this coroutine's task mid-flight right after the client's
+        final response.completed -- the largest, last turn of the session,
+        with the least time to flush.
+
+        Bounded, not indefinite: a hung callback (a stuck DB write, a slow
+        webhook) must never wedge connection teardown, which is exactly the
+        failure mode a bound exists to prevent. Reuses
+        LOGGING_WORKER_MAX_TIME_PER_COROUTINE (litellm/constants.py) -- the
+        same env-overridable per-coroutine budget the rest of the SDK already
+        applies to one logging dispatch via GLOBAL_LOGGING_WORKER -- rather
+        than inventing a second, bespoke constant for what is the same kind
+        of wait.
+        """
+        if not self._pending_cost_tasks:
+            return
+        pending_tasks: Final = tuple(self._pending_cost_tasks)
+        _done, still_pending = await asyncio.wait(pending_tasks, timeout=LOGGING_WORKER_MAX_TIME_PER_COROUTINE)
+        if still_pending:
+            verbose_logger.warning(
+                "ResponsesWebSocketStreaming: %d turn cost dispatch(es) did not "
+                "finish within %.0fs of connection teardown; may be unbilled",
+                len(still_pending),
+                LOGGING_WORKER_MAX_TIME_PER_COROUTINE,
+            )
+
     async def bidirectional_forward(self) -> None:
         """Run both forwarding directions concurrently."""
         forward_task: Final = asyncio.create_task(self.backend_to_client())
@@ -1992,6 +2186,10 @@ class ResponsesWebSocketStreaming:
                     await forward_task
                 except asyncio.CancelledError:
                     pass
+            # forward_task is done by this point, so no NEW cost tasks can be
+            # added -- self._pending_cost_tasks is the complete set for the
+            # connection.
+            await self._drain_pending_cost_tasks()
             try:
                 await self.backend_ws.close()
             except Exception:
