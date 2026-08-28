@@ -4129,6 +4129,230 @@
           ]
         }
       },
+      "/v1/messages/batches": {
+        "get": {
+          "operationId": "list_message_batches_v1_messages_batches_get",
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              },
+              "description": "Successful Response"
+            }
+          },
+          "security": [
+            {
+              "APIKeyHeader": []
+            }
+          ],
+          "summary": "List Message Batches",
+          "tags": [
+            "anthropic_passthrough"
+          ]
+        },
+        "post": {
+          "operationId": "create_message_batch_v1_messages_batches_post",
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              },
+              "description": "Successful Response"
+            }
+          },
+          "security": [
+            {
+              "APIKeyHeader": []
+            }
+          ],
+          "summary": "Create Message Batch",
+          "tags": [
+            "anthropic_passthrough"
+          ]
+        }
+      },
+      "/v1/messages/batches/{batch_id}": {
+        "delete": {
+          "operationId": "delete_message_batch_v1_messages_batches__batch_id__delete",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "batch_id",
+              "required": true,
+              "schema": {
+                "title": "Batch Id",
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "security": [
+            {
+              "APIKeyHeader": []
+            }
+          ],
+          "summary": "Delete Message Batch",
+          "tags": [
+            "anthropic_passthrough"
+          ]
+        },
+        "get": {
+          "operationId": "retrieve_message_batch_v1_messages_batches__batch_id__get",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "batch_id",
+              "required": true,
+              "schema": {
+                "title": "Batch Id",
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "security": [
+            {
+              "APIKeyHeader": []
+            }
+          ],
+          "summary": "Retrieve Message Batch",
+          "tags": [
+            "anthropic_passthrough"
+          ]
+        }
+      },
+      "/v1/messages/batches/{batch_id}/cancel": {
+        "post": {
+          "operationId": "cancel_message_batch_v1_messages_batches__batch_id__cancel_post",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "batch_id",
+              "required": true,
+              "schema": {
+                "title": "Batch Id",
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "security": [
+            {
+              "APIKeyHeader": []
+            }
+          ],
+          "summary": "Cancel Message Batch",
+          "tags": [
+            "anthropic_passthrough"
+          ]
+        }
+      },
+      "/v1/messages/batches/{batch_id}/results": {
+        "get": {
+          "operationId": "message_batch_results_v1_messages_batches__batch_id__results_get",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "batch_id",
+              "required": true,
+              "schema": {
+                "title": "Batch Id",
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "security": [
+            {
+              "APIKeyHeader": []
+            }
+          ],
+          "summary": "Message Batch Results",
+          "tags": [
+            "anthropic_passthrough"
+          ]
+        }
+      },
       "/v1/messages/count_tokens": {
         "post": {
           "description": "Count tokens for Anthropic Messages API format.\n\nThis endpoint follows the Anthropic Messages API token counting specification.\nIt accepts the same parameters as the /v1/messages endpoint but returns\ntoken counts instead of generating a response.\n\nExample usage:\n```\ncurl -X POST \"http://localhost:4000/v1/messages/count_tokens?beta=true\"       -H \"Content-Type: application/json\"       -H \"Authorization: Bearer your-key\"       -d '{\n    \"model\": \"claude-3-sonnet-20240229\",\n    \"messages\": [{\"role\": \"user\", \"content\": \"Hello Claude!\"}]\n  }'\n```\n\nReturns: {\"input_tokens\": <number>}",
