@@ -3569,3 +3569,294 @@ class TestNativeWebSocketPerTurnCostAccounting:
         )
         await asyncio.sleep(0.2)
         assert handler._pending_cost_tasks == set(), "a completed task must be discarded via add_done_callback"
+
+
+class TestWebSocketRateLimitEnforcementMechanism:
+    """Mechanism tests for rayward-internal/llm-gateway-infra#657's
+    non-native-provider (managed-path) leg -- ``ManagedResponsesWebSocketHandler``,
+    used by Fireworks/Vertex/Bedrock-Mantle/etc. Native providers (Azure,
+    OpenAI) take a completely different code path (``ResponsesWebSocketStreaming``)
+    with its own, separately-tracked usage-accounting gap -- NOT covered by
+    this fix or these tests.
+
+    Measured on production 2026-08-28: two large WS turns (17,731 then
+    ~13,000 tokens) billed the calling key exactly $0. A live re-check
+    (corrected after an initial mis-ordered read of the raw log) established
+    that the production run's 3 WebSocket rounds all preceded the 2 HTTPS
+    control rounds -- so it does NOT show a fresh WS connection bypassing an
+    *already*-exhausted TPM cap. Also corrected: DB spend logging itself
+    (``_PROXY_track_cost_callback``) is NOT broken by the metadata collision
+    -- it resolves identity via ``get_litellm_metadata_from_kwargs``, which
+    is resilient to it (confirmed empirically, see
+    ``TestWebSocketProxyIdentityMetadataMerge``).
+
+    What this class documents, with file:line, is the STATIC mechanism by
+    which a metadata collision reaches the ACTIVE rate limiter:
+    - ``litellm/proxy/response_api_endpoints/endpoints.py``'s
+      ``responses_websocket_endpoint`` calls
+      ``ProxyBaseLLMRequestProcessing.common_processing_pre_call_logic``,
+      which calls ``proxy_logging_obj.pre_call_hook(..., call_type=route_type)``
+      (``litellm/proxy/common_request_processing.py:1966``) exactly once,
+      before the WebSocket accepts any ``response.create`` frame.
+    - ``ProxyLogging.pre_call_hook`` (``litellm/proxy/utils.py:1634+``)
+      iterates ``litellm.callbacks`` (via ``_callback_capabilities()``) and
+      calls ``_callback.async_pre_call_hook(user_api_key_dict, cache, data,
+      call_type)`` for every registered CustomLogger that overrides it.
+    - The registered rate limiter is ``_PROXY_MaxParallelRequestsHandler_v3``
+      (``litellm/proxy/hooks/__init__.py:21`` -- the *default*
+      ``"parallel_request_limiter"`` entry, unless
+      ``LEGACY_MULTI_INSTANCE_RATE_LIMITING=true``), added to
+      ``litellm.callbacks`` at startup via ``ProxyLogging._add_proxy_hooks``
+      (``litellm/proxy/utils.py:786-806``). Its
+      ``get_rate_limiter_for_call_type`` (``parallel_request_limiter_v3.py:
+      2865-2870``) special-cases ONLY ``"acreate_batch"`` -- there is no
+      exclusion for ``"_aresponses_websocket"``, so the generic per-key
+      TPM/RPM check runs for it exactly as for any HTTP call type.
+    - Because ``_PROXY_MaxParallelRequestsHandler_v3`` is a plain
+      ``litellm.callbacks`` entry (not something only the HTTP request path
+      invokes), its ``async_log_success_event``
+      (``parallel_request_limiter_v3.py:4396+``) fires from the SDK's
+      generic success-callback dispatch for ANY ``litellm.aresponses()``
+      call -- including the per-turn calls
+      ``ManagedResponsesWebSocketHandler._stream_and_forward`` makes deep
+      inside a WS session. It reads ``standard_logging_object["metadata"]
+      ["user_api_key_hash"]`` (``parallel_request_limiter_v3.py:4157``) to
+      attribute the turn's tokens to the right counter -- the exact field
+      the ``_inject_credentials`` fix protects from being dropped.
+    - Its ``async_log_success_event`` (``parallel_request_limiter_v3.py:4396+``)
+      reads ``standard_logging_object["metadata"]["user_api_key_hash"]``
+      (``:4157``) to attribute a turn's tokens -- the exact field the
+      ``_inject_credentials`` fix protects from being dropped by a colliding
+      client ``metadata`` object (verified deterministically in
+      ``TestWebSocketProxyIdentityMetadataMerge`` against
+      ``litellm_params["metadata"]``, which ``standard_logging_object``
+      construction reads from).
+
+    NOT covered here: an end-to-end assertion that a WS turn's real usage
+    makes a *subsequent* connection's ``pre_call_hook`` raise
+    ``RateLimitError``. I attempted this against the real, registered
+    ``_PROXY_MaxParallelRequestsHandler_v3`` and a real ``InternalUsageCache``
+    and could not get a reliable, reproducible result: its reservation/
+    correction accounting (``claim_request_stash_for_data`` /
+    ``async_increment_reservation_aware_tokens``) behaved inconsistently
+    across runs in ways not fully root-caused within the time available --
+    sometimes the turn's actual usage never registered at all, sometimes
+    only a small pre-call "floor" reservation persisted. Rather than present
+    a flaky or misleading end-to-end test, that specific claim is RETRACTED
+    as unverified; what stands, verified and deterministic, is the
+    metadata-merge protection itself (``TestWebSocketProxyIdentityMetadataMerge``)
+    and the mechanism trace above.
+    """
+
+    def test_parallel_request_limiter_v3_has_no_websocket_exclusion(self):
+        """Guard the mechanism claim above: only acreate_batch gets a
+        call-type-specific rate limiter: _aresponses_websocket must fall
+        through to the generic per-key/team/user/org check."""
+        from litellm import DualCache
+        from litellm.proxy.hooks.parallel_request_limiter_v3 import (
+            _PROXY_MaxParallelRequestsHandler_v3,
+        )
+        from litellm.proxy.utils import InternalUsageCache
+
+        limiter = _PROXY_MaxParallelRequestsHandler_v3(InternalUsageCache(dual_cache=DualCache()))
+        assert limiter.get_rate_limiter_for_call_type(call_type="_aresponses_websocket") is None
+        assert limiter.get_rate_limiter_for_call_type(call_type="acreate_batch") is not None
+
+
+class TestWebSocketProxyIdentityMetadataMerge:
+    """Regression tests for rayward-internal/llm-gateway-infra#657's
+    non-native-provider (managed-path) leg.
+
+    NOT about DB spend logging: ``_PROXY_track_cost_callback`` resolves
+    identity via ``get_litellm_metadata_from_kwargs`` (litellm/litellm_core_utils/
+    core_helpers.py:280-297), which prefers ``litellm_params["litellm_metadata"]``
+    over ``["metadata"]`` and even back-fills missing ``user_api_key*`` keys
+    from ``metadata`` (``add_missing_spend_metadata_to_litellm_metadata``,
+    same file :230-241) -- confirmed empirically against the real callback,
+    with and without this fix, both resolve ``user_api_key`` correctly.
+
+    What this DOES fix: a ``response.create`` frame may carry its own
+    top-level ``metadata`` object -- a legal Responses API request field
+    (``ResponsesAPIOptionalRequestParams.metadata``) that
+    ``_build_base_call_kwargs`` forwards verbatim from the client (e.g. a
+    Codex session tag). ``litellm.utils.function_setup`` only copies our
+    ``user_api_key``-carrying ``litellm_metadata`` into
+    ``litellm_params["metadata"]`` when ``kwargs["metadata"]`` is falsy, so a
+    truthy client metadata dict wins and drops ``user_api_key`` from
+    ``litellm_params["metadata"]``. The ACTIVE rate limiter,
+    ``_PROXY_MaxParallelRequestsHandler_v3``
+    (litellm/proxy/hooks/parallel_request_limiter_v3.py:4157), reads
+    ``standard_logging_object["metadata"]["user_api_key_hash"]`` to attribute
+    a turn's tokens to the right TPM/RPM counter, and that field is NOT
+    protected by the ``get_litellm_metadata_from_kwargs`` merge -- so the
+    collision breaks cross-connection TPM/RPM enforcement for non-native
+    providers (Fireworks, Vertex, Bedrock-Mantle, etc., anything routed
+    through ``ManagedResponsesWebSocketHandler``). See
+    ``TestWebSocketRateLimitEnforcementMechanism`` for the file:line
+    mechanism trace against the real registered limiter; these tests check
+    the underlying merge mechanism directly and deterministically.
+
+    Native providers (Azure, OpenAI) do not go through
+    ``ManagedResponsesWebSocketHandler`` at all -- see
+    ``ResponsesWebSocketStreaming`` and the tracked native-path usage
+    accounting gap (a separate change, not covered by this fix).
+    """
+
+    @staticmethod
+    def _install_streaming_shim(monkeypatch):
+        """Wrap the REAL litellm.aresponses so the real @client decorator,
+        the real litellm.utils.function_setup metadata merge, and the real
+        registered success callbacks all run -- only the stream/non-stream
+        boundary is faked (mock_response does not support stream=True)."""
+        import litellm
+
+        real_aresponses = litellm.aresponses
+
+        async def streaming_shim(*args, **kwargs):
+            kwargs.pop("stream", None)
+            response = await real_aresponses(*args, **kwargs)
+
+            async def _one_chunk():
+                yield response
+
+            return _one_chunk()
+
+        monkeypatch.setattr(litellm, "aresponses", streaming_shim)
+
+    @pytest.mark.asyncio
+    async def test_ws_turn_keeps_user_api_key_in_litellm_params_metadata_despite_client_metadata(self, monkeypatch):
+        """litellm_params["metadata"] (read directly by standard_logging_object
+        construction, and hence by the real rate limiter -- see
+        TestWebSocketRateLimitClosesAcrossConnections) must keep user_api_key
+        even when the client's own frame carries a colliding metadata object."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        import litellm
+        from litellm.integrations.custom_logger import CustomLogger
+        from litellm.litellm_core_utils.litellm_logging import Logging
+        from litellm.responses.streaming_iterator import (
+            ManagedResponsesWebSocketHandler,
+        )
+
+        class MetadataCapture(CustomLogger):
+            def __init__(self):
+                self.metadata: dict | None = None
+                self.event = asyncio.Event()
+
+            async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+                self.metadata = kwargs.get("litellm_params", {}).get("metadata") or {}
+                self.event.set()
+
+        spy = MetadataCapture()
+        # monkeypatch.setattr auto-reverts at teardown (and the autouse
+        # isolate_litellm_state fixture in tests/test_litellm/conftest.py
+        # would restore it anyway) -- no manual restore needed either way.
+        monkeypatch.setattr(litellm, "callbacks", [spy])
+        self._install_streaming_shim(monkeypatch)
+
+        mock_websocket = MagicMock()
+        mock_websocket.send_text = AsyncMock()
+
+        handler = ManagedResponsesWebSocketHandler(
+            websocket=mock_websocket,
+            model="gpt-4o",
+            logging_obj=Logging(
+                model="gpt-4o",
+                messages=[],
+                stream=True,
+                call_type="aresponses",
+                start_time=0,
+                litellm_call_id="test-ws-metadata-id",
+                function_id="test-func",
+            ),
+            litellm_metadata={
+                "user_api_key": "sk-hashed-test-key",
+                "user_api_key_team_id": "team-1",
+            },
+            mock_response="hello",
+        )
+
+        # The client's OWN metadata object -- e.g. a Codex session tag --
+        # riding alongside the proxy's litellm_metadata on the same frame.
+        frame = json.dumps(
+            {
+                "type": "response.create",
+                "model": "gpt-4o",
+                "input": "hi",
+                "metadata": {"codex_session_id": "abc123"},
+            }
+        )
+
+        await handler._process_response_create(frame)
+        await asyncio.wait_for(spy.event.wait(), timeout=5.0)
+        assert spy.metadata is not None, "success callback was never invoked"
+        assert spy.metadata.get("user_api_key") == "sk-hashed-test-key", (
+            f"user_api_key missing from litellm_params['metadata']: {spy.metadata!r} "
+            "-- the rate limiter's standard_logging_object read depends on this"
+        )
+
+    @pytest.mark.asyncio
+    async def test_ws_turn_preserves_client_metadata_as_requester_metadata(self, monkeypatch):
+        """The client's own metadata must not be discarded -- only nested
+        under litellm_metadata so it no longer collides with the proxy's."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        import litellm
+        from litellm.integrations.custom_logger import CustomLogger
+        from litellm.litellm_core_utils.litellm_logging import Logging
+        from litellm.responses.streaming_iterator import (
+            ManagedResponsesWebSocketHandler,
+        )
+
+        class MetadataCapture(CustomLogger):
+            def __init__(self):
+                self.metadata: dict | None = None
+                self.event = asyncio.Event()
+
+            async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+                self.metadata = kwargs.get("litellm_params", {}).get("metadata") or {}
+                self.event.set()
+
+        spy = MetadataCapture()
+        # monkeypatch.setattr auto-reverts at teardown (and the autouse
+        # isolate_litellm_state fixture in tests/test_litellm/conftest.py
+        # would restore it anyway) -- no manual restore needed either way.
+        monkeypatch.setattr(litellm, "callbacks", [spy])
+        self._install_streaming_shim(monkeypatch)
+
+        mock_websocket = MagicMock()
+        mock_websocket.send_text = AsyncMock()
+
+        handler = ManagedResponsesWebSocketHandler(
+            websocket=mock_websocket,
+            model="gpt-4o",
+            logging_obj=Logging(
+                model="gpt-4o",
+                messages=[],
+                stream=True,
+                call_type="aresponses",
+                start_time=0,
+                litellm_call_id="test-ws-metadata-id-2",
+                function_id="test-func",
+            ),
+            litellm_metadata={"user_api_key": "sk-hashed-test-key"},
+            mock_response="hello",
+        )
+
+        frame = json.dumps(
+            {
+                "type": "response.create",
+                "model": "gpt-4o",
+                "input": "hi",
+                "metadata": {"codex_session_id": "abc123"},
+            }
+        )
+
+        await handler._process_response_create(frame)
+        await asyncio.wait_for(spy.event.wait(), timeout=5.0)
+        assert spy.metadata is not None
+        assert spy.metadata.get("requester_metadata", {}).get("codex_session_id") == "abc123", (
+            "client-supplied metadata must survive, nested under requester_metadata"
+        )

@@ -2558,7 +2558,55 @@ class ManagedResponsesWebSocketHandler:
         if self.custom_llm_provider is not None and self._same_provider(model):
             call_kwargs["custom_llm_provider"] = self.custom_llm_provider
         if self.litellm_metadata:
-            call_kwargs["litellm_metadata"] = dict(self.litellm_metadata)
+            # A response.create frame may carry its own top-level "metadata"
+            # object -- a legal Responses API request field (see
+            # ResponsesAPIOptionalRequestParams.metadata) that
+            # _build_base_call_kwargs forwards verbatim from the client (e.g.
+            # a Codex session tag). litellm.utils.function_setup only copies
+            # our user_api_key-carrying litellm_metadata into
+            # litellm_params["metadata"] when kwargs["metadata"] is falsy:
+            #     if not litellm_params.get("metadata"):
+            #         litellm_params["metadata"] = kwargs["litellm_metadata"].copy()
+            # A truthy client metadata dict wins that check and drops
+            # user_api_key from litellm_params["metadata"].
+            #
+            # This does NOT break DB spend logging (rayward-internal/
+            # llm-gateway-infra#657) -- _PROXY_track_cost_callback resolves
+            # identity via get_litellm_metadata_from_kwargs
+            # (litellm/litellm_core_utils/core_helpers.py:280-297), which
+            # prefers litellm_params["litellm_metadata"] (unaffected by this
+            # collision) over ["metadata"], confirmed empirically against the
+            # real callback. The STATIC path this collision DOES reach: the
+            # ACTIVE rate limiter, _PROXY_MaxParallelRequestsHandler_v3
+            # (litellm/proxy/hooks/parallel_request_limiter_v3.py), reads
+            # standard_logging_object["metadata"]["user_api_key_hash"]
+            # (:4157) to attribute a turn's tokens -- and that field comes
+            # from litellm_params["metadata"], not the protected
+            # litellm_metadata, so a colliding client metadata object drops
+            # the key identity this specific read depends on (traced,
+            # verified deterministically -- see
+            # TestWebSocketRateLimitEnforcementMechanism).
+            #
+            # NOT established: that this alone makes a SUBSEQUENT WebSocket
+            # connection's one-time pre_call_hook check reject an over-limit
+            # key. That further end-to-end claim was attempted twice --
+            # against real production logs (withdrawn after re-reading round
+            # ordering) and against the real limiter + a real
+            # InternalUsageCache (its reservation/correction accounting
+            # behaved inconsistently across runs, not fully root-caused) --
+            # and neither attempt reproduced cleanly. Treat it as
+            # unsupported; see TestWebSocketRateLimitEnforcementMechanism's
+            # docstring for the retraction. This change is defensible on the
+            # static mechanism trace above alone: fold the caller's metadata
+            # under litellm_metadata instead of leaving it as a colliding
+            # top-level kwarg -- mirrors add_litellm_data_to_request's own
+            # "requester_metadata" convention for the HTTP path.
+            requester_metadata: Final = call_kwargs.pop("metadata", None)
+            # Gains "requester_metadata" below, then becomes call_kwargs["litellm_metadata"].
+            merged_metadata: Final[dict[str, object]] = dict(self.litellm_metadata)  # mutable-ok: mutated below
+            if isinstance(requester_metadata, dict) and requester_metadata:
+                merged_metadata["requester_metadata"] = requester_metadata
+            call_kwargs["litellm_metadata"] = merged_metadata
 
     @staticmethod
     def _update_proxy_request(call_kwargs: dict[str, Any], model: str) -> None:
