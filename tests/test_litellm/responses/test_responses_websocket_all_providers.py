@@ -7,6 +7,7 @@ Tests that:
 3. Providers without native websocket support use ManagedResponsesWebSocketHandler
 """
 
+import asyncio
 import json
 from unittest.mock import MagicMock
 
@@ -2966,6 +2967,7 @@ class TestNativeWebSocketUrlConstruction:
         ], "client socket must never be closed with 1011 after a native handshake failure"
 
 
+<<<<<<< HEAD
 class TestWebSocketRateLimitEnforcementMechanism:
     """Mechanism tests for rayward-internal/llm-gateway-infra#657's
     non-native-provider (managed-path) leg -- ``ManagedResponsesWebSocketHandler``,
@@ -3196,10 +3198,581 @@ class TestWebSocketProxyIdentityMetadataMerge:
         """The client's own metadata must not be discarded -- only nested
         under litellm_metadata so it no longer collides with the proxy's."""
         import asyncio
+=======
+class TestNativeWebSocketPerTurnCostAccounting:
+    """Regression tests for rayward-internal/llm-gateway-infra#657's native-provider
+    leg (Azure, OpenAI -- anything where responses_api_provider_config.supports_native_websocket()
+    is True, so llm_http_handler.py routes to ResponsesWebSocketStreaming instead of
+    ManagedResponsesWebSocketHandler).
+
+    Measured in production 2026-08-28 (real DB query against LiteLLM_SpendLogs,
+    2026-08-28 04:00-04:45 UTC window): 11 `_aresponses_websocket` rows, one per
+    WebSocket session (11 sessions, 200+ response.completed frames), every row
+    `spend=0`, `total_tokens=prompt_tokens=completion_tokens=0`,
+    `metadata.cost_breakdown` all-zero, `status='success'` (not skipped --
+    genuinely written as zero). Root cause: `_log_messages()` used to dispatch
+    `self.messages` -- a raw Python list of stored WS event dicts -- as the
+    "response" to `self.logging_obj.dispatch_success_handlers`, once, in
+    `backend_to_client`'s `finally:`, i.e. only at connection close.
+    `_get_assembled_streaming_response` (litellm_logging.py:3670-3693) has no
+    branch for a bare list and returns None, so response_cost/usage always
+    computed as 0/0 -- confirmed by driving the exact pre-fix code with a real
+    registered spy CustomLogger.
+
+    Fix: as each response.completed/failed/incomplete frame is forwarded (inside
+    backend_to_client's loop, not at close), build the correctly-typed
+    ResponseCompletedEvent/ResponseFailedEvent/ResponseIncompleteEvent from it
+    and dispatch it on a FRESH per-turn LiteLLMLoggingObj. This lands on
+    _get_assembled_streaming_response's EXISTING correct branch for those three
+    types (litellm_logging.py:3672-3673) -- no logging-layer change needed, only
+    the caller needs to build the right typed object and hand it a fresh
+    logging_obj.
+
+    Fresh-per-turn is not optional: reusing the connection-level logging_obj
+    across turns was verified (by running, not reading) to silently drop every
+    turn after the first once stream=True, because dispatch_success_handlers's
+    own dedup guard (model_call_details["has_dispatched_final_stream_success"])
+    is keyed on the logging_obj instance, not the call. See
+    test_three_turn_session_costs_exactly_three_turns below.
+
+    Row cardinality: this deliberately changes one row per SESSION into one row
+    per TURN. Verified safe: SpendLogs' primary key (request_id) prefers the
+    response's own `id` (get_spend_logs_id, spend_tracking_utils.py:190-201)
+    over litellm_call_id, and every real provider response.completed event
+    carries a genuinely distinct response id per turn -- and this fix ALSO
+    generates a fresh litellm_call_id per turn as a second independent source
+    of uniqueness. See test_distinct_turns_get_distinct_request_ids.
+    """
+
+    @staticmethod
+    def _register_spy_and_fanout(spy):
+        """Register *spy* the way production startup does (litellm.callbacks),
+        and perform the SAME litellm.callbacks -> litellm._async_success_callback
+        fan-out litellm.utils.function_setup performs on its first call per
+        process -- which, in the real endpoint, already happened once for the
+        connection at Phase 1 (common_processing_pre_call_logic) before any
+        per-turn dispatch. Restoration of litellm.callbacks (and
+        _async_success_callback) is handled by the autouse isolate_litellm_state
+        fixture (tests/test_litellm/conftest.py) -- do not add a manual restore
+        here or at call sites."""
+        import uuid as _uuid
+        from datetime import datetime as _dt
+
+        import litellm as _litellm
+        from litellm.utils import Rules as _Rules
+
+        _litellm.callbacks = [spy]
+        _litellm.utils.function_setup(
+            original_function="_aresponses_websocket",
+            rules_obj=_Rules(),
+            start_time=_dt.now(),
+            model="gpt-5.6-sol",
+            litellm_call_id=str(_uuid.uuid4()),
+        )
+
+    @staticmethod
+    def _completed_event(resp_id, total_tokens, model="gpt-5.6-sol", event_type="response.completed"):
+        return json.dumps(
+            {
+                "type": event_type,
+                "response": {
+                    "id": resp_id,
+                    "object": "response",
+                    "created_at": 0,
+                    "status": "completed" if event_type == "response.completed" else "incomplete",
+                    "model": model,
+                    "output": [
+                        {
+                            "type": "message",
+                            "id": f"msg_{resp_id}",
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "hi", "annotations": []}],
+                        }
+                    ],
+                    "usage": {
+                        "input_tokens": total_tokens // 2,
+                        "output_tokens": total_tokens - total_tokens // 2,
+                        "total_tokens": total_tokens,
+                    },
+                },
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_three_turn_session_costs_exactly_three_turns(self, monkeypatch):
+        """Fails before the fix (0 costed events -- $0 spend, matching production);
+        must show exactly 3, not 4 (a leftover close-time dispatch) or 6 (double
+        counting response.created alongside response.completed)."""
+        from unittest.mock import AsyncMock
+
+        import websockets.exceptions  # noqa: F401  (lazy submodule must be importable)
+
+        import litellm
+        from litellm.integrations.custom_logger import CustomLogger
+        from litellm.proxy._types import UserAPIKeyAuth
+
+        class Spy(CustomLogger):
+            def __init__(self):
+                self.events = []
+
+            async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+                sl = kwargs.get("standard_logging_object") or {}
+                self.events.append((sl.get("response_cost"), sl.get("total_tokens")))
+
+        spy = Spy()
+        self._register_spy_and_fanout(spy)
+
+        websocket = MagicMock()
+        websocket.send_text = AsyncMock()
+        backend_ws = MagicMock()
+        backend_ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"type": "response.created", "response": {"id": "resp_1", "status": "in_progress"}}),
+                self._completed_event("resp_1", 100),
+                json.dumps({"type": "response.created", "response": {"id": "resp_2", "status": "in_progress"}}),
+                self._completed_event("resp_2", 200),
+                json.dumps({"type": "response.created", "response": {"id": "resp_3", "status": "in_progress"}}),
+                self._completed_event("resp_3", 300),
+                Exception("stop"),
+            ]
+        )
+
+        user_api_key_dict = UserAPIKeyAuth(api_key="sk-native-3turn-key")
+        handler = _make_streaming(
+            websocket=websocket,
+            backend_ws=backend_ws,
+            user_api_key_dict=user_api_key_dict,
+            request_data={
+                "litellm_metadata": {
+                    "user_api_key": user_api_key_dict.api_key,
+                    "user_api_key_hash": user_api_key_dict.api_key,
+                }
+            },
+            authorized_model="gpt-5.6-sol",
+        )
+
+        await handler.backend_to_client()
+        await asyncio.sleep(0.3)
+
+        assert len(spy.events) == 3, f"expected exactly 3 costed turns, got {len(spy.events)}: {spy.events}"
+        costs, tokens = zip(*spy.events)
+        assert list(tokens) == [100, 200, 300], f"per-turn usage must be distinct and non-cumulative: {tokens}"
+        assert all(c > 0 for c in costs), f"every turn must be costed above $0: {costs}"
+        assert len(set(costs)) == 3, f"three distinct turns must produce three distinct costs: {costs}"
+
+    @pytest.mark.asyncio
+    async def test_response_failed_and_incomplete_are_also_costed(self, monkeypatch):
+        """A failed or incomplete turn still consumed real tokens and must still
+        be attributed -- not just response.completed."""
+        from unittest.mock import AsyncMock
+
+        import websockets.exceptions  # noqa: F401
+
+        import litellm
+        from litellm.integrations.custom_logger import CustomLogger
+        from litellm.proxy._types import UserAPIKeyAuth
+
+        class Spy(CustomLogger):
+            def __init__(self):
+                self.events = []
+
+            async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+                sl = kwargs.get("standard_logging_object") or {}
+                self.events.append((sl.get("response_cost"), sl.get("total_tokens")))
+
+        spy = Spy()
+        self._register_spy_and_fanout(spy)
+
+        websocket = MagicMock()
+        websocket.send_text = AsyncMock()
+        backend_ws = MagicMock()
+        backend_ws.recv = AsyncMock(
+            side_effect=[
+                self._completed_event("resp_failed_1", 50, event_type="response.failed"),
+                self._completed_event("resp_incomplete_1", 75, event_type="response.incomplete"),
+                Exception("stop"),
+            ]
+        )
+
+        user_api_key_dict = UserAPIKeyAuth(api_key="sk-native-failed-key")
+        handler = _make_streaming(
+            websocket=websocket,
+            backend_ws=backend_ws,
+            user_api_key_dict=user_api_key_dict,
+            request_data={
+                "litellm_metadata": {
+                    "user_api_key": user_api_key_dict.api_key,
+                    "user_api_key_hash": user_api_key_dict.api_key,
+                }
+            },
+            authorized_model="gpt-5.6-sol",
+        )
+
+        await handler.backend_to_client()
+        await asyncio.sleep(0.3)
+
+        assert len(spy.events) == 2, f"failed AND incomplete turns must both be costed: {spy.events}"
+        tokens = sorted(t for _, t in spy.events)
+        assert tokens == [50, 75]
+
+    @pytest.mark.asyncio
+    async def test_turn_cost_attributes_to_the_correct_key(self, monkeypatch):
+        """Verify key identity reaches the callback on the native path too --
+        this class builds request_data differently from the managed path
+        (llm_http_handler.py:6519-6521, litellm_metadata only if truthy), so it
+        is not safe to assume the managed-path fix's verification carries over."""
+        from unittest.mock import AsyncMock
+
+        import websockets.exceptions  # noqa: F401
+
+        import litellm
+        from litellm.integrations.custom_logger import CustomLogger
+        from litellm.proxy._types import UserAPIKeyAuth
+
+        class Spy(CustomLogger):
+            def __init__(self):
+                self.metadata = None
+
+            async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+                sl = kwargs.get("standard_logging_object") or {}
+                self.metadata = sl.get("metadata")
+
+        spy = Spy()
+        self._register_spy_and_fanout(spy)
+
+        websocket = MagicMock()
+        websocket.send_text = AsyncMock()
+        backend_ws = MagicMock()
+        backend_ws.recv = AsyncMock(side_effect=[self._completed_event("resp_key_1", 42), Exception("stop")])
+
+        user_api_key_dict = UserAPIKeyAuth(api_key="sk-native-attribution-key")
+        handler = _make_streaming(
+            websocket=websocket,
+            backend_ws=backend_ws,
+            user_api_key_dict=user_api_key_dict,
+            request_data={
+                "litellm_metadata": {
+                    "user_api_key": user_api_key_dict.api_key,
+                    "user_api_key_hash": user_api_key_dict.api_key,
+                    "requester_ip_address": "203.0.113.7",
+                }
+            },
+            authorized_model="gpt-5.6-sol",
+        )
+
+        await handler.backend_to_client()
+        await asyncio.sleep(0.3)
+
+        assert spy.metadata is not None, "success callback was never invoked"
+        assert spy.metadata.get("user_api_key_hash") == user_api_key_dict.api_key
+        assert spy.metadata.get("requester_ip_address") == "203.0.113.7", (
+            "requester_ip_address must thread through from the connection-level "
+            "litellm_metadata (add_litellm_data_to_request already sets it there); "
+            "the old once-at-close raw-list dispatch could not populate ANY "
+            "metadata field, including this one"
+        )
+
+    @pytest.mark.asyncio
+    async def test_distinct_turns_get_distinct_request_ids(self, monkeypatch):
+        """SpendLogs' primary key prefers response_obj["id"] over litellm_call_id
+        (get_spend_logs_id, spend_tracking_utils.py:190-201). Verify both are
+        independently distinct per turn -- a real constraint-violation risk if
+        either were reused across turns on the same connection."""
+        from unittest.mock import AsyncMock
+
+        import websockets.exceptions  # noqa: F401
+
+        import litellm
+        from litellm.integrations.custom_logger import CustomLogger
+        from litellm.proxy._types import UserAPIKeyAuth
+
+        class Spy(CustomLogger):
+            def __init__(self):
+                self.ids = []
+
+            async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+                self.ids.append((getattr(response_obj, "id", None), kwargs.get("litellm_call_id")))
+
+        spy = Spy()
+        self._register_spy_and_fanout(spy)
+
+        websocket = MagicMock()
+        websocket.send_text = AsyncMock()
+        backend_ws = MagicMock()
+        backend_ws.recv = AsyncMock(
+            side_effect=[
+                self._completed_event("resp_a", 10),
+                self._completed_event("resp_b", 20),
+                Exception("stop"),
+            ]
+        )
+
+        user_api_key_dict = UserAPIKeyAuth(api_key="sk-native-ids-key")
+        handler = _make_streaming(
+            websocket=websocket,
+            backend_ws=backend_ws,
+            user_api_key_dict=user_api_key_dict,
+            request_data={
+                "litellm_metadata": {
+                    "user_api_key": user_api_key_dict.api_key,
+                    "user_api_key_hash": user_api_key_dict.api_key,
+                }
+            },
+            authorized_model="gpt-5.6-sol",
+        )
+
+        await handler.backend_to_client()
+        await asyncio.sleep(0.3)
+
+        assert len(spy.ids) == 2
+        response_ids, call_ids = zip(*spy.ids)
+        assert len(set(response_ids)) == 2, f"response ids must be distinct per turn: {response_ids}"
+        assert len(set(call_ids)) == 2, f"litellm_call_id must be distinct per turn: {call_ids}"
+
+    @pytest.mark.asyncio
+    async def test_non_terminal_events_are_not_costed(self, monkeypatch):
+        """response.created and delta events carry no final usage and must
+        never trigger a dispatch."""
+        from unittest.mock import AsyncMock
+
+        import websockets.exceptions  # noqa: F401
+
+        import litellm
+        from litellm.integrations.custom_logger import CustomLogger
+        from litellm.proxy._types import UserAPIKeyAuth
+
+        class Spy(CustomLogger):
+            def __init__(self):
+                self.call_count = 0
+
+            async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+                self.call_count += 1
+
+        spy = Spy()
+        self._register_spy_and_fanout(spy)
+
+        websocket = MagicMock()
+        websocket.send_text = AsyncMock()
+        backend_ws = MagicMock()
+        backend_ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"type": "response.created", "response": {"id": "resp_1", "status": "in_progress"}}),
+                json.dumps({"type": "response.output_text.delta", "delta": "hi"}),
+                Exception("stop"),
+            ]
+        )
+
+        user_api_key_dict = UserAPIKeyAuth(api_key="sk-native-noncost-key")
+        handler = _make_streaming(
+            websocket=websocket,
+            backend_ws=backend_ws,
+            user_api_key_dict=user_api_key_dict,
+            request_data={
+                "litellm_metadata": {
+                    "user_api_key": user_api_key_dict.api_key,
+                    "user_api_key_hash": user_api_key_dict.api_key,
+                }
+            },
+            authorized_model="gpt-5.6-sol",
+        )
+
+        await handler.backend_to_client()
+        await asyncio.sleep(0.3)
+
+        assert spy.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_turn_cost_unaffected_by_output_pii_masking(self, monkeypatch):
+        """apply_to_output masking must not corrupt or block cost computation --
+        the masked (client-forwarded) text is what gets read, but usage/cost
+        come from the response's own usage object, never the text content."""
+        from unittest.mock import AsyncMock
+
+        import websockets.exceptions  # noqa: F401
+
+        import litellm
+        from litellm.integrations.custom_logger import CustomLogger
+        from litellm.proxy._types import UserAPIKeyAuth
+
+        class Spy(CustomLogger):
+            def __init__(self):
+                self.events = []
+
+            async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+                sl = kwargs.get("standard_logging_object") or {}
+                self.events.append((sl.get("response_cost"), sl.get("total_tokens")))
+
+        spy = Spy()
+        self._register_spy_and_fanout(spy)
+
+        guardrail = _FakeWSGuardrail()
+        websocket = MagicMock()
+        websocket.send_text = AsyncMock()
+        backend_ws = MagicMock()
+        backend_ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps(
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp_pii_1",
+                            "object": "response",
+                            "created_at": 0,
+                            "status": "completed",
+                            "model": "gpt-5.6-sol",
+                            "output": [
+                                {
+                                    "type": "message",
+                                    "id": "msg_pii_1",
+                                    "status": "completed",
+                                    "role": "assistant",
+                                    "content": [
+                                        {
+                                            "type": "output_text",
+                                            "text": "contact alice@example.com please",
+                                            "annotations": [],
+                                        }
+                                    ],
+                                },
+                            ],
+                            "usage": {"input_tokens": 50, "output_tokens": 60, "total_tokens": 110},
+                        },
+                    }
+                ),
+                Exception("stop"),
+            ]
+        )
+
+        user_api_key_dict = UserAPIKeyAuth(api_key="sk-native-pii-key")
+        handler = _make_streaming(
+            websocket=websocket,
+            backend_ws=backend_ws,
+            user_api_key_dict=user_api_key_dict,
+            request_data={
+                "litellm_metadata": {
+                    "user_api_key": user_api_key_dict.api_key,
+                    "user_api_key_hash": user_api_key_dict.api_key,
+                }
+            },
+            output_guardrail_callbacks=[guardrail],
+            authorized_model="gpt-5.6-sol",
+        )
+
+        await handler.backend_to_client()
+        await asyncio.sleep(0.3)
+
+        websocket.send_text.assert_awaited_once()
+        forwarded = json.loads(websocket.send_text.await_args[0][0])
+        forwarded_text = forwarded["response"]["output"][0]["content"][0]["text"]
+        assert "alice@example.com" not in forwarded_text, "client must receive the masked text"
+        assert forwarded_text == "contact <EMAIL_ADDRESS_1> please"
+
+        assert len(spy.events) == 1, "the masked turn must still be costed exactly once"
+        assert spy.events[0][1] == 110, "usage must come from the response's usage object, unaffected by masking"
+        assert spy.events[0][0] > 0
+
+    @pytest.mark.asyncio
+    async def test_drain_waits_for_a_turn_dispatched_just_before_teardown(self):
+        """Regression for the fire-and-forget task-ownership gap: the client
+        disconnects right after its final response.completed (the realistic
+        trigger is Cloud Run scaling the instance down, or a deploy, killing
+        an in-flight task -- not the event loop itself stopping, which a
+        pending asyncio task usually survives in production). Teardown must
+        drain self._pending_cost_tasks with a bounded wait, or the LAST
+        (often largest) turn of every session is the one most likely to lose
+        its billing.
+
+        Tests _drain_pending_cost_tasks directly rather than the full
+        bidirectional_forward orchestration: bidirectional_forward's
+        PRE-EXISTING (not introduced by this fix) "cancel forward_task if not
+        done" logic races against backend_to_client's own progress in a mock
+        setup with no real ordering guarantees, which would make an
+        integration-level version of this test flaky for reasons unrelated to
+        the drain itself. Deliberately asserts with NO extra sleep/await
+        after the drain call -- a test that slept afterwards would pass
+        whether or not the drain exists, which is exactly why the original
+        3-turn test (which does sleep) could not have caught this."""
+        import litellm
+        from litellm.integrations.custom_logger import CustomLogger
+        from litellm.proxy._types import UserAPIKeyAuth
+
+        class SlowSpy(CustomLogger):
+            """Simulates a success handler whose write has not landed yet
+            when the connection tears down -- e.g. an in-flight DB write."""
+
+            def __init__(self):
+                self.events = []
+
+            async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+                await asyncio.sleep(0.05)
+                sl = kwargs.get("standard_logging_object") or {}
+                self.events.append((sl.get("response_cost"), sl.get("total_tokens")))
+
+        spy = SlowSpy()
+        self._register_spy_and_fanout(spy)
+
+        user_api_key_dict = UserAPIKeyAuth(api_key="sk-native-teardown-key")
+        handler = _make_streaming(
+            websocket=MagicMock(),
+            backend_ws=MagicMock(),
+            user_api_key_dict=user_api_key_dict,
+            request_data={
+                "litellm_metadata": {
+                    "user_api_key": user_api_key_dict.api_key,
+                    "user_api_key_hash": user_api_key_dict.api_key,
+                }
+            },
+            authorized_model="gpt-5.6-sol",
+        )
+
+        # The connection's LAST turn, dispatched an instant before the
+        # (simulated) client disconnect / instance teardown.
+        handler._dispatch_turn_cost(self._completed_event("resp_final_turn", 999))
+        assert len(handler._pending_cost_tasks) == 1
+
+        # NO sleep here -- the assertions below must be satisfied by the
+        # drain itself, not by luck or a test delay.
+        await handler._drain_pending_cost_tasks()
+
+        assert len(spy.events) == 1, (
+            f"the final turn's cost dispatch must be drained, not lost at teardown: {spy.events}"
+        )
+        assert spy.events[0][1] == 999
+        assert spy.events[0][0] > 0
+        assert len(handler._pending_cost_tasks) == 0, "drained tasks must be discarded from the registry"
+
+    @pytest.mark.asyncio
+    async def test_bidirectional_forward_drains_pending_cost_tasks_before_returning(self):
+        """Wiring check: bidirectional_forward's finally: must actually call
+        the drain (not just exist as a dead method) before it returns."""
+        from unittest.mock import AsyncMock
+
+        websocket = MagicMock()
+        backend_ws = MagicMock()
+        backend_ws.recv = AsyncMock(side_effect=Exception("stop"))
+        backend_ws.close = AsyncMock()
+        websocket.receive_text = AsyncMock(side_effect=Exception("client disconnected"))
+
+        handler = _make_streaming(websocket=websocket, backend_ws=backend_ws)
+        handler._drain_pending_cost_tasks = AsyncMock()
+
+        await handler.bidirectional_forward()
+
+        handler._drain_pending_cost_tasks.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_pending_cost_tasks_hold_strong_references(self):
+        """_dispatch_turn_cost must retain the created task on the instance,
+        not just create_task() and let it go -- asyncio keeps only a weak
+        reference to a bare create_task() result, so an unretained task can
+        be garbage-collected mid-run."""
+>>>>>>> origin/litellm_internal_staging
         from unittest.mock import AsyncMock
 
         import litellm
         from litellm.integrations.custom_logger import CustomLogger
+<<<<<<< HEAD
         from litellm.litellm_core_utils.litellm_logging import Logging
         from litellm.responses.streaming_iterator import (
             ManagedResponsesWebSocketHandler,
@@ -3255,3 +3828,35 @@ class TestWebSocketProxyIdentityMetadataMerge:
         assert spy.metadata.get("requester_metadata", {}).get("codex_session_id") == "abc123", (
             "client-supplied metadata must survive, nested under requester_metadata"
         )
+=======
+        from litellm.proxy._types import UserAPIKeyAuth
+
+        class Spy(CustomLogger):
+            async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+                pass
+
+        spy = Spy()
+        self._register_spy_and_fanout(spy)
+
+        user_api_key_dict = UserAPIKeyAuth(api_key="sk-native-strongref-key")
+        handler = _make_streaming(
+            websocket=MagicMock(),
+            backend_ws=MagicMock(),
+            user_api_key_dict=user_api_key_dict,
+            request_data={
+                "litellm_metadata": {
+                    "user_api_key": user_api_key_dict.api_key,
+                    "user_api_key_hash": user_api_key_dict.api_key,
+                }
+            },
+            authorized_model="gpt-5.6-sol",
+        )
+
+        assert handler._pending_cost_tasks == set()
+        handler._dispatch_turn_cost(self._completed_event("resp_ref_1", 10))
+        assert len(handler._pending_cost_tasks) == 1, (
+            "the created task must be retained in self._pending_cost_tasks immediately"
+        )
+        await asyncio.sleep(0.2)
+        assert handler._pending_cost_tasks == set(), "a completed task must be discarded via add_done_callback"
+>>>>>>> origin/litellm_internal_staging
