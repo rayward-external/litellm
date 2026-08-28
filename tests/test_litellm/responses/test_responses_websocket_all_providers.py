@@ -3044,7 +3044,6 @@ class TestWebSocketRateLimitEnforcementMechanism:
     """
 
     def test_parallel_request_limiter_v3_has_no_websocket_exclusion(self):
-
         """Guard the mechanism claim above: only acreate_batch gets a
         call-type-specific rate limiter: _aresponses_websocket must fall
         through to the generic per-key/team/user/org check."""
@@ -3120,9 +3119,7 @@ class TestWebSocketProxyIdentityMetadataMerge:
         monkeypatch.setattr(litellm, "aresponses", streaming_shim)
 
     @pytest.mark.asyncio
-    async def test_ws_turn_keeps_user_api_key_in_litellm_params_metadata_despite_client_metadata(
-        self, monkeypatch
-    ):
+    async def test_ws_turn_keeps_user_api_key_in_litellm_params_metadata_despite_client_metadata(self, monkeypatch):
         """litellm_params["metadata"] (read directly by standard_logging_object
         construction, and hence by the real rate limiter -- see
         TestWebSocketRateLimitClosesAcrossConnections) must keep user_api_key
@@ -3142,15 +3139,15 @@ class TestWebSocketProxyIdentityMetadataMerge:
                 self.metadata: dict | None = None
                 self.event = asyncio.Event()
 
-            async def async_log_success_event(
-                self, kwargs, response_obj, start_time, end_time
-            ):
+            async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
                 self.metadata = kwargs.get("litellm_params", {}).get("metadata") or {}
                 self.event.set()
 
         spy = MetadataCapture()
-        original_callbacks = litellm.callbacks.copy() if litellm.callbacks else []
-        litellm.callbacks = [spy]
+        # monkeypatch.setattr auto-reverts at teardown (and the autouse
+        # isolate_litellm_state fixture in tests/test_litellm/conftest.py
+        # would restore it anyway) -- no manual restore needed either way.
+        monkeypatch.setattr(litellm, "callbacks", [spy])
         self._install_streaming_shim(monkeypatch)
 
         mock_websocket = MagicMock()
@@ -3186,21 +3183,16 @@ class TestWebSocketProxyIdentityMetadataMerge:
             }
         )
 
-        try:
-            await handler._process_response_create(frame)
-            await asyncio.wait_for(spy.event.wait(), timeout=5.0)
-            assert spy.metadata is not None, "success callback was never invoked"
-            assert spy.metadata.get("user_api_key") == "sk-hashed-test-key", (
-                f"user_api_key missing from litellm_params['metadata']: {spy.metadata!r} "
-                "-- the rate limiter's standard_logging_object read depends on this"
-            )
-        finally:
-            litellm.callbacks = original_callbacks
+        await handler._process_response_create(frame)
+        await asyncio.wait_for(spy.event.wait(), timeout=5.0)
+        assert spy.metadata is not None, "success callback was never invoked"
+        assert spy.metadata.get("user_api_key") == "sk-hashed-test-key", (
+            f"user_api_key missing from litellm_params['metadata']: {spy.metadata!r} "
+            "-- the rate limiter's standard_logging_object read depends on this"
+        )
 
     @pytest.mark.asyncio
-    async def test_ws_turn_preserves_client_metadata_as_requester_metadata(
-        self, monkeypatch
-    ):
+    async def test_ws_turn_preserves_client_metadata_as_requester_metadata(self, monkeypatch):
         """The client's own metadata must not be discarded -- only nested
         under litellm_metadata so it no longer collides with the proxy's."""
         import asyncio
@@ -3218,15 +3210,15 @@ class TestWebSocketProxyIdentityMetadataMerge:
                 self.metadata: dict | None = None
                 self.event = asyncio.Event()
 
-            async def async_log_success_event(
-                self, kwargs, response_obj, start_time, end_time
-            ):
+            async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
                 self.metadata = kwargs.get("litellm_params", {}).get("metadata") or {}
                 self.event.set()
 
         spy = MetadataCapture()
-        original_callbacks = litellm.callbacks.copy() if litellm.callbacks else []
-        litellm.callbacks = [spy]
+        # monkeypatch.setattr auto-reverts at teardown (and the autouse
+        # isolate_litellm_state fixture in tests/test_litellm/conftest.py
+        # would restore it anyway) -- no manual restore needed either way.
+        monkeypatch.setattr(litellm, "callbacks", [spy])
         self._install_streaming_shim(monkeypatch)
 
         mock_websocket = MagicMock()
@@ -3257,13 +3249,9 @@ class TestWebSocketProxyIdentityMetadataMerge:
             }
         )
 
-        try:
-            await handler._process_response_create(frame)
-            await asyncio.wait_for(spy.event.wait(), timeout=5.0)
-            assert spy.metadata is not None
-            assert (
-                spy.metadata.get("requester_metadata", {}).get("codex_session_id")
-                == "abc123"
-            ), "client-supplied metadata must survive, nested under requester_metadata"
-        finally:
-            litellm.callbacks = original_callbacks
+        await handler._process_response_create(frame)
+        await asyncio.wait_for(spy.event.wait(), timeout=5.0)
+        assert spy.metadata is not None
+        assert spy.metadata.get("requester_metadata", {}).get("codex_session_id") == "abc123", (
+            "client-supplied metadata must survive, nested under requester_metadata"
+        )
