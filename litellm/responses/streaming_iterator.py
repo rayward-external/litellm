@@ -2402,9 +2402,8 @@ class ManagedResponsesWebSocketHandler:
             # top-level kwarg -- mirrors add_litellm_data_to_request's own
             # "requester_metadata" convention for the HTTP path.
             requester_metadata: Final = call_kwargs.pop("metadata", None)
-            merged_metadata: Final[dict[str, object]] = dict(  # mutable-ok: one more key added below, then handed off as call_kwargs["litellm_metadata"]
-                self.litellm_metadata
-            )
+            # Gains "requester_metadata" below, then becomes call_kwargs["litellm_metadata"].
+            merged_metadata: Final[dict[str, object]] = dict(self.litellm_metadata)  # mutable-ok: mutated below
             if isinstance(requester_metadata, dict) and requester_metadata:
                 merged_metadata["requester_metadata"] = requester_metadata
             call_kwargs["litellm_metadata"] = merged_metadata
