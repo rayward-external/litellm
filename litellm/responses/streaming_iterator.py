@@ -1526,7 +1526,8 @@ class ResponsesWebSocketStreaming:
         # silently is the same bug in a new place. Retained here and drained
         # with a bounded wait in bidirectional_forward's finally: before the
         # connection tears down.
-        self._pending_cost_tasks: set[asyncio.Task] = set()  # mutable-ok: instance-owned task registry, entries removed via add_done_callback
+        # Instance-owned task registry; entries removed via add_done_callback.
+        self._pending_cost_tasks: set[asyncio.Task] = set()  # mutable-ok: registry
 
     def _should_store_event(self, event_obj: Mapping[str, object]) -> bool:
         return event_obj.get("type") in RESPONSES_WS_LOGGED_EVENT_TYPES
@@ -1644,7 +1645,9 @@ class ResponsesWebSocketStreaming:
             function_id="ResponsesWebSocketStreaming._dispatch_turn_cost",
         )
         _raw_turn_metadata: Final = self.request_data.get("litellm_metadata")
-        turn_metadata: Final[dict[str, object]] = (  # mutable-ok: copied so per-turn mutation by downstream callbacks never leaks back into self.request_data
+        # Copied so per-turn mutation by downstream callbacks never leaks back
+        # into self.request_data.
+        turn_metadata: Final[dict[str, object]] = (  # mutable-ok: per-turn copy
             dict(_raw_turn_metadata) if isinstance(_raw_turn_metadata, dict) else {}  # mutable-ok: see above
         )
         turn_logging_obj.update_environment_variables(
@@ -1690,8 +1693,7 @@ class ResponsesWebSocketStreaming:
             typed_event: Final = event_cls.model_validate(evt_obj)
         except Exception as exc:  # noqa: BLE001  # a malformed/unexpected terminal-event shape must never crash frame forwarding; skip costing this turn and keep the connection alive
             verbose_logger.warning(
-                "ResponsesWebSocketStreaming: could not build %s for cost logging, "
-                "this turn will NOT be billed: %s",
+                "ResponsesWebSocketStreaming: could not build %s for cost logging, this turn will NOT be billed: %s",
                 event_type,
                 exc,
             )
