@@ -3019,14 +3019,16 @@ class TestNativeWebSocketPerTurnCostAccounting:
         fan-out litellm.utils.function_setup performs on its first call per
         process -- which, in the real endpoint, already happened once for the
         connection at Phase 1 (common_processing_pre_call_logic) before any
-        per-turn dispatch. Returns the original litellm.callbacks list to restore."""
+        per-turn dispatch. Restoration of litellm.callbacks (and
+        _async_success_callback) is handled by the autouse isolate_litellm_state
+        fixture (tests/test_litellm/conftest.py) -- do not add a manual restore
+        here or at call sites."""
         import uuid as _uuid
         from datetime import datetime as _dt
 
         import litellm as _litellm
         from litellm.utils import Rules as _Rules
 
-        original_callbacks = _litellm.callbacks.copy() if _litellm.callbacks else []
         _litellm.callbacks = [spy]
         _litellm.utils.function_setup(
             original_function="_aresponses_websocket",
@@ -3035,7 +3037,6 @@ class TestNativeWebSocketPerTurnCostAccounting:
             model="gpt-5.6-sol",
             litellm_call_id=str(_uuid.uuid4()),
         )
-        return original_callbacks
 
     @staticmethod
     def _completed_event(resp_id, total_tokens, model="gpt-5.6-sol", event_type="response.completed"):
@@ -3088,7 +3089,7 @@ class TestNativeWebSocketPerTurnCostAccounting:
                 self.events.append((sl.get("response_cost"), sl.get("total_tokens")))
 
         spy = Spy()
-        original_callbacks = self._register_spy_and_fanout(spy)
+        self._register_spy_and_fanout(spy)
 
         websocket = MagicMock()
         websocket.send_text = AsyncMock()
@@ -3119,11 +3120,8 @@ class TestNativeWebSocketPerTurnCostAccounting:
             authorized_model="gpt-5.6-sol",
         )
 
-        try:
-            await handler.backend_to_client()
-            await asyncio.sleep(0.3)
-        finally:
-            litellm.callbacks = original_callbacks
+        await handler.backend_to_client()
+        await asyncio.sleep(0.3)
 
         assert len(spy.events) == 3, f"expected exactly 3 costed turns, got {len(spy.events)}: {spy.events}"
         costs, tokens = zip(*spy.events)
@@ -3152,7 +3150,7 @@ class TestNativeWebSocketPerTurnCostAccounting:
                 self.events.append((sl.get("response_cost"), sl.get("total_tokens")))
 
         spy = Spy()
-        original_callbacks = self._register_spy_and_fanout(spy)
+        self._register_spy_and_fanout(spy)
 
         websocket = MagicMock()
         websocket.send_text = AsyncMock()
@@ -3179,11 +3177,8 @@ class TestNativeWebSocketPerTurnCostAccounting:
             authorized_model="gpt-5.6-sol",
         )
 
-        try:
-            await handler.backend_to_client()
-            await asyncio.sleep(0.3)
-        finally:
-            litellm.callbacks = original_callbacks
+        await handler.backend_to_client()
+        await asyncio.sleep(0.3)
 
         assert len(spy.events) == 2, f"failed AND incomplete turns must both be costed: {spy.events}"
         tokens = sorted(t for _, t in spy.events)
@@ -3212,14 +3207,12 @@ class TestNativeWebSocketPerTurnCostAccounting:
                 self.metadata = sl.get("metadata")
 
         spy = Spy()
-        original_callbacks = self._register_spy_and_fanout(spy)
+        self._register_spy_and_fanout(spy)
 
         websocket = MagicMock()
         websocket.send_text = AsyncMock()
         backend_ws = MagicMock()
-        backend_ws.recv = AsyncMock(
-            side_effect=[self._completed_event("resp_key_1", 42), Exception("stop")]
-        )
+        backend_ws.recv = AsyncMock(side_effect=[self._completed_event("resp_key_1", 42), Exception("stop")])
 
         user_api_key_dict = UserAPIKeyAuth(api_key="sk-native-attribution-key")
         handler = _make_streaming(
@@ -3236,11 +3229,8 @@ class TestNativeWebSocketPerTurnCostAccounting:
             authorized_model="gpt-5.6-sol",
         )
 
-        try:
-            await handler.backend_to_client()
-            await asyncio.sleep(0.3)
-        finally:
-            litellm.callbacks = original_callbacks
+        await handler.backend_to_client()
+        await asyncio.sleep(0.3)
 
         assert spy.metadata is not None, "success callback was never invoked"
         assert spy.metadata.get("user_api_key_hash") == user_api_key_dict.api_key
@@ -3270,12 +3260,10 @@ class TestNativeWebSocketPerTurnCostAccounting:
                 self.ids = []
 
             async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
-                self.ids.append(
-                    (getattr(response_obj, "id", None), kwargs.get("litellm_call_id"))
-                )
+                self.ids.append((getattr(response_obj, "id", None), kwargs.get("litellm_call_id")))
 
         spy = Spy()
-        original_callbacks = self._register_spy_and_fanout(spy)
+        self._register_spy_and_fanout(spy)
 
         websocket = MagicMock()
         websocket.send_text = AsyncMock()
@@ -3302,11 +3290,8 @@ class TestNativeWebSocketPerTurnCostAccounting:
             authorized_model="gpt-5.6-sol",
         )
 
-        try:
-            await handler.backend_to_client()
-            await asyncio.sleep(0.3)
-        finally:
-            litellm.callbacks = original_callbacks
+        await handler.backend_to_client()
+        await asyncio.sleep(0.3)
 
         assert len(spy.ids) == 2
         response_ids, call_ids = zip(*spy.ids)
@@ -3333,7 +3318,7 @@ class TestNativeWebSocketPerTurnCostAccounting:
                 self.call_count += 1
 
         spy = Spy()
-        original_callbacks = self._register_spy_and_fanout(spy)
+        self._register_spy_and_fanout(spy)
 
         websocket = MagicMock()
         websocket.send_text = AsyncMock()
@@ -3360,11 +3345,8 @@ class TestNativeWebSocketPerTurnCostAccounting:
             authorized_model="gpt-5.6-sol",
         )
 
-        try:
-            await handler.backend_to_client()
-            await asyncio.sleep(0.3)
-        finally:
-            litellm.callbacks = original_callbacks
+        await handler.backend_to_client()
+        await asyncio.sleep(0.3)
 
         assert spy.call_count == 0
 
@@ -3390,7 +3372,7 @@ class TestNativeWebSocketPerTurnCostAccounting:
                 self.events.append((sl.get("response_cost"), sl.get("total_tokens")))
 
         spy = Spy()
-        original_callbacks = self._register_spy_and_fanout(spy)
+        self._register_spy_and_fanout(spy)
 
         guardrail = _FakeWSGuardrail()
         websocket = MagicMock()
@@ -3445,11 +3427,8 @@ class TestNativeWebSocketPerTurnCostAccounting:
             authorized_model="gpt-5.6-sol",
         )
 
-        try:
-            await handler.backend_to_client()
-            await asyncio.sleep(0.3)
-        finally:
-            litellm.callbacks = original_callbacks
+        await handler.backend_to_client()
+        await asyncio.sleep(0.3)
 
         websocket.send_text.assert_awaited_once()
         forwarded = json.loads(websocket.send_text.await_args[0][0])
@@ -3499,7 +3478,7 @@ class TestNativeWebSocketPerTurnCostAccounting:
                 self.events.append((sl.get("response_cost"), sl.get("total_tokens")))
 
         spy = SlowSpy()
-        original_callbacks = self._register_spy_and_fanout(spy)
+        self._register_spy_and_fanout(spy)
 
         user_api_key_dict = UserAPIKeyAuth(api_key="sk-native-teardown-key")
         handler = _make_streaming(
@@ -3515,17 +3494,14 @@ class TestNativeWebSocketPerTurnCostAccounting:
             authorized_model="gpt-5.6-sol",
         )
 
-        try:
-            # The connection's LAST turn, dispatched an instant before the
-            # (simulated) client disconnect / instance teardown.
-            handler._dispatch_turn_cost(self._completed_event("resp_final_turn", 999))
-            assert len(handler._pending_cost_tasks) == 1
+        # The connection's LAST turn, dispatched an instant before the
+        # (simulated) client disconnect / instance teardown.
+        handler._dispatch_turn_cost(self._completed_event("resp_final_turn", 999))
+        assert len(handler._pending_cost_tasks) == 1
 
-            # NO sleep here -- the assertions below must be satisfied by the
-            # drain itself, not by luck or a test delay.
-            await handler._drain_pending_cost_tasks()
-        finally:
-            litellm.callbacks = original_callbacks
+        # NO sleep here -- the assertions below must be satisfied by the
+        # drain itself, not by luck or a test delay.
+        await handler._drain_pending_cost_tasks()
 
         assert len(spy.events) == 1, (
             f"the final turn's cost dispatch must be drained, not lost at teardown: {spy.events}"
@@ -3570,7 +3546,7 @@ class TestNativeWebSocketPerTurnCostAccounting:
                 pass
 
         spy = Spy()
-        original_callbacks = self._register_spy_and_fanout(spy)
+        self._register_spy_and_fanout(spy)
 
         user_api_key_dict = UserAPIKeyAuth(api_key="sk-native-strongref-key")
         handler = _make_streaming(
@@ -3586,15 +3562,10 @@ class TestNativeWebSocketPerTurnCostAccounting:
             authorized_model="gpt-5.6-sol",
         )
 
-        try:
-            assert handler._pending_cost_tasks == set()
-            handler._dispatch_turn_cost(self._completed_event("resp_ref_1", 10))
-            assert len(handler._pending_cost_tasks) == 1, (
-                "the created task must be retained in self._pending_cost_tasks immediately"
-            )
-            await asyncio.sleep(0.2)
-            assert handler._pending_cost_tasks == set(), (
-                "a completed task must be discarded via add_done_callback"
-            )
-        finally:
-            litellm.callbacks = original_callbacks
+        assert handler._pending_cost_tasks == set()
+        handler._dispatch_turn_cost(self._completed_event("resp_ref_1", 10))
+        assert len(handler._pending_cost_tasks) == 1, (
+            "the created task must be retained in self._pending_cost_tasks immediately"
+        )
+        await asyncio.sleep(0.2)
+        assert handler._pending_cost_tasks == set(), "a completed task must be discarded via add_done_callback"
