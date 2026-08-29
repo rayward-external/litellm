@@ -142,6 +142,12 @@ def _sanitize_for_log(value: Any) -> str:
 
 
 from litellm.router import Router
+from litellm.router_strategy.tag_based_routing import (
+    ORIGINAL_REQUEST_TAGS_KEY,
+    ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY,
+    PIN_TAG_PREFIX,
+    PINNED_PROVIDER_ROUTE_KEY,
+)
 from litellm.secret_managers.main import get_secret_bool
 from litellm.types.llms.anthropic import ANTHROPIC_API_HEADERS
 from litellm.types.services import ServiceTypes
