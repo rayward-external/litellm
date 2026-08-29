@@ -579,6 +579,24 @@ def _strip_router_reserved_metadata(
             )
 
 
+def _trusted_pinned_provider_route(request: Request | None) -> str | None:
+    """The trusted provider a pinned route stashed on ``request.state``, or None.
+
+    The provider-pinned routes (``litellm/proxy/pinned_provider_routes.py``) set
+    ``request.state._pinned_provider_route`` from the URL before delegating. This
+    reads it back so the pin signal can be re-asserted LAST — after the body is
+    parsed/merged — making a client string-encoded metadata bucket unable to
+    preempt it. ``request.state`` is server-only, so a client can never set it.
+
+    Returns the value only when it is a non-empty ``str`` — a ``MagicMock``
+    ``request.state`` in tests (and unified routes with no pin) yield None, so
+    unified-route behaviour is untouched.
+    """
+    state = getattr(request, "state", None) if request is not None else None
+    value = getattr(state, PINNED_PROVIDER_ROUTE_KEY, None) if state is not None else None
+    return value if isinstance(value, str) and value else None
+
+
 def _get_metadata_variable_name(request: Request) -> str:
     """
     Helper to return what the "metadata" field should be called in the request data
