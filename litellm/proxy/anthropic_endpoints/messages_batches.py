@@ -529,9 +529,9 @@ def _translate_reasoning_effort_params(params: Mapping[str, Any] | None) -> Mapp
         # max_tokens > thinking.budget_tokens, and _map_reasoning_effort returns
         # a FIXED per-effort budget (e.g. high -> 4096) that can exceed a small
         # record's max_tokens — mirror the chat path's cap
-        # (transformation.py _cap_thinking_budget_to_max_tokens) or the
+        # (transformation.py cap_thinking_budget_to_max_tokens) or the
         # translated record trades one guaranteed 400 for another.
-        capped = AnthropicConfig._cap_thinking_budget_to_max_tokens(
+        capped = AnthropicConfig.cap_thinking_budget_to_max_tokens(
             mapped_thinking,  # type: ignore[arg-type]
             AnthropicConfig._requested_max_tokens(params),
         )
@@ -547,7 +547,7 @@ def _translate_reasoning_effort_params(params: Mapping[str, Any] | None) -> Mapp
             return new_params
         mapped_thinking = capped
 
-    # mapped_thinking is a fresh dict from _map_reasoning_effort/_cap_thinking_budget_to_max_tokens
+    # mapped_thinking is a fresh dict from _map_reasoning_effort/cap_thinking_budget_to_max_tokens
     # and is never mutated after this, so assign it directly (no defensive copy).
     new_params["thinking"] = mapped_thinking
     if mapped_thinking.get("type") == "adaptive":

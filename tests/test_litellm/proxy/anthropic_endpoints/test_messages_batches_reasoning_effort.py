@@ -77,7 +77,7 @@ def test_reasoning_effort_on_legacy_model_maps_to_enabled_budget(monkeypatch):
 def test_legacy_budget_capped_below_max_tokens(monkeypatch):
     """Anthropic/Bedrock require max_tokens > budget_tokens: a fixed per-effort
     budget larger than the record's max_tokens must be clamped to max_tokens-1
-    (mirrors the chat path's _cap_thinking_budget_to_max_tokens)."""
+    (mirrors the chat path's cap_thinking_budget_to_max_tokens)."""
     _mock_capability(monkeypatch, known=True, adaptive=False)
     params = _base_params(model="claude-haiku-4-5", reasoning_effort="high", max_tokens=2048)
 
