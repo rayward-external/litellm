@@ -18,8 +18,11 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    env:
+      SYNC_BRANCH: ${{ inputs.sync_branch }}
+      UPSTREAM_REF: ${{ inputs.upstream_ref }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           ref: litellm_internal_staging
@@ -32,12 +35,12 @@ jobs:
       - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/BerriAI/litellm.git
-          git fetch upstream "${{ inputs.upstream_ref }}"
+          git fetch upstream "$UPSTREAM_REF"
 
       - name: Merge upstream (-X theirs)
         run: |
-          git checkout -b "${{ inputs.sync_branch }}" origin/litellm_internal_staging
-          git merge -X theirs "upstream/${{ inputs.upstream_ref }}" -m "chore: sync upstream $(date -u +%Y-%m-%d)"
+          git checkout -b "$SYNC_BRANCH" origin/litellm_internal_staging
+          git merge -X theirs "upstream/$UPSTREAM_REF" -m "chore: sync upstream $(date -u +%Y-%m-%d)"
 
       - name: Restore fork-only patches dropped by the merge
         run: |
@@ -243,4 +246,4 @@ jobs:
 
       - name: Push sync branch
         run: |
-          git push origin "HEAD:${{ inputs.sync_branch }}" --force
+          git push origin "HEAD:$SYNC_BRANCH" --force
