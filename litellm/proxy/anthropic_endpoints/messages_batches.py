@@ -75,6 +75,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from litellm._logging import verbose_proxy_logger
+from litellm.litellm_core_utils.aws_partition import get_aws_arn_prefix, get_aws_dns_suffix
 from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM
 from litellm.llms.custom_httpx.http_handler import get_async_httpx_client
 from litellm.proxy._types import UserAPIKeyAuth
@@ -857,7 +858,9 @@ async def _unbilled_delete_block(batch_id: str, user_api_key_dict: UserAPIKeyAut
 
 
 def _job_arn(job_id: str, ctx: dict[str, str]) -> str:
-    return f"arn:aws:bedrock:{ctx['region']}:{ctx['account_id']}:model-invocation-job/{job_id}"
+    return (
+        f"{get_aws_arn_prefix(ctx['region'])}bedrock:{ctx['region']}:{ctx['account_id']}:model-invocation-job/{job_id}"
+    )
 
 
 def _job_url(job_id: str, ctx: dict[str, str], suffix: str = "") -> str:
@@ -865,7 +868,7 @@ def _job_url(job_id: str, ctx: dict[str, str], suffix: str = "") -> str:
     from urllib.parse import quote
 
     return (
-        f"https://bedrock.{ctx['region']}.amazonaws.com/model-invocation-job/"
+        f"https://bedrock.{ctx['region']}.{get_aws_dns_suffix(ctx['region'])}/model-invocation-job/"
         f"{quote(_job_arn(job_id, ctx), safe='')}{suffix}"
     )
 
@@ -1078,7 +1081,7 @@ async def create_message_batch(
 
     ctx = _bedrock_context(deployment)
     input_key = f"{_S3_INPUT_PREFIX}{uuid.uuid4().hex}.jsonl"
-    s3_url = f"https://{ctx['bucket']}.s3.{ctx['region']}.amazonaws.com/{input_key}"
+    s3_url = f"https://{ctx['bucket']}.s3.{ctx['region']}.{get_aws_dns_suffix(ctx['region'])}/{input_key}"
     upload = await _aws_call("PUT", s3_url, "\n".join(records) + "\n", "s3", ctx["params"], ctx["region"])
     if upload.status_code != 200:
         verbose_proxy_logger.error("bedrock msgbatch S3 staging failed: %s %s", upload.status_code, upload.text[:500])
@@ -1094,7 +1097,7 @@ async def create_message_batch(
     }
     create = await _aws_call(
         "POST",
-        f"https://bedrock.{ctx['region']}.amazonaws.com/model-invocation-job",
+        f"https://bedrock.{ctx['region']}.{get_aws_dns_suffix(ctx['region'])}/model-invocation-job",
         json.dumps(job_request),
         "bedrock",
         ctx["params"],
@@ -1249,7 +1252,7 @@ async def message_batch_results(
     output_key = f"{output_prefix}{job_id}/{input_basename}.out"
 
     async def _s3_get(key: str) -> str | None:
-        url = f"https://{ctx['bucket']}.s3.{ctx['region']}.amazonaws.com/{key}"
+        url = f"https://{ctx['bucket']}.s3.{ctx['region']}.{get_aws_dns_suffix(ctx['region'])}/{key}"
         response = await _aws_call("GET", url, None, "s3", ctx["params"], ctx["region"])
         return response.text if response.status_code == 200 else None
 
@@ -1864,7 +1867,7 @@ async def delete_message_batch(
     output_prefix = job["outputDataConfig"]["s3OutputDataConfig"]["s3Uri"].removeprefix(f"s3://{ctx['bucket']}/")
     output_key = f"{output_prefix}{job_id}/{input_key.rsplit('/', 1)[-1]}.out"
     for key in (input_key, output_key, f"{output_prefix}{job_id}/manifest.json.out"):
-        url = f"https://{ctx['bucket']}.s3.{ctx['region']}.amazonaws.com/{key}"
+        url = f"https://{ctx['bucket']}.s3.{ctx['region']}.{get_aws_dns_suffix(ctx['region'])}/{key}"
         response = await _aws_call("DELETE", url, None, "s3", ctx["params"], ctx["region"])
         if response.status_code not in (200, 204):
             verbose_proxy_logger.warning("bedrock msgbatch artifact delete failed: %s %s", key, response.status_code)
