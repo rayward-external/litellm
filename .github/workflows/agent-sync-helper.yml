@@ -12,12 +12,11 @@ on:
         required: true
         default: 'litellm_internal_staging'
 
-permissions:
-  contents: write
-
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       SYNC_BRANCH: ${{ inputs.sync_branch }}
       UPSTREAM_REF: ${{ inputs.upstream_ref }}
