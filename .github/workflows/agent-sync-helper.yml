@@ -8,7 +8,7 @@ on:
         required: true
         default: 'chore/sync-upstream-2026-08-30'
       upstream_ref:
-        description: 'Upstream BerriAI/litellm ref to merge in'
+        description: 'Upstream BerriAI/litellm ref (branch name or commit SHA) to merge in'
         required: true
         default: 'litellm_internal_staging'
 
@@ -40,7 +40,7 @@ jobs:
       - name: Merge upstream (-X theirs)
         run: |
           git checkout -b "$SYNC_BRANCH" origin/litellm_internal_staging
-          git merge -X theirs "upstream/$UPSTREAM_REF" -m "chore: sync upstream $(date -u +%Y-%m-%d)"
+          git merge -X theirs FETCH_HEAD -m "chore: sync upstream $(date -u +%Y-%m-%d)"
 
       - name: Restore fork-only patches dropped by the merge
         run: |
