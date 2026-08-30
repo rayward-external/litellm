@@ -1640,3 +1640,443 @@ class Logging(LiteLLMLoggingBaseClass):
 
         if is_unbilled_non_inference_call(
             self.call_type, StandardLoggingPayloadSetup.merge_litellm_metadata(self.litellm_params), result
+        ):
+            return 0.0
+
+        transformed_result: Final = self._generate_content_result_as_model_response(result)
+        if transformed_result is not None:
+            result = transformed_result
+
+        if isinstance(result, (BaseModel, HttpxBinaryResponseContent)) and hasattr(result, "_hidden_params"):
+            hidden_params: Final = getattr(result, "_hidden_params", {})
+            if (
+                "response_cost" in hidden_params and hidden_params["response_cost"] is not None
+            ):  # use cost if already calculated
+                return hidden_params["response_cost"]
+            elif router_model_id is None and "model_id" in hidden_params:  # use model_id if not already set
+                router_model_id = hidden_params["model_id"]
+
+        # Fallback: extract router_model_id from litellm_params when not available
+        # from the result object. ResponsesAPIResponse objects (used by /v1/responses
+        # streaming) don't carry _hidden_params["model_id"] like ModelResponse does.
+        if router_model_id is None:
+            router_model_id = self.get_router_model_id()
+
+        ## RESPONSE COST ##
+        custom_pricing: Final = use_custom_pricing_for_model(
+            litellm_params=(self.litellm_params if hasattr(self, "litellm_params") else None)
+        )
+
+        prompt = self._prompt_for_cost_calculation()
+
+        if cache_hit is None:
+            cache_hit = self.model_call_details.get("cache_hit", False)
+
+        try:
+            response_cost_calculator_kwargs: Final = {
+                "response_object": result,
+                "model": litellm_model_name or self.model,
+                "cache_hit": cache_hit,
+                "custom_llm_provider": self.model_call_details.get("custom_llm_provider", None),
+                "base_model": _get_base_model_from_metadata(model_call_details=self.model_call_details),
+                "call_type": self.call_type,
+                "optional_params": self.optional_params,
+                "custom_pricing": custom_pricing,
+                "prompt": prompt,
+                "standard_built_in_tools_params": self.standard_built_in_tools_params,
+                "router_model_id": router_model_id,
+                "litellm_logging_obj": self,
+                "service_tier": (self.optional_params.get("service_tier") if self.optional_params else None),
+                "data_residency": (
+                    self.litellm_params.get("data_residency")
+                    if hasattr(self, "litellm_params") and self.litellm_params
+                    else None
+                ),
+                "vertex_location": _resolve_vertex_location_for_cost(
+                    custom_llm_provider=self.model_call_details.get("custom_llm_provider", None),
+                    litellm_params=(self.litellm_params if hasattr(self, "litellm_params") else None),
+                    optional_params=self.optional_params,
+                    model=litellm_model_name or self.model,
+                ),
+            }
+        except Exception as e:  # error creating kwargs for cost calculation
+            debug_info = StandardLoggingModelCostFailureDebugInformation(
+                error_str=str(e),
+                traceback_str=_get_traceback_str_for_error(str(e)),
+            )
+            verbose_logger.debug("response_cost_failure_debug_information: %s", debug_info)
+            self.model_call_details["response_cost_failure_debug_information"] = debug_info
+            return None
+
+        try:
+            response_cost: Final = litellm.response_cost_calculator(**response_cost_calculator_kwargs)
+
+            verbose_logger.debug("response_cost: %s", response_cost)
+            additional_response_cost: Final[object] = self.model_call_details.get("additional_response_cost")
+            if isinstance(additional_response_cost, (int, float)) and additional_response_cost > 0:
+                return (response_cost or 0.0) + additional_response_cost
+            return response_cost
+        except Exception as e:  # error calculating cost
+            debug_info = StandardLoggingModelCostFailureDebugInformation(
+                error_str=str(e),
+                traceback_str=_get_traceback_str_for_error(str(e)),
+                model=response_cost_calculator_kwargs["model"],
+                cache_hit=response_cost_calculator_kwargs["cache_hit"],
+                custom_llm_provider=response_cost_calculator_kwargs["custom_llm_provider"],
+                base_model=response_cost_calculator_kwargs["base_model"],
+                call_type=response_cost_calculator_kwargs["call_type"],
+                custom_pricing=response_cost_calculator_kwargs["custom_pricing"],
+            )
+            verbose_logger.debug("response_cost_failure_debug_information: %s", debug_info)
+            self.model_call_details["response_cost_failure_debug_information"] = debug_info
+
+        return None
+
+    def _prompt_for_cost_calculation(self) -> str:
+        """
+        The raw input string is only priced directly for text-to-speech, which bills per character.
+        Every other call type gets its billable units from the response usage object, and call types
+        that carry no usage at all (file content retrieval, and anything else `function_setup` cannot
+        build messages for) only have the ``"default-message-value"`` placeholder here, so passing the
+        input along would token-price that placeholder.
+        """
+        if self.call_type not in (CallTypes.speech.value, CallTypes.aspeech.value):
+            return ""
+        _input = self.model_call_details.get("input", None)
+        return _input if isinstance(_input, str) else ""
+
+    def _generate_content_result_as_model_response(self, result: object) -> ModelResponse | None:
+        """
+        Native Google :generateContent bodies report token usage under
+        ``usageMetadata``, which the cost calculator does not read, so a raw body
+        always costs 0. The async success path already transforms it into a
+        ``ModelResponse`` before costing; do the same transformation here so the
+        synchronously-built ``x-litellm-response-cost`` header carries the real
+        cost. Returns ``None`` (leaving the original result untouched) for other
+        call types, for already-transformed ``ModelResponse`` results, and on any
+        transformation failure.
+        """
+        if self.call_type not in (
+            CallTypes.generate_content.value,
+            CallTypes.agenerate_content.value,
+        ):
+            return None
+        if isinstance(result, ModelResponse) or not isinstance(result, (BaseModel, dict)):
+            return None
+        try:
+            import httpx
+
+            completion_response = result.model_dump(by_alias=True) if isinstance(result, BaseModel) else dict(result)
+            return litellm.VertexGeminiConfig()._transform_google_generate_content_to_openai_model_response(
+                completion_response=completion_response,
+                model_response=ModelResponse(),
+                model=self.model or "",
+                logging_obj=self,
+                raw_response=httpx.Response(status_code=200, headers={}),
+            )
+        except Exception as e:  # noqa: BLE001 - cost normalization must never break the response path
+            verbose_logger.debug("generate_content response cost normalization failed: %s", e)
+            return None
+
+    async def _response_cost_calculator_async(
+        self,
+        result: ModelResponse
+        | ModelResponseStream
+        | EmbeddingResponse
+        | ImageResponse
+        | TranscriptionResponse
+        | TextCompletionResponse
+        | HttpxBinaryResponseContent
+        | RerankResponse
+        | Batch
+        | FineTuningJob,
+        cache_hit: bool | None = None,
+    ) -> float | None:
+        return self._response_cost_calculator(result=result, cache_hit=cache_hit)
+
+    @staticmethod
+    def _is_sync_litellm_request(litellm_params: dict) -> bool:
+        """True for sync SDK entrypoints (``completion``), false for async (``acompletion``, etc.)."""
+        return (
+            litellm_params.get(CallTypes.acompletion.value, False) is not True
+            and litellm_params.get(CallTypes.aresponses.value, False) is not True
+            and litellm_params.get(CallTypes.aembedding.value, False) is not True
+            and litellm_params.get(CallTypes.aimage_generation.value, False) is not True
+            and litellm_params.get(CallTypes.atranscription.value, False) is not True
+            and litellm_params.get(CallTypes.allm_passthrough_route.value, False) is not True
+            and litellm_params.get(CallTypes.aanthropic_messages.value, False) is not True
+            and litellm_params.get(CallTypes.agenerate_content.value, False) is not True
+            and litellm_params.get(CallTypes.agenerate_content_stream.value, False) is not True
+        )
+
+    def _is_assembled_stream_success(self, result=None) -> bool:
+        """Final assembled stream export (not a per-chunk success call).
+
+        Per-chunk callers pass a ``ModelResponseStream`` (or ``None``); the
+        final assembled response is any other non-``None`` value (typically a
+        ``ModelResponse``). Treating a chunk as the assembled response would
+        prematurely set the ``has_dispatched_final_stream_success`` dedup
+        guard and silently suppress the real final stream log.
+        """
+        if self.stream is not True:
+            return False
+        if result is not None and not isinstance(result, ModelResponseStream):
+            return True
+        return (
+            "async_complete_streaming_response" in self.model_call_details
+            or self.model_call_details.get("complete_streaming_response") is not None
+        )
+
+    async def dispatch_success_handlers(
+        self,
+        result=None,
+        start_time=None,
+        end_time=None,
+        cache_hit=None,
+        prefer_async_handlers: bool = False,
+        **kwargs,
+    ) -> None:
+        """Route success logging to async and/or sync handlers for this request.
+
+        ``prefer_async_handlers`` only bypasses the sync-SDK-only shortcut (e.g.
+        ``async for`` on a stream from ``completion()``). Legacy string callbacks
+        still run via ``executor.submit(success_handler)`` when configured.
+        """
+        from litellm.litellm_core_utils.thread_pool_executor import executor
+
+        if self._is_assembled_stream_success(result):
+            if self.model_call_details.get("has_dispatched_final_stream_success"):
+                return
+            self.model_call_details["has_dispatched_final_stream_success"] = True
+
+        litellm_params: Final = self.model_call_details.get("litellm_params", {}) or {}
+        sync_sdk: Final = self._is_sync_litellm_request(litellm_params)
+        passthrough: Final = self.call_type == CallTypes.pass_through.value
+        if sync_sdk and not prefer_async_handlers and not passthrough:
+            self.success_handler(
+                result,
+                start_time=start_time,
+                end_time=end_time,
+                cache_hit=cache_hit,
+                **kwargs,
+            )
+            return
+
+        await self.async_success_handler(
+            result,
+            start_time=start_time,
+            end_time=end_time,
+            cache_hit=cache_hit,
+            **kwargs,
+        )
+
+        if not self._should_run_sync_callbacks_for_async_calls():
+            return
+
+        executor.submit(
+            self.success_handler,
+            result,
+            start_time=start_time,
+            end_time=end_time,
+            cache_hit=cache_hit,
+            **kwargs,
+        )
+
+    async def dispatch_failure_handlers(
+        self,
+        exception: Exception,
+        traceback_exception: str,
+        prefer_async_handlers: bool = False,
+    ) -> None:
+        """Route failure logging to async and/or sync handlers for this request.
+
+        Mirrors ``dispatch_success_handlers``: the sync ``failure_handler`` never runs
+        concurrently with ``async_failure_handler`` on the shared logging object, so the
+        two paths cannot mutate it at the same time. ``prefer_async_handlers`` only
+        bypasses the sync-SDK-only shortcut (e.g. ``async for`` on a stream from
+        ``completion()``); legacy string callbacks still run via
+        ``executor.submit(failure_handler)`` when configured.
+        """
+        litellm_params: Final = self.model_call_details.get("litellm_params", {}) or {}
+        sync_sdk: Final = self._is_sync_litellm_request(litellm_params)
+        passthrough: Final = self.call_type == CallTypes.pass_through.value
+        if sync_sdk and not prefer_async_handlers and not passthrough:
+            self.failure_handler(exception, traceback_exception)
+            return
+
+        await self.async_failure_handler(exception, traceback_exception)
+
+        if not self._should_run_sync_failure_callbacks_for_async_calls():
+            return
+
+        executor.submit(self.failure_handler, exception, traceback_exception)
+
+    def should_run_logging(
+        self,
+        event_type: Literal["async_success", "sync_success", "async_failure", "sync_failure"],
+        stream: bool = False,
+    ) -> bool:
+        try:
+            if self.model_call_details.get(f"has_logged_{event_type}", False) is True:
+                return False
+
+            return True
+        except Exception:
+            return True
+
+    def has_run_logging(
+        self,
+        event_type: Literal["async_success", "sync_success", "async_failure", "sync_failure"],
+    ) -> None:
+        if self.stream is not None and self.stream is True:
+            """
+            Ignore check on stream, as there can be multiple chunks
+            """
+            return
+        self.model_call_details[f"has_logged_{event_type}"] = True
+        return
+
+    def should_run_callback(self, callback: litellm.CALLBACK_TYPES, litellm_params: dict, event_hook: str) -> bool:
+        if litellm.global_disable_no_log_param:
+            return True
+
+        if litellm_params.get("no-log", False) is True:
+            # proxy cost tracking cal backs should run
+
+            if not (isinstance(callback, CustomLogger) and "_PROXY_" in callback.__class__.__name__):
+                verbose_logger.debug("no-log request, skipping logging for %s event", event_hook)
+                return False
+
+        # Check for dynamically disabled callbacks via headers
+        if EnterpriseCallbackControls is not None and EnterpriseCallbackControls.is_callback_disabled_dynamically(
+            callback=callback,
+            litellm_params=litellm_params,
+            standard_callback_dynamic_params=self.standard_callback_dynamic_params,
+        ):
+            verbose_logger.debug(
+                "Callback %s disabled via x-litellm-disable-callbacks header for %s event", callback, event_hook
+            )
+            return False
+
+        return True
+
+    def _update_completion_start_time(self, completion_start_time: datetime.datetime):
+        self.completion_start_time = completion_start_time
+        self.model_call_details["completion_start_time"] = self.completion_start_time
+
+    def normalize_logging_result(self, result: Any) -> object:
+        """
+        Some endpoints return a different type of result than what is expected by the logging system.
+        This function is used to normalize the result to the expected type.
+        """
+        logging_result = result
+        if self.call_type == CallTypes.arealtime.value and isinstance(result, list):
+            combined_usage_object: Final = (
+                RealtimeAPITokenUsageProcessor.collect_and_combine_usage_from_realtime_stream_results(results=result)
+            )
+            logging_result = RealtimeAPITokenUsageProcessor.create_logging_realtime_object(
+                usage=combined_usage_object,
+                results=result,
+            )
+
+        elif (
+            self.call_type == CallTypes.llm_passthrough_route.value
+            or self.call_type == CallTypes.allm_passthrough_route.value
+        ) and isinstance(result, Response):
+            from litellm.utils import ProviderConfigManager
+
+            provider_config: Final = ProviderConfigManager.get_provider_passthrough_config(
+                provider=self.model_call_details.get("custom_llm_provider", ""),
+                model=self.model,
+            )
+            if provider_config is not None:
+                logging_result = provider_config.logging_non_streaming_response(
+                    model=self.model,
+                    custom_llm_provider=self.model_call_details.get("custom_llm_provider", ""),
+                    httpx_response=result,
+                    request_data=self.model_call_details.get("request_data", {}),
+                    logging_obj=self,
+                    endpoint=self.model_call_details.get("endpoint", ""),
+                )
+        return logging_result
+
+    def _merge_hidden_params_from_response_into_metadata(self, logging_result: object) -> None:
+        """
+        Copy response._hidden_params into litellm_params.metadata['hidden_params'].
+
+        Non-streaming success uses _process_hidden_params_and_response_cost (skipped when
+        stream=True). Streaming assembles the full response later; without this merge,
+        OTEL/callbacks that read metadata.hidden_params miss cost-related fields.
+        """
+        if logging_result is None:
+            return
+        hidden_params: Final = getattr(logging_result, "_hidden_params", None)
+        if not hidden_params:
+            return
+        if self.model_call_details.get("litellm_params") is None:
+            return
+        metadata_hidden_params: Final = hidden_params.copy()
+        response_cost: Final[object] = self.model_call_details.get("response_cost")
+        if metadata_hidden_params.get("response_cost") is None and response_cost is not None:
+            metadata_hidden_params["response_cost"] = response_cost
+
+        litellm_params: Final = self.model_call_details["litellm_params"]
+        metadata: Final = litellm_params.get("metadata") or {}
+        litellm_params["metadata"] = metadata
+        metadata["hidden_params"] = metadata_hidden_params
+
+    def _process_hidden_params_and_response_cost(
+        self,
+        logging_result,
+        start_time,
+        end_time,
+    ):
+        """Resolve hidden params, compute response cost, and emit the standard logging payload."""
+        hidden_params: Final = getattr(logging_result, "_hidden_params", {})
+        if hidden_params:
+            if self.model_call_details.get("litellm_params") is not None:
+                self.model_call_details["litellm_params"].setdefault("metadata", {})
+                if self.model_call_details["litellm_params"]["metadata"] is None:
+                    self.model_call_details["litellm_params"]["metadata"] = {}
+                self.model_call_details["litellm_params"]["metadata"]["hidden_params"] = getattr(
+                    logging_result, "_hidden_params", {}
+                )
+
+        if self.model_call_details.get("cache_hit") is True:
+            self.model_call_details["response_cost"] = 0.0
+        elif "response_cost" in hidden_params:
+            self.model_call_details["response_cost"] = hidden_params["response_cost"]
+        elif (existing_cost := self.model_call_details.get("response_cost")) is not None and existing_cost != 0:
+            # Preserve response_cost if already calculated (e.g., by pass-through
+            # handlers like Gemini/Vertex which call completion_cost directly).
+            # Do not preserve 0 from failure_handler on intermediate router retries.
+            pass
+        else:
+            self.model_call_details["response_cost"] = self._response_cost_calculator(result=logging_result)
+
+        self.model_call_details["standard_logging_object"] = self._build_standard_logging_payload(
+            logging_result, start_time, end_time
+        )
+
+        standard_logging_payload: Final[StandardLoggingPayload | None] = self.model_call_details.get(
+            "standard_logging_object"
+        )
+        if standard_logging_payload is not None:
+            emit_standard_logging_payload(standard_logging_payload)
+
+    def _build_standard_logging_payload(
+        self, init_response_obj: object, start_time: Any, end_time: Any
+    ) -> StandardLoggingPayload | None:
+        """Build StandardLoggingPayload and accumulate its construction time."""
+        _start: Final = time.time()
+        payload: Final = get_standard_logging_object_payload(
+            kwargs=self.model_call_details,
+            init_response_obj=init_response_obj,
+            start_time=start_time,
+            end_time=end_time,
+            logging_obj=self,
+            status="success",
+            standard_built_in_tools_params=self.standard_built_in_tools_params,
+        )
+        self.callback_duration_ms += (time.time() - _start) * 1000
+        return payload
