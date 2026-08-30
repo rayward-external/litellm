@@ -1,0 +1,246 @@
+name: Agent Sync Helper
+
+on:
+  workflow_dispatch:
+    inputs:
+      sync_branch:
+        description: 'Branch to create/force-update with the upstream sync merge'
+        required: true
+        default: 'chore/sync-upstream-2026-08-30'
+      upstream_ref:
+        description: 'Upstream BerriAI/litellm ref to merge in'
+        required: true
+        default: 'litellm_internal_staging'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: litellm_internal_staging
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/BerriAI/litellm.git
+          git fetch upstream "${{ inputs.upstream_ref }}"
+
+      - name: Merge upstream (-X theirs)
+        run: |
+          git checkout -b "${{ inputs.sync_branch }}" origin/litellm_internal_staging
+          git merge -X theirs "upstream/${{ inputs.upstream_ref }}" -m "chore: sync upstream $(date -u +%Y-%m-%d)"
+
+      - name: Restore fork-only patches dropped by the merge
+        run: |
+          cat <<'PATCH_EOF' > /tmp/restore.patch
+          diff --git a/enterprise/litellm_enterprise/proxy/common_utils/check_batch_cost.py b/enterprise/litellm_enterprise/proxy/common_utils/check_batch_cost.py
+          index 25f43d891..b59f4042d 100644
+          --- a/enterprise/litellm_enterprise/proxy/common_utils/check_batch_cost.py
+          +++ b/enterprise/litellm_enterprise/proxy/common_utils/check_batch_cost.py
+          @@ -2,6 +2,7 @@
+           Polls LiteLLM_ManagedObjectTable to check if the batch job is complete, and if the cost has been tracked.
+           """
+           
+          +import json
+           from dataclasses import replace as dataclasses_replace
+           from datetime import datetime, timedelta, timezone
+           from types import MappingProxyType
+          diff --git a/litellm/llms/anthropic/chat/transformation.py b/litellm/llms/anthropic/chat/transformation.py
+          index 7f47fc66c..29ecb1b9f 100644
+          --- a/litellm/llms/anthropic/chat/transformation.py
+          +++ b/litellm/llms/anthropic/chat/transformation.py
+          @@ -430,6 +430,79 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
+                       f"Supported values are: {', '.join(repr(level) for level in supported)}."
+                   )
+           
+          +    @staticmethod
+          +    def _coerce_optional_int(value: object) -> int | None:
+          +        """Best-effort int coercion for a legacy ``budget_tokens`` value that may
+          +        arrive as a string, float, bool, or already an int -- never raises."""
+          +        if isinstance(value, bool):
+          +            return None
+          +        if isinstance(value, int):
+          +            return value
+          +        if isinstance(value, (str, float)):
+          +            try:
+          +                return int(value)
+          +            except (TypeError, ValueError):
+          +                return None
+          +        return None
+          +
+          +    @staticmethod
+          +    def _legacy_thinking_budget_to_effort(
+          +        budget: int, max_tokens: int | None, model: str, custom_llm_provider: str
+          +    ) -> str:
+          +        """Map a legacy ``budget_tokens`` value onto the adaptive-thinking effort
+          +        ladder, so a caller who only ever set ``budget_tokens`` keeps getting
+          +        roughly the same amount of thinking after the model moves to adaptive-only.
+          +
+          +        Anthropic requires ``max_tokens > thinking.budget_tokens``; a caller whose
+          +        budget does not fit under ``max_tokens`` is asking for as much thinking as
+          +        the response can possibly hold, so that maps straight to the model's
+          +        highest supported effort level rather than through the buckets below.
+          +        """
+          +        if max_tokens is not None and budget >= max_tokens:
+          +            supported = AnthropicConfig._supported_effort_levels(model, custom_llm_provider)
+          +            return supported[-1] if supported else "low"
+          +        if budget >= DEFAULT_REASONING_EFFORT_XHIGH_THINKING_BUDGET and AnthropicConfig._supports_effort_level(
+          +            model, "xhigh", custom_llm_provider
+          +        ):
+          +            return "xhigh"
+          +        if budget >= DEFAULT_REASONING_EFFORT_HIGH_THINKING_BUDGET and AnthropicConfig._supports_effort_level(
+          +            model, "high", custom_llm_provider
+          +        ):
+          +            return "high"
+          +        if budget >= DEFAULT_REASONING_EFFORT_MEDIUM_THINKING_BUDGET:
+          +            return "medium"
+          +        return "low"
+          +
+          +    def _translate_legacy_thinking_for_adaptive_model(
+          +        self, model: str, optional_params: dict, custom_llm_provider: str
+          +    ) -> None:
+          +        """Translate legacy ``thinking.type=enabled`` to adaptive for the
+          +        adaptive-thinking models that reject it (4.7+ and the 5 families), so a
+          +        pre-existing ``budget_tokens``-based caller keeps working unmodified.
+          +        Models flagged ``supports_legacy_thinking`` (the 4.6 family) accept the
+          +        legacy shape natively, so it is forwarded verbatim and the caller's
+          +        ``budget_tokens`` cap keeps applying. Caller-provided
+          +        ``output_config.effort`` is never overridden.
+          +        """
+          +        if not AnthropicConfig._is_adaptive_thinking_model(model, custom_llm_provider):
+          +            return
+          +        if AnthropicConfig._supports_legacy_thinking(model, custom_llm_provider):
+          +            return
+          +        thinking = optional_params.get("thinking")
+          +        if not isinstance(thinking, dict) or thinking.get("type") != "enabled":
+          +            return
+          +
+          +        budget = AnthropicConfig._coerce_optional_int(thinking.get("budget_tokens")) or 0
+          +        max_tokens = AnthropicConfig._coerce_optional_int(optional_params.get("max_tokens"))
+          +        effort = AnthropicConfig._legacy_thinking_budget_to_effort(budget, max_tokens, model, custom_llm_provider)
+          +
+          +        optional_params["thinking"] = {"type": "adaptive"}
+          +        existing_output_config = optional_params.get("output_config")
+          +        if not isinstance(existing_output_config, dict):
+          +            existing_output_config = {}
+          +        existing_output_config.setdefault("effort", effort)
+          +        optional_params["output_config"] = existing_output_config
+          +
+               @staticmethod
+               def _model_supports_effort_param(model: str, custom_llm_provider: str) -> bool:
+                   """Whether the model accepts ``output_config.effort`` at all.
+          @@ -1331,6 +1404,11 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
+                       return thinking
+                   return AnthropicThinkingParam(type=thinking.get("type", "enabled"), budget_tokens=max_tokens - 1)
+           
+          +    @staticmethod
+          +    def _requested_max_tokens(non_default_params: dict) -> int | None:
+          +        """The caller's requested max_tokens, accepting both OpenAI spellings."""
+          +        return non_default_params.get("max_completion_tokens") or non_default_params.get("max_tokens")
+          +
+               def _extract_json_schema_from_response_format(self, value: dict | None) -> dict | None:
+                   if value is None:
+                       return None
+          @@ -1622,7 +1700,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
+                                   # way the adaptive-thinking translation above already does.
+                                   # Adaptive models carry no budget_tokens and are left alone.
+                                   effort_max_tokens = AnthropicConfig._requested_max_tokens(non_default_params)
+          -                    capped_thinking = AnthropicConfig._cap_thinking_budget_to_max_tokens(
+          +                    capped_thinking = AnthropicConfig.cap_thinking_budget_to_max_tokens(
+                                       mapped_thinking, effort_max_tokens
+                                   )
+                                   if capped_thinking is None:
+          diff --git a/litellm/proxy/_types.py b/litellm/proxy/_types.py
+          index 0eee646a6..4e45214c3 100644
+          --- a/litellm/proxy/_types.py
+          +++ b/litellm/proxy/_types.py
+          @@ -2897,6 +2897,13 @@ class UserAPIKeyAuth(LiteLLM_VerificationTokenView):  # the expected response ob
+                       ),
+                   )
+                   budget_reservation: dict[str, Any] | None = Field(default=None, exclude=True)
+          +    # RAYWARD FORK PATCH: per-window snapshot stashed by
+          +    # _virtual_key_multi_budget_check so get_custom_headers can publish
+          +    # x-usage-budget without a second (impossible -- it is sync) cache read.
+          +    # exclude=True for the same reason as budget_reservation above: transient
+          +    # request state, never persisted and never part of the key's API shape.
+          +    # See litellm/proxy/common_utils/budget_window_headers.py.
+          +    budget_window_usage: tuple[Any, ...] | None = Field(default=None, exclude=True)
+                   matched_model_access_groups: list[str] | None = Field(default=None, exclude=True)
+                   budget_throttle_pct: float | None = Field(default=None, exclude=True)
+                   user: Any | None = None  # Expanded user object when expand=user is used
+          diff --git a/litellm/proxy/common_request_processing.py b/litellm/proxy/common_request_processing.py
+          index ad2442d36..4c4280b14 100644
+          --- a/litellm/proxy/common_request_processing.py
+          +++ b/litellm/proxy/common_request_processing.py
+          @@ -1596,6 +1596,49 @@ class ProxyBaseLLMRequestProcessing:
+                       # in the two headers below, which are ours and single-typed.
+                       "x-litellm-key-max-budget": str(user_api_key_dict.max_budget),
+                       "x-litellm-key-spend": str(updated_spend),
+          +            # -- RAYWARD FORK PATCH (#491): the neutral usage contract --------
+          +            # `x-usage-cost` / `-spend` / `-budget` are the ONE documented way a
+          +            # caller reads their own spend (docs/external-api-usage-headers.md in
+          +            # the infra repo). They were external-only, minted by the rename table
+          +            # in external_audience_middleware.py, so a client written against the
+          +            # documented contract read nothing on the internal hostname. Emitting
+          +            # them here gives internal callers the same contract.
+          +            #
+          +            # WHAT HAPPENS TO THESE THREE ON THE EXTERNAL LEG: they are DROPPED.
+          +            # That is intentional and load-bearing, not an oversight. The external
+          +            # policy is a strict allowlist and these names are not in it, so the
+          +            # copy emitted here dies at the boundary and the copy the caller
+          +            # receives is the one the rename table mints from the branded header
+          +            # beside it. Keeping the neutral names unmintable-except-by-rename is
+          +            # what guarantees an external caller sees exactly ONE value: an
+          +            # upstream that sends its own `x-usage-cost` (the pass-through path
+          +            # forwards upstream headers verbatim, and upstream wins over custom
+          +            # ones there) also fails the allowlist and is dropped. Add any of
+          +            # these three to ALLOWED_HEADERS and that guarantee is gone.
+          +            "x-usage-cost": str(response_cost),
+          +            "x-usage-spend": str(updated_spend),
+          +            "x-usage-budget": format_budget_windows(getattr(user_api_key_dict, "budget_window_usage", None)),
+          +            # The branded twin the external rename reads. It exists because the
+          +            # neutral header above cannot cross the boundary on its own, and
+          +            # because `x-litellm-key-max-budget` went back to upstream's scalar --
+          +            # renaming THAT would publish `None` to every windowed key and silently
+          +            # kill external budget reporting. Fork-only name by design: upstream
+          +            # never emits it, so nothing but this line can produce the value the
+          +            # rename turns into `x-usage-budget`.
+          +            #
+          +            # getattr, not attribute access, for two independent reasons:
+          +            #   * a sync that reverts the _types.py half would otherwise raise
+          +            #     AttributeError on EVERY request rather than just dropping the
+          +            #     header -- a fork patch must never be able to 500 the proxy;
+          +            #   * upstream tests build MagicMock(spec=UserAPIKeyAuth), and
+          +            #     pydantic v2 fields are not visible to a mock spec, so direct
+          +            #     access breaks unrelated upstream tests on every rebase.
+          +            # Both degradations are silent, so the wiring tests assert this call
+          +            # site and the _types.py field still exist.
+          +            "x-litellm-key-budget-windows": format_budget_windows(
+          +                getattr(user_api_key_dict, "budget_window_usage", None)
+          +            ),
+          +            # -- end fork patch --------------------------------------------------
+                       "x-litellm-response-duration-ms": str(timing_values.get("_response_ms")),
+                       "x-litellm-overhead-duration-ms": str(timing_values.get("litellm_overhead_time_ms")),
+                       "x-litellm-callback-duration-ms": str(hidden_params.get("callback_duration_ms", None)),
+          PATCH_EOF
+          git apply --whitespace=nowarn /tmp/restore.patch
+          git add -A
+          git commit -m "fix: restore fork patches dropped by sync merge
+
+          Restores 3 gaps the -X theirs merge silently dropped:
+          - budget-window-headers wiring (_types.py, common_request_processing.py)
+          - anthropic legacy-thinking-to-adaptive translation helpers
+          - missing 'import json' in check_batch_cost.py"
+
+      - name: Push sync branch
+        run: |
+          git push origin "HEAD:${{ inputs.sync_branch }}" --force
