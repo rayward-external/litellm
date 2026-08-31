@@ -104,19 +104,21 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: |
-          content=""
-          [ -f alerts.json ] && content="$content
-CODE-SCANNING alerts.json:
-\`\`\`json
-$(cat alerts.json)
-\`\`\`"
-          [ -f secrets.json ] && content="$content
-SECRET-SCANNING secrets.json:
-\`\`\`json
-$(cat secrets.json)
-\`\`\`"
-          summary=$(echo "$content" | head -c 60000)
-          jq -n --arg title "Alert bridge scratch dump (${{ inputs.mode }})" --arg summary "$summary" \
+          : > /tmp/summary.md
+          if [ -f alerts.json ]; then
+            echo "CODE-SCANNING alerts.json:" >> /tmp/summary.md
+            echo '```json' >> /tmp/summary.md
+            cat alerts.json >> /tmp/summary.md
+            echo '```' >> /tmp/summary.md
+          fi
+          if [ -f secrets.json ]; then
+            echo "SECRET-SCANNING secrets.json:" >> /tmp/summary.md
+            echo '```json' >> /tmp/summary.md
+            cat secrets.json >> /tmp/summary.md
+            echo '```' >> /tmp/summary.md
+          fi
+          head -c 60000 /tmp/summary.md > /tmp/summary_trunc.md
+          jq -n --arg title "Alert bridge scratch dump (${{ inputs.mode }})" --rawfile summary /tmp/summary_trunc.md \
             '{name:"scratch-alert-dump",head_sha:env.SHA,status:"completed",conclusion:"neutral",output:{title:$title,summary:$summary}}' \
             > /tmp/checkrun.json
           gh api -X POST "repos/$REPO/check-runs" --input /tmp/checkrun.json
