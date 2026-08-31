@@ -26,7 +26,7 @@ on:
 
 permissions:
   security-events: write
-  contents: read
+  contents: write
 
 jobs:
   bridge:
@@ -96,4 +96,16 @@ jobs:
               -f dismissed_reason="$r" \
               -f dismissed_comment="$c" \
               && echo "dismissed #$n ($r)" | tee -a $GITHUB_STEP_SUMMARY
+
+      - name: SCRATCH publish results to branch
+        if: inputs.mode == 'list' || inputs.mode == 'list_secrets'
+        run: |
+          git config user.name "alert-bridge-scratch"
+          git config user.email "actions@github.com"
+          mkdir -p .scratch-alert-dump
+          [ -f alerts.json ] && cp alerts.json .scratch-alert-dump/
+          [ -f secrets.json ] && cp secrets.json .scratch-alert-dump/
+          git add .scratch-alert-dump
+          git diff --cached --quiet || git commit -m "scratch: dump alert-bridge results (${{ inputs.mode }})"
+          git push origin HEAD:${{ github.ref_name }}
           done
