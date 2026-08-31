@@ -104,6 +104,7 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: |
+          set -x
           : > /tmp/summary.md
           if [ -f alerts.json ]; then
             echo "CODE-SCANNING alerts.json:" >> /tmp/summary.md
@@ -121,5 +122,10 @@ jobs:
           jq -n --arg title "Alert bridge scratch dump (${{ inputs.mode }})" --rawfile summary /tmp/summary_trunc.md \
             '{name:"scratch-alert-dump",head_sha:env.SHA,status:"completed",conclusion:"neutral",output:{title:$title,summary:$summary}}' \
             > /tmp/checkrun.json
-          gh api -X POST "repos/$REPO/check-runs" --input /tmp/checkrun.json
+          cat /tmp/checkrun.json
+          if ! out=$(gh api -X POST "repos/$REPO/check-runs" --input /tmp/checkrun.json 2>&1); then
+            echo "::error::gh api failed: $out"
+            exit 1
+          fi
+          echo "$out"
           done
