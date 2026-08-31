@@ -26,7 +26,8 @@ on:
 
 permissions:
   security-events: write
-  contents: write
+  contents: read
+  checks: write
 
 jobs:
   bridge:
@@ -97,15 +98,26 @@ jobs:
               -f dismissed_comment="$c" \
               && echo "dismissed #$n ($r)" | tee -a $GITHUB_STEP_SUMMARY
 
-      - name: SCRATCH publish results to branch
+      - name: SCRATCH publish results as check-run
         if: inputs.mode == 'list' || inputs.mode == 'list_secrets'
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
         run: |
-          git config user.name "alert-bridge-scratch"
-          git config user.email "actions@github.com"
-          mkdir -p .scratch-alert-dump
-          [ -f alerts.json ] && cp alerts.json .scratch-alert-dump/
-          [ -f secrets.json ] && cp secrets.json .scratch-alert-dump/
-          git add .scratch-alert-dump
-          git diff --cached --quiet || git commit -m "scratch: dump alert-bridge results (${{ inputs.mode }})"
-          git push origin HEAD:${{ github.ref_name }}
+          content=""
+          [ -f alerts.json ] && content="$content
+CODE-SCANNING alerts.json:
+\`\`\`json
+$(cat alerts.json)
+\`\`\`"
+          [ -f secrets.json ] && content="$content
+SECRET-SCANNING secrets.json:
+\`\`\`json
+$(cat secrets.json)
+\`\`\`"
+          summary=$(echo "$content" | head -c 60000)
+          jq -n --arg title "Alert bridge scratch dump (${{ inputs.mode }})" --arg summary "$summary" \
+            '{name:"scratch-alert-dump",head_sha:env.SHA,status:"completed",conclusion:"neutral",output:{title:$title,summary:$summary}}' \
+            > /tmp/checkrun.json
+          gh api -X POST "repos/$REPO/check-runs" --input /tmp/checkrun.json
           done
