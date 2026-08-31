@@ -103,29 +103,27 @@ jobs:
         env:
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
+          MODE: ${{ inputs.mode }}
         run: |
-          set -x
-          : > /tmp/summary.md
-          if [ -f alerts.json ]; then
-            echo "CODE-SCANNING alerts.json:" >> /tmp/summary.md
-            echo '```json' >> /tmp/summary.md
-            cat alerts.json >> /tmp/summary.md
-            echo '```' >> /tmp/summary.md
-          fi
-          if [ -f secrets.json ]; then
-            echo "SECRET-SCANNING secrets.json:" >> /tmp/summary.md
-            echo '```json' >> /tmp/summary.md
-            cat secrets.json >> /tmp/summary.md
-            echo '```' >> /tmp/summary.md
-          fi
-          head -c 60000 /tmp/summary.md > /tmp/summary_trunc.md
-          jq -n --arg title "Alert bridge scratch dump (${{ inputs.mode }})" --arg summary "$(cat /tmp/summary_trunc.md)" \
-            '{name:"scratch-alert-dump",head_sha:env.SHA,status:"completed",conclusion:"neutral",output:{title:$title,summary:$summary}}' \
-            > /tmp/checkrun.json
-          cat /tmp/checkrun.json
-          if ! out=$(gh api -X POST "repos/$REPO/check-runs" --input /tmp/checkrun.json 2>&1); then
-            echo "::error::gh api failed: $out"
-            exit 1
-          fi
-          echo "$out"
-          done
+          python3 -c "import sys,textwrap; exec(textwrap.dedent(sys.stdin.read()))" <<'PYEOF'
+          import json, os, subprocess
+          summary = ""
+          if os.path.exists("alerts.json"):
+              summary += "CODE-SCANNING alerts.json:\n```json\n" + open("alerts.json").read() + "\n```\n"
+          if os.path.exists("secrets.json"):
+              summary += "SECRET-SCANNING secrets.json:\n```json\n" + open("secrets.json").read() + "\n```\n"
+          summary = summary[:60000]
+          body = {
+              "name": "scratch-alert-dump",
+              "head_sha": os.environ["SHA"],
+              "status": "completed",
+              "conclusion": "neutral",
+              "output": {"title": f"Alert bridge scratch dump ({os.environ['MODE']})", "summary": summary},
+          }
+          with open("/tmp/checkrun.json", "w") as f:
+              json.dump(body, f)
+          subprocess.run(
+              ["gh", "api", "-X", "POST", f"repos/{os.environ['REPO']}/check-runs", "--input", "/tmp/checkrun.json"],
+              check=True,
+          )
+          PYEOF
