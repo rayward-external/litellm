@@ -6,7 +6,7 @@ import json
 from dataclasses import replace as dataclasses_replace
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Dict, Final, List, Literal, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Final, List, Literal, Optional, Tuple, cast
 
 from litellm._logging import verbose_proxy_logger
 from litellm._uuid import uuid
@@ -109,309 +109,7 @@ class CheckBatchCost:
             return
         self.batch_processed_support_confirmed = True
 
-    @staticmethod
-    def _get_job_file_object(job: Any) -> dict[str, Any]:
-        """The job row's file_object as a dict. The hook write-path stores it
-        as a JSON string, so tolerate one level of string encoding; anything
-        unparseable returns {}."""
-        file_object = getattr(job, "file_object", None)
-        for _ in range(2):
-            if not isinstance(file_object, str):
-                break
-            try:
-                file_object = json.loads(file_object)
-            except ValueError:
-                return {}
-        return file_object if isinstance(file_object, dict) else {}
-
-    @classmethod
-    def _get_job_attribution(cls, job: Any) -> dict[str, Any]:
-        """Attribution stashed in file_object.litellm_attribution by routes
-        that register batches directly (the /v1/messages/batches route) —
-        user_api_key (hash), user_api_key_team_id, user_api_key_end_user_id,
-        user_api_key_alias. Rows without the stash return {} and keep the
-        pre-existing behavior."""
-        attribution = cls._get_job_file_object(job).get("litellm_attribution")
-        return attribution if isinstance(attribution, dict) else {}
-
-    async def _claim_job(self, job: Any) -> bool:
-        """Atomically claim a row immediately before its spend log is written:
-        every proxy process runs this poller, and billing + flag-flip were
-        previously non-atomic, so concurrent workers could each bill the same
-        batch (codex P1). The conditional update_many means exactly one worker
-        wins the claim. Called from _track_completed_batch_cost once the
-        results are in hand — claiming any earlier makes the output file
-        deletable and a batch unbillable while it is still being costed.
-        Schemas without the batch_processed column cannot claim atomically
-        and keep the legacy single-worker assumption."""
-        if not self._has_batch_processed_column:
-            return True
-        try:
-            claimed_count = await self.prisma_client.db.litellm_managedobjecttable.update_many(
-                where={"id": job.id, "batch_processed": False},
-                data={"batch_processed": True, "status": "pricing"},
-            )
-        except Exception as claim_err:
-            verbose_proxy_logger.error(
-                f"CheckBatchCost: claim failed for job {job.id}; skipping this cycle: {claim_err}"
-            )
-            return False
-        return claimed_count == 1
-
-    async def _release_job_claim(self, job: Any) -> None:
-        """Return a claimed-but-unpriced row to the pool so the next poll
-        retries it. Fenced to the claim-held state: after a reclaim, a slow
-        ex-owner's release must not flip a row another worker has since
-        claimed or finalized (codex P2 round 3). Best effort: an orphaned
-        claim (release also failed) is recovered by
-        _reclaim_abandoned_pricing_claims on later cycles — the deterministic
-        litellm_call_id backstops the double-bill side."""
-        try:
-            if not self._has_batch_processed_column:
-                await self.prisma_client.db.litellm_managedobjecttable.update(
-                    where={"id": job.id},
-                    data={"batch_processed": False, "status": "validating"},
-                )
-                return
-            released = await self.prisma_client.db.litellm_managedobjecttable.update_many(
-                where={"id": job.id, "status": "pricing", "batch_processed": True},
-                data={"batch_processed": False, "status": "validating"},
-            )
-            if released != 1:
-                verbose_proxy_logger.warning(
-                    f"CheckBatchCost: release skipped for job {job.id} — the claim was taken over by another worker"
-                )
-        except Exception as release_err:
-            verbose_proxy_logger.error(
-                f"CheckBatchCost: failed to release claim on job {job.id}: {release_err}"
-            )
-
-    @classmethod
-    def _augment_update_with_owner_key(cls, job: Any, update_data: dict[str, Any]) -> dict[str, Any]:
-        """Self-heal the owner_key column (which backs the owner-scoped
-        /v1/messages/batches listing) in the SAME finalization write — no extra
-        query. A row a pre-#335 writer created before the migration backfill, or
-        during a rolling deploy, carries owner_key NULL, and the listing's
-        indexed query needs it. When the column is still NULL and the submitting
-        key hash is recoverable from the attribution stash, fold it into
-        update_data.
-
-        NULL-ONLY and NEVER-OVERWRITE: an existing owner_key is a real value the
-        listing depends on (and that finalization must preserve), so it is left
-        untouched — this only fills a genuine gap, it never changes a set value.
-        Only reached on the modern (batch_processed) schema, which is exactly the
-        schema that has the owner_key column."""
-        if getattr(job, "owner_key", None) is not None:
-            return update_data
-        key_hash = cls._get_job_attribution(job).get("user_api_key")
-        if not isinstance(key_hash, str) or not key_hash:
-            return update_data
-        return {**update_data, "owner_key": key_hash}
-
-    async def _finalize_job(self, job: Any, update_data: dict[str, Any]) -> bool:
-        """Write the terminal row state, fenced to the claim this worker
-        holds: a slow ex-owner whose claim was reclaimed must not overwrite
-        the new owner's finalization (codex P2 round 3). Legacy schemas
-        without batch_processed keep the plain unconditional update."""
-        if not self._has_batch_processed_column:
-            # Older schema without batch_processed predates the owner_key column
-            # too, so there is nothing to backfill here — plain update.
-            await self.prisma_client.db.litellm_managedobjecttable.update(
-                where={"id": job.id}, data=update_data
-            )
-            return True
-        update_data = self._augment_update_with_owner_key(job, update_data)
-        finalized_count = await self.prisma_client.db.litellm_managedobjecttable.update_many(
-            where={"id": job.id, "status": "pricing", "batch_processed": True},
-            data=update_data,
-        )
-        if finalized_count != 1:
-            verbose_proxy_logger.warning(
-                f"CheckBatchCost: finalize skipped for job {job.id} — the claim was reclaimed by another worker"
-            )
-            return False
-        return True
-
-    @staticmethod
-    def _batch_cost_call_id(batch_id: str) -> str:
-        """Deterministic, prefixed spend id for a batch — the prefix is what
-        get_spend_logs_id keys on to use it as the SpendLogs request_id."""
-        import uuid as _stdlib_uuid
-
-        from litellm.proxy.spend_tracking.spend_tracking_utils import (
-            BATCH_COST_CALL_ID_PREFIX,
-        )
-
-        return BATCH_COST_CALL_ID_PREFIX + str(
-            _stdlib_uuid.uuid5(_stdlib_uuid.NAMESPACE_URL, f"litellm:batch-cost:{batch_id}")
-        )
-
-    async def _spend_already_recorded(self, batch_id: str, job: Any = None) -> bool:
-        """True when this batch's spend side effects already ran — a prior
-        worker billed it (then died before finalizing, or lost its claim to
-        reclamation). Spend side effects (spend log AND the key/team/daily
-        counters, which increment independently of the spend log's primary
-        key) must not run twice (codex P1 round 4).
-
-        Two independent signals, either suffices:
-        1. The row-local marker stamped by _mark_spend_recorded — works even
-           with disable_spend_logs, where no SpendLogs row ever exists
-           (codex P1 round 5).
-        2. A SpendLogs row under the deterministic request_id.
-
-        Errors on the SpendLogs lookup return False: with the claim held, the
-        deterministic request_id still dedups the spend LOG on the retry —
-        only the counters ride on this pre-check, and skipping billing on a
-        transient read error would risk never billing at all."""
-        if (
-            job is not None
-            and self._get_job_file_object(job).get(SPEND_RECORDED_MARKER_KEY) is True
-        ):
-            return True
-        try:
-            existing = await self.prisma_client.db.litellm_spendlogs.find_unique(
-                where={"request_id": self._batch_cost_call_id(batch_id)}
-            )
-            return existing is not None
-        except Exception as lookup_err:
-            verbose_proxy_logger.error(
-                f"CheckBatchCost: spend-already-recorded lookup failed for {batch_id}: {lookup_err}"
-            )
-            return False
-
-    async def _mark_spend_recorded(self, job: Any) -> None:
-        """Stamp the billing row the moment spend side effects have run, so
-        the dedup pre-check works without a SpendLogs row (disable_spend_logs
-        deployments — codex P1 round 5). Fenced to the claim this worker
-        holds, matching release/finalize; a slow ex-owner whose claim was
-        reclaimed writes 0 rows (that 2h-reclaim-vs-active-worker race is the
-        pre-existing accepted residual, covered by the SpendLogs backstop
-        when spend logs are enabled). Best effort: spend was already emitted,
-        so a failed marker write must not release the claim or block
-        finalization. Legacy schemas skip it: without the batch_processed
-        column there is no claim reclamation, so the re-bill scenario the
-        marker guards against cannot occur."""
-        if not self._has_batch_processed_column:
-            return
-        try:
-            stamped = dict(self._get_job_file_object(job))
-            stamped[SPEND_RECORDED_MARKER_KEY] = True
-            await self.prisma_client.db.litellm_managedobjecttable.update_many(
-                where={"id": job.id, "status": "pricing", "batch_processed": True},
-                data={"file_object": json.dumps(stamped)},
-            )
-        except Exception as mark_err:
-            verbose_proxy_logger.critical(
-                f"CheckBatchCost: could not stamp spend-recorded marker on job {job.id}; "
-                f"if this worker dies before finalizing and spend logs are disabled, "
-                f"reclamation may re-bill this batch: {mark_err}"
-            )
-
-    async def _reclaim_abandoned_pricing_claims(self) -> None:
-        """Requeue rows stuck in a pricing claim: a worker that died between
-        claiming and finalizing leaves batch_processed=True,status='pricing',
-        which the primary query excludes forever — the batch would never be
-        billed (codex P1 round 2). Claims older than the reclaim window are
-        conditionally flipped back; if the dead worker DID write spend before
-        dying, the deterministic per-batch litellm_call_id makes the re-priced
-        spend row collide instead of double-billing."""
-        if not self._has_batch_processed_column:
-            return
-        try:
-            cutoff = datetime.now(timezone.utc) - timedelta(
-                seconds=ABANDONED_PRICING_CLAIM_RECLAIM_SECONDS
-            )
-            reclaimed = await self.prisma_client.db.litellm_managedobjecttable.update_many(
-                where={
-                    "file_purpose": "batch",
-                    "status": "pricing",
-                    "batch_processed": True,
-                    "updated_at": {"lt": cutoff},
-                },
-                data={"batch_processed": False, "status": "validating"},
-            )
-            if reclaimed:
-                verbose_proxy_logger.warning(
-                    f"CheckBatchCost: reclaimed {reclaimed} abandoned pricing claim(s) for retry"
-                )
-        except Exception as reclaim_err:
-            verbose_proxy_logger.error(
-                f"CheckBatchCost: abandoned-claim reclaim failed: {reclaim_err}"
-            )
-
-    async def _backfill_null_owner_keys(self) -> None:
-        """Self-healing sweep that drains the owner_key IS NULL message-batch
-        slice once per poll cycle, so the read path (owner-scoped
-        /v1/messages/batches listing) needs no key-hash scan at all.
-
-        Sources of a NULL owner_key: a row that predates the migration backfill,
-        and a row a pre-#335 pod writes during a rolling deploy. The per-row
-        _finalize_job fold heals rows the poller finalizes this cycle, but a row
-        an old pod ALREADY finalized (batch_processed=True) is never revisited by
-        the primary query — this sweep is what covers those, so the whole slice
-        drains deterministically with no operator action.
-
-        Idempotent and NEVER-OVERWRITE: it only touches rows still NULL whose
-        attribution yields a key hash (the guard means OpenAI-dialect /v1/batches
-        rows, which carry no attribution, stay NULL and the sweep re-touches
-        nothing once drained). Same double-encoded JSON extraction as the
-        migration backfill. PostgreSQL only — the proxy's sole dialect; gated on
-        the modern schema (owner_key was added after batch_processed, so it is
-        absent wherever that column is) and best-effort via the caller's
-        try/except."""
-        if not self._has_batch_processed_column:
-            return
-        await self.prisma_client.db.execute_raw(
-            """
-            UPDATE "LiteLLM_ManagedObjectTable"
-            SET "owner_key" = CASE WHEN jsonb_typeof("file_object") = 'string'
-               THEN ("file_object" #>> '{}')::jsonb #>> '{litellm_attribution,user_api_key}'
-               ELSE "file_object" #>> '{litellm_attribution,user_api_key}' END
-            WHERE "file_purpose" = 'batch' AND "owner_key" IS NULL
-              AND (CASE WHEN jsonb_typeof("file_object") = 'string'
-                   THEN ("file_object" #>> '{}')::jsonb #>> '{litellm_attribution,user_api_key}'
-                   ELSE "file_object" #>> '{litellm_attribution,user_api_key}' END) IS NOT NULL
-            """
-        )
-
-    @staticmethod
-    def _finalized_file_object(
-        job: Any, response: "LiteLLMBatch", spend_recorded: bool = False
-    ) -> str:
-        """The provider response JSON with the registration stash re-attached:
-        finalization must not discard litellm_attribution — the upstream
-        ownership check matches on it, so dropping it would 404 key-only
-        callers on their own batch after billing (codex P2). spend_recorded
-        stamps the row-local dedup marker (also preserved from the stash) so
-        finalization never erases evidence that billing ran."""
-        finalized: dict[str, Any] = json.loads(response.model_dump_json())
-        stash = CheckBatchCost._get_job_file_object(job)
-        for preserved_key in (
-            "litellm_attribution",
-            "model",
-            "mixed_models",
-            "total_records",
-            # The /v1/messages/batches route stashes the CLIENT-facing batch id
-            # here (Bedrock's is the owner-tagged msgbatch_bedrock_* id, which is
-            # NOT recoverable from the finalized provider id/ARN). Preserving it
-            # keeps the owner-scoped LIST able to return an id that still works
-            # against GET /v1/messages/batches/{id} after finalization, and its
-            # presence is the positive marker distinguishing an Anthropic message
-            # batch from an OpenAI-dialect /v1/batches Bedrock job. Additive:
-            # only rows this route created carry the key; every other batch flow
-            # is untouched.
-            "litellm_client_batch_id",
-            SPEND_RECORDED_MARKER_KEY,
-        ):
-            if preserved_key in stash and (
-                preserved_key not in finalized or finalized.get(preserved_key) is None
-            ):
-                finalized[preserved_key] = stash.get(preserved_key)
-        if spend_recorded:
-            finalized[SPEND_RECORDED_MARKER_KEY] = True
-        return json.dumps(finalized)
-
-    async def _get_user_info(self, batch_id: str, user_id: str | None) -> dict[str, Any]:
+    async def _get_user_info(self, batch_id: str, user_id: Optional[str]) -> dict[str, str | None]:
         """
         Look up user email and key alias by user_id for enriching the S3 callback metadata.
         Returns a dict with user_api_key_user_email and user_api_key_alias (both may be None).
@@ -421,8 +119,10 @@ class CheckBatchCost:
         if not user_id:
             return {}
         try:
-            user_row = await self.prisma_client.db.litellm_usertable.find_unique(
-                where={"user_id": user_id}
+            user_row: prisma_models.LiteLLM_UserTable | None = (
+                await self.prisma_client.db.litellm_usertable.find_unique(
+                    where={"user_id": user_id}
+                )
             )
             if user_row is None:
                 return {}
@@ -441,8 +141,10 @@ class CheckBatchCost:
         if not api_key:
             return None
         try:
-            key_row = await self.prisma_client.db.litellm_verificationtoken.find_unique(
-                where={"token": api_key}
+            key_row: prisma_models.LiteLLM_VerificationToken | None = (
+                await self.prisma_client.db.litellm_verificationtoken.find_unique(
+                    where={"token": api_key}
+                )
             )
             return getattr(key_row, "key_alias", None) if key_row is not None else None
         except Exception as e:
@@ -454,8 +156,10 @@ class CheckBatchCost:
         if not team_id:
             return None
         try:
-            team_row = await self.prisma_client.db.litellm_teamtable.find_unique(
-                where={"team_id": team_id}
+            team_row: prisma_models.LiteLLM_TeamTable | None = (
+                await self.prisma_client.db.litellm_teamtable.find_unique(
+                    where={"team_id": team_id}
+                )
             )
             return getattr(team_row, "team_alias", None) if team_row is not None else None
         except Exception as e:
@@ -464,7 +168,7 @@ class CheckBatchCost:
 
     async def _build_creator_attribution_metadata(
         self, job: "LiteLLM_ManagedObjectTable", batch_id: str
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """
         Rebuild the spend-tracking metadata for the key, team, and tags that created the
         batch so the batch-cost spend log is attributed the same way a non-batch request
@@ -478,7 +182,7 @@ class CheckBatchCost:
         team_id = getattr(job, "team_id", None)
         request_tags = getattr(job, "request_tags", None)
 
-        metadata: dict[str, Any] = {
+        metadata: dict[str, object] = {
             "user_api_key_user_id": job.created_by,
             "user_api_key": api_key,
             "user_api_key_team_id": team_id,
