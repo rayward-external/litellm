@@ -1,9 +1,10 @@
 # Fork-maintained patches for rayward-external/litellm
 #
-# Verified on every PR and daily by .github/workflows/fork-patch-verify.yml,
-# which runs scripts/verify_fork_patches.py against this file -- see that
-# script's docstring for the full format contract, match strategy, and why
-# some rows are intentionally not checked. Short version:
+# Verified on every push, every PR, and daily on a cron by
+# .github/workflows/fork-patch-verify.yml, which runs
+# scripts/verify_fork_patches.py against this file -- see that script's
+# docstring for the full format contract, match strategy, and why some rows
+# are intentionally not checked. Short version:
 #
 # Format: <file>[ / <file> ...] | <pattern> | <human_description>
 #   - <pattern> matched as a literal substring OR (MULTILINE|DOTALL) regex,
@@ -25,9 +26,21 @@
 # digest pin that shadows an ARG default (below) can stay present while
 # drifting to a stale value nothing compares it to -- exactly what broke the
 # image build 2026-08-30 to 2026-09-02 (rayward-external/litellm#239). That
-# class gets its OWN consistency check, not a grep pattern here:
-# tests/test_litellm/test_dockerfile_base_image_pins.py asserts every literal
-# FROM digest still equals the ARG default it shadows.
+# class therefore gets a SECOND phase in the same script rather than a grep
+# pattern here: verify_fork_patches.py's dockerfile_pin_failures() compares
+# every literal `FROM <image>@sha256:` in every Dockerfile THIS FILE NAMES
+# against the `ARG ..._IMAGE` default it shadows -- full reference, name+tag
+# +digest -- and fails if they differ, if a required Dockerfile is unnamed or
+# missing, or if a required Dockerfile yields zero comparisons (vacuity).
+# tests/test_litellm/test_dockerfile_base_image_pins.py is the pytest entry
+# point to that same implementation, so a `pytest` run and the daily cron can
+# never disagree about what "pinned" means.
+#
+# Write pin rows' <pattern> version-AGNOSTICALLY (e.g. `FROM.*sha256:`, not a
+# literal digest or `node:20\.18`): phase 1 asserts the pin is PRESENT, phase 2
+# asserts it is CURRENT. A row that hardcodes today's version becomes the thing
+# that goes stale -- which is how the ui-builder pin sat drifted from
+# 2026-08-04 to 2026-09-02 with this file reporting green.
 
 Dockerfile            | FROM.*sha256:    | Digest-pinned base image (not ARG-variable FROM); this is the Dockerfile litellm-build-push.yml deploys (Scorecard PinnedDependenciesID)
 backend/Dockerfile    | FROM.*sha256:    | Digest-pinned base image (not ARG-variable FROM)
@@ -48,10 +61,10 @@ litellm/proxy/guardrails/guardrail_hooks/litellm_content_filter/content_filter.p
 .github/codeql/codeql-config.yml    | py/stack-trace-exposure                    | Exclude CWE-209 query: tracebacks only reach loggers, ProxyException.to_dict() never serializes a traceback field, CodeQL cannot distinguish log sinks from HTTP response sinks
 .github/codeql/codeql-config.yml    | py/incomplete-url-substring-sanitization   | Exclude CWE-184 query: security-critical URL validation uses urlparse() tuple comparison; flagged startswith/endswith are non-security normalization (JWT heuristic, trailing-slash strip)
 .github/codeql/codeql-config.yml    | py/request-without-cert-validation          | Exclude CWE-295 query: every httpx client resolves verify via get_ssl_verify()/get_ssl_configuration() (litellm/llms/custom_httpx/http_handler.py), defaulting to True and only disabled via explicit operator opt-in (SSL_VERIFY env var / litellm.ssl_verify / explicit param) for enterprise self-signed/internal-CA deployments; CodeQL cannot follow the dynamic default so it flags every call site
-Dockerfile        | FROM --platform=\$BUILDPLATFORM node:20\.18-alpine3\.20@sha256: | (ui-builder stage) Literal digest pin for the ui-builder stage (was ARG-variable FROM \$UI_BUILD_IMAGE), closing PinnedDependencies #1009/#1020. Same pattern as the other stages in this file. REMOVAL CONDITION: remove once upstream pins this stage itself.
+Dockerfile        | FROM --platform=\$BUILDPLATFORM node:\S+@sha256: | (ui-builder stage) Literal digest pin for the ui-builder stage (was ARG-variable FROM \$UI_BUILD_IMAGE), closing PinnedDependencies #1009/#1020. Same pattern as the other stages in this file. The pattern is deliberately version-AGNOSTIC: this row asserts the pin is PRESENT, while whether it is CURRENT is phase 2's job (scripts/verify_fork_patches.py compares it to ARG UI_BUILD_IMAGE). Pinning a literal node version here instead would make the row itself the thing that goes stale -- which is how this pin sat drifted at node:20.18-alpine3.20 from 2026-08-04 (upstream commit 487074f602 moved ARG UI_BUILD_IMAGE to node:24.19-alpine3.24) until phase 2's first run caught it, with the manifest reporting green the whole time. REMOVAL CONDITION: remove once upstream pins this stage itself.
 docker/Dockerfile.database            | FROM ghcr\.io/astral-sh/uv:0\.11\.7@sha256:   | Literal digest pin for uvbin/ui-builder/runtime stages (were ARG-variable FROM), closing PinnedDependencies #1010/#1011/#1012. REMOVAL CONDITION: remove once upstream pins these stages itself.
 docker/Dockerfile.non_root            | FROM ghcr\.io/astral-sh/uv:0\.11\.7@sha256:   | Literal digest pin for uvbin/ui-builder stages (were ARG-variable FROM), closing PinnedDependencies #1013/#1014. REMOVAL CONDITION: remove once upstream pins these stages itself.
-tests/test_litellm/test_dockerfile_base_image_pins.py | test_literal_from_digests_match_arg_defaults | Regression guard for every literal digest pin above: asserts each Dockerfile's literal `FROM <repo>@sha256:` equals that same file's `ARG ..._IMAGE` default, and that the patched files still carry both. A literal pin is not a variable reference, so an upstream ARG bump leaves it behind with nothing comparing the two. That drift broke the image build on 2026-08-30: upstream moved the ARG to a wolfi-base with glibc 2.44 and switched to `apk add python-3.13` / `uv sync --python python3.13`, the literal FROM lines stayed on a May 2026 wolfi-base with glibc 2.43, and the build died with "/usr/lib/libm.so.6: version `GLIBC_2.44' not found". Covers Dockerfile, backend/, gateway/, migrations/ and docker/Dockerfile.database.
+tests/test_litellm/test_dockerfile_base_image_pins.py | test_no_stale_literal_from_pins | Regression guard for every literal digest pin above. The RULE now lives in scripts/verify_fork_patches.py (dockerfile_pin_failures) so it also runs on the daily fork-patch-verify.yml schedule and after every upstream sync, not only when this suite happens to run (rayward-internal/llm-gateway-infra#694); this module is the pytest entry point to that same implementation and imports it by path, so the two can never disagree. Asserts each Dockerfile's literal `FROM <image>@sha256:` still equals the `ARG ..._IMAGE` default it shadows -- full reference, name+tag+digest -- and that the patched files still carry both. A literal pin is not a variable reference, so an upstream ARG bump leaves it behind with nothing comparing the two. That drift broke the image build on 2026-08-30: upstream moved the ARG to a wolfi-base with glibc 2.44 and switched to `apk add python-3.13` / `uv sync --python python3.13`, the literal FROM lines stayed on a May 2026 wolfi-base with glibc 2.43, and the build died with "/usr/lib/libm.so.6: version `GLIBC_2.44' not found". The FIRST version of this guard was keyed on an allowlist of two image repos (wolfi-base, astral-sh/uv) and compared digests only, so it stayed green for a month while the ui-builder stage of Dockerfile, docker/Dockerfile.database and docker/Dockerfile.non_root sat on node:20.18-alpine3.20 after upstream commit 487074f602 (2026-08-04) moved ARG UI_BUILD_IMAGE to node:24.19-alpine3.24 -- fixed by generalizing the rule to every pinned image and re-pinning all three. Covers Dockerfile, backend/, gateway/, migrations/, docker/Dockerfile.database (REQUIRED_PINNED_DOCKERFILES) and opportunistically docker/Dockerfile.non_root. REMOVAL CONDITION: none; this is the not-stale half of the sync-CI condition AGENTS.md's cost-tracking exception depends on.
 litellm-rust/crates/python-bridge/src/gil.rs        | py.detach(f)   | pyo3 0.29 removed Python::allow_threads (renamed Python::detach); RUSTSEC-2026-0176/0177 are only patched at pyo3 >=0.29.0, so we can't downgrade below the version that removed the old GIL API. REMOVAL CONDITION: remove when upstream litellm bumps pyo3 to >=0.29 and updates the bridge itself.
 litellm-rust/crates/python-bridge/src/lib.rs        | Python::attach | pyo3 0.29 removed Python::with_gil (renamed Python::attach); same RUSTSEC-2026-0176/0177 constraint as gil.rs above. REMOVAL CONDITION: remove when upstream litellm bumps pyo3 to >=0.29 and updates the bridge itself.
 litellm-rust/crates/ai-gateway/src/python/config.rs | Python::attach | pyo3 0.29 removed Python::with_gil (renamed Python::attach); same RUSTSEC-2026-0176/0177 constraint as gil.rs above. REMOVAL CONDITION: remove when upstream litellm bumps pyo3 to >=0.29 and updates the bridge itself.

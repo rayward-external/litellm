@@ -8,8 +8,26 @@ name: Fork Patch Verify
 # never conflicts textually with the surrounding diff) is caught here instead
 # of surfacing as a build break days or weeks later -- exactly what happened
 # with the digest-pin drift fixed in rayward-external/litellm#239.
+#
+# The script runs two phases and this workflow is red if EITHER fails:
+#   1. every manifest row's patch is still PRESENT;
+#   2. every literal `FROM <image>@sha256:` still equals the `ARG` default it
+#      shadows -- i.e. the pin is not merely present but not STALE. Phase 1
+#      alone cannot see that class: the row for the 2026-08-30 break asserted
+#      the pin was present, and it was; it was just the wrong pin.
 
 on:
+  push:
+    branches:
+      - main
+      - litellm_internal_staging
+      - litellm_oss_staging
+      - "litellm_**"
+    # A -X theirs upstream sync lands on these branches as a PUSH (often a
+    # merge commit pushed directly, or a squash landing straight after a PR
+    # check ran against an older head). PR-only coverage therefore leaves the
+    # exact event this check exists for -- the sync itself -- unverified on
+    # the branch that gets built and deployed.
   pull_request:
     branches:
       - main
@@ -22,6 +40,10 @@ on:
     # manifest or this script itself. The check itself is a few hundred
     # milliseconds of file reads, so running it on every PR costs nothing.
   schedule:
+    # Daily. A push/PR check only fires when someone changes something; the
+    # cron is what makes a patch that has been silently gone for a week
+    # surface on its own, and it is the leg AGENTS.md's "sync CI" condition
+    # actually needs (rayward-internal/llm-gateway-infra#694).
     - cron: "17 7 * * *"
   workflow_dispatch:
 
@@ -43,5 +65,5 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Verify every fork-patches.txt row is still present
+      - name: Verify fork patches are present AND digest pins are not stale
         run: python3 scripts/verify_fork_patches.py
