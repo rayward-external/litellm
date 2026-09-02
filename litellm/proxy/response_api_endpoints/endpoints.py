@@ -1476,6 +1476,17 @@ async def responses_websocket_endpoint(
         "method": "POST",
         "path": "/v1/responses",
         "headers": headers_list,
+        # Carry the peer address across from the WebSocket scope. Starlette's
+        # Request.client reads scope["client"] and returns None when it is
+        # absent, and add_litellm_data_to_request
+        # (litellm/proxy/litellm_pre_call_utils.py:2144-2164) falls back to
+        # request.client.host for requester_ip_address -- so omitting this left
+        # every _aresponses_websocket spend row with a blank
+        # requester_ip_address, column and metadata copy alike
+        # (rayward-internal/llm-gateway-infra#661). The x-forwarded-for branch
+        # above it is gated on general_settings["use_x_forwarded_for"], so the
+        # headers copied on the line above are not enough on their own.
+        "client": websocket.scope.get("client"),
     }
     request: Final = Request(scope=scope)
     request._url = websocket.url

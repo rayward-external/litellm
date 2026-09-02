@@ -1853,6 +1853,53 @@ class ResponsesWebSocketStreaming:
             modified = True
         return modified
 
+    @staticmethod
+    def _flatten_response_create(
+        msg_obj: dict[str, object],  # mutable-ok: WS frame dict, mutated in place like _enforce_authorized_model above
+    ) -> bool:
+        """
+        Collapse a nested ``response.create`` envelope into the flat wire shape
+        before the frame is forwarded to the provider's own socket.
+
+        A client may send either shape:
+          flat:   ``{"type": "response.create", "input": ..., "model": ...}``
+          nested: ``{"type": "response.create", "response": {"input": ..., ...}}``
+
+        The nested one is what OpenAI's WebSocket-mode guide documents, but the
+        native path (``llm_http_handler.async_responses_websocket``) is a literal
+        pass-through: whatever we send is what the provider's ``/v1/responses``
+        socket receives. Measured 2026-09-02 against the real upstream through
+        that pass-through, the flat frame is accepted while the nested one is
+        rejected with ``missing_required_parameter: 'input'``
+        (rayward-internal/llm-gateway-infra#689), so a conformant client got a
+        400 on every turn.
+
+        Nothing between ``_mask_response_create`` and ``backend_ws.send`` ever
+        collapsed the envelope -- ``_apply_request_defaults`` and
+        ``_enforce_authorized_model`` read and write *inside* it but always
+        leave it nested -- so this runs FIRST in ``_mask_response_create``,
+        making every later step (defaults merge, authorized-model enforcement,
+        PII masking, input logging) operate on the flat frame that is actually
+        sent. Those steps keep their own nested handling; after this it is
+        dead-but-harmless defence for any other caller.
+
+        Nested values win over a same-named top-level key: the envelope is the
+        request the client meant, and a stray top-level duplicate is not.
+        ``type`` is never overwritten -- it identifies the client event, not a
+        request parameter.
+
+        Returns True if the object was modified.
+        """
+        nested: Final = msg_obj.get("response")
+        if not _is_json_object(nested):
+            return False
+        del msg_obj["response"]
+        hoisted: Final = MappingProxyType(  # mutable-ok: immediately frozen filtered envelope
+            {key: value for key, value in nested.items() if key != "type"}
+        )
+        msg_obj.update(hoisted)
+        return True
+
     def _apply_request_defaults(
         self,
         msg_obj: dict[str, object],  # mutable-ok: WS frame dict, mutated in place like _enforce_authorized_model above
@@ -1895,18 +1942,23 @@ class ResponsesWebSocketStreaming:
         if msg_obj.get("type") != "response.create":
             return message
 
+        # FIRST: collapse a nested {"response": {...}} envelope to the flat
+        # shape the provider's socket accepts, so every step below (and the
+        # frame actually forwarded) sees one shape. See
+        # _flatten_response_create.
+        flattened: Final = self._flatten_response_create(msg_obj)
         defaults_modified: Final = self._apply_request_defaults(msg_obj)
         # Always enforce the authorized model, even when PII masking is off.
         model_modified: Final = self._enforce_authorized_model(msg_obj)
 
         if not self.guardrail_callbacks:
-            return json.dumps(msg_obj) if defaults_modified or model_modified else message
+            return json.dumps(msg_obj) if flattened or defaults_modified or model_modified else message
 
         if "metadata" not in self.request_data:
             self.request_data["metadata"] = {}
 
         modified = (
-            defaults_modified or model_modified
+            flattened or defaults_modified or model_modified
         )  # rebind-ok: accumulator flag flipped True by the PII-masking loop below
         guardrail_cbs: Final[tuple[PresidioGuardrailCallback, ...]] = tuple(self.guardrail_callbacks)
         for cb in guardrail_cbs:
