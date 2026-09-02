@@ -331,8 +331,13 @@ class TestTransformationCustomTools:
 
     def test_transform_anthropic_tool_call_ids_get_openai_item_id_shape(self):
         """Anthropic tool ids (toolu_/srvtoolu_) surfacing through the bridge
-        must be emitted with fc/ctc-prefixed item ids so a Responses client can
-        replay them to OpenAI verbatim, while call_id stays raw for pairing."""
+        must be emitted with OpenAI-shaped item ids so a Responses client can
+        replay them verbatim, while call_id stays raw for pairing.
+
+        A ``srvtoolu_`` web search is a search the provider already ran, so it
+        surfaces as a ``web_search_call`` record (``ws_`` item id, no call_id)
+        rather than a ``function_call`` the client would answer — see
+        test_server_executed_web_search_roundtrip.py."""
         from litellm.types.utils import ModelResponse, Choices, Message, ChatCompletionMessageToolCall, Function
 
         client_call = ChatCompletionMessageToolCall(
@@ -366,12 +371,12 @@ class TestTransformationCustomTools:
 
         assert [item.id for item in result] == [
             "fc_toolu_01ClientCall",
-            "fc_srvtoolu_01ServerCall",
+            "ws_srvtoolu_01ServerCall",
             "ctc_toolu_01CustomCall",
         ]
-        assert [item.call_id for item in result] == [
+        assert [getattr(item, "call_id", None) for item in result] == [
             "toolu_01ClientCall",
-            "srvtoolu_01ServerCall",
+            None,
             "toolu_01CustomCall",
         ]
 

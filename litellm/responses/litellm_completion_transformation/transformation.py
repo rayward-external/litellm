@@ -78,6 +78,7 @@ from litellm.types.responses.main import (
     OutputFunctionToolCall,
     OutputImageGenerationCall,
     OutputText,
+    OutputWebSearchCall,
 )
 from litellm.types.utils import (
     ChatCompletionAnnotation,
@@ -90,9 +91,11 @@ from litellm.types.utils import (
 )
 
 from .custom_tools import (
+    build_web_search_call_item,
     convert_custom_tool_to_function_tool,
     extract_custom_tool_names,
     is_custom_tool_call,
+    is_server_executed_web_search_call,
     openai_shaped_tool_call_item_id,
     serialize_tool_call_arguments,
     unwrap_custom_tool_arguments,
@@ -1997,13 +2000,18 @@ class LiteLLMCompletionResponsesConfig:
     def transform_chat_completion_tools_to_responses_tools(
         chat_completion_response: ModelResponse,
         responses_api_request: ResponsesAPIOptionalRequestParams | None = None,
-    ) -> list[ResponseFunctionToolCall | CustomToolCallOutputItem]:
+    ) -> list[ResponseFunctionToolCall | CustomToolCallOutputItem | OutputWebSearchCall]:
         """
         Transform a Chat Completion tools into a Responses API tools.
 
         For custom tools (e.g. apply_patch), returns CustomToolCallOutputItem
         with ``type="custom_tool_call"``. For regular function tools, returns
         ``ResponseFunctionToolCall`` with ``type="function_call"``.
+
+        A web search the provider ran itself (Anthropic ``server_tool_use``,
+        surfaced here as a ``srvtoolu_``-prefixed tool call) returns
+        ``OutputWebSearchCall`` instead: the search is already done, so the item
+        records it rather than asking the client to run it.
         """
         all_chat_completion_tools: Final[list[ChatCompletionMessageToolCall]] = []
         for choice in chat_completion_response.choices:
@@ -2020,13 +2028,20 @@ class LiteLLMCompletionResponsesConfig:
         custom_tool_names: Final = extract_custom_tool_names(request_tools)
         namespace_tool_names: Final = LiteLLMCompletionResponsesConfig.namespace_tool_name_map(request_tools)
 
-        responses_tools: Final[list[ResponseFunctionToolCall | CustomToolCallOutputItem]] = []
+        responses_tools: Final[list[ResponseFunctionToolCall | CustomToolCallOutputItem | OutputWebSearchCall]] = []
         for tool in all_chat_completion_tools:
             if tool.type == "function":
                 function_definition = tool.function
                 tool_name = function_definition.name or ""
                 tool_id = tool.id or ""
                 tool_arguments = serialize_tool_call_arguments(function_definition.get("arguments"))
+
+                # A web search the PROVIDER already ran is not a call the client
+                # can make: emit OpenAI's ``web_search_call`` record instead of a
+                # ``function_call`` the client would have to answer.
+                if is_server_executed_web_search_call(tool_id, tool_name):
+                    responses_tools.append(build_web_search_call_item(tool_id, tool_name, tool_arguments, "completed"))
+                    continue
 
                 # Check if this is a custom tool
                 if is_custom_tool_call(tool_name, custom_tool_names):
@@ -2279,6 +2294,7 @@ class LiteLLMCompletionResponsesConfig:
         | OutputCodeInterpreterCall
         | OutputFunctionToolCall
         | OutputImageGenerationCall
+        | OutputWebSearchCall
         | ResponseFunctionToolCall
         | CustomToolCallOutputItem
     ]:
@@ -2287,6 +2303,7 @@ class LiteLLMCompletionResponsesConfig:
             | OutputCodeInterpreterCall
             | OutputFunctionToolCall
             | OutputImageGenerationCall
+            | OutputWebSearchCall
             | ResponseFunctionToolCall
             | CustomToolCallOutputItem
         ] = []

@@ -7,7 +7,9 @@ import litellm
 from litellm.main import stream_chunk_builder
 from litellm.responses.litellm_completion_transformation.custom_tools import (
     build_tool_call_item_kwargs,
+    build_web_search_call_item,
     extract_custom_tool_names,
+    is_server_executed_web_search_call,
     serialize_tool_call_arguments,
 )
 from litellm.responses.litellm_completion_transformation.transformation import (
@@ -132,6 +134,9 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         self._accumulated_reasoning_content_parts: list[str] = []
         self._accumulated_provider_specific_fields: dict[str, object] = {}
         self._custom_tool_names: set[str] = extract_custom_tool_names(self.responses_api_request.get("tools"))
+        # Tool calls the PROVIDER ran itself. Only the first delta of a call
+        # carries its name, so the verdict is latched by call id.
+        self._server_executed_web_search_call_ids: set[str] = set()  # mutable-ok: per-call latch
         self._namespace_tool_names = LiteLLMCompletionResponsesConfig.namespace_tool_name_map(
             self.responses_api_request.get("tools")
         )
@@ -172,6 +177,33 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
 
         return delta.content or delta.function_call or delta.tool_calls or chunk.choices[0].finish_reason is not None
 
+    def _resolve_streamed_call_id(self, tool_call: object) -> str:
+        """Correlate one streamed tool-call delta with its call id.
+
+        Only the first delta of a call carries an ``id``; later ones are keyed by
+        ``index`` alone. Returns "" when the delta cannot be attributed to a call:
+        it has neither an id nor a usable index, or its index has been reused by
+        more than one call id, which makes id-less deltas ambiguous and unsafe to
+        route. The caller skips those.
+        """
+        tc_index: Final = self._normalize_tool_call_index(tool_call)
+        call_id_raw: Final = tool_call.get("id") if isinstance(tool_call, dict) else getattr(tool_call, "id", None)
+
+        if call_id_raw:
+            call_id: Final = str(call_id_raw)
+            if tc_index is not None:
+                existing_call_id: Final = self._tool_call_id_by_index.get(tc_index)
+                if existing_call_id is not None and existing_call_id != call_id:
+                    # Reusing the same index for multiple call_ids is ambiguous for id-less deltas.
+                    # Guard against silent misrouting by disabling index fallback for this index.
+                    self._ambiguous_tool_call_indexes.add(tc_index)
+                self._tool_call_id_by_index[tc_index] = call_id
+            return call_id
+
+        if tc_index is None or tc_index in self._ambiguous_tool_call_indexes:
+            return ""
+        return self._tool_call_id_by_index.get(tc_index) or ""
+
     def _queue_tool_call_delta_events(self, tool_calls: object) -> None:
         """
         Convert chat-completions streaming `tool_calls` deltas into Responses API streaming events.
@@ -187,26 +219,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             return
 
         for tc in tool_calls:
-            tc_index = self._normalize_tool_call_index(tc)
-            call_id_raw = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
-            call_id = ""
-
-            if call_id_raw:
-                call_id = str(call_id_raw)
-                if tc_index is not None:
-                    existing_call_id = self._tool_call_id_by_index.get(tc_index)
-                    if existing_call_id is not None and existing_call_id != call_id:
-                        # Reusing the same index for multiple call_ids is ambiguous for id-less deltas.
-                        # Guard against silent misrouting by disabling index fallback for this index.
-                        self._ambiguous_tool_call_indexes.add(tc_index)
-                    self._tool_call_id_by_index[tc_index] = call_id
-            elif tc_index is not None:
-                if tc_index in self._ambiguous_tool_call_indexes:
-                    continue
-                mapped_call_id = self._tool_call_id_by_index.get(tc_index)
-                if mapped_call_id:
-                    call_id = mapped_call_id
-
+            call_id = self._resolve_streamed_call_id(tc)
             if not call_id:
                 continue
 
@@ -220,6 +233,12 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                 fn_name = str(getattr(fn, "name", "") or "")
                 fn_args_delta = serialize_tool_call_arguments(getattr(fn, "arguments", ""))
             tool_name, tool_namespace = self._responses_namespace_tool_call_fields(fn_name)
+
+            # A provider-executed web search is reported once, at the end, as a
+            # ``web_search_call`` item — never as streamed function-call events
+            # the client would answer.
+            if self._is_server_executed_web_search(call_id, tool_name):
+                continue
 
             output_index = self._get_or_assign_tool_output_index(call_id)
 
@@ -258,6 +277,41 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                     delta_event.__dict__["sequence_number"] = self._sequence_number
                     self._pending_tool_events.append(delta_event)
 
+    def _is_server_executed_web_search(self, call_id: str, tool_name: str) -> bool:
+        if call_id in self._server_executed_web_search_call_ids:
+            return True
+        if is_server_executed_web_search_call(call_id, tool_name):
+            self._server_executed_web_search_call_ids.add(call_id)
+            return True
+        return False
+
+    def _queue_web_search_call_events(self, call_id: str, tool_name: str, arguments: str) -> None:
+        """Report a provider-executed web search or fetch as a ``web_search_call`` item.
+
+        Emitted as an added/done pair with no ``function_call_arguments`` events,
+        because the client has nothing to run and nothing to answer. ``tool_name``
+        comes from the assembled final message, which always carries it, and picks
+        the action shape (``search`` vs ``open_page``).
+        """
+        output_index: Final = self._get_or_assign_tool_output_index(call_id)
+        self._sequence_number += 1
+        added_event: Final = OutputItemAddedEvent(
+            type=ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED,
+            output_index=output_index,
+            item=build_web_search_call_item(call_id, tool_name, arguments, "in_progress"),
+        )
+        added_event.__dict__["sequence_number"] = self._sequence_number
+        self._pending_tool_events.append(added_event)
+
+        self._sequence_number += 1
+        done_event: Final = OutputItemDoneEvent(
+            type=ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE,
+            output_index=output_index,
+            item=build_web_search_call_item(call_id, tool_name, arguments, "completed"),
+        )
+        done_event.__dict__["sequence_number"] = self._sequence_number
+        self._pending_tool_events.append(done_event)
+
     def _queue_final_tool_call_done_events(self, litellm_complete_object: ModelResponse) -> None:
         """
         Ensure tool calls that were not streamed as deltas still get emitted before response.completed.
@@ -292,6 +346,10 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                 fn_name = str(getattr(fn, "name", "") or "")
                 fn_args = serialize_tool_call_arguments(getattr(fn, "arguments", ""))
             tool_name, tool_namespace = self._responses_namespace_tool_call_fields(fn_name)
+
+            if self._is_server_executed_web_search(call_id, tool_name):
+                self._queue_web_search_call_events(call_id, tool_name, fn_args)
+                continue
 
             # Track if this is a new tool call that wasn't streamed
             is_new_tool_call = call_id not in self._tool_args_by_call_id

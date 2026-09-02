@@ -1,4 +1,4 @@
-from typing import Final, Literal, Optional, Union
+from typing import Final, Literal, Optional, TypeAlias, Union
 
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
 from pydantic import PrivateAttr
@@ -82,6 +82,51 @@ def build_code_interpreter_log_outputs(
         parts.append(f"STDERR: {content['stderr']}")
     logs: Final = "".join(parts)
     return [OutputCodeInterpreterCallLog(type="logs", logs=logs)] if logs else None
+
+
+WebSearchCallStatus: TypeAlias = Literal["in_progress", "searching", "completed", "incomplete", "failed"]
+
+
+class OutputWebSearchCallSearchAction(BaseLiteLLMOpenAIResponseObject):
+    """``action.type == "search"``: the model ran a query."""
+
+    type: Literal["search"]
+    query: str
+
+
+class OutputWebSearchCallOpenPageAction(BaseLiteLLMOpenAIResponseObject):
+    """``action.type == "open_page"``: the model fetched one URL.
+
+    OpenAI's Responses API models a page fetch as a ``web_search_call`` with
+    this action rather than an item type of its own -- see
+    ``openai.types.responses.response_function_web_search.ActionOpenPage``.
+    """
+
+    type: Literal["open_page"]
+    url: str
+
+
+OutputWebSearchCallAction: TypeAlias = OutputWebSearchCallSearchAction | OutputWebSearchCallOpenPageAction
+
+
+class OutputWebSearchCall(BaseLiteLLMOpenAIResponseObject):
+    """A web search the PROVIDER already ran on its own fleet.
+
+    Mirrors the ``web_search_call`` variant of OpenAI's Responses API output.
+    Unlike ``function_call``, this item carries no ``call_id``: it is a record
+    of work already done, not a request for the client to do any. Emitting a
+    provider-executed search as a ``function_call`` instead makes the client
+    answer a call it cannot run, and that answer has no ``tool_use`` to pair
+    with when the history is replayed.
+    """
+
+    type: Literal["web_search_call"]
+    id: str
+    status: WebSearchCallStatus
+    # OpenAI declares ``action`` required. We keep it optional so a call whose
+    # arguments carry neither a query nor a url degrades to "no description"
+    # instead of asserting work the model did not do.
+    action: OutputWebSearchCallAction | None = None
 
 
 class CustomToolCallOutputItem(BaseLiteLLMOpenAIResponseObject):
