@@ -20,6 +20,7 @@ provider-executed search, and a replayed history never leaves a ``tool_result``
 without its ``tool_use``.
 """
 
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -44,7 +45,9 @@ from litellm.types.utils import (
 )
 
 SERVER_SEARCH_ID = "srvtoolu_01NQtgb8rWnWji3GxBsBUxaq"
+SERVER_FETCH_ID = "srvtoolu_01NX9Dj8LEuVAorACswXx6st"
 CLIENT_TOOL_ID = "toolu_012UNSopfSsL8rmKbtEyHfSB"
+FETCHED_URL = "https://example.com"
 
 
 def _chat_completion_with_server_search() -> ModelResponse:
@@ -143,6 +146,55 @@ class TestServerExecutedWebSearchEmission:
 
         call_ids = {getattr(item, "call_id", None) for item in items}
         assert SERVER_SEARCH_ID not in call_ids
+
+    def test_server_fetch_keeps_its_url_in_an_open_page_action(self):
+        """Anthropic's ``web_fetch`` takes ``{"url": ...}``, not ``{"query": ...}``
+        (measured against api.anthropic.com on 2026-09-02). OpenAI has no
+        fetch-shaped output item, so it must surface as a ``web_search_call``
+        with an ``open_page`` action carrying the URL — reading it with the
+        search key would drop the URL and mislabel a fetch as a search."""
+        chat_completion_response = ModelResponse(
+            id="chatcmpl-3",
+            created=1,
+            model="claude-sonnet-5",
+            object="chat.completion",
+            choices=[
+                Choices(
+                    finish_reason="tool_calls",
+                    index=0,
+                    message=Message(
+                        role="assistant",
+                        content="Example Domain.",
+                        tool_calls=[
+                            ChatCompletionMessageToolCall(
+                                id=SERVER_FETCH_ID,
+                                type="function",
+                                function=Function(
+                                    name="web_fetch",
+                                    arguments=json.dumps({"url": FETCHED_URL}),
+                                ),
+                            )
+                        ],
+                    ),
+                )
+            ],
+        )
+
+        response = LiteLLMCompletionResponsesConfig.transform_chat_completion_response_to_responses_api_response(
+            request_input="fetch example.com",
+            responses_api_request={},
+            chat_completion_response=chat_completion_response,
+        )
+
+        items = _output_items(response)
+        fetch_item = next(item for item in items if item.type == "web_search_call")
+        assert fetch_item.id == f"ws_{SERVER_FETCH_ID}"
+        assert getattr(fetch_item, "call_id", None) is None
+        assert fetch_item.action is not None
+        assert fetch_item.action.type == "open_page"
+        assert fetch_item.action.url == FETCHED_URL
+        # A fetch is never reported as a query the model did not run.
+        assert not hasattr(fetch_item.action, "query")
 
     def test_client_tool_named_web_search_is_still_a_function_call(self):
         """The ``srvtoolu_`` prefix is what marks a call as provider-executed.
@@ -305,6 +357,39 @@ class TestServerExecutedWebSearchReplay:
         ]
         assert not [block for block in blocks if block.get("type") == "tool_result"]
         assert not [block for block in blocks if block.get("type") == "server_tool_use"]
+
+    def test_echoed_web_fetch_call_item_produces_no_orphan_server_tool_use(self):
+        """The ``open_page`` item replayed by the client must add nothing to the
+        Anthropic history: no ``server_tool_use`` without its result, and no
+        ``tool_result`` without its ``tool_use``."""
+        responses_input = [
+            {"role": "user", "content": [{"type": "input_text", "text": "fetch example.com"}]},
+            {
+                "type": "web_search_call",
+                "id": f"ws_{SERVER_FETCH_ID}",
+                "status": "completed",
+                "action": {"type": "open_page", "url": FETCHED_URL},
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Example Domain."}],
+            },
+            {"role": "user", "content": [{"type": "input_text", "text": "thanks"}]},
+        ]
+
+        anthropic_messages = self._anthropic_messages(responses_input)
+
+        _assert_every_tool_result_has_its_tool_use(anthropic_messages)
+        blocks = [
+            block
+            for message in anthropic_messages
+            if isinstance(message.get("content"), list)
+            for block in message["content"]
+            if isinstance(block, dict)
+        ]
+        assert not [block for block in blocks if block.get("type") == "server_tool_use"]
+        assert not [block for block in blocks if block.get("type") == "tool_result"]
 
     def test_legacy_recorded_server_search_pair_keeps_its_tool_use(self):
         """Histories recorded before this fix still carry the ``function_call`` /

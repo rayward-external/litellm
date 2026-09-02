@@ -2040,7 +2040,7 @@ class LiteLLMCompletionResponsesConfig:
                 # can make: emit OpenAI's ``web_search_call`` record instead of a
                 # ``function_call`` the client would have to answer.
                 if is_server_executed_web_search_call(tool_id, tool_name):
-                    responses_tools.append(build_web_search_call_item(tool_id, tool_arguments, "completed"))
+                    responses_tools.append(build_web_search_call_item(tool_id, tool_name, tool_arguments, "completed"))
                     continue
 
                 # Check if this is a custom tool

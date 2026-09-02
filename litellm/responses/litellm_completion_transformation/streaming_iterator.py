@@ -277,18 +277,20 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             return True
         return False
 
-    def _queue_web_search_call_events(self, call_id: str, arguments: str) -> None:
-        """Report a provider-executed web search as a ``web_search_call`` item.
+    def _queue_web_search_call_events(self, call_id: str, tool_name: str, arguments: str) -> None:
+        """Report a provider-executed web search or fetch as a ``web_search_call`` item.
 
         Emitted as an added/done pair with no ``function_call_arguments`` events,
-        because the client has nothing to run and nothing to answer.
+        because the client has nothing to run and nothing to answer. ``tool_name``
+        comes from the assembled final message, which always carries it, and picks
+        the action shape (``search`` vs ``open_page``).
         """
         output_index: Final = self._get_or_assign_tool_output_index(call_id)
         self._sequence_number += 1
         added_event: Final = OutputItemAddedEvent(
             type=ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED,
             output_index=output_index,
-            item=build_web_search_call_item(call_id, arguments, "in_progress"),
+            item=build_web_search_call_item(call_id, tool_name, arguments, "in_progress"),
         )
         added_event.__dict__["sequence_number"] = self._sequence_number
         self._pending_tool_events.append(added_event)
@@ -297,7 +299,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         done_event: Final = OutputItemDoneEvent(
             type=ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE,
             output_index=output_index,
-            item=build_web_search_call_item(call_id, arguments, "completed"),
+            item=build_web_search_call_item(call_id, tool_name, arguments, "completed"),
         )
         done_event.__dict__["sequence_number"] = self._sequence_number
         self._pending_tool_events.append(done_event)
@@ -338,7 +340,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             tool_name, tool_namespace = self._responses_namespace_tool_call_fields(fn_name)
 
             if self._is_server_executed_web_search(call_id, tool_name):
-                self._queue_web_search_call_events(call_id, fn_args)
+                self._queue_web_search_call_events(call_id, tool_name, fn_args)
                 continue
 
             # Track if this is a new tool call that wasn't streamed

@@ -29,6 +29,8 @@ from litellm.types.llms.openai import (
 from litellm.types.responses.main import (
     OutputWebSearchCall,
     OutputWebSearchCallAction,
+    OutputWebSearchCallOpenPageAction,
+    OutputWebSearchCallSearchAction,
     WebSearchCallStatus,
 )
 
@@ -45,9 +47,14 @@ TOOL_CALL_ITEM_ID_PREFIX_BY_TYPE: Final = MappingProxyType(
 SERVER_EXECUTED_TOOL_CALL_ID_PREFIX: Final = "srvtoolu_"
 
 # Server-executed tool names that map onto OpenAI's ``web_search_call`` output
-# item. Code execution has its own item type and is converted elsewhere (see
+# item. ``web_fetch`` belongs here because OpenAI has no fetch-shaped item: a
+# page fetch is a ``web_search_call`` with an ``open_page`` action. Code
+# execution has its own item type and is converted elsewhere (see
 # ``_extract_tool_result_output_items``), so it is deliberately absent here.
 SERVER_EXECUTED_WEB_SEARCH_TOOL_NAMES: Final = frozenset({"web_search", "web_fetch"})
+
+# The one whose Anthropic input is ``{"url": ...}`` rather than ``{"query": ...}``.
+SERVER_EXECUTED_WEB_FETCH_TOOL_NAME: Final = "web_fetch"
 
 
 def openai_shaped_tool_call_item_id(item_type: str, tool_id: str) -> str:
@@ -161,8 +168,8 @@ def is_server_executed_web_search_call(call_id: str, tool_name: str) -> bool:
     )
 
 
-def extract_web_search_query(arguments: str) -> str | None:
-    """Read the ``query`` out of a web search tool call's JSON arguments."""
+def extract_string_tool_argument(arguments: str, key: str) -> str | None:
+    """Read one non-empty string field out of a tool call's JSON arguments."""
     if not arguments:
         return None
     try:
@@ -170,28 +177,49 @@ def extract_web_search_query(arguments: str) -> str | None:
     except (json.JSONDecodeError, TypeError, ValueError):
         return None
     if isinstance(parsed, dict):
-        query: Final = parsed.get("query")
-        if isinstance(query, str):
-            return query
+        value: Final = parsed.get(key)
+        if isinstance(value, str) and value:
+            return value
     return None
+
+
+def build_web_search_call_action(tool_name: str, arguments: str) -> OutputWebSearchCallAction | None:
+    """Describe what a provider-executed web tool actually did.
+
+    The two Anthropic server tools read from different keys -- ``web_search``
+    takes ``{"query": ...}`` and ``web_fetch`` takes ``{"url": ...}`` (both
+    measured against api.anthropic.com on 2026-09-02) -- and OpenAI keeps them
+    distinct too: a fetch is a ``web_search_call`` whose action is
+    ``open_page`` (``openai.types.responses.response_function_web_search``).
+    Reading a fetch with the search key would drop the URL and report a query
+    the model never ran, so the branch is on the tool name, not the arguments.
+
+    Returns None only when the arguments carry neither key, leaving the item
+    without an action rather than describing work that did not happen.
+    """
+    if tool_name == SERVER_EXECUTED_WEB_FETCH_TOOL_NAME:
+        url: Final = extract_string_tool_argument(arguments, "url")
+        return OutputWebSearchCallOpenPageAction(type="open_page", url=url) if url is not None else None
+    query: Final = extract_string_tool_argument(arguments, "query")
+    return OutputWebSearchCallSearchAction(type="search", query=query) if query is not None else None
 
 
 def build_web_search_call_item(
     call_id: str,
+    tool_name: str,
     arguments: str,
     status: WebSearchCallStatus,
 ) -> OutputWebSearchCall:
-    """Build the ``web_search_call`` output item for a provider-executed search.
+    """Build the ``web_search_call`` output item for a provider-executed call.
 
     Shared by the streaming iterator and the non-streaming transformation so
-    both surfaces describe the same search the same way.
+    both surfaces describe the same call the same way.
     """
-    query: Final = extract_web_search_query(arguments)
     return OutputWebSearchCall(
         type="web_search_call",
         id=openai_shaped_tool_call_item_id("web_search_call", call_id),
         status=status,
-        action=(OutputWebSearchCallAction(type="search", query=query) if query is not None else None),
+        action=build_web_search_call_action(tool_name, arguments),
     )
 
 

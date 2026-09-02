@@ -1,8 +1,8 @@
-from typing import Final, Literal, Optional, Union
+from typing import Final, Literal, Optional, TypeAlias, Union
 
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
 from pydantic import PrivateAttr
-from typing_extensions import Any, TypeAlias, TypedDict
+from typing_extensions import Any, TypedDict
 
 from litellm.types.llms.base import BaseLiteLLMOpenAIResponseObject
 
@@ -87,11 +87,26 @@ def build_code_interpreter_log_outputs(
 WebSearchCallStatus: TypeAlias = Literal["in_progress", "searching", "completed", "incomplete", "failed"]
 
 
-class OutputWebSearchCallAction(BaseLiteLLMOpenAIResponseObject):
-    """The action a provider-executed web search performed."""
+class OutputWebSearchCallSearchAction(BaseLiteLLMOpenAIResponseObject):
+    """``action.type == "search"``: the model ran a query."""
 
     type: Literal["search"]
-    query: str | None = None
+    query: str
+
+
+class OutputWebSearchCallOpenPageAction(BaseLiteLLMOpenAIResponseObject):
+    """``action.type == "open_page"``: the model fetched one URL.
+
+    OpenAI's Responses API models a page fetch as a ``web_search_call`` with
+    this action rather than an item type of its own -- see
+    ``openai.types.responses.response_function_web_search.ActionOpenPage``.
+    """
+
+    type: Literal["open_page"]
+    url: str
+
+
+OutputWebSearchCallAction: TypeAlias = OutputWebSearchCallSearchAction | OutputWebSearchCallOpenPageAction
 
 
 class OutputWebSearchCall(BaseLiteLLMOpenAIResponseObject):
@@ -108,6 +123,9 @@ class OutputWebSearchCall(BaseLiteLLMOpenAIResponseObject):
     type: Literal["web_search_call"]
     id: str
     status: WebSearchCallStatus
+    # OpenAI declares ``action`` required. We keep it optional so a call whose
+    # arguments carry neither a query nor a url degrades to "no description"
+    # instead of asserting work the model did not do.
     action: OutputWebSearchCallAction | None = None
 
 
