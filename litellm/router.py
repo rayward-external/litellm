@@ -8435,6 +8435,41 @@ class Router:
         )
         return False
 
+    def _refusal_stream_hold_for_call(
+        self,
+        initial_kwargs: dict,
+        hold_cls: "type[_RefusalStreamHold]" = _RefusalStreamHold,
+    ) -> _RefusalStreamHold:
+        """Build the refusal stream hold for one streaming call. Armed only when
+        refusal patterns are configured AND the model group has a
+        content_policy_fallbacks entry — holding delays time-to-first-chunk, so
+        groups with no rescue route must stream untouched. `hold_cls` selects the
+        stream shape (_RefusalStreamHold for chat chunks,
+        _ResponsesRefusalStreamHold for Responses API events)."""
+        patterns = _get_refusal_fallback_patterns()
+        model_group = initial_kwargs.get("model")
+        hold_chars = 0
+        try:
+            n_choices = int(initial_kwargs.get("n") or 1)
+        except (TypeError, ValueError):
+            n_choices = 1
+        if n_choices > 1:
+            # Multi-choice deltas interleave by StreamingChoices.index; a single
+            # accumulated buffer can't match reliably, so stream vanilla instead
+            # of half-working detection.
+            patterns = []
+        if patterns and isinstance(model_group, str):
+            content_policy_fallbacks = initial_kwargs.get("content_policy_fallbacks", self.content_policy_fallbacks)
+            if content_policy_fallbacks and self._get_fallback_model_group_from_fallbacks(
+                fallbacks=content_policy_fallbacks, model_group=model_group
+            ):
+                hold_chars = _refusal_stream_hold_chars()
+        return hold_cls(
+            patterns=patterns,
+            hold_chars=hold_chars,
+            model=model_group if isinstance(model_group, str) else "",
+        )
+
     def _should_raise_content_policy_error(self, model: str, response: ModelResponse, kwargs: dict) -> bool:
         """
         Determines if a content policy error should be raised.
