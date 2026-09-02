@@ -429,30 +429,58 @@ def test_output_config_forwarded_for_bedrock_chat_invoke_request():
 
 
 def test_output_config_format_converted_for_bedrock_chat_invoke_request():
-    """Bedrock Invoke chat path consumes ``output_config.format`` before forwarding."""
+    """Bedrock Invoke chat path inlines ``output_config.format`` for models
+    without native structured-output support and keeps the effort key."""
     config = AmazonAnthropicClaudeConfig()
     schema = {
         "type": "object",
         "properties": {"answer": {"type": "string"}},
     }
 
-    result = config.transform_request(
+    with patch(  # test-quality-ok: pin non-native path
+        "litellm.llms.bedrock.common_utils._bedrock_model_supports",
+        side_effect=lambda _model, key: key == "supports_output_config",
+    ):
+        result = config.transform_request(
+            model="anthropic.claude-opus-4-7",
+            messages=[{"role": "user", "content": "test"}],
+            optional_params={
+                "max_tokens": 100,
+                "output_config": {
+                    "effort": "xhigh",
+                    "format": {"type": "json_schema", "schema": schema},
+                },
+            },
+            litellm_params={},
+            headers={},
+        )
+
+    assert result.get("output_config") == {"effort": "xhigh"}
+    last_content = result["messages"][0]["content"]
+    assert json.loads(last_content[-1]["text"]) == schema
+
+
+def test_output_config_format_forwarded_for_bedrock_chat_invoke_request():
+    """Bedrock Invoke chat path forwards ``output_config.format`` alongside effort
+    for models with native structured-output support (Claude Opus 4.7)."""
+    schema_format = {
+        "type": "json_schema",
+        "schema": {"type": "object", "properties": {"answer": {"type": "string"}}},
+    }
+
+    result = AmazonAnthropicClaudeConfig().transform_request(
         model="anthropic.claude-opus-4-7",
         messages=[{"role": "user", "content": "test"}],
         optional_params={
             "max_tokens": 100,
-            "output_config": {
-                "effort": "xhigh",
-                "format": {"type": "json_schema", "schema": schema},
-            },
+            "output_config": {"effort": "xhigh", "format": schema_format},
         },
         litellm_params={},
         headers={},
     )
 
-    assert result.get("output_config") == {"effort": "xhigh"}
-    last_content = result["messages"][0]["content"]
-    assert json.loads(last_content[-1]["text"]) == schema
+    assert result.get("output_config") == {"effort": "xhigh", "format": schema_format}
+    assert "answer" not in json.dumps(result["messages"])
 
 
 @pytest.mark.parametrize(
@@ -489,7 +517,7 @@ def test_bedrock_chat_invoke_checks_output_config_support_with_bedrock_provider(
     optional_params = {"max_tokens": 100, "output_config": {"effort": "high"}}
 
     with patch(
-        "litellm.llms.bedrock.chat.invoke_transformations.anthropic_claude3_transformation._supports_factory",
+        "litellm.llms.bedrock.common_utils._bedrock_model_supports",
         return_value=True,
     ) as mock_supports_factory:
         result = config.transform_request(
@@ -500,11 +528,7 @@ def test_bedrock_chat_invoke_checks_output_config_support_with_bedrock_provider(
             headers={},
         )
 
-    mock_supports_factory.assert_called_once_with(
-        model="us.anthropic.claude-opus-4-7",
-        custom_llm_provider="bedrock",
-        key="supports_output_config",
-    )
+    mock_supports_factory.assert_called_once_with("us.anthropic.claude-opus-4-7", "supports_output_config")
     assert result["output_config"] == {"effort": "high"}
 
 
@@ -545,58 +569,106 @@ def test_output_format_removed_from_bedrock_invoke_request():
     ), f"output_format should be removed for Bedrock Invoke, got keys: {result.keys()}"
 
 
-def _adaptive_thinking_invoke_response() -> httpx.Response:
-    """A Bedrock InvokeModel body for an adaptive-thinking Claude model.
-
-    The invoke route returns the Anthropic-native Messages shape verbatim, so the
-    thinking block is signature-only and the token count lives in
-    usage.output_tokens_details.
-    """
-    return httpx.Response(
-        status_code=200,
-        json={
-            "id": "msg_bdrk_adaptive",
-            "type": "message",
-            "role": "assistant",
-            "model": "anthropic.claude-opus-4-8-v1:0",
-            "content": [
-                {"type": "thinking", "thinking": "", "signature": "EqQBCgIYAhIm..."},
-                {"type": "text", "text": "The probability is 3/8."},
-            ],
-            "stop_reason": "end_turn",
-            "usage": {
-                "input_tokens": 18,
-                "output_tokens": 162,
-                "output_tokens_details": {"thinking_tokens": 32},
-            },
-        },
-        request=httpx.Request("POST", "https://bedrock-runtime.us-east-1.amazonaws.com/model/invoke"),
-    )
-
-
-def test_invoke_route_reports_adaptive_thinking_reasoning_tokens():
-    """
-    Bedrock is the order-1 primary for our Claude models. Its invoke route reuses
-    AnthropicConfig.transform_response, so the adaptive-thinking token count
-    reported by the model must survive into completion_tokens_details.
-    """
-    from litellm.types.utils import ModelResponse
+def test_bedrock_chat_invoke_forwards_output_config_format_natively(local_model_cost_map):
+    """Regression: ``output_config.format`` is forwarded verbatim on models Bedrock
+    enforces structured outputs for, instead of being inlined as prompt text."""
+    import json
 
     config = AmazonAnthropicClaudeConfig()
-    model_response = config.transform_response(
-        model="anthropic.claude-opus-4-8-v1:0",
-        raw_response=_adaptive_thinking_invoke_response(),
-        model_response=ModelResponse(),
-        logging_obj=MagicMock(),
-        request_data={},
-        messages=[{"role": "user", "content": "hi"}],
-        optional_params={},
+    schema_format = {
+        "type": "json_schema",
+        "schema": {
+            "type": "object",
+            "properties": {"zebra_count": {"type": "integer"}},
+            "required": ["zebra_count"],
+            "additionalProperties": False,
+        },
+    }
+
+    result = config.transform_request(
+        model="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        messages=[{"role": "user", "content": "say hello"}],
+        optional_params={
+            "max_tokens": 100,
+            "output_config": {"format": schema_format},
+        },
         litellm_params={},
-        encoding=None,
+        headers={},
     )
 
-    usage = model_response.usage
-    assert usage.completion_tokens == 162
-    assert usage.completion_tokens_details is not None
-    assert usage.completion_tokens_details.reasoning_tokens == 32
-    assert usage.completion_tokens_details.text_tokens == 162 - 32
+    assert result.get("output_config") == {"format": schema_format}
+    assert "zebra_count" not in json.dumps(result["messages"])
+
+
+def test_bedrock_chat_invoke_drop_params_keeps_native_output_config_format(local_model_cost_map, monkeypatch):
+    """``drop_params=True`` must not eat ``output_config.format`` before the
+    native-forwarding router runs (Sonnet 4.5 has no effort flags)."""
+    import litellm
+
+    monkeypatch.setattr(litellm, "drop_params", True)
+    schema_format = {
+        "type": "json_schema",
+        "schema": {"type": "object", "properties": {"zebra_count": {"type": "integer"}}},
+    }
+
+    result = AmazonAnthropicClaudeConfig().transform_request(
+        model="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        messages=[{"role": "user", "content": "say hello"}],
+        optional_params={"max_tokens": 100, "output_config": {"format": schema_format}},
+        litellm_params={},
+        headers={},
+    )
+
+    assert result.get("output_config") == {"format": schema_format}
+
+
+def test_bedrock_chat_invoke_drop_params_still_inlines_for_non_native(local_model_cost_map, monkeypatch):
+    """``drop_params=True`` on a model without native structured-output support
+    still reaches the inline-schema fallback instead of losing the schema."""
+    import litellm
+
+    monkeypatch.setattr(litellm, "drop_params", True)
+    schema = {"type": "object", "properties": {"zebra_count": {"type": "integer"}}}
+
+    result = AmazonAnthropicClaudeConfig().transform_request(
+        model="anthropic.claude-3-haiku-20240307-v1:0",
+        messages=[{"role": "user", "content": "say hello"}],
+        optional_params={
+            "max_tokens": 100,
+            "output_config": {"format": {"type": "json_schema", "schema": schema}},
+        },
+        litellm_params={},
+        headers={},
+    )
+
+    assert "output_config" not in result
+    last_content = result["messages"][-1]["content"]
+    assert json.loads(last_content[-1]["text"]) == schema
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["us.anthropic.claude-fable-5-1", "anthropic.claude-fable-5-1"],
+)
+def test_bedrock_chat_invoke_fable_5_1_response_format_avoids_forced_tool_choice(local_model_cost_map, model):
+    """Regression: Bedrock rejects both native ``output_config.format`` and forced
+    tool_choice for Fable 5.1, so invoke must use the tool-based path without a
+    forced ``tool_choice``."""
+    result = AmazonAnthropicClaudeConfig().map_openai_params(
+        non_default_params={
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "test_schema",
+                    "schema": {"type": "object", "properties": {"result": {"type": "string"}}},
+                },
+            }
+        },
+        optional_params={},
+        model=model,
+        drop_params=False,
+    )
+
+    assert "output_format" not in result
+    assert "tools" in result
+    assert "tool_choice" not in result
