@@ -3209,6 +3209,124 @@ class TestStreamCloseOnDisconnect:
 
         assert inner_closed.is_set()
 
+    async def test_stalled_write_closes_upstream_without_any_http_disconnect(
+        self, monkeypatch
+    ):
+        """The Cloud Run shape: the client is gone, but the ASGI server never
+        delivers http.disconnect because *its* peer keeps the socket open.
+
+        Nothing arrives on receive() and send() never returns, so the only
+        available signal is that the write made no progress. Without the stall
+        deadline the upstream stays open until the platform's request cap.
+        """
+        monkeypatch.setattr(litellm, "stream_stalled_write_timeout_seconds", 0.05)
+        closed = asyncio.Event()
+        upstream_closed = asyncio.Event()
+
+        async def upstream():
+            try:
+                while True:
+                    yield "data: x\n\n"
+                    await asyncio.sleep(0)
+            finally:
+                upstream_closed.set()
+
+        upstream_gen = upstream()
+
+        async def body():
+            try:
+                async for chunk in upstream_gen:
+                    yield chunk
+            finally:
+                closed.set()
+
+        response = _UpstreamClosingStreamingResponse(
+            body(),
+            media_type="text/event-stream",
+            upstream_generator=upstream_gen,
+        )
+
+        sends = 0
+
+        async def receive():
+            # The transport reports nothing, ever.
+            await asyncio.Event().wait()
+
+        async def send(message):
+            nonlocal sends
+            if message["type"] == "http.response.body":
+                sends += 1
+                if sends >= 2:
+                    # Peer stopped reading: this write never drains.
+                    await asyncio.Event().wait()
+
+        await asyncio.wait_for(
+            response({"type": "http"}, receive, send), timeout=5
+        )
+
+        assert closed.is_set()
+        assert upstream_closed.is_set()
+
+    async def test_stalled_write_deadline_can_be_disabled(self, monkeypatch):
+        """Set to None, detection falls back to receive() only - which is the
+        behaviour that leaves the request wedged, so it must stay opt-out."""
+        monkeypatch.setattr(litellm, "stream_stalled_write_timeout_seconds", None)
+        closed = asyncio.Event()
+
+        async def body():
+            try:
+                while True:
+                    yield "data: x\n\n"
+            finally:
+                closed.set()
+
+        response = _UpstreamClosingStreamingResponse(
+            body(), media_type="text/event-stream"
+        )
+
+        async def receive():
+            await asyncio.Event().wait()
+
+        async def send(message):
+            if message["type"] == "http.response.body":
+                await asyncio.Event().wait()
+
+        task = asyncio.create_task(response({"type": "http"}, receive, send))
+        await asyncio.sleep(0.2)
+        assert not closed.is_set()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    async def test_healthy_slow_stream_is_not_torn_down(self, monkeypatch):
+        """A write that drains, however slowly, is not a stall. The deadline
+        applies per write, not to the stream as a whole."""
+        monkeypatch.setattr(litellm, "stream_stalled_write_timeout_seconds", 0.5)
+        delivered = []
+
+        async def body():
+            for i in range(5):
+                yield f"data: {i}\n\n"
+
+        response = _UpstreamClosingStreamingResponse(
+            body(), media_type="text/event-stream"
+        )
+
+        async def receive():
+            await asyncio.Event().wait()
+
+        async def send(message):
+            if message["type"] == "http.response.body" and message["body"]:
+                await asyncio.sleep(0.1)
+                delivered.append(message["body"])
+
+        await asyncio.wait_for(
+            response({"type": "http"}, receive, send), timeout=5
+        )
+
+        assert len(delivered) == 5
+
     async def test_async_streaming_data_generator_closes_upstream_on_early_close(
         self,
     ):
