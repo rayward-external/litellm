@@ -34,6 +34,7 @@ Dockerfiles sat pinned to node:20.18-alpine3.20 after upstream moved
 
 import importlib.util
 import os
+import re
 import sys
 
 import pytest
@@ -124,3 +125,85 @@ def test_pin_check_is_not_vacuous():
     assert verifier.image_name(
         "node:24.19-alpine3.24@sha256:" + "d" * 64
     ) == "node", "image_name() no longer strips tags; pin pairing would break silently"
+
+
+def test_every_fork_patch_is_present_and_every_pin_is_current(capsys):
+    """Run the WHOLE verifier (phase 1 + phase 2) from the normal PR suite.
+
+    Without this, phase 1 was only ever evaluated by
+    `.github/workflows/fork-patch-verify.yml` itself -- including the manifest
+    row that guards that workflow file's own existence. A sync that wiped
+    `.github/workflows/` would have deleted the only thing checking whether
+    `.github/workflows/` had been wiped, and no pytest run would have noticed.
+    """
+    exit_code = verifier.main()
+    output = capsys.readouterr().out
+    assert exit_code == 0, (
+        "scripts/verify_fork_patches.py reports a dropped fork patch or a stale "
+        "digest pin. Full report:\n\n" + output
+    )
+
+
+def _synthetic_tree(tmp_path):
+    """Copy every manifest-named Dockerfile into an isolated tree."""
+    for rel_path in NAMED_DOCKERFILES:
+        src = os.path.join(REPO_ROOT, rel_path)
+        if not os.path.isfile(src):
+            continue
+        dst = tmp_path / rel_path
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with open(src, encoding="utf-8") as fh:
+            dst.write_text(fh.read(), encoding="utf-8")
+    return tmp_path
+
+
+def test_synthetic_tree_is_clean_before_mutation(tmp_path):
+    """Positive control: the copy itself must pass, or the negative test is void."""
+    root = _synthetic_tree(tmp_path)
+    assert verifier.dockerfile_pin_failures(ROWS, repo_root=str(root)) == []
+
+
+@pytest.mark.parametrize(
+    ("dockerfile", "stage", "arg_name"),
+    [
+        # The stage #694 calls out: only Dockerfile.database's runtime stage is
+        # literally pinned, and a drifted pin there builds clean and dies at
+        # run time. Reverting JUST this one stage passed green before the
+        # per-stage guard existed, because the file's other pins kept it
+        # looking covered.
+        ("docker/Dockerfile.database", "runtime", "LITELLM_RUNTIME_IMAGE"),
+        ("Dockerfile", "builder", "LITELLM_BUILD_IMAGE"),
+        ("Dockerfile", "ui-builder", "UI_BUILD_IMAGE"),
+        ("backend/Dockerfile", "uvbin", "UV_IMAGE"),
+    ],
+)
+def test_per_stage_revert_to_vanilla_is_detected(tmp_path, dockerfile, stage, arg_name):
+    """Reverting ONE stage to `FROM $VAR` must fail, even with other pins intact."""
+    root = _synthetic_tree(tmp_path)
+    target = root / dockerfile
+    text = target.read_text(encoding="utf-8")
+
+    reverted, count = re.subn(
+        r"^FROM (?:--\S+ )*\S+@sha256:[0-9a-f]{64}( AS %s)$" % re.escape(stage),
+        r"FROM $%s\1" % arg_name,
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert count == 1, (
+        f"could not find a literal pin for stage `{stage}` in {dockerfile} to "
+        f"revert; the test's own mutation is stale."
+    )
+    target.write_text(reverted, encoding="utf-8")
+
+    failures = verifier.dockerfile_pin_failures(ROWS, repo_root=str(root))
+    assert failures, (
+        f"reverting {dockerfile}'s `{stage}` stage to `FROM ${arg_name}` was NOT "
+        f"detected. A per-FILE anti-vacuity guard cannot see this: the reverted "
+        f"line stops being a literal pin, so nothing compares it, while the "
+        f"file's other pins keep the file looking covered."
+    )
+    assert any(stage in f and dockerfile in f for f in failures), (
+        f"a failure was reported but none names {dockerfile}'s `{stage}` stage: "
+        f"{failures}"
+    )

@@ -32,10 +32,11 @@ Manifest format (.github/fork-patches.txt):
          longer requires the literal parens. Trying the literal substring
          first means a mis-escaped-as-regex pattern still gets credit
          for the literal code it names.)
-      2. as a Python regex (MULTILINE | DOTALL), for the handful of rows
-         that deliberately use regex features (`.*` spanning a job's
-         style across lines, `\\(`/`\\)`/`\\.` escapes for literal
-         parens/dots). Invalid regexes (unbalanced parens/brackets that
+      2. as a Python regex (MULTILINE, deliberately NOT DOTALL -- see
+         pattern_present), for the handful of rows that deliberately use
+         regex features (`^`/`$` anchors, `\\(`/`\\)`/`\\.` escapes for
+         literal parens/dots, an explicit `[\\s\\S]` where a row really
+         must span lines). Invalid regexes (unbalanced parens/brackets that
          were meant as literal code, e.g. `expect(...).toEqual([])`) fall
          back to the literal check only.
     A pattern of exactly `N/A` marks a row that has no local, greppable
@@ -104,9 +105,11 @@ Phase 2 -- digest pins must not be STALE, not merely present:
   exact repo:tag string does not even pair the two lines up). Stage names
   map to the ARG upstream's un-patched `FROM $VAR` would have used; any
   other stage falls back to matching on the image name with its tag
-  stripped. REQUIRED_PINNED_DOCKERFILES makes the phase non-vacuous: each
-  of those files must be named by the manifest, exist, and yield at least
-  one literal pin actually compared.
+  stripped. REQUIRED_PINNED_DOCKERFILES makes the phase non-vacuous at file
+  level, and EXPECTED_LITERAL_PIN_STAGES does it at STAGE level: every
+  (file, stage) the fork deliberately pins must still BE a literal pin, so
+  reverting a single stage to `FROM $VAR` fails instead of quietly dropping
+  out of the comparison.
 
 Usage:
     python3 scripts/verify_fork_patches.py
@@ -133,6 +136,12 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-08-30 drift (rayward-internal/llm-gateway-infra#694);
 # docker/Dockerfile.non_root is checked too when the manifest names it, but is
 # not required (its builder/runtime stages are still vanilla `FROM $VAR`).
+# Rows currently marked `pattern = N/A` (never checked). Pinned so that
+# silencing a LIVE row by flipping its pattern to N/A -- the cheapest possible
+# way to make this script green without fixing anything -- shows up as a diff
+# to this number and has to be argued for in review.
+EXPECTED_NA_ROWS = 12
+
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
     "backend/Dockerfile",
@@ -151,6 +160,35 @@ STAGE_TO_ARG = {
     "runtime": "LITELLM_RUNTIME_IMAGE",
     "ui-builder": "UI_BUILD_IMAGE",
     "uvbin": "UV_IMAGE",
+}
+
+# Every (file, stage) that MUST be a literal `FROM <image>@sha256:` pin.
+#
+# Anti-vacuity has to be per-STAGE, not per-file. A file-level "did we compare
+# anything here?" guard is satisfied by any one surviving pin, so reverting a
+# SINGLE stage back to `FROM $LITELLM_RUNTIME_IMAGE` used to pass green: the
+# reverted line simply stopped being a literal pin, so nothing compared it, and
+# the file still had three other pins to vouch for it. Measured on this tree
+# before this map existed: reverting docker/Dockerfile.database's `runtime`
+# stage -- exactly the stage rayward-internal/llm-gateway-infra#694 calls out,
+# the one that would have built clean and died at run time -- exited 0.
+#
+# 18 pins across 6 files. Note this is a SUPERSET of the "all 9 literal
+# digests" the manifest's 2026-09-02 quarantine row counts: that 9 is the
+# wolfi-base subset #239 re-synced for the glibc break (builder+runtime in the
+# four wolfi files, plus Dockerfile.database's runtime). The other 9 are the
+# six `uvbin` (ghcr.io/astral-sh/uv) and three `ui-builder` (node) pins, which
+# drift and revert exactly the same way -- the node ui-builder pins are the
+# ones that were actually found stale.
+EXPECTED_LITERAL_PIN_STAGES = {
+    "Dockerfile": ("uvbin", "ui-builder", "builder", "runtime"),
+    "backend/Dockerfile": ("uvbin", "builder", "runtime"),
+    "gateway/Dockerfile": ("uvbin", "builder", "runtime"),
+    "migrations/Dockerfile": ("uvbin", "builder", "runtime"),
+    # builder is still vanilla `FROM $LITELLM_BUILD_IMAGE` here.
+    "docker/Dockerfile.database": ("uvbin", "ui-builder", "runtime"),
+    # builder and runtime are still vanilla `FROM $VAR` here.
+    "docker/Dockerfile.non_root": ("uvbin", "ui-builder"),
 }
 
 _ARG_PIN_RE = re.compile(
@@ -195,27 +233,38 @@ def dockerfiles_named_by_manifest(rows: list[Row]) -> list[str]:
     return list(seen)
 
 
-def dockerfile_pin_failures(rows: list[Row]) -> list[str]:
-    """Every literal FROM digest that no longer equals the ARG default it tracks."""
-    failures: list[str] = []
+def dockerfile_pin_failures(rows: list[Row], repo_root: str = REPO_ROOT) -> list[str]:
+    """Every literal FROM digest that no longer equals the ARG default it tracks.
+
+    `repo_root` is injectable so the negative tests can run the real rule
+    against a synthetic tree instead of mutating the working copy.
+    """
+    # (file_key, message). The key is structured rather than recovered by
+    # substring-matching the rendered message: `rel_path in message` treated
+    # "Dockerfile" as present in "docker/Dockerfile.database: ...", so the root
+    # Dockerfile's own vacuity finding was suppressed by any failure naming a
+    # DIFFERENT Dockerfile.
+    found: list[tuple[str | None, str]] = []
     named = dockerfiles_named_by_manifest(rows)
 
     missing_from_manifest = [f for f in REQUIRED_PINNED_DOCKERFILES if f not in named]
     if missing_from_manifest:
-        failures.append(
-            f"manifest names no patch row for {missing_from_manifest}, so the pin "
+        found.append(
+            (None, f"manifest names no patch row for {missing_from_manifest}, so the pin "
             f"check would not cover them. Either the row was dropped by an upstream "
             f"sync (restore it) or the file was renamed (update the row and "
-            f"REQUIRED_PINNED_DOCKERFILES)."
+            f"REQUIRED_PINNED_DOCKERFILES).")
         )
 
-    compared_per_file: dict[str, int] = {}
+    pinned_stages_seen: dict[str, set[str]] = {}
 
     for rel_path in sorted(named):
-        full_path = os.path.join(REPO_ROOT, rel_path)
+        full_path = os.path.join(repo_root, rel_path)
         if not os.path.isfile(full_path):
-            if rel_path in REQUIRED_PINNED_DOCKERFILES:
-                failures.append(f"{rel_path}: required pinned Dockerfile does not exist")
+            if rel_path in REQUIRED_PINNED_DOCKERFILES or rel_path in EXPECTED_LITERAL_PIN_STAGES:
+                found.append(
+                    (rel_path, f"{rel_path}: required pinned Dockerfile does not exist")
+                )
             continue
         with open(full_path, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
@@ -225,7 +274,7 @@ def dockerfile_pin_failures(rows: list[Row]) -> list[str]:
         for name, ref in args.items():
             by_name.setdefault(image_name(ref), {})[name] = ref
 
-        compared_per_file[rel_path] = 0
+        pinned_stages_seen[rel_path] = set()
 
         # Build- and runtime-ARGs for the SAME image must not disagree: they are
         # the same base image in every current Dockerfile, so a split means a
@@ -233,23 +282,23 @@ def dockerfile_pin_failures(rows: list[Row]) -> list[str]:
         for name, refs in sorted(by_name.items()):
             if len(set(refs.values())) > 1:
                 rendered = ", ".join(f"{n}={r}" for n, r in sorted(refs.items()))
-                failures.append(
-                    f"{rel_path}: ARG defaults for `{name}` disagree ({rendered}). "
+                found.append(
+                    (rel_path, f"{rel_path}: ARG defaults for `{name}` disagree ({rendered}). "
                     f"A base-image bump appears to have been applied to only some of "
                     f"them, so whichever literal FROM tracks the un-bumped ARG is now "
-                    f"pinned to a different image than the rest of the build."
+                    f"pinned to a different image than the rest of the build.")
                 )
 
         for m in _FROM_PIN_RE.finditer(text):
             ref = m.group("ref")
             stage = (m.group("stage") or "").lower()
             expected_arg = STAGE_TO_ARG.get(stage)
+            pinned_stages_seen[rel_path].add(stage)
 
             if expected_arg and expected_arg in args:
-                compared_per_file[rel_path] += 1
                 if ref != args[expected_arg]:
-                    failures.append(
-                        f"{rel_path}: stage `{stage}` pins\n"
+                    found.append(
+                        (rel_path, f"{rel_path}: stage `{stage}` pins\n"
                         f"        {ref}\n"
                         f"    but {expected_arg} defaults to\n"
                         f"        {args[expected_arg]}\n"
@@ -259,16 +308,16 @@ def dockerfile_pin_failures(rows: list[Row]) -> list[str]:
                         f"two -- the exact failure that made this image unbuildable "
                         f"2026-08-30 -> 2026-09-02. Set the FROM to the ARG's value; do "
                         f"NOT change the ARG, and do NOT revert the pin to "
-                        f"`FROM ${expected_arg}` (see .github/fork-patches.txt)."
+                        f"`FROM ${expected_arg}` (see .github/fork-patches.txt).")
                     )
                 continue
 
             if expected_arg:
-                failures.append(
-                    f"{rel_path}: stage `{stage}` is literally pinned but the file "
+                found.append(
+                    (rel_path, f"{rel_path}: stage `{stage}` is literally pinned but the file "
                     f"declares no `ARG {expected_arg}=...@sha256:...` to compare it "
                     f"against. The ARG was renamed or dropped, which leaves this pin "
-                    f"tracking nothing."
+                    f"tracking nothing.")
                 )
                 continue
 
@@ -277,31 +326,56 @@ def dockerfile_pin_failures(rows: list[Row]) -> list[str]:
                 # An image this file pins with no ARG counterpart at all: nothing
                 # to drift against, so not a finding.
                 continue
-            compared_per_file[rel_path] += 1
             if ref not in set(candidates.values()):
                 rendered = ", ".join(f"{n}={r}" for n, r in sorted(candidates.items()))
-                failures.append(
-                    f"{rel_path}: stage `{stage or '<unnamed>'}` pins\n"
+                found.append(
+                    (rel_path, f"{rel_path}: stage `{stage or '<unnamed>'}` pins\n"
                     f"        {ref}\n"
                     f"    which matches none of this file's ARG defaults for that "
                     f"image ({rendered}).\n"
                     f"    Set the FROM to the ARG's value. Do not revert the literal "
-                    f"pin -- it is a deliberate fork patch."
+                    f"pin -- it is a deliberate fork patch.")
                 )
 
-    for rel_path in REQUIRED_PINNED_DOCKERFILES:
-        if compared_per_file.get(rel_path, 0) == 0 and not any(
-            rel_path in f for f in failures
-        ):
-            failures.append(
-                f"{rel_path}: no literal `FROM <image>@sha256:...` pin was compared "
-                f"against an ARG default. Either an upstream sync reverted the pins to "
-                f"`FROM $LITELLM_BUILD_IMAGE` (re-apply them) or the FROM/ARG parsing "
-                f"stopped matching -- both mean this check has gone vacuous here."
+    # Per-STAGE anti-vacuity. Every stage the fork deliberately pins must still
+    # BE a literal pin. A per-file guard cannot see a single reverted stage:
+    # the reverted line just stops matching _FROM_PIN_RE, so nothing compares
+    # it, while the file's other pins keep the file looking covered.
+    files_with_findings = {key for key, _ in found if key is not None}
+    for rel_path, expected_stages in sorted(EXPECTED_LITERAL_PIN_STAGES.items()):
+        if rel_path in files_with_findings and rel_path not in pinned_stages_seen:
+            continue
+        seen = pinned_stages_seen.get(rel_path)
+        if seen is None:
+            if rel_path not in files_with_findings:
+                found.append(
+                    (
+                        rel_path,
+                        f"{rel_path}: expected literal digest pins for stages "
+                        f"{list(expected_stages)} but the file was never scanned -- "
+                        f"it is not named by any .github/fork-patches.txt row, or it "
+                        f"no longer exists.",
+                    )
+                )
+            continue
+        missing = [st for st in expected_stages if st not in seen]
+        if missing:
+            found.append(
+                (
+                    rel_path,
+                    f"{rel_path}: stage(s) {missing} are no longer a literal "
+                    f"`FROM <image>@sha256:...` pin (literal pins still present: "
+                    f"{sorted(seen)}).\n"
+                    f"    An upstream sync reverted that stage to the vanilla "
+                    f"`FROM $VAR` form, or the pin was deleted. This is NOT caught by "
+                    f"the file's other pins: a reverted stage simply stops being "
+                    f"compared, which is why anti-vacuity is asserted per STAGE. "
+                    f"Re-apply the literal pin (set it to the stage's ARG default); "
+                    f"do not delete the row or this entry to make the check pass.",
+                )
             )
 
-    return failures
-
+    return [msg for _, msg in found]
 
 
 class Row:
@@ -348,11 +422,26 @@ def parse_manifest(path: str) -> list[Row]:
 
 
 def pattern_present(pattern: str, content: str) -> bool:
-    """True if `pattern` proves present in `content`, by either match strategy."""
+    """True if `pattern` proves present in `content`, by either match strategy.
+
+    MULTILINE but deliberately NOT DOTALL. Under DOTALL a `.` crosses newlines,
+    so a row like `FROM.*sha256:` was satisfied by ANY `FROM` anywhere in the
+    file followed by `sha256:` anywhere later -- i.e. one surviving pinned stage
+    vouched for every other stage in the same file, and a per-stage revert to
+    `FROM $LITELLM_RUNTIME_IMAGE` passed green. Measured on this tree: reverting
+    docker/Dockerfile.database's runtime stage (the one #694 calls out as the
+    silent-failure stage) exited 0 before this change.
+
+    Only two rows in the manifest ever relied on DOTALL (the image-scan.yml
+    `<job>-image ... --require-hashes` pairs); both were rewritten to tempered
+    patterns that cannot cross into a neighbouring job. A row that genuinely
+    needs to span lines should say so explicitly with `[\\s\\S]` or `\\n`
+    rather than leaning on a global flag that silently widens every other row.
+    """
     if pattern in content:
         return True
     try:
-        rx = re.compile(pattern, re.MULTILINE | re.DOTALL)
+        rx = re.compile(pattern, re.MULTILINE)
     except re.error:
         return False
     return rx.search(content) is not None
@@ -430,6 +519,18 @@ def main() -> int:
     print()
 
     ok = True
+
+    if historical_skipped > EXPECTED_NA_ROWS:
+        ok = False
+        print(
+            f"N/A ROW COUNT ROSE: {historical_skipped} rows are marked "
+            f"`pattern = N/A` (never checked), but EXPECTED_NA_ROWS is "
+            f"{EXPECTED_NA_ROWS}. Flipping a live row to N/A silences it without "
+            f"fixing anything. If the new N/A row is genuinely narrative or "
+            f"superseded, raise EXPECTED_NA_ROWS in the same commit so the change "
+            f"is visible in review."
+        )
+        print()
 
     if missing_files:
         ok = False
