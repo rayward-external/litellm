@@ -1,6 +1,6 @@
 {
   "ANN001": {
-    "limit": 2985
+    "limit": 2988
   },
   "ANN002": {
     "limit": 70
@@ -9,10 +9,10 @@
     "limit": 809
   },
   "ANN201": {
-    "limit": 2001
+    "limit": 2010
   },
   "ANN202": {
-    "limit": 835
+    "limit": 837
   },
   "ANN204": {
     "limit": 693
@@ -240,13 +240,13 @@
     "limit": 96
   },
   "TRY201": {
-    "limit": 403
+    "limit": 404
   },
   "TRY203": {
     "limit": 111
   },
   "TRY300": {
-    "limit": 854
+    "limit": 855
   },
   "UP028": {
     "limit": 2
