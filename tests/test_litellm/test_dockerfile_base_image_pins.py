@@ -8,9 +8,9 @@ OpenSSF Scorecard's PinnedDependencies check passes (see
 `.github/fork-patches.txt`). That patch is deliberate and must stay.
 
 The hazard the patch creates is drift: an upstream sync bumps the
-`ARG LITELLM_BUILD_IMAGE` / `ARG LITELLM_RUNTIME_IMAGE` default, but the
-literal `FROM` lines are not variable references so nothing updates them and
-nothing compares them. The two silently diverge.
+`ARG LITELLM_BUILD_IMAGE` / `ARG LITELLM_RUNTIME_IMAGE` / `ARG UI_BUILD_IMAGE`
+default, but the literal `FROM` lines are not variable references so nothing
+updates them and nothing compares them. The two silently diverge.
 
 That is exactly what broke the image build on 2026-08-30. Upstream bumped the
 ARG defaults to a wolfi-base carrying glibc 2.44 and switched the builder to
@@ -20,207 +20,190 @@ ARG defaults to a wolfi-base carrying glibc 2.44 and switched the builder to
     ImportError: /usr/lib/libm.so.6: version `GLIBC_2.44' not found
         (required by .../math.cpython-313-x86_64-linux-gnu.so)
 
-These tests fail on divergence so the next ARG bump cannot land half-applied.
+The RULE ITSELF now lives in `scripts/verify_fork_patches.py`, because it must
+also run on the daily `fork-patch-verify.yml` schedule and after every upstream
+sync -- not only when someone happens to run this suite
+(rayward-internal/llm-gateway-infra#694). This module is the pytest entry point
+to that same implementation, so the two can never disagree about what "pinned"
+means. The original private copy of the rule here was keyed on an allowlist of
+two image repos (wolfi-base, astral-sh/uv) and compared digests only, which is
+why it reported green for a month while the `ui-builder` stage of three
+Dockerfiles sat pinned to node:20.18-alpine3.20 after upstream moved
+`ARG UI_BUILD_IMAGE` to node:24.19-alpine3.24 (commit 487074f602, 2026-08-04).
 """
 
+import importlib.util
 import os
 import re
+import sys
 
 import pytest
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-
-# Registries whose pins we compare. Keyed on the image path so a bare tag bump
-# (e.g. a different repo entirely) does not trip the comparison.
-_PINNED_IMAGE_REPOS = (
-    "cgr.dev/chainguard/wolfi-base",
-    "ghcr.io/astral-sh/uv",
-)
-
-_ARG_RE = re.compile(
-    r"^ARG\s+(?P<name>[A-Z0-9_]+_IMAGE)\s*=\s*(?P<repo>\S+?)@sha256:(?P<digest>[0-9a-f]{64})\s*$",
-    re.MULTILINE,
-)
-_FROM_RE = re.compile(
-    r"^FROM\s+(?:--\S+\s+)*(?P<repo>\S+?)@sha256:(?P<digest>[0-9a-f]{64})"
-    r"(?:\s+AS\s+(?P<stage>\S+))?\s*$",
-    re.MULTILINE,
-)
-
-# Stage name -> the ARG that upstream's un-patched `FROM $VAR` would have used.
-_STAGE_TO_ARG = {
-    "builder": "LITELLM_BUILD_IMAGE",
-    "runtime": "LITELLM_RUNTIME_IMAGE",
-}
-
-# Dockerfiles that carry the fork's literal-pin patch and are expected to have
-# both an ARG default and at least one literal FROM to compare it against.
-# Listed explicitly so this suite cannot silently go vacuous if a file is
-# renamed or the discovery walk stops matching.
-PATCHED_DOCKERFILES = (
-    "Dockerfile",
-    "backend/Dockerfile",
-    "gateway/Dockerfile",
-    "migrations/Dockerfile",
-    "docker/Dockerfile.database",
-)
+_VERIFIER_PATH = os.path.join(REPO_ROOT, "scripts", "verify_fork_patches.py")
 
 
-def _discover_dockerfiles() -> list[str]:
-    """Repo-relative paths of every Dockerfile, excluding vendored trees."""
-    skip_dirs = {
-        ".git",
-        ".venv",
-        "venv",
-        "node_modules",
-        "__pycache__",
-        "site-packages",
-    }
-    found: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
-        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
-        for filename in filenames:
-            if filename == "Dockerfile" or filename.startswith("Dockerfile."):
-                if filename.endswith((".md", ".txt", ".dockerignore")):
-                    continue
-                found.append(
-                    os.path.relpath(os.path.join(dirpath, filename), REPO_ROOT)
-                )
-    return sorted(found)
+def _load_verifier():
+    """Import scripts/verify_fork_patches.py by path (scripts/ is not a package).
+
+    A failure here is a real finding, not a harness problem: it means the
+    fork-only verifier script this fork's patch policy depends on is gone or
+    unimportable, which is precisely the "an upstream sync wiped a fork-only
+    file" case `.github/fork-patches.txt` records rows for.
+    """
+    spec = importlib.util.spec_from_file_location("_fork_patch_verifier", _VERIFIER_PATH)
+    assert spec is not None and spec.loader is not None, (
+        f"cannot load {_VERIFIER_PATH}; scripts/verify_fork_patches.py is the "
+        "implementation of the fork-patch and digest-pin checks (see "
+        ".github/fork-patches.txt). If an upstream sync removed it, restore it."
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-def _read(rel_path: str) -> str:
-    with open(os.path.join(REPO_ROOT, rel_path), "r", encoding="utf-8") as f:
-        return f.read()
+verifier = _load_verifier()
+
+REQUIRED = verifier.REQUIRED_PINNED_DOCKERFILES
+ROWS = verifier.parse_manifest(verifier.MANIFEST_PATH)
+NAMED_DOCKERFILES = verifier.dockerfiles_named_by_manifest(ROWS)
+PIN_FAILURES = verifier.dockerfile_pin_failures(ROWS)
 
 
-def _arg_pins(text: str) -> dict[str, tuple[str, str]]:
-    """ARG name -> (repo, digest), for pinned images we track."""
-    return {
-        m.group("name"): (m.group("repo"), m.group("digest"))
-        for m in _ARG_RE.finditer(text)
-        if m.group("repo") in _PINNED_IMAGE_REPOS
-    }
+def test_manifest_names_every_required_dockerfile():
+    """Guard against the pin check silently covering nothing.
 
-
-def _from_pins(text: str) -> list[tuple[str, str, str | None]]:
-    """(repo, digest, stage) for each literal FROM of a tracked image."""
-    return [
-        (m.group("repo"), m.group("digest"), m.group("stage"))
-        for m in _FROM_RE.finditer(text)
-        if m.group("repo") in _PINNED_IMAGE_REPOS
-    ]
-
-
-DOCKERFILES = _discover_dockerfiles()
-
-
-def test_patched_dockerfiles_are_discovered():
-    """Guard against this suite silently testing nothing."""
-    missing = [p for p in PATCHED_DOCKERFILES if p not in DOCKERFILES]
+    `.github/fork-patches.txt` is the single source of truth for which files
+    carry the literal-pin patch; this asserts that answer still includes every
+    Dockerfile that must never go unchecked.
+    """
+    missing = [p for p in REQUIRED if p not in NAMED_DOCKERFILES]
     assert not missing, (
-        f"Dockerfiles carrying the fork's literal-digest-pin patch were not "
-        f"discovered: {missing}. Either they were renamed (update "
-        f"PATCHED_DOCKERFILES and .github/fork-patches.txt) or _discover_dockerfiles() "
-        f"stopped matching them. Discovered: {DOCKERFILES}"
+        f"no .github/fork-patches.txt row names {missing}, so the digest-pin "
+        f"check would not cover them. Either an upstream sync dropped the row "
+        f"(restore it) or the file was renamed. Manifest currently names: "
+        f"{NAMED_DOCKERFILES}"
     )
 
 
-@pytest.mark.parametrize("dockerfile", PATCHED_DOCKERFILES)
-def test_patched_dockerfile_has_both_arg_and_literal_from(dockerfile: str):
-    """Each patched file must actually have something to compare."""
-    text = _read(dockerfile)
-
-    args = _arg_pins(text)
-    assert args, (
-        f"{dockerfile} has no `ARG ..._IMAGE=<repo>@sha256:...` default. The "
-        "drift check compares literal FROM pins against these; without one there "
-        "is nothing to compare and the fork's pin can drift undetected."
-    )
-
-    froms = _from_pins(text)
-    assert froms, (
-        f"{dockerfile} has no literal `FROM <repo>@sha256:...` line. This fork "
-        "pins base images by literal digest for Scorecard PinnedDependencies "
-        "(.github/fork-patches.txt); an upstream sync appears to have reverted it "
-        "to `FROM $LITELLM_BUILD_IMAGE`. Re-apply the pin."
+@pytest.mark.parametrize("dockerfile", REQUIRED)
+def test_required_dockerfile_exists(dockerfile: str):
+    assert os.path.isfile(os.path.join(REPO_ROOT, dockerfile)), (
+        f"{dockerfile} is recorded as carrying the fork's literal-digest-pin "
+        f"patch but does not exist."
     )
 
 
-@pytest.mark.parametrize("dockerfile", DOCKERFILES)
-def test_literal_from_digests_match_arg_defaults(dockerfile: str):
-    """Every literal pinned FROM digest must equal an ARG default in the same file.
+@pytest.mark.parametrize("dockerfile", REQUIRED)
+def test_no_stale_literal_from_pins(dockerfile: str):
+    """Every literal pinned FROM must equal the ARG default it shadows.
 
     This is the check that would have caught the 2026-08-30 build break.
     """
-    text = _read(dockerfile)
-
-    froms = _from_pins(text)
-    if not froms:
-        pytest.skip(f"{dockerfile} pins no tracked base image by literal digest")
-
-    args = _arg_pins(text)
-    if not args:
-        pytest.skip(f"{dockerfile} declares no pinned ARG default to compare against")
-
-    for repo, digest, stage in froms:
-        # Digests to compare against: ARG defaults for the same image repo.
-        same_repo = {
-            name: d for name, (r, d) in args.items() if r == repo
-        }
-        if not same_repo:
-            continue
-
-        # Precise check: a `builder`/`runtime` stage must match the specific ARG
-        # upstream's `FROM $VAR` form would have used.
-        expected_arg = _STAGE_TO_ARG.get(stage or "")
-        if expected_arg and expected_arg in same_repo:
-            assert digest == same_repo[expected_arg], (
-                f"{dockerfile}: stage `{stage}` pins {repo}@sha256:{digest} but "
-                f"{expected_arg} defaults to sha256:{same_repo[expected_arg]}.\n"
-                f"The literal FROM pin has drifted from the ARG default. Upstream "
-                f"bumps the ARG; the literal FROM is not a variable reference so "
-                f"nothing updates it. Set the FROM digest to the ARG's value "
-                f"(do NOT change the ARG, and do NOT revert the pin to "
-                f"`FROM ${expected_arg}` -- see .github/fork-patches.txt).\n"
-                f"This exact drift broke the image build on 2026-08-30: the ARG "
-                f"moved to a wolfi-base with glibc 2.44 for python3.13 while the "
-                f"FROM stayed on glibc 2.43, and `uv sync --python python3.13` "
-                f"died with \"version `GLIBC_2.44' not found\"."
-            )
-            continue
-
-        # Looser check for any other stage: must match *some* ARG default.
-        assert digest in set(same_repo.values()), (
-            f"{dockerfile}: stage `{stage or '<unnamed>'}` pins "
-            f"{repo}@sha256:{digest}, which matches none of this file's ARG "
-            f"defaults for that image "
-            f"({', '.join(f'{n}=sha256:{d}' for n, d in sorted(same_repo.items()))}).\n"
-            f"The literal FROM pin has drifted from the ARG default; set it to the "
-            f"ARG's value. Do not revert the literal pin -- it is a deliberate "
-            f"fork patch (.github/fork-patches.txt)."
-        )
+    mine = [f for f in PIN_FAILURES if f.startswith(f"{dockerfile}:")]
+    assert not mine, "\n".join(mine)
 
 
-@pytest.mark.parametrize("dockerfile", DOCKERFILES)
-def test_pinned_arg_defaults_are_self_consistent(dockerfile: str):
-    """Build and runtime ARGs for the same image repo must not disagree.
+def test_no_stale_literal_from_pins_anywhere():
+    """Catch-all, including files outside REQUIRED (e.g. docker/Dockerfile.non_root)."""
+    assert not PIN_FAILURES, "\n".join(PIN_FAILURES)
 
-    They are the same base image in every current Dockerfile; a split would mean
-    a bump was applied to only one of them.
+
+def test_pin_check_is_not_vacuous():
+    """The rule must actually be comparing something.
+
+    `dockerfile_pin_failures` reports a failure when a required Dockerfile
+    yields zero compared pins, so a green run here plus the assertions above
+    means real FROM/ARG pairs were compared -- not that the parser matched
+    nothing.
     """
-    args = _arg_pins(_read(dockerfile))
-    if not args:
-        pytest.skip(f"{dockerfile} declares no pinned ARG defaults")
+    assert NAMED_DOCKERFILES, (
+        ".github/fork-patches.txt names no Dockerfile at all -- the manifest "
+        "rows for the literal-pin patch are gone."
+    )
+    assert verifier.image_name(
+        "node:24.19-alpine3.24@sha256:" + "d" * 64
+    ) == "node", "image_name() no longer strips tags; pin pairing would break silently"
 
-    by_repo: dict[str, dict[str, str]] = {}
-    for name, (repo, digest) in args.items():
-        by_repo.setdefault(repo, {})[name] = digest
 
-    for repo, names in by_repo.items():
-        distinct = set(names.values())
-        assert len(distinct) == 1, (
-            f"{dockerfile}: ARG defaults for {repo} disagree "
-            f"({', '.join(f'{n}=sha256:{d}' for n, d in sorted(names.items()))}). "
-            f"A base-image bump appears to have been applied to only some of them."
-        )
+def test_every_fork_patch_is_present_and_every_pin_is_current(capsys):
+    """Run the WHOLE verifier (phase 1 + phase 2) from the normal PR suite.
+
+    Without this, phase 1 was only ever evaluated by
+    `.github/workflows/fork-patch-verify.yml` itself -- including the manifest
+    row that guards that workflow file's own existence. A sync that wiped
+    `.github/workflows/` would have deleted the only thing checking whether
+    `.github/workflows/` had been wiped, and no pytest run would have noticed.
+    """
+    exit_code = verifier.main()
+    output = capsys.readouterr().out
+    assert exit_code == 0, (
+        "scripts/verify_fork_patches.py reports a dropped fork patch or a stale "
+        "digest pin. Full report:\n\n" + output
+    )
+
+
+def _synthetic_tree(tmp_path):
+    """Copy every manifest-named Dockerfile into an isolated tree."""
+    for rel_path in NAMED_DOCKERFILES:
+        src = os.path.join(REPO_ROOT, rel_path)
+        if not os.path.isfile(src):
+            continue
+        dst = tmp_path / rel_path
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with open(src, encoding="utf-8") as fh:
+            dst.write_text(fh.read(), encoding="utf-8")
+    return tmp_path
+
+
+def test_synthetic_tree_is_clean_before_mutation(tmp_path):
+    """Positive control: the copy itself must pass, or the negative test is void."""
+    root = _synthetic_tree(tmp_path)
+    assert verifier.dockerfile_pin_failures(ROWS, repo_root=str(root)) == []
+
+
+@pytest.mark.parametrize(
+    ("dockerfile", "stage", "arg_name"),
+    [
+        # The stage #694 calls out: only Dockerfile.database's runtime stage is
+        # literally pinned, and a drifted pin there builds clean and dies at
+        # run time. Reverting JUST this one stage passed green before the
+        # per-stage guard existed, because the file's other pins kept it
+        # looking covered.
+        ("docker/Dockerfile.database", "runtime", "LITELLM_RUNTIME_IMAGE"),
+        ("Dockerfile", "builder", "LITELLM_BUILD_IMAGE"),
+        ("Dockerfile", "ui-builder", "UI_BUILD_IMAGE"),
+        ("backend/Dockerfile", "uvbin", "UV_IMAGE"),
+    ],
+)
+def test_per_stage_revert_to_vanilla_is_detected(tmp_path, dockerfile, stage, arg_name):
+    """Reverting ONE stage to `FROM $VAR` must fail, even with other pins intact."""
+    root = _synthetic_tree(tmp_path)
+    target = root / dockerfile
+    text = target.read_text(encoding="utf-8")
+
+    reverted, count = re.subn(
+        r"^FROM (?:--\S+ )*\S+@sha256:[0-9a-f]{64}( AS %s)$" % re.escape(stage),
+        r"FROM $%s\1" % arg_name,
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert count == 1, (
+        f"could not find a literal pin for stage `{stage}` in {dockerfile} to "
+        f"revert; the test's own mutation is stale."
+    )
+    target.write_text(reverted, encoding="utf-8")
+
+    failures = verifier.dockerfile_pin_failures(ROWS, repo_root=str(root))
+    assert failures, (
+        f"reverting {dockerfile}'s `{stage}` stage to `FROM ${arg_name}` was NOT "
+        f"detected. A per-FILE anti-vacuity guard cannot see this: the reverted "
+        f"line stops being a literal pin, so nothing compares it, while the "
+        f"file's other pins keep the file looking covered."
+    )
+    assert any(stage in f and dockerfile in f for f in failures), (
+        f"a failure was reported but none names {dockerfile}'s `{stage}` stage: "
+        f"{failures}"
+    )
