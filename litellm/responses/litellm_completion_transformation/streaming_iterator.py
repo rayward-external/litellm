@@ -177,6 +177,33 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
 
         return delta.content or delta.function_call or delta.tool_calls or chunk.choices[0].finish_reason is not None
 
+    def _resolve_streamed_call_id(self, tool_call: object) -> str:
+        """Correlate one streamed tool-call delta with its call id.
+
+        Only the first delta of a call carries an ``id``; later ones are keyed by
+        ``index`` alone. Returns "" when the delta cannot be attributed to a call:
+        it has neither an id nor a usable index, or its index has been reused by
+        more than one call id, which makes id-less deltas ambiguous and unsafe to
+        route. The caller skips those.
+        """
+        tc_index: Final = self._normalize_tool_call_index(tool_call)
+        call_id_raw: Final = tool_call.get("id") if isinstance(tool_call, dict) else getattr(tool_call, "id", None)
+
+        if call_id_raw:
+            call_id: Final = str(call_id_raw)
+            if tc_index is not None:
+                existing_call_id: Final = self._tool_call_id_by_index.get(tc_index)
+                if existing_call_id is not None and existing_call_id != call_id:
+                    # Reusing the same index for multiple call_ids is ambiguous for id-less deltas.
+                    # Guard against silent misrouting by disabling index fallback for this index.
+                    self._ambiguous_tool_call_indexes.add(tc_index)
+                self._tool_call_id_by_index[tc_index] = call_id
+            return call_id
+
+        if tc_index is None or tc_index in self._ambiguous_tool_call_indexes:
+            return ""
+        return self._tool_call_id_by_index.get(tc_index) or ""
+
     def _queue_tool_call_delta_events(self, tool_calls: object) -> None:
         """
         Convert chat-completions streaming `tool_calls` deltas into Responses API streaming events.
@@ -192,26 +219,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             return
 
         for tc in tool_calls:
-            tc_index = self._normalize_tool_call_index(tc)
-            call_id_raw = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
-            call_id = ""
-
-            if call_id_raw:
-                call_id = str(call_id_raw)
-                if tc_index is not None:
-                    existing_call_id = self._tool_call_id_by_index.get(tc_index)
-                    if existing_call_id is not None and existing_call_id != call_id:
-                        # Reusing the same index for multiple call_ids is ambiguous for id-less deltas.
-                        # Guard against silent misrouting by disabling index fallback for this index.
-                        self._ambiguous_tool_call_indexes.add(tc_index)
-                    self._tool_call_id_by_index[tc_index] = call_id
-            elif tc_index is not None:
-                if tc_index in self._ambiguous_tool_call_indexes:
-                    continue
-                mapped_call_id = self._tool_call_id_by_index.get(tc_index)
-                if mapped_call_id:
-                    call_id = mapped_call_id
-
+            call_id = self._resolve_streamed_call_id(tc)
             if not call_id:
                 continue
 
