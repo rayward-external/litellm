@@ -1434,9 +1434,13 @@ class TestNativeWebSocketGuardrails:
         )
 
         assert json.loads(flat_message)["model"] == "authorized-deployment"
-        assert (
-            json.loads(nested_message)["response"]["model"] == "authorized-deployment"
-        )
+        # The nested envelope is collapsed to the flat shape the provider's
+        # socket accepts (rayward-internal/llm-gateway-infra#689), so the
+        # enforced model lands at the top level -- but it must still be
+        # enforced, which is what this asserts.
+        nested_obj = json.loads(nested_message)
+        assert "response" not in nested_obj
+        assert nested_obj["model"] == "authorized-deployment"
 
     @pytest.mark.asyncio
     async def test_native_websocket_merges_deployment_defaults(self):
@@ -1886,8 +1890,11 @@ class TestNativeWebSocketGuardrailMasking:
         )
         obj = json.loads(masked)
 
-        assert obj["response"]["model"] == "auth-model"
-        assert obj["response"]["input"] == "<EMAIL_ADDRESS_1>"
+        # Collapsed to the flat shape (#689); masking and model enforcement
+        # still applied to the collapsed frame.
+        assert "response" not in obj
+        assert obj["model"] == "auth-model"
+        assert obj["input"] == "<EMAIL_ADDRESS_1>"
 
     @pytest.mark.asyncio
     async def test_mask_response_create_flat_instructions(self):
@@ -1928,7 +1935,9 @@ class TestNativeWebSocketGuardrailMasking:
         )
         obj = json.loads(masked)
 
-        assert obj["response"]["instructions"] == "email <EMAIL_ADDRESS_1>"
+        # Collapsed to the flat shape (#689); nested instructions still masked.
+        assert "response" not in obj
+        assert obj["instructions"] == "email <EMAIL_ADDRESS_1>"
         assert handler.request_data["metadata"]["pii_tokens"] == {
             "<EMAIL_ADDRESS_1>": "alice@example.com"
         }
@@ -1997,6 +2006,178 @@ class TestNativeWebSocketGuardrailMasking:
     def test_enforce_authorized_model_no_authorized_model(self):
         handler = _make_streaming(request_data={})
         assert handler._enforce_authorized_model({"model": "anything"}) is False
+
+    def test_flatten_response_create_nested_collapses(self):
+        """Nested envelope -> flat frame, envelope key removed, type kept."""
+        handler = _make_streaming(request_data={})
+        msg = {
+            "type": "response.create",
+            "response": {
+                "model": "m",
+                "input": "hi",
+                "max_output_tokens": 64,
+                "reasoning": {"effort": "low"},
+            },
+        }
+        assert handler._flatten_response_create(msg) is True
+        assert msg == {
+            "type": "response.create",
+            "model": "m",
+            "input": "hi",
+            "max_output_tokens": 64,
+            "reasoning": {"effort": "low"},
+        }
+
+    def test_flatten_response_create_flat_is_untouched(self):
+        handler = _make_streaming(request_data={})
+        msg = {"type": "response.create", "model": "m", "input": "hi"}
+        assert handler._flatten_response_create(msg) is False
+        assert msg == {"type": "response.create", "model": "m", "input": "hi"}
+
+    def test_flatten_response_create_nested_wins_and_type_survives(self):
+        """A nested value beats a same-named top-level key; the envelope's own
+        stray ``type`` never overwrites the client event type."""
+        handler = _make_streaming(request_data={})
+        msg = {
+            "type": "response.create",
+            "model": "top-level",
+            "response": {"model": "nested", "type": "not-an-event", "input": "hi"},
+        }
+        assert handler._flatten_response_create(msg) is True
+        assert msg["type"] == "response.create"
+        assert msg["model"] == "nested"
+        assert msg["input"] == "hi"
+        assert "response" not in msg
+
+    def test_flatten_response_create_ignores_non_object_envelope(self):
+        handler = _make_streaming(request_data={})
+        msg = {"type": "response.create", "response": "not-an-object", "input": "hi"}
+        assert handler._flatten_response_create(msg) is False
+        assert msg["response"] == "not-an-object"
+
+    @pytest.mark.asyncio
+    async def test_mask_response_create_nested_flattened_without_guardrails(self):
+        """rayward-internal/llm-gateway-infra#689: the documented nested
+        ``response.create`` shape must reach the provider socket flat -- the
+        nested one is rejected upstream with
+        ``missing_required_parameter: 'input'``. Flattening must happen even
+        when no guardrail and no authorized model are configured."""
+        handler = _make_streaming(request_data={})
+
+        masked = await handler._mask_response_create(
+            json.dumps(
+                {
+                    "type": "response.create",
+                    "response": {"model": "m", "input": "hi", "max_output_tokens": 32},
+                }
+            )
+        )
+        obj = json.loads(masked)
+
+        assert "response" not in obj
+        assert obj == {
+            "type": "response.create",
+            "model": "m",
+            "input": "hi",
+            "max_output_tokens": 32,
+        }
+
+    @pytest.mark.asyncio
+    async def test_mask_response_create_flat_frame_shape_unchanged(self):
+        """The flat shape -- the one measured to work upstream -- must pass
+        through structurally unchanged (only the authorized model injected)."""
+        handler = _make_streaming(request_data={}, authorized_model="auth-model")
+
+        masked = await handler._mask_response_create(
+            json.dumps(
+                {
+                    "type": "response.create",
+                    "model": "spoofed",
+                    "input": "hi",
+                    "max_output_tokens": 32,
+                }
+            )
+        )
+        obj = json.loads(masked)
+
+        assert obj == {
+            "type": "response.create",
+            "model": "auth-model",
+            "input": "hi",
+            "max_output_tokens": 32,
+        }
+
+    @pytest.mark.asyncio
+    async def test_mask_response_create_nested_still_enforces_authorized_model(self):
+        """Deployment substitution must stay blocked on the nested shape after
+        flattening -- a spoofed nested model must not survive the collapse."""
+        handler = _make_streaming(request_data={}, authorized_model="auth-model")
+
+        masked = await handler._mask_response_create(
+            json.dumps(
+                {
+                    "type": "response.create",
+                    "response": {"model": "spoofed-deployment", "input": "hi"},
+                }
+            )
+        )
+        obj = json.loads(masked)
+
+        assert "response" not in obj
+        assert obj["model"] == "auth-model"
+        assert "spoofed-deployment" not in masked
+
+    @pytest.mark.asyncio
+    async def test_mask_response_create_nested_applies_request_defaults(self):
+        handler = _make_streaming(
+            request_data={},
+            request_defaults={"reasoning": {"effort": "low"}},
+        )
+
+        masked = await handler._mask_response_create(
+            json.dumps(
+                {"type": "response.create", "response": {"model": "m", "input": "hi"}}
+            )
+        )
+        obj = json.loads(masked)
+
+        assert "response" not in obj
+        assert obj["reasoning"] == {"effort": "low"}
+        assert obj["input"] == "hi"
+
+    @pytest.mark.asyncio
+    async def test_client_to_backend_forwards_flattened_frame(self):
+        """The frame actually written to the backend socket is the flat one --
+        asserted at the send boundary, not just on the masking helper."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        backend_ws = MagicMock()
+        backend_ws.send = AsyncMock()
+
+        client_ws = MagicMock()
+        client_ws.receive_text = AsyncMock(side_effect=RuntimeError("client gone"))
+
+        handler = _make_streaming(
+            websocket=client_ws,
+            backend_ws=backend_ws,
+            request_data={},
+            authorized_model="auth-model",
+            first_message=json.dumps(
+                {
+                    "type": "response.create",
+                    "response": {"model": "spoofed", "input": "hi"},
+                }
+            ),
+        )
+
+        await handler.client_to_backend()
+
+        backend_ws.send.assert_awaited_once()
+        sent = json.loads(backend_ws.send.await_args.args[0])
+        assert "response" not in sent
+        assert sent["type"] == "response.create"
+        assert sent["input"] == "hi"
+        assert sent["model"] == "auth-model"
 
     def test_enforce_authorized_model_nested_with_top_level_model(self):
         handler = _make_streaming(request_data={}, authorized_model="auth-model")

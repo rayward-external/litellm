@@ -562,6 +562,135 @@ class TestResponsesWSFirstFrameModelAuth:
         )
 
 
+class TestResponsesWSRequesterIpAddress:
+    """rayward-internal/llm-gateway-infra#661.
+
+    Every ``_aresponses_websocket`` spend row carried a blank
+    ``requester_ip_address`` (column and metadata copy alike). The connection
+    metadata IS built by ``add_litellm_data_to_request`` -- the stated
+    mechanism was right -- but that function reads the peer address off
+    ``request.client`` (litellm/proxy/litellm_pre_call_utils.py:2157-2163), and
+    the synthetic ``Request`` this endpoint builds for pre-call processing did
+    not copy ``client`` across from the WebSocket scope, so
+    ``Request.client`` was ``None`` and the field defaulted to ``""``.
+    """
+
+    _PEER = ("203.0.113.7", 51234)
+
+    @staticmethod
+    async def _capture_synthetic_request(ws_scope: dict):
+        """Drive the endpoint far enough to capture the synthetic Request it
+        hands to pre-call processing."""
+        import json as _json
+
+        from starlette.datastructures import URL
+
+        from litellm.proxy.response_api_endpoints.endpoints import (
+            responses_websocket_endpoint,
+        )
+
+        ws = MagicMock()
+        ws.headers = {}
+        ws.query_params = {}
+        ws.scope = ws_scope
+        # A real URL, like starlette's WebSocket.url -- the endpoint assigns it
+        # to Request._url and auth_utils.get_request_route reads .path off it.
+        ws.url = URL("ws://testserver/v1/responses")
+        ws.accept = AsyncMock()
+        ws.receive_text = AsyncMock(
+            return_value=_json.dumps(
+                {"type": "response.create", "model": "gpt-4o-mini", "input": []}
+            )
+        )
+        ws.close = AsyncMock()
+
+        captured = {}
+
+        async def _capture(**kwargs):
+            captured["request"] = kwargs["request"]
+            return ({"model": "gpt-4o-mini"}, MagicMock())
+
+        processor = MagicMock()
+        processor.common_processing_pre_call_logic = AsyncMock(side_effect=_capture)
+
+        async def fake_llm_call():
+            return None
+
+        # The object under test is the ASGI scope this endpoint synthesizes, so
+        # there is no HTTP boundary to fake instead -- the seam has to be the
+        # proxy wiring the endpoint hands that scope to. Mirrors
+        # TestResponsesWSFirstFrameModelAuth above.
+        with (
+            patch(  # test-quality-ok: auth is not under test here and needs a live key store
+                "litellm.proxy.response_api_endpoints.endpoints._enforce_responses_ws_first_frame_model_auth",
+                new_callable=AsyncMock,
+            ),
+            patch(  # test-quality-ok: this call IS the seam -- the only place the synthetic Request is observable
+                "litellm.proxy.response_api_endpoints.endpoints.ProxyBaseLLMRequestProcessing",
+                return_value=processor,
+            ),
+            patch(  # test-quality-ok: stops the endpoint before it dials a real upstream; no router is configured
+                "litellm.proxy.route_llm_request.route_request",
+                new_callable=AsyncMock,
+                return_value=fake_llm_call(),
+            ),
+        ):
+            await responses_websocket_endpoint(
+                websocket=ws,
+                model=None,
+                user_api_key_dict=MagicMock(),
+            )
+
+        return captured["request"]
+
+    @pytest.mark.asyncio
+    async def test_synthetic_request_carries_websocket_peer_address(self):
+        request = await self._capture_synthetic_request(
+            {"headers": [], "client": self._PEER}
+        )
+        assert request.client is not None
+        assert request.client.host == "203.0.113.7"
+
+    @pytest.mark.asyncio
+    async def test_synthetic_request_survives_missing_peer_address(self):
+        """A scope with no ``client`` (some ASGI servers / test clients) must
+        still produce a usable Request, not raise."""
+        request = await self._capture_synthetic_request({"headers": []})
+        assert request.client is None
+
+    @pytest.mark.asyncio
+    async def test_requester_ip_address_reaches_websocket_connection_metadata(self):
+        """End-to-end over the real mechanism: the synthetic Request this
+        endpoint builds, run through the real ``add_litellm_data_to_request``,
+        must populate ``litellm_metadata["requester_ip_address"]`` -- the dict
+        ``_build_litellm_metadata_for_ws`` copies into the per-turn spend row.
+        Before the fix this was ``""``.
+        """
+        from litellm.proxy._types import UserAPIKeyAuth
+        from litellm.proxy.litellm_pre_call_utils import (
+            _get_metadata_variable_name,
+            add_litellm_data_to_request,
+        )
+
+        request = await self._capture_synthetic_request(
+            {"headers": [], "client": self._PEER}
+        )
+
+        # /v1/responses is a LITELLM_METADATA_ROUTES route.
+        assert _get_metadata_variable_name(request) == "litellm_metadata"
+
+        data = await add_litellm_data_to_request(
+            data={"model": "gpt-4o-mini"},
+            request=request,
+            user_api_key_dict=UserAPIKeyAuth(api_key="hashed-key"),
+            proxy_config=MagicMock(),
+            general_settings={},
+            version="test-version",
+        )
+
+        assert data["litellm_metadata"]["requester_ip_address"] == "203.0.113.7"
+
+
 class TestReadWSModelFromFirstFrameErrors:
     @pytest.mark.asyncio
     async def test_timeout_closes_without_error_frame(self):
