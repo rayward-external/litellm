@@ -616,16 +616,20 @@ class TestResponsesWSRequesterIpAddress:
         async def fake_llm_call():
             return None
 
+        # The object under test is the ASGI scope this endpoint synthesizes, so
+        # there is no HTTP boundary to fake instead -- the seam has to be the
+        # proxy wiring the endpoint hands that scope to. Mirrors
+        # TestResponsesWSFirstFrameModelAuth above.
         with (
-            patch(
+            patch(  # test-quality-ok: auth is not under test here and needs a live key store
                 "litellm.proxy.response_api_endpoints.endpoints._enforce_responses_ws_first_frame_model_auth",
                 new_callable=AsyncMock,
             ),
-            patch(
+            patch(  # test-quality-ok: this call IS the seam -- the only place the synthetic Request is observable
                 "litellm.proxy.response_api_endpoints.endpoints.ProxyBaseLLMRequestProcessing",
                 return_value=processor,
             ),
-            patch(
+            patch(  # test-quality-ok: stops the endpoint before it dials a real upstream; no router is configured
                 "litellm.proxy.route_llm_request.route_request",
                 new_callable=AsyncMock,
                 return_value=fake_llm_call(),

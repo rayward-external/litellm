@@ -1893,7 +1893,7 @@ class ResponsesWebSocketStreaming:
         nested: Final = msg_obj.get("response")
         if not _is_json_object(nested):
             return False
-        del msg_obj["response"]
+        del msg_obj["response"]  # rebind-ok: frame normalised in place before forwarding
         hoisted: Final = MappingProxyType(  # mutable-ok: immediately frozen filtered envelope
             {key: value for key, value in nested.items() if key != "type"}
         )
