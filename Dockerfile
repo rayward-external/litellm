@@ -29,7 +29,7 @@ COPY ui/litellm-dashboard/ ./
 RUN npm run build
 
 # Builder stage
-FROM cgr.dev/chainguard/wolfi-base:latest AS builder
+FROM cgr.dev/chainguard/wolfi-base@sha256:31da6565f35af6401031c1d7aa91dc84ac76c5c48edd17fb90f0ed9e3173c7a9 AS builder
 
 WORKDIR /app
 USER root
@@ -37,7 +37,8 @@ USER root
 COPY --from=uvbin /uv /usr/local/bin/uv
 COPY --from=uvbin /uvx /usr/local/bin/uvx
 
-RUN apk add --no-cache \
+RUN apk add --no-cache --upgrade glibc glibc-locale && \
+    apk add --no-cache \
     bash \
     gcc \
     python-3.13 \
@@ -99,7 +100,7 @@ RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh && \
     sed -i 's/\r$//' docker/prod_entrypoint.sh && chmod +x docker/prod_entrypoint.sh
 
 # Runtime stage
-FROM cgr.dev/chainguard/wolfi-base:latest AS runtime
+FROM cgr.dev/chainguard/wolfi-base@sha256:31da6565f35af6401031c1d7aa91dc84ac76c5c48edd17fb90f0ed9e3173c7a9 AS runtime
 
 USER root
 
@@ -110,7 +111,8 @@ USER root
 RUN echo "https://packages.wolfi.dev/os" >> /etc/apk/repositories
 
 # node (without npm) is required by the prisma CLI at runtime
-RUN apk add --no-cache bash openssl tzdata nodejs python-3.13 libsndfile
+RUN apk add --no-cache --upgrade glibc glibc-locale && \
+    apk add --no-cache bash openssl tzdata nodejs python-3.13 libsndfile
 
 WORKDIR /app
 ENV PATH="/app/.venv/bin:${PATH}" \

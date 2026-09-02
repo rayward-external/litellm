@@ -37,6 +37,7 @@ COPY --from=uvbin /uv /uvx /usr/local/bin/
 # instead of nodeenv downloading one whose dynamic deps may not be in Wolfi
 # (e.g. Node 26.2.0 needs libatomic). Retry for transient apk.cgr.dev flakes.
 RUN for i in 1 2 3; do \
+      apk add --no-cache --upgrade glibc glibc-locale && \
       apk add --no-cache bash gcc python-3.13 python-3.13-dev openssl openssl-dev libsndfile nodejs npm && break; \
       [ $i = 3 ] && { echo "apk add failed after 3 retries" >&2; exit 1; }; \
       sleep 5; \
@@ -89,6 +90,7 @@ FROM cgr.dev/chainguard/wolfi-base@sha256:31da6565f35af6401031c1d7aa91dc84ac76c5
 USER root
 
 RUN for i in 1 2 3; do \
+      apk add --no-cache --upgrade glibc glibc-locale && \
       apk add --no-cache bash openssl tzdata python-3.13 nodejs libsndfile libatomic && break; \
       [ $i = 3 ] && { echo "apk add failed after 3 retries" >&2; exit 1; }; \
       sleep 5; \
