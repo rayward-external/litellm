@@ -7,7 +7,9 @@ import litellm
 from litellm.main import stream_chunk_builder
 from litellm.responses.litellm_completion_transformation.custom_tools import (
     build_tool_call_item_kwargs,
+    build_web_search_call_item,
     extract_custom_tool_names,
+    is_server_executed_web_search_call,
     serialize_tool_call_arguments,
 )
 from litellm.responses.litellm_completion_transformation.transformation import (
@@ -132,6 +134,9 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         self._accumulated_reasoning_content_parts: list[str] = []
         self._accumulated_provider_specific_fields: dict[str, object] = {}
         self._custom_tool_names: set[str] = extract_custom_tool_names(self.responses_api_request.get("tools"))
+        # Tool calls the PROVIDER ran itself. Only the first delta of a call
+        # carries its name, so the verdict is latched by call id.
+        self._server_executed_web_search_call_ids: set[str] = set()  # mutable-ok: per-call latch
         self._namespace_tool_names = LiteLLMCompletionResponsesConfig.namespace_tool_name_map(
             self.responses_api_request.get("tools")
         )
@@ -221,6 +226,12 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                 fn_args_delta = serialize_tool_call_arguments(getattr(fn, "arguments", ""))
             tool_name, tool_namespace = self._responses_namespace_tool_call_fields(fn_name)
 
+            # A provider-executed web search is reported once, at the end, as a
+            # ``web_search_call`` item — never as streamed function-call events
+            # the client would answer.
+            if self._is_server_executed_web_search(call_id, tool_name):
+                continue
+
             output_index = self._get_or_assign_tool_output_index(call_id)
 
             if call_id not in self._tool_args_by_call_id:
@@ -258,6 +269,39 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                     delta_event.__dict__["sequence_number"] = self._sequence_number
                     self._pending_tool_events.append(delta_event)
 
+    def _is_server_executed_web_search(self, call_id: str, tool_name: str) -> bool:
+        if call_id in self._server_executed_web_search_call_ids:
+            return True
+        if is_server_executed_web_search_call(call_id, tool_name):
+            self._server_executed_web_search_call_ids.add(call_id)
+            return True
+        return False
+
+    def _queue_web_search_call_events(self, call_id: str, arguments: str) -> None:
+        """Report a provider-executed web search as a ``web_search_call`` item.
+
+        Emitted as an added/done pair with no ``function_call_arguments`` events,
+        because the client has nothing to run and nothing to answer.
+        """
+        output_index: Final = self._get_or_assign_tool_output_index(call_id)
+        self._sequence_number += 1
+        added_event: Final = OutputItemAddedEvent(
+            type=ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED,
+            output_index=output_index,
+            item=build_web_search_call_item(call_id, arguments, "in_progress"),
+        )
+        added_event.__dict__["sequence_number"] = self._sequence_number
+        self._pending_tool_events.append(added_event)
+
+        self._sequence_number += 1
+        done_event: Final = OutputItemDoneEvent(
+            type=ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE,
+            output_index=output_index,
+            item=build_web_search_call_item(call_id, arguments, "completed"),
+        )
+        done_event.__dict__["sequence_number"] = self._sequence_number
+        self._pending_tool_events.append(done_event)
+
     def _queue_final_tool_call_done_events(self, litellm_complete_object: ModelResponse) -> None:
         """
         Ensure tool calls that were not streamed as deltas still get emitted before response.completed.
@@ -292,6 +336,10 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                 fn_name = str(getattr(fn, "name", "") or "")
                 fn_args = serialize_tool_call_arguments(getattr(fn, "arguments", ""))
             tool_name, tool_namespace = self._responses_namespace_tool_call_fields(fn_name)
+
+            if self._is_server_executed_web_search(call_id, tool_name):
+                self._queue_web_search_call_events(call_id, fn_args)
+                continue
 
             # Track if this is a new tool call that wasn't streamed
             is_new_tool_call = call_id not in self._tool_args_by_call_id

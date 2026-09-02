@@ -26,10 +26,28 @@ from litellm.types.llms.openai import (
     ChatCompletionToolParam,
     ChatCompletionToolParamFunctionChunk,
 )
+from litellm.types.responses.main import (
+    OutputWebSearchCall,
+    OutputWebSearchCallAction,
+    WebSearchCallStatus,
+)
 
 _MAX_ARGUMENTS_LEN: Final = 1_000_000
 
-TOOL_CALL_ITEM_ID_PREFIX_BY_TYPE: Final = MappingProxyType({"function_call": "fc", "custom_tool_call": "ctc"})
+TOOL_CALL_ITEM_ID_PREFIX_BY_TYPE: Final = MappingProxyType(
+    {"function_call": "fc", "custom_tool_call": "ctc", "web_search_call": "ws"}
+)
+
+# Anthropic stamps every tool call its OWN fleet executed with this prefix
+# (``server_tool_use`` blocks), as opposed to the ``toolu_`` calls it hands to
+# the client. The distinction is invisible in the Chat Completions shape both
+# collapse into, so the id prefix is the only signal the Responses bridge has.
+SERVER_EXECUTED_TOOL_CALL_ID_PREFIX: Final = "srvtoolu_"
+
+# Server-executed tool names that map onto OpenAI's ``web_search_call`` output
+# item. Code execution has its own item type and is converted elsewhere (see
+# ``_extract_tool_result_output_items``), so it is deliberately absent here.
+SERVER_EXECUTED_WEB_SEARCH_TOOL_NAMES: Final = frozenset({"web_search", "web_fetch"})
 
 
 def openai_shaped_tool_call_item_id(item_type: str, tool_id: str) -> str:
@@ -126,6 +144,55 @@ def build_tool_call_item_kwargs(
     else:
         kwargs["arguments"] = arguments_or_input
     return kwargs
+
+
+def is_server_executed_web_search_call(call_id: str, tool_name: str) -> bool:
+    """Was this tool call a web search the provider already ran itself?
+
+    Such a call is not actionable by the client: the provider ran the search and
+    returned the results in the same response. Surfacing it as a ``function_call``
+    makes the client answer it (codex answers ``unsupported call: web_search``),
+    and on the next turn that answer replays as a ``tool_result`` whose paired
+    ``tool_use`` does not exist, which Anthropic rejects with
+    "unexpected `tool_use_id` found in `tool_result` blocks".
+    """
+    return (
+        call_id.startswith(SERVER_EXECUTED_TOOL_CALL_ID_PREFIX) and tool_name in SERVER_EXECUTED_WEB_SEARCH_TOOL_NAMES
+    )
+
+
+def extract_web_search_query(arguments: str) -> str | None:
+    """Read the ``query`` out of a web search tool call's JSON arguments."""
+    if not arguments:
+        return None
+    try:
+        parsed: Final = json.loads(arguments)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if isinstance(parsed, dict):
+        query: Final = parsed.get("query")
+        if isinstance(query, str):
+            return query
+    return None
+
+
+def build_web_search_call_item(
+    call_id: str,
+    arguments: str,
+    status: WebSearchCallStatus,
+) -> OutputWebSearchCall:
+    """Build the ``web_search_call`` output item for a provider-executed search.
+
+    Shared by the streaming iterator and the non-streaming transformation so
+    both surfaces describe the same search the same way.
+    """
+    query: Final = extract_web_search_query(arguments)
+    return OutputWebSearchCall(
+        type="web_search_call",
+        id=openai_shaped_tool_call_item_id("web_search_call", call_id),
+        status=status,
+        action=(OutputWebSearchCallAction(type="search", query=query) if query is not None else None),
+    )
 
 
 class _CustomToolFormat(BaseModel):

@@ -2,7 +2,7 @@ from typing import Final, Literal, Optional, Union
 
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
 from pydantic import PrivateAttr
-from typing_extensions import Any, TypedDict
+from typing_extensions import Any, TypeAlias, TypedDict
 
 from litellm.types.llms.base import BaseLiteLLMOpenAIResponseObject
 
@@ -82,6 +82,33 @@ def build_code_interpreter_log_outputs(
         parts.append(f"STDERR: {content['stderr']}")
     logs: Final = "".join(parts)
     return [OutputCodeInterpreterCallLog(type="logs", logs=logs)] if logs else None
+
+
+WebSearchCallStatus: TypeAlias = Literal["in_progress", "searching", "completed", "incomplete", "failed"]
+
+
+class OutputWebSearchCallAction(BaseLiteLLMOpenAIResponseObject):
+    """The action a provider-executed web search performed."""
+
+    type: Literal["search"]
+    query: str | None = None
+
+
+class OutputWebSearchCall(BaseLiteLLMOpenAIResponseObject):
+    """A web search the PROVIDER already ran on its own fleet.
+
+    Mirrors the ``web_search_call`` variant of OpenAI's Responses API output.
+    Unlike ``function_call``, this item carries no ``call_id``: it is a record
+    of work already done, not a request for the client to do any. Emitting a
+    provider-executed search as a ``function_call`` instead makes the client
+    answer a call it cannot run, and that answer has no ``tool_use`` to pair
+    with when the history is replayed.
+    """
+
+    type: Literal["web_search_call"]
+    id: str
+    status: WebSearchCallStatus
+    action: OutputWebSearchCallAction | None = None
 
 
 class CustomToolCallOutputItem(BaseLiteLLMOpenAIResponseObject):
