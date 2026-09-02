@@ -11,6 +11,7 @@ rollups and, for ``source``, the status page's per-test links to GitHub.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 from junit_properties import (
@@ -115,7 +116,7 @@ class TestResultProperties:
             ("logging/test_x.py", 40, "TestFoo.test_bar"),
             (FakeMarker("covers", "LOG-1", "LOG-2"),),
         )
-        assert result_properties(item) == (
+        assert result_properties(cast(pytest.Item, item)) == (
             ("package", "logging"),
             ("covers", "LOG-1,LOG-2"),
             ("source", "tests/e2e/logging/test_x.py:41"),
@@ -125,8 +126,8 @@ class TestResultProperties:
         """Collection can run the hook more than once; a second pass must not
         double the <property> entries in the report."""
         item = FakeItem("logging/test_x.py::test_bar", ("logging/test_x.py", 40, "test_bar"))
-        attach_result_properties(item)
-        attach_result_properties(item)
+        attach_result_properties(cast(pytest.Item, item))
+        attach_result_properties(cast(pytest.Item, item))
         assert [name for name, _ in item.user_properties] == ["package", "covers", "source"]
 
 
