@@ -702,6 +702,37 @@ def _extract_error_from_sse_chunk(event_line: str | bytes) -> dict:
     return default_error
 
 
+class StreamWriteStalled(Exception):
+    """No progress was made writing a streamed chunk within the configured window.
+
+    Raised instead of `starlette.requests.ClientDisconnect` so a caller can tell
+    an inferred stall from a disconnect the transport actually reported.
+    """
+
+
+def _stall_guarded_send(send: Send, timeout_seconds: float) -> Send:
+    """Wrap an ASGI `send` so a write that makes no progress ends the stream.
+
+    `asyncio.wait_for` cancels the pending `send()` on expiry. The bytes it was
+    draining are abandoned, which is correct: the response is being torn down and
+    the peer is, by construction, not reading them.
+    """
+
+    async def guarded(message: Mapping[str, Any]) -> None:
+        try:
+            await asyncio.wait_for(send(message), timeout=timeout_seconds)  # pyright: ignore[reportArgumentType]
+        except asyncio.TimeoutError as exc:
+            verbose_proxy_logger.warning(
+                "client stopped reading the stream: no write progress in %ss, closing the upstream LLM call",
+                timeout_seconds,
+            )
+            raise StreamWriteStalled(
+                f"no streaming write progress in {timeout_seconds}s; treating the client as gone"
+            ) from exc
+
+    return guarded  # pyright: ignore[reportReturnType]
+
+
 class _UpstreamClosingStreamingResponse(StreamingResponse):
     """StreamingResponse that always closes its body iterator and the wrapped
     upstream generator.
@@ -713,6 +744,16 @@ class _UpstreamClosingStreamingResponse(StreamingResponse):
     body iterator) because aclose() on a never-started generator skips its
     body, so a cascade through it would be a no-op if the client disconnects
     before the first chunk is sent.
+
+    It also bounds how long a single write may stall. Starlette's own disconnect
+    handling is receive()-based: it needs the ASGI server to synthesize
+    `http.disconnect`, and a server only does that when the socket to its
+    *immediate peer* closes. A terminating proxy in front of the app (Cloud Run,
+    ALB, nginx) can stop consuming the response while holding that hop's socket
+    open, in which case no disconnect is ever delivered, `await send(...)` parks
+    in the server's flow-control drain, and the request lives until the
+    platform's request cap - still holding a concurrency slot and the upstream
+    provider connection. See `litellm.stream_stalled_write_timeout_seconds`.
     """
 
     def __init__(
@@ -732,9 +773,23 @@ class _UpstreamClosingStreamingResponse(StreamingResponse):
         """The upstream LLM stream, for a caller that has to run this response's cleanup itself."""
         return self._upstream_generator
 
+    async def stream_response(self, send: Send) -> None:
+        stall_timeout: Final = coerce_keepalive_interval(litellm.stream_stalled_write_timeout_seconds)
+        if stall_timeout is None:
+            await super().stream_response(send)
+            return
+        await super().stream_response(_stall_guarded_send(send, stall_timeout))
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
             await super().__call__(scope, receive, send)
+        except StreamWriteStalled:
+            # The peer is not reading, so there is no client left to report an
+            # error to and nothing above this can usefully handle it. The
+            # `finally` below closes the upstream call; returning normally lets
+            # the ASGI server tear the connection down without an error
+            # traceback for what is a client-side condition.
+            pass
         finally:
             with anyio.CancelScope(shield=True):
                 for target in (self.body_iterator, self._upstream_generator):
@@ -1146,10 +1201,10 @@ async def open_sse_before_first_byte(
     verbose_proxy_logger.info(
         "no upstream response after %ss, opening the SSE response early and sending keepalives", interval
     )
-    return StreamingResponse(
-        keepalive_then_relay(),
+    return _UpstreamClosingStreamingResponse(
+        keepalive_then_relay(),  # pyright: ignore[reportArgumentType]  # bytes generator, StreamingResponse accepts either
         media_type=media_type,
-        headers=_TTFT_KEEPALIVE_HEADERS,
+        headers=dict(_TTFT_KEEPALIVE_HEADERS),
     )
 
 

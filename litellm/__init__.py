@@ -256,6 +256,25 @@ use_chat_completions_url_for_anthropic_messages: bool = bool(
 strip_anthropic_total_tokens: bool = False
 anthropic_sse_ping_interval_seconds: float = 15.0
 sse_keepalive_ping_interval_seconds: float | None = None
+# How long a single streaming write may sit unacknowledged before the stream is
+# abandoned and the upstream LLM connection closed.
+#
+# Disconnect detection in an ASGI stack is receive()-based: Starlette only learns
+# the client is gone when the server synthesizes `http.disconnect`, and a server
+# only does that when the TCP connection to its immediate peer actually closes.
+# Behind a proxy that terminates the client connection itself (Cloud Run, ALB,
+# nginx), the peer can stop *consuming* the response while keeping that hop's
+# socket open. Nothing is ever delivered to the app, `await send(...)` parks in
+# the server's flow-control drain, and the request survives until the platform's
+# request cap - holding a concurrency slot and the upstream provider connection
+# for the whole time.
+#
+# A stalled write is the only signal available in that shape, and on an SSE
+# stream it is unambiguous: keepalive pings guarantee there is always something
+# to write, so a write that makes no progress for this long means nobody is
+# reading. Set to None or 0 to disable and restore pure receive()-based
+# detection.
+stream_stalled_write_timeout_seconds: float | None = 300.0
 route_all_chat_openai_to_responses: bool = (
     os.getenv("LITELLM_ROUTE_ALL_CHAT_OPENAI_TO_RESPONSES", "false").lower() == "true"
 )  # When True, routes all OpenAI /chat/completions requests through the Responses API bridge
