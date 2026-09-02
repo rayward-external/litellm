@@ -180,13 +180,13 @@ async def _stream_v1_messages_to(client: _StallingClient, upstream: _FakeAnthrop
         return upstream
 
     with (
-        patch.object(
+        patch.object(  # test-quality-ok: the subject is the ASGI write path below routing; the real pre-call logic needs a live router and DB and would not change what is measured
             ProxyBaseLLMRequestProcessing,
             "common_processing_pre_call_logic",
             autospec=True,
             side_effect=_fake_pre_call,
         ),
-        patch(
+        patch(  # test-quality-ok: this IS the boundary under test - it substitutes the provider connection whose closure the assertions are about
             "litellm.proxy.common_request_processing.route_request",
             new=AsyncMock(return_value=_fake_llm_call()),
         ),

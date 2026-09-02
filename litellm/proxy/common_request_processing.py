@@ -15,7 +15,7 @@ import httpx
 import orjson
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 
 import litellm
 from litellm._logging import _redact_string, verbose_proxy_logger
@@ -718,19 +718,22 @@ def _stall_guarded_send(send: Send, timeout_seconds: float) -> Send:
     the peer is, by construction, not reading them.
     """
 
-    async def guarded(message: Mapping[str, Any]) -> None:
+    async def guarded(message: Message) -> None:
         try:
-            await asyncio.wait_for(send(message), timeout=timeout_seconds)  # pyright: ignore[reportArgumentType]
+            await asyncio.wait_for(send(message), timeout=timeout_seconds)
         except asyncio.TimeoutError as exc:
+            # Deliberately not specific about what is still open: the stall can
+            # land on the terminating empty-body frame, by which point the
+            # upstream has already finished and there is nothing left to close.
             verbose_proxy_logger.warning(
-                "client stopped reading the stream: no write progress in %ss, closing the upstream LLM call",
+                "client stopped reading the stream: no write progress in %ss, abandoning the response",
                 timeout_seconds,
             )
             raise StreamWriteStalled(
                 f"no streaming write progress in {timeout_seconds}s; treating the client as gone"
             ) from exc
 
-    return guarded  # pyright: ignore[reportReturnType]
+    return guarded
 
 
 class _UpstreamClosingStreamingResponse(StreamingResponse):
@@ -758,10 +761,10 @@ class _UpstreamClosingStreamingResponse(StreamingResponse):
 
     def __init__(
         self,
-        content: AsyncGenerator[str, None],
+        content: AsyncGenerator[str | bytes, None],
         *,
         media_type: str | None = None,
-        headers: dict | None = None,
+        headers: Mapping[str, str] | None = None,
         status_code: int = status.HTTP_200_OK,
         upstream_generator: AsyncGenerator[str, None] | None = None,
     ) -> None:
@@ -1202,9 +1205,9 @@ async def open_sse_before_first_byte(
         "no upstream response after %ss, opening the SSE response early and sending keepalives", interval
     )
     return _UpstreamClosingStreamingResponse(
-        keepalive_then_relay(),  # pyright: ignore[reportArgumentType]  # bytes generator, StreamingResponse accepts either
+        keepalive_then_relay(),
         media_type=media_type,
-        headers=dict(_TTFT_KEEPALIVE_HEADERS),
+        headers=_TTFT_KEEPALIVE_HEADERS,
     )
 
 
