@@ -1404,9 +1404,6 @@
     },
     "prefer-const": {
       "count": 2
-    },
-    "react-hooks/set-state-in-effect": {
-      "count": 1
     }
   },
   "src/components/TeamsPage/teamTableColumns.tsx": {
