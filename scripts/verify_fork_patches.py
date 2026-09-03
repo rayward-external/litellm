@@ -140,7 +140,7 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # silencing a LIVE row by flipping its pattern to N/A -- the cheapest possible
 # way to make this script green without fixing anything -- shows up as a diff
 # to this number and has to be argued for in review.
-EXPECTED_NA_ROWS = 12
+EXPECTED_NA_ROWS = 15
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",

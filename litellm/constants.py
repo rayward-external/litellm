@@ -9,6 +9,38 @@ DEFAULT_HEALTH_CHECK_PROMPT: Final = str(os.getenv("DEFAULT_HEALTH_CHECK_PROMPT"
 AZURE_DEFAULT_RESPONSES_API_VERSION: Final = str(os.getenv("AZURE_DEFAULT_RESPONSES_API_VERSION", "preview"))
 ROUTER_MAX_FALLBACKS: Final = int(os.getenv("ROUTER_MAX_FALLBACKS", 5))
 ROUTER_FALLBACK_ERROR_DETAIL_MAX_CHARS: Final = 2000
+RUNTIME_UPDATABLE_ROUTER_SETTINGS: Final[frozenset[str]] = frozenset(
+    {
+        "routing_strategy_args",
+        "routing_strategy",
+        "routing_groups",
+        "allowed_fails",
+        "cooldown_time",
+        "num_retries",
+        "timeout",
+        "max_retries",
+        "retry_after",
+        "fallbacks",
+        "context_window_fallbacks",
+        "retry_policy",
+        "model_group_retry_policy",
+        "model_group_alias",
+        "enable_weighted_failover",
+        "enable_tag_filtering",
+        "tag_routing_prefix",
+        "optional_pre_call_checks",
+    }
+)
+ROUTER_SETTINGS_MANAGED_OUTSIDE_CONFIG: Final[frozenset[str]] = frozenset(
+    {
+        "model_list",
+        "search_tools",
+        "assistants_config",
+        "router_general_settings",
+        "ignore_invalid_deployments",
+        "fallback_access_check",
+    }
+)
 DEFAULT_BATCH_SIZE: Final = int(os.getenv("DEFAULT_BATCH_SIZE", 512))
 DEFAULT_FLUSH_INTERVAL_SECONDS: Final = int(os.getenv("DEFAULT_FLUSH_INTERVAL_SECONDS", 5))
 DEFAULT_S3_FLUSH_INTERVAL_SECONDS: Final = int(os.getenv("DEFAULT_S3_FLUSH_INTERVAL_SECONDS", 10))
@@ -1420,6 +1452,7 @@ RETURN_RAW_MODEL_NAME_METADATA_KEY: Final = "_complexity_router_return_raw_model
 SESSION_DEPLOYMENT_AFFINITY_TTL_METADATA_KEY: Final = "_session_deployment_affinity_ttl"
 CONSUMED_REQUEST_TAGS_METADATA_KEY: Final = "_consumed_request_tags"
 INTERNAL_CALL_ORIGIN_METADATA_KEY: Final = "internal_call_origin"
+SESSION_ID_GENERATED_METADATA_KEY: Final = "litellm_session_id_generated"
 LITELLM_TRUNCATED_PAYLOAD_FIELD: Final = "litellm_truncated"
 LITELLM_TRUNCATION_DB_SAFEGUARD_NOTE: Final = (
     "Truncation is a DB storage safeguard. "
@@ -1630,7 +1663,9 @@ PROXY_BATCH_POLLING_INTERVAL: Final = int(os.getenv("PROXY_BATCH_POLLING_INTERVA
 MAX_OBJECTS_PER_POLL_CYCLE: Final = max(1, int(os.getenv("MAX_OBJECTS_PER_POLL_CYCLE", 50)))
 # Reclaim window for pricing claims orphaned by a dead poller worker —
 # see CheckBatchCost._reclaim_abandoned_pricing_claims.
-ABANDONED_PRICING_CLAIM_RECLAIM_SECONDS: Final = max(300, int(os.getenv("ABANDONED_PRICING_CLAIM_RECLAIM_SECONDS", 7200)))
+ABANDONED_PRICING_CLAIM_RECLAIM_SECONDS: Final = max(
+    300, int(os.getenv("ABANDONED_PRICING_CLAIM_RECLAIM_SECONDS", 7200))
+)
 MANAGED_OBJECT_STALENESS_CUTOFF_DAYS: Final = max(1, int(os.getenv("MANAGED_OBJECT_STALENESS_CUTOFF_DAYS", 7)))
 STALE_OBJECT_CLEANUP_BATCH_SIZE: Final = max(1, int(os.getenv("STALE_OBJECT_CLEANUP_BATCH_SIZE", 1000)))
 # Set PROXY_BATCH_POLLING_ENABLED=false to disable the CheckBatchCost and
@@ -1716,6 +1751,7 @@ LITELLM_SETTINGS_SAFE_DB_OVERRIDES: Final = [
     "anthropic_prompt_caching_ttl",
     "max_ui_session_budget",
     "budget_rollover",
+    "mcp_tool_search",
 ]
 SPECIAL_LITELLM_AUTH_TOKEN: Final = ["ui-token"]
 DEFAULT_MANAGEMENT_OBJECT_IN_MEMORY_CACHE_TTL = int(os.getenv("DEFAULT_MANAGEMENT_OBJECT_IN_MEMORY_CACHE_TTL", 60))

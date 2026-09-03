@@ -48,6 +48,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         --extra proxy-runtime \
         --extra extra_proxy \
         --extra semantic-router \
+        --extra saml \
         --python python3.13
 
 # Stage 2 — copy source and install the project + workspace members.
@@ -59,6 +60,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         --extra proxy-runtime \
         --extra extra_proxy \
         --extra semantic-router \
+        --extra saml \
         --python python3.13
 
 RUN HOME=/opt/prisma XDG_CACHE_HOME=/opt/prisma/.cache PRISMA_BINARY_CACHE_DIR=/opt/prisma/binaries \
