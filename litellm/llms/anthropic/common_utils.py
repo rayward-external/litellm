@@ -560,10 +560,12 @@ class AnthropicModelInfo(BaseLLMModelInfo):
         if not isinstance(thinking, dict) or thinking.get("type") != "enabled":
             return
 
+        max_tokens_param: Final = optional_params.get("max_tokens")
         effort: Final = AnthropicModelInfo._legacy_budget_to_effort(
             model=model,
             budget_tokens=int(thinking.get("budget_tokens") or 0),
             custom_llm_provider=custom_llm_provider,
+            max_tokens=int(max_tokens_param) if isinstance(max_tokens_param, (int, float)) else None,
         )
         existing_output_config: Final = optional_params.get("output_config")
         optional_params["thinking"] = {"type": "adaptive"}
@@ -573,7 +575,13 @@ class AnthropicModelInfo(BaseLLMModelInfo):
         }
 
     @staticmethod
-    def _legacy_budget_to_effort(model: str, budget_tokens: int, custom_llm_provider: str) -> str:
+    def _legacy_budget_to_effort(
+        model: str, budget_tokens: int, custom_llm_provider: str, max_tokens: int | None = None
+    ) -> str:
+        # A caller asking for a thinking budget that consumes the whole response
+        # budget is asking for maximum reasoning effort, not just "xhigh".
+        if max_tokens is not None and max_tokens > 0 and budget_tokens >= max_tokens:
+            return "max"
         if budget_tokens >= DEFAULT_REASONING_EFFORT_XHIGH_THINKING_BUDGET and (
             AnthropicModelInfo._supports_model_capability(model, "supports_xhigh_reasoning_effort", custom_llm_provider)
         ):
