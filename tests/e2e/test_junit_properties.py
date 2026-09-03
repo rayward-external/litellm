@@ -11,7 +11,6 @@ rollups and, for ``source``, the status page's per-test links to GitHub.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 
 import pytest
 from junit_properties import (
