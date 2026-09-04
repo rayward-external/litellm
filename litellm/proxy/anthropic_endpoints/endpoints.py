@@ -36,7 +36,7 @@ def _anthropic_error_json_response(exc: ProxyException, request: Request) -> JSO
         _close_dangling_otel_server_span,  # pyright: ignore[reportPrivateUsage]  # proxy_server keeps the span-close helper private; error JSONResponses returned by the route must stamp the OTel server span like the global ProxyException handler does
     )
 
-    status_code: Final = int(exc.code) if exc.code is not None and exc.code.isdigit() else 500
+    status_code: Final = int(exc.code) if exc.code.isdigit() else 500
     _close_dangling_otel_server_span(request, status_code, exc=exc)
     envelope: Final = AnthropicExceptionMapping.transform_to_anthropic_error(
         status_code=status_code,

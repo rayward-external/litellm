@@ -438,8 +438,6 @@ class _PROXY_LiteLLMManagedFiles(CustomLogger, BaseFileEndpoints):
         or directly on the provider account) stay accessible so pass-through
         reads keep working.
         """
-        if self.prisma_client is None:
-            return
         managed_object = (
             await self.prisma_client.db.litellm_managedobjecttable.find_first(
                 where={"OR": [{"unified_object_id": object_id}, {"model_object_id": object_id}]}
@@ -466,8 +464,6 @@ class _PROXY_LiteLLMManagedFiles(CustomLogger, BaseFileEndpoints):
         batch's output/error files are first synced; ids with no row stay
         accessible so pass-through reads keep working.
         """
-        if self.prisma_client is None:
-            return
         managed_file = (
             await self.prisma_client.db.litellm_managedfiletable.find_first(
                 where={"OR": [{"unified_file_id": file_id}, {"flat_model_file_ids": {"has": file_id}}]}
@@ -500,8 +496,6 @@ class _PROXY_LiteLLMManagedFiles(CustomLogger, BaseFileEndpoints):
             if file_id and not _is_base64_encoded_unified_file_id(file_id)
         )
         if not provider_file_ids:
-            return
-        if self.prisma_client is None:
             return
         batch_row = (
             await self.prisma_client.db.litellm_managedobjecttable.find_first(

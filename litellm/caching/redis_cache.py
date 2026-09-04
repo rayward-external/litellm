@@ -448,7 +448,9 @@ def _redis_circuit_breaker_guard(method):
     return wrapper
 
 
-def _redis_circuit_breaker_guard_sync(method: Callable[..., _RedisCallResult]) -> Callable[..., _RedisCallResult]:
+def _redis_circuit_breaker_guard_sync(  # pyright: ignore[reportUnusedFunction]  # sync counterpart to the async guard above, exercised by tests/test_litellm/caching/test_redis_cache.py (outside basedpyright's litellm-only include path) pending its own sync-method rollout
+    method: Callable[..., _RedisCallResult],
+) -> Callable[..., _RedisCallResult]:
     return functools.wraps(method)(
         lambda self, *args, **kwargs: _run_under_circuit_breaker_sync(
             self._circuit_breaker, method.__name__, lambda: method(self, *args, **kwargs)
