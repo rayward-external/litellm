@@ -588,6 +588,9 @@ from litellm.proxy.middleware.admission_control_middleware import (
     admission_control_state,
     get_admission_control_settings,
 )
+from litellm.proxy.middleware.external_audience_middleware import (
+    ExternalAudienceHeaderMiddleware,
+)
 from litellm.proxy.middleware.in_flight_requests_middleware import (
     InFlightRequestsMiddleware,
 )
@@ -18258,6 +18261,14 @@ app.add_middleware(
     get_settings=lambda: get_admission_control_settings(general_settings),
     state=admission_control_state,
 )
+# RAYWARD FORK PATCH — keep this the LAST add_middleware call in this file.
+# Starlette makes the last-added middleware outermost, and this one must observe
+# the final response header set produced by every inner middleware (CORS's
+# access-control-expose-headers included) before it strips gateway-identifying
+# headers for external callers. Registered here rather than next to the other
+# middlewares for that reason. See external_audience_middleware.py for what
+# breaks if this line is dropped by an upstream rebase.
+app.add_middleware(ExternalAudienceHeaderMiddleware)
 
 
 async def _stream_mcp_asgi_response(handle_fn, scope: dict, receive) -> "StreamingResponse":
