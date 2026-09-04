@@ -160,7 +160,7 @@ class VectorStorePreCallHook(CustomLogger):
                             **litellm_params_for_vector_store,
                         },
                     )
-                except Exception as search_error:
+                except Exception as search_error:  # noqa: BLE001  # one failing vector store must not block the others
                     verbose_logger.warning(
                         "Vector store search failed for vector_store_id=%s, continuing without its context: %s",
                         vector_store_id,

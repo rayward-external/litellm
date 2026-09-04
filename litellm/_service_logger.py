@@ -104,7 +104,7 @@ class ServiceLogging(CustomLogger):
         """
         try:
             await hook()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # a callback failure must not replace the outage it is reporting
             verbose_logger.exception("Error emitting service event - %s", e)
 
     @staticmethod
@@ -122,7 +122,7 @@ class ServiceLogging(CustomLogger):
                 loop.create_task(ServiceLogging._emit_guarded(hook))
             else:
                 loop.run_until_complete(ServiceLogging._emit_guarded(hook))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # dispatch must not crash the caller whose service call it is monitoring
             verbose_logger.exception("Error dispatching service event - %s", e)
 
     def service_success_hook(

@@ -244,7 +244,7 @@ async def list_containers(
                 user_api_base=user_api_base,
                 version=version,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # translated to the proxy's public exception contract below
             raise await processor._handle_llm_api_exception(
                 e=e,
                 user_api_key_dict=user_api_key_dict,

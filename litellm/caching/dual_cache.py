@@ -217,7 +217,7 @@ class DualCache(BaseCache):
             return list(  # mutable-ok: public list contract
                 redis_result.get(key) if value is None else value for key, value in zip(keys, result)
             )
-        except Exception:
+        except Exception:  # noqa: BLE001  # a cache read failure must not crash the caller's request
             verbose_logger.error(traceback.format_exc())
 
     async def async_get_cache(
