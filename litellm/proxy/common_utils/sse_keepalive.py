@@ -1,14 +1,18 @@
 import asyncio
 import contextlib
+import json
 import math
+import time
 from collections.abc import AsyncGenerator, Iterable, Mapping
 from typing import Final
 
 import anyio
 
+from litellm._logging import verbose_proxy_logger
 from litellm.constants import STREAM_SSE_KEEPALIVE_PING_CHUNK
 
 ANTHROPIC_PING_SSE_CHUNK: Final = STREAM_SSE_KEEPALIVE_PING_CHUNK
+UPSTREAM_IDLE_SSE_ERROR_TYPE: Final = "timeout_error"
 SSE_COMMENT_PING: Final = ": ping\n\n"
 SSE_COMMENT_PING_BYTES: Final = SSE_COMMENT_PING.encode()
 # The byte form of proxy_server._SSE_FRAME_DELIMITERS, CR-only included: SSE
@@ -42,10 +46,29 @@ def keepalive_ping_has_fired(elapsed_seconds: float, ping_interval_seconds: floa
     return interval is not None and elapsed_seconds >= interval
 
 
+def anthropic_upstream_idle_sse_chunk(max_upstream_idle_seconds: float) -> str:
+    """Terminal Anthropic ``error`` event for a stream ended by the upstream-idle cap.
+
+    This fires mid-stream, once a ping or a chunk has flushed the response
+    status, so the failure can no longer be raised - it has to travel as a
+    frame. Shaped like the ``error`` events this proxy already emits for a failure
+    discovered after the headers flushed (``guardrails.anthropic_sse``), for the
+    same reason ``ping_chunk`` defaults to Anthropic's own ping: that is the
+    protocol the caller which enables this cap speaks.
+    """
+    message: Final = f"upstream produced no output for {max_upstream_idle_seconds:g}s; ending the stream"
+    return (
+        f'event: error\ndata: {{"type": "error", "error": '
+        f'{{"type": "{UPSTREAM_IDLE_SSE_ERROR_TYPE}", "message": {json.dumps(message)}}}}}\n\n'
+    )
+
+
 def wrap_sse_stream_with_keepalive_pings(
     stream: AsyncGenerator[str, None],
     ping_interval_seconds: float | str | None,
     ping_chunk: str = ANTHROPIC_PING_SSE_CHUNK,
+    max_upstream_idle_seconds: float | str | None = None,
+    idle_error_chunk: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Fill idle gaps in an SSE stream, including the one before its first chunk.
 
@@ -53,31 +76,83 @@ def wrap_sse_stream_with_keepalive_pings(
     own ``ping`` event because that is the protocol the first caller speaks; a
     stream carrying anything else wants ``SSE_COMMENT_PING``, which is a comment
     every conformant SSE client discards rather than a frame it has to understand.
+
+    ``max_upstream_idle_seconds`` additionally bounds how long the *upstream* may
+    produce nothing before the stream is ended with ``idle_error_chunk`` (by
+    default the matching Anthropic ``error`` event). Off unless a caller asks for
+    it, and necessarily off when pings are disabled, since the gap between two
+    pings is where the measurement lives.
     """
     interval: Final = coerce_keepalive_interval(ping_interval_seconds)
     if interval is None:
         return stream
-    return _keepalive_ping_stream(stream=stream, ping_interval_seconds=interval, ping_chunk=ping_chunk)
+    max_idle: Final = coerce_keepalive_interval(max_upstream_idle_seconds)
+    return _keepalive_ping_stream(
+        stream=stream,
+        ping_interval_seconds=interval,
+        ping_chunk=ping_chunk,
+        max_upstream_idle_seconds=max_idle,
+        idle_error_chunk=(
+            anthropic_upstream_idle_sse_chunk(max_idle)
+            if idle_error_chunk is None and max_idle is not None
+            else idle_error_chunk
+        ),
+    )
 
 
 async def _keepalive_ping_stream(
     stream: AsyncGenerator[str, None],
     ping_interval_seconds: float,
     ping_chunk: str,
+    max_upstream_idle_seconds: float | None = None,
+    idle_error_chunk: str | None = None,
 ) -> AsyncGenerator[str, None]:
     pending = asyncio.ensure_future(
         stream.__anext__()
     )  # rebind-ok: re-armed with the next __anext__ after each delivered chunk
+    # Restamped whenever the wrapper starts waiting on the upstream's next chunk,
+    # so what it measures is upstream silence and nothing else. Time spent
+    # suspended at a `yield` belongs to a consumer that is not reading, which is
+    # `litellm.stream_stalled_write_timeout_seconds`' business, not this cap's.
+    #
+    # Both the clock read and the restamp are guarded on the cap being
+    # configured, and it is off by default. With it off this generator does
+    # exactly what it did before the cap existed: same chunks, same order, and
+    # not one extra clock read per chunk on the streaming hot path.
+    idle_deadline_seconds: Final = max_upstream_idle_seconds
+    upstream_wait_started = (  # rebind-ok: restamped per upstream __anext__
+        time.monotonic() if idle_deadline_seconds is not None else 0.0
+    )
     try:
         while True:
             await asyncio.wait({pending}, timeout=ping_interval_seconds)
             if not pending.done():
+                if idle_deadline_seconds is not None:
+                    idle_seconds = time.monotonic() - upstream_wait_started  # rebind-ok: re-measured each ping cycle
+                    if idle_seconds >= idle_deadline_seconds:
+                        verbose_proxy_logger.warning(
+                            "upstream produced no output for %.1fs (cap %ss); ending the stream",
+                            idle_seconds,
+                            idle_deadline_seconds,
+                        )
+                        if idle_error_chunk:
+                            yield idle_error_chunk
+                        return
+                # A ping is this proxy's own byte, not upstream output, so it
+                # deliberately leaves `upstream_wait_started` alone. Resetting it
+                # here would make the cap unreachable on exactly the stream shape
+                # it exists for: a hung upstream held open by our own pings.
                 yield ping_chunk
                 continue
             try:
                 yield pending.result()
             except StopAsyncIteration:
                 return
+            if idle_deadline_seconds is not None:
+                # After the yield, never before: the restamp marks the start of
+                # the wait on the NEXT upstream chunk, so a consumer that parked
+                # at that yield is not charged to the upstream.
+                upstream_wait_started = time.monotonic()
             pending = asyncio.ensure_future(stream.__anext__())
     finally:
         pending.cancel()

@@ -54,6 +54,10 @@ STALL_TIMEOUT_SECONDS = 0.25
 # Every assertion is bounded: the defect under test is an unbounded wait, so a
 # test that hangs is a failure, not a slow pass.
 TEST_DEADLINE_SECONDS = 10.0
+# The upstream-idle cap the tests run with, and the ping cadence it is measured
+# on. Both scaled down from the shipped defaults (600s / 15s) by the same order.
+IDLE_CAP_SECONDS = 0.3
+IDLE_PING_INTERVAL_SECONDS = 0.02
 
 
 class _FakeAnthropicStream:
@@ -84,6 +88,27 @@ class _FakeAnthropicStream:
 
     async def aclose(self) -> None:
         self.closed.set()
+
+
+class _HungAnthropicStream(_FakeAnthropicStream):
+    """An upstream that delivers `chunks_before_hang` chunks and then goes quiet.
+
+    The measured production shape: 29 of 33 orphaned requests delivered under
+    4,746 total wire bytes across 555-884s, against ~5.5 KB/s for a healthy
+    stream on the same route. They were not truncated long answers - they were
+    hung upstreams held open by the proxy's own keepalive pings until the
+    platform's request cap.
+    """
+
+    def __init__(self, chunks_before_hang: int = 0) -> None:
+        super().__init__()
+        self._chunks_before_hang = chunks_before_hang
+
+    async def __anext__(self) -> dict[str, Any]:
+        if self.chunks_yielded >= self._chunks_before_hang:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+        return await super().__anext__()
 
 
 class _StallingClient:
@@ -278,3 +303,147 @@ async def test_stalled_client_on_openai_sse_path_closes_the_upstream(monkeypatch
 
     assert client.stalled.is_set()
     assert closed.is_set()
+
+
+# ---------------------------------------------------------------------------
+# Upstream-idle cap
+#
+# The deadline above needs the peer to apply backpressure. Measured behind a
+# terminating proxy that buffers the response instead: the proxy kept accepting
+# the app's writes for the whole run, every keepalive ping succeeded, no write
+# ever stalled, and the requests ran to the platform's request cap having
+# delivered essentially nothing - a hung upstream held open by our own pings.
+#
+# `litellm.stream_max_upstream_idle_seconds` is the second, independent trigger
+# for that shape. It measures the model's side of the proxy, so it does not care
+# what the transport does or does not report.
+# ---------------------------------------------------------------------------
+
+
+class _ReadingClient:
+    """An ASGI client that reads the whole response and records every message.
+
+    The opposite of `_StallingClient`: this peer always drains, so a write never
+    stalls and the per-write deadline can never fire. Whatever ends the request
+    here is the upstream-idle cap.
+    """
+
+    def __init__(self) -> None:
+        self.messages: list[dict[str, Any]] = []
+
+    async def receive(self) -> dict[str, Any]:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    async def send(self, message: dict[str, Any]) -> None:
+        self.messages.append(message)
+
+    @property
+    def body(self) -> str:
+        return "".join(m.get("body", b"").decode() for m in self.messages if m["type"] == "http.response.body")
+
+    @property
+    def ended_cleanly(self) -> bool:
+        """Whether Starlette finished the response rather than being torn down.
+
+        A `StreamWriteStalled` raise abandons `stream_response` before its
+        terminating empty-body frame, so this is False when the per-write
+        deadline is what ended the request.
+        """
+        return bool(self.messages) and not self.messages[-1].get("more_body", False)
+
+
+def _use_scaled_idle_cap(monkeypatch, cap_seconds: float | None) -> None:
+    monkeypatch.setattr(litellm, "stream_max_upstream_idle_seconds", cap_seconds)
+    monkeypatch.setattr(litellm, "anthropic_sse_ping_interval_seconds", IDLE_PING_INTERVAL_SECONDS)
+
+
+async def test_hung_upstream_ends_with_a_terminal_error_event(monkeypatch):
+    """The reframed regression: nothing about the client is wrong, the model is.
+
+    `stream_stalled_write_timeout_seconds` is left at its shipped default, which
+    is three orders of magnitude past this test's deadline - so if anything ends
+    this request it is the idle cap, and the two triggers demonstrably coexist.
+    """
+    _use_scaled_idle_cap(monkeypatch, IDLE_CAP_SECONDS)
+    upstream = _HungAnthropicStream(chunks_before_hang=1)
+    client = _ReadingClient()
+
+    await asyncio.wait_for(_stream_v1_messages_to(client, upstream), timeout=TEST_DEADLINE_SECONDS)
+
+    assert "tok1" in client.body, "the real chunk the upstream did produce was lost"
+    assert '"type": "error"' in client.body, "the client was left to infer the truncation"
+    assert '"timeout_error"' in client.body
+    assert upstream.closed.is_set(), "the hung upstream connection was left open"
+    assert client.ended_cleanly, "torn down by the per-write deadline rather than ended by the idle cap"
+
+
+async def test_without_the_idle_cap_a_hung_upstream_wedges_the_request(monkeypatch):
+    """Pin the defect itself: a reading client and a dead model, and nothing ends it.
+
+    This is the production shape - the request survived to the platform's request
+    cap. Kept so a change that silently disables the cap shows up as a behaviour
+    change rather than a quietly passing suite.
+    """
+    _use_scaled_idle_cap(monkeypatch, None)
+    upstream = _HungAnthropicStream(chunks_before_hang=1)
+    client = _ReadingClient()
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(_stream_v1_messages_to(client, upstream), timeout=1.0)
+
+    assert "tok1" in client.body, "the stream never opened, so nothing was under test"
+
+
+async def test_a_hung_upstream_that_produced_nothing_refunds_the_budget_reservation(monkeypatch):
+    """The teardown accounting the cap inherits, on the shape that dominates.
+
+    29 of the 33 measured requests delivered no content at all, so the reservation
+    taken up front is owed back in full: `async_streaming_data_generator` refunds
+    only when no provider output was ever delivered, and the cap must reach that
+    path rather than around it.
+    """
+    _use_scaled_idle_cap(monkeypatch, IDLE_CAP_SECONDS)
+    refund = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "litellm.proxy.spend_tracking.budget_reservation.release_budget_reservation_on_cancel",
+        refund,
+    )
+    upstream = _HungAnthropicStream(chunks_before_hang=0)
+
+    await asyncio.wait_for(_stream_v1_messages_to(_ReadingClient(), upstream), timeout=TEST_DEADLINE_SECONDS)
+
+    assert refund.await_count == 1, "a request that produced nothing kept its reservation"
+    assert upstream.closed.is_set()
+
+
+async def test_delivered_output_is_not_refunded_when_the_idle_cap_fires(monkeypatch):
+    """The other half of the same rule: a partial stream still owes its spend."""
+    _use_scaled_idle_cap(monkeypatch, IDLE_CAP_SECONDS)
+    refund = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "litellm.proxy.spend_tracking.budget_reservation.release_budget_reservation_on_cancel",
+        refund,
+    )
+    upstream = _HungAnthropicStream(chunks_before_hang=3)
+
+    await asyncio.wait_for(_stream_v1_messages_to(_ReadingClient(), upstream), timeout=TEST_DEADLINE_SECONDS)
+
+    assert refund.await_count == 0, "output was delivered, so nothing is owed back"
+
+
+async def test_the_write_deadline_still_fires_with_the_idle_cap_enabled(monkeypatch):
+    """The two triggers are independent: a live upstream and a client that left.
+
+    The upstream here talks continuously, so the idle cap can never fire; the
+    stall deadline must still end the request exactly as before.
+    """
+    monkeypatch.setattr(litellm, "stream_stalled_write_timeout_seconds", STALL_TIMEOUT_SECONDS)
+    _use_scaled_idle_cap(monkeypatch, IDLE_CAP_SECONDS)
+    upstream = _FakeAnthropicStream()
+    client = _StallingClient(read_chunks=3)
+
+    await asyncio.wait_for(_stream_v1_messages_to(client, upstream), timeout=TEST_DEADLINE_SECONDS)
+
+    assert client.stalled.is_set(), "the test never reached the stalled write"
+    assert upstream.closed.is_set()

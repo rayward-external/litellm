@@ -2609,6 +2609,7 @@ class ProxyBaseLLMRequestProcessing:
                             generator=wrap_sse_stream_with_keepalive_pings(
                                 stream=selected_data_generator,
                                 ping_interval_seconds=litellm.anthropic_sse_ping_interval_seconds,
+                                max_upstream_idle_seconds=litellm.stream_max_upstream_idle_seconds,
                             ),
                             media_type="text/event-stream",
                             headers=custom_headers,
