@@ -24,7 +24,7 @@ COPY ui/litellm-dashboard/ ./
 RUN npm run build
 
 # ---------- runtime ----------
-FROM nginx:${NGINX_VERSION}@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10 AS runtime
+FROM nginx:${NGINX_VERSION} AS runtime
 
 # Drop the upstream default :80 server; we own the config.
 RUN rm -f /etc/nginx/conf.d/default.conf
