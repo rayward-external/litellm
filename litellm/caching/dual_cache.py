@@ -8,10 +8,9 @@ Has 4 primary methods:
     - async_get_cache
 """
 
-import asyncio
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Sequence
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Final
 
@@ -188,31 +187,34 @@ class DualCache(BaseCache):
         local_only: bool = False,
         **kwargs,
     ):
-        received_args: Final = locals()
-        received_args.pop("self")
-
-        def run_in_new_loop():
-            """Run the coroutine in a new event loop within this thread."""
-            new_loop: Final = asyncio.new_event_loop()
-            try:
-                asyncio.set_event_loop(new_loop)
-                return new_loop.run_until_complete(self.async_batch_get_cache(**received_args))
-            finally:
-                new_loop.close()
-                asyncio.set_event_loop(None)
-
         try:
-            # First, try to get the current event loop
-            _ = asyncio.get_running_loop()
-            # If we're already in an event loop, run in a separate thread
-            # to avoid nested event loop issues
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future: Final = executor.submit(run_in_new_loop)
-                return future.result()
+            result: Final = self.in_memory_cache.batch_get_cache(keys, **kwargs)
 
-        except RuntimeError:
-            # No running event loop, we can safely run in this thread
-            return run_in_new_loop()
+            if None not in result or self.redis_cache is None or local_only:
+                return result
+
+            sublist_keys, previous_access_times = self._reserve_redis_batch_keys(time.time(), keys, result)
+            if len(sublist_keys) == 0:
+                return result
+
+            try:
+                redis_result: Final = self.redis_cache.batch_get_cache(
+                    key_list=sublist_keys, parent_otel_span=parent_otel_span
+                )
+            except Exception:
+                # Do not throttle subsequent callers if the Redis read fails.
+                self._rollback_redis_batch_key_reservations(previous_access_times)
+                raise
+
+            for key, value in redis_result.items():
+                if value is not None:
+                    self.in_memory_cache.set_cache(key, value, **self._backfill_kwargs(kwargs))
+
+            return list(  # mutable-ok: public list contract
+                redis_result.get(key) if value is None else value for key, value in zip(keys, result)
+            )
+        except Exception:  # noqa: BLE001  # a cache read failure must not crash the caller's request
+            verbose_logger.error(traceback.format_exc())
 
     async def async_get_cache(
         self,
@@ -251,7 +253,7 @@ class DualCache(BaseCache):
         self,
         current_time: float,
         keys: list[str],
-        result: list[Any],
+        result: Sequence[Any],
     ) -> tuple[list[str], dict[str, float | None]]:
         """
         Atomically choose keys to fetch from Redis and reserve their access time.

@@ -3,7 +3,7 @@
 # UI container — Next.js static export served by nginx.
 
 ARG UI_BUILD_IMAGE=node:24.19-alpine3.24@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
-ARG NGINX_VERSION=1.31-alpine
+ARG NGINX_VERSION=1.31.5-alpine3.24@sha256:34f40471dea485273c5e2a04dd5e97a682332ceb4a9adecd67de450dcb2fb390
 
 # ---------- builder ----------
 FROM ${UI_BUILD_IMAGE} AS builder
@@ -24,7 +24,7 @@ COPY ui/litellm-dashboard/ ./
 RUN npm run build
 
 # ---------- runtime ----------
-FROM nginx:${NGINX_VERSION}@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10 AS runtime
+FROM nginx:${NGINX_VERSION} AS runtime
 
 # Drop the upstream default :80 server; we own the config.
 RUN rm -f /etc/nginx/conf.d/default.conf
