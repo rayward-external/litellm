@@ -2146,6 +2146,118 @@ class TestNativeWebSocketGuardrailMasking:
         assert obj["input"] == "hi"
 
     @pytest.mark.asyncio
+    async def test_mask_response_create_strips_passthrough_for_azure_flat(self):
+        """Codex CLI attaches internal_chat_message_metadata_passthrough to
+        response.create input items; Azure's native websocket relay must not
+        forward it (rayward-internal/llm-gateway-infra#755)."""
+        handler = _make_streaming(
+            request_data={},
+            responses_api_provider_config=AzureOpenAIResponsesAPIConfig(),
+        )
+
+        masked = await handler._mask_response_create(
+            json.dumps(
+                {
+                    "type": "response.create",
+                    "input": [
+                        {"type": "message", "role": "user", "content": "hi"},
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": "second",
+                            "internal_chat_message_metadata_passthrough": {
+                                "turn_id": "t1",
+                                "content_item_kinds": ["text"],
+                            },
+                        },
+                    ],
+                }
+            )
+        )
+        obj = json.loads(masked)
+
+        assert "internal_chat_message_metadata_passthrough" not in obj["input"][1]
+        assert obj["input"][1]["content"] == "second"
+        assert "internal_chat_message_metadata_passthrough" not in obj["input"][0]
+
+    @pytest.mark.asyncio
+    async def test_mask_response_create_strips_passthrough_for_azure_nested(self):
+        """Same strip on the nested {"response": {...}} envelope shape."""
+        handler = _make_streaming(
+            request_data={},
+            responses_api_provider_config=AzureOpenAIResponsesAPIConfig(),
+        )
+
+        masked = await handler._mask_response_create(
+            json.dumps(
+                {
+                    "type": "response.create",
+                    "response": {
+                        "model": "m",
+                        "input": [
+                            {"type": "message", "role": "user", "content": "hi"},
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": "second",
+                                "internal_chat_message_metadata_passthrough": {"turn_id": "t1"},
+                            },
+                        ],
+                    },
+                }
+            )
+        )
+        obj = json.loads(masked)
+
+        assert "response" not in obj
+        assert "internal_chat_message_metadata_passthrough" not in obj["input"][1]
+        assert obj["input"][1]["content"] == "second"
+
+    @pytest.mark.asyncio
+    async def test_mask_response_create_keeps_passthrough_for_openai(self):
+        """api.openai.com accepts internal_chat_message_metadata_passthrough and
+        Codex relies on the echo, so an OpenAI-backed connection must forward
+        it unchanged."""
+        handler = _make_streaming(
+            request_data={},
+            responses_api_provider_config=OpenAIResponsesAPIConfig(),
+        )
+        passthrough_input = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": "hi",
+                "internal_chat_message_metadata_passthrough": {"turn_id": "t1"},
+            }
+        ]
+
+        masked = await handler._mask_response_create(
+            json.dumps({"type": "response.create", "input": passthrough_input})
+        )
+        obj = json.loads(masked)
+
+        assert obj["input"][0]["internal_chat_message_metadata_passthrough"] == {"turn_id": "t1"}
+
+    @pytest.mark.asyncio
+    async def test_mask_response_create_no_provider_config_keeps_passthrough(self):
+        """No provider config bound (the default) must be a no-op on input."""
+        handler = _make_streaming(request_data={})
+        passthrough_input = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": "hi",
+                "internal_chat_message_metadata_passthrough": {"turn_id": "t1"},
+            }
+        ]
+
+        masked = await handler._mask_response_create(
+            json.dumps({"type": "response.create", "input": passthrough_input})
+        )
+
+        assert json.loads(masked)["input"] == passthrough_input
+
+    @pytest.mark.asyncio
     async def test_client_to_backend_forwards_flattened_frame(self):
         """The frame actually written to the backend socket is the flat one --
         asserted at the send boundary, not just on the masking helper."""

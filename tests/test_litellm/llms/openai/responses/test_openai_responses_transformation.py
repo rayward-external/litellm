@@ -220,6 +220,35 @@ class TestOpenAIResponsesAPIConfig:
 
         assert result["input"] == input_clean
 
+    def test_transform_keeps_internal_chat_message_metadata_passthrough(self):
+        """api.openai.com accepts internal_chat_message_metadata_passthrough and
+        Codex CLI relies on the echo, so the OpenAI config must not strip it
+        (only the Azure config does, rayward-internal/llm-gateway-infra#755)."""
+        input_with_passthrough = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hi"}],
+                "internal_chat_message_metadata_passthrough": {
+                    "turn_id": "t1",
+                    "content_item_kinds": ["text"],
+                },
+            }
+        ]
+
+        result = self.config.transform_responses_api_request(
+            model=self.model,
+            input=input_with_passthrough,
+            response_api_optional_request_params={},
+            litellm_params={},
+            headers={},
+        )
+
+        assert result["input"][0]["internal_chat_message_metadata_passthrough"] == {
+            "turn_id": "t1",
+            "content_item_kinds": ["text"],
+        }
+
     def test_transform_drops_foreign_tool_call_item_ids(self):
         """Replayed tool call items whose ids are not OpenAI-shaped (e.g.
         Anthropic toolu_/srvtoolu_ ids after a router fallback) must be sent

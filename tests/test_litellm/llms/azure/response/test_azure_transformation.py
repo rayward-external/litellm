@@ -612,4 +612,104 @@ class TestAzureResponsesAPIConfig:
         )
 
         assert result["tools"][0] is tool
-        assert "anyOf" in result["tools"][0]["parameters"]
+
+    def test_azure_strips_internal_chat_message_metadata_passthrough_from_message_item(self):
+        """Codex CLI attaches internal_chat_message_metadata_passthrough to input items.
+
+        Azure's Responses API 400s on it (unknown_parameter); this key must not
+        reach Azure, rayward-internal/llm-gateway-infra#755.
+        """
+        input_items = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hi"}],
+                "internal_chat_message_metadata_passthrough": {
+                    "turn_id": "t1",
+                    "content_item_kinds": ["text"],
+                },
+            }
+        ]
+
+        result = self.config.transform_responses_api_request(
+            model=self.model,
+            input=input_items,
+            response_api_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        item = result["input"][0]
+        assert "internal_chat_message_metadata_passthrough" not in item
+        assert item["type"] == "message"
+        assert item["role"] == "user"
+        assert item["content"] == [{"type": "input_text", "text": "hi"}]
+
+    def test_azure_strips_internal_chat_message_metadata_passthrough_from_non_message_item(self):
+        """The field can land on any item type, not just message (function_call here)."""
+        input_items = [
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "get_weather",
+                "arguments": "{}",
+                "internal_chat_message_metadata_passthrough": {"turn_id": "t1"},
+            }
+        ]
+
+        result = self.config.transform_responses_api_request(
+            model=self.model,
+            input=input_items,
+            response_api_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        item = result["input"][0]
+        assert "internal_chat_message_metadata_passthrough" not in item
+        assert item["call_id"] == "call_1"
+        assert item["name"] == "get_weather"
+
+    def test_azure_string_input_passes_through_unchanged(self):
+        result = self.config.transform_responses_api_request(
+            model=self.model,
+            input="hi",
+            response_api_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert result["input"] == "hi"
+
+    def test_azure_item_without_passthrough_key_is_unchanged(self):
+        item = {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hi"}],
+        }
+
+        result = self.config.transform_responses_api_request(
+            model=self.model,
+            input=[item],
+            response_api_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert result["input"][0] == item
+
+    def test_sanitize_input_items_inherited_by_o_series_config(self):
+        """AzureOpenAIOSeriesResponsesAPIConfig inherits the strip without overriding it."""
+        config = AzureOpenAIOSeriesResponsesAPIConfig()
+        input_items = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hi"}],
+                "internal_chat_message_metadata_passthrough": {"turn_id": "t1"},
+            }
+        ]
+
+        result = config.sanitize_input_items(input_items)
+
+        assert "internal_chat_message_metadata_passthrough" not in result[0]

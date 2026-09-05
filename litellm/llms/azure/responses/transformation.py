@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 import httpx
 from openai.types.responses import ResponseReasoningItem
@@ -19,6 +19,18 @@ if TYPE_CHECKING:
     LiteLLMLoggingObj = _LiteLLMLoggingObj
 else:
     LiteLLMLoggingObj = Any
+
+# Codex CLI >= 0.153 attaches this to every Responses API input item. Azure's
+# Responses API rejects it (unknown_parameter); api.openai.com accepts it and
+# Codex relies on the echo, so only Azure strips it.
+# rayward-internal/llm-gateway-infra#755
+_INTERNAL_CHAT_MESSAGE_METADATA_PASSTHROUGH_KEY: Final = "internal_chat_message_metadata_passthrough"
+
+
+def _without_internal_chat_message_metadata_passthrough(item: object) -> object:
+    if not isinstance(item, dict) or _INTERNAL_CHAT_MESSAGE_METADATA_PASSTHROUGH_KEY not in item:
+        return item
+    return {key: value for key, value in item.items() if key != _INTERNAL_CHAT_MESSAGE_METADATA_PASSTHROUGH_KEY}
 
 
 class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
@@ -108,6 +120,14 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
 
         return validated_input
 
+    def sanitize_input_items(self, input: str | ResponseInputParam) -> str | ResponseInputParam:
+        if not isinstance(input, list):
+            return input
+        if not any(_INTERNAL_CHAT_MESSAGE_METADATA_PASSTHROUGH_KEY in item for item in input if isinstance(item, dict)):
+            return input
+        sanitized: Final = [_without_internal_chat_message_metadata_passthrough(item) for item in input]
+        return cast("ResponseInputParam", sanitized)  # cast-ok: items keep their shape, minus a rejected key
+
     def transform_responses_api_request(
         self,
         model: str,
@@ -118,6 +138,7 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
     ) -> dict:
         """No transform applied since inputs are in OpenAI spec already"""
         stripped_model_name: Final = self.get_stripped_model_name(model)
+        sanitized_input: Final = self.sanitize_input_items(input)
 
         # Azure Responses API requires flattened tools (params at top level, not nested in 'function')
         if "tools" in response_api_optional_request_params and isinstance(
@@ -136,7 +157,7 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
 
         return super().transform_responses_api_request(
             model=stripped_model_name,
-            input=input,
+            input=sanitized_input,
             response_api_optional_request_params=response_api_optional_request_params,
             litellm_params=litellm_params,
             headers=headers,

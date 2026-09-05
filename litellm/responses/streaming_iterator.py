@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import datetime
 from functools import lru_cache
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, overload, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast, overload, runtime_checkable
 
 import httpx
 from openai._streaming import SSEDecoder
@@ -39,6 +39,7 @@ from litellm.types.llms.openai import (
     ResponseCompletedEvent,
     ResponseFailedEvent,
     ResponseIncompleteEvent,
+    ResponseInputParam,
     ResponsesAPIResponse,
     ResponsesAPIStreamEvents,
     ResponsesAPIStreamingResponse,
@@ -1593,6 +1594,7 @@ class ResponsesWebSocketStreaming:
         quota_callbacks: Sequence[ProjectQuotaCallback] | None = None,
         authorized_model: str | None = None,
         request_defaults: Mapping[str, object] | None = None,
+        responses_api_provider_config: BaseResponsesAPIConfig | None = None,
     ):
         self.websocket = websocket
         self.backend_ws = backend_ws
@@ -1609,6 +1611,7 @@ class ResponsesWebSocketStreaming:
         # response.create frame to prevent deployment-substitution attacks.
         self.authorized_model: str | None = authorized_model
         self.request_defaults: Mapping[str, object] = request_defaults or MappingProxyType({})
+        self.responses_api_provider_config: BaseResponsesAPIConfig | None = responses_api_provider_config
         # Strong references to in-flight per-turn cost dispatch tasks
         # (_dispatch_turn_cost). asyncio only holds a WEAK reference to a
         # bare create_task() result -- per the stdlib docs, a task whose
@@ -1954,6 +1957,31 @@ class ResponsesWebSocketStreaming:
         request.update(missing_defaults)
         return bool(missing_defaults)
 
+    def _sanitize_input_items(
+        self,
+        msg_obj: dict[str, object],  # mutable-ok: WS frame dict, mutated in place like _enforce_authorized_model above
+    ) -> bool:
+        """
+        Apply the backend provider config's ``sanitize_input_items`` to the frame's
+        top-level ``input``. Runs after ``_flatten_response_create``, so a nested
+        ``{"response": {"input": ...}}`` envelope has already been collapsed to the
+        flat shape checked here.
+        """
+        if self.responses_api_provider_config is None:
+            return False
+        original_input: Final = msg_obj.get("input")
+        if not isinstance(original_input, (str, list)):
+            return False
+        sanitized_input: Final = self.responses_api_provider_config.sanitize_input_items(
+            cast("str | ResponseInputParam", original_input)
+        )
+        if sanitized_input is original_input:
+            return False
+        msg_obj["input"] = (
+            sanitized_input  # rebind-ok: frame normalised in place before forwarding, like _flatten_response_create above
+        )
+        return True
+
     async def _mask_response_create(self, message: str) -> str:
         """
         Enforce the authorized model and apply Presidio PII masking to a
@@ -1984,15 +2012,19 @@ class ResponsesWebSocketStreaming:
         defaults_modified: Final = self._apply_request_defaults(msg_obj)
         # Always enforce the authorized model, even when PII masking is off.
         model_modified: Final = self._enforce_authorized_model(msg_obj)
+        # Always strip provider-rejected input fields, even when PII masking is off.
+        input_sanitized: Final = self._sanitize_input_items(msg_obj)
 
         if not self.guardrail_callbacks:
-            return json.dumps(msg_obj) if flattened or defaults_modified or model_modified else message
+            return (
+                json.dumps(msg_obj) if flattened or defaults_modified or model_modified or input_sanitized else message
+            )
 
         if "metadata" not in self.request_data:
             self.request_data["metadata"] = {}
 
         modified = (
-            flattened or defaults_modified or model_modified
+            flattened or defaults_modified or model_modified or input_sanitized
         )  # rebind-ok: accumulator flag flipped True by the PII-masking loop below
         guardrail_cbs: Final[tuple[PresidioGuardrailCallback, ...]] = tuple(self.guardrail_callbacks)
         for cb in guardrail_cbs:
