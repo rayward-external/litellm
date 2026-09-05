@@ -269,12 +269,47 @@ sse_keepalive_ping_interval_seconds: float | None = None
 # request cap - holding a concurrency slot and the upstream provider connection
 # for the whole time.
 #
-# A stalled write is the only signal available in that shape, and on an SSE
-# stream it is unambiguous: keepalive pings guarantee there is always something
-# to write, so a write that makes no progress for this long means nobody is
-# reading. Set to None or 0 to disable and restore pure receive()-based
-# detection.
+# A stalled write is the only transport-level signal available in that shape,
+# and on an SSE stream it is unambiguous: keepalive pings guarantee there is
+# always something to write, so a write that makes no progress for this long
+# means nobody is reading. Set to None or 0 to disable and restore pure
+# receive()-based detection.
+#
+# It does depend on the peer applying backpressure at all. A proxy that buffers
+# the whole response instead never stalls a write, and nothing about the
+# transport reveals the client is gone; `stream_max_upstream_idle_seconds` below
+# is the independent, non-transport bound for that shape.
 stream_stalled_write_timeout_seconds: float | None = 300.0
+# How long a stream may go without any output from the upstream model before it
+# is ended with a terminal SSE `error` event.
+#
+# OFF unless an operator sets it. The mechanism below is general; the right
+# number is not - it is a statement about one deployment's own traffic, since it
+# has to sit above the longest silence that deployment's healthy streams
+# actually produce. Nobody can pick that for someone else, and a default here
+# would end streams for every deployment that never asked. Opt in with
+# `litellm_settings.stream_max_upstream_idle_seconds: <seconds>` in config.yaml,
+# or `litellm.stream_max_upstream_idle_seconds = <seconds>` in Python, after
+# measuring the idle gaps your own streams show. None or 0 disables.
+#
+# Consecutive upstream silence is a signal that survives an intermediary which
+# buffers, because it is measured on the model's side of the proxy rather than
+# the client's. Only real upstream output resets it: the keepalive pings are the
+# proxy's own bytes and deliberately do not, or a ping-filled stream could never
+# time out. Time the proxy spends suspended on a consumer that is not reading
+# does not count against it either - that is the knob above.
+#
+# A slow stream is unaffected as long as it emits something inside the window.
+# What this ends is a stream producing nothing at all for this long, which is a
+# property of a dead upstream rather than of a long answer - so unlike a total
+# duration cap it does not penalise legitimate length. Note it is armed from the
+# start of the request, so it bounds time-to-first-token too: a provider that
+# emits nothing at all while it thinks needs a value above its worst TTFT.
+#
+# Measured on the gap between two keepalive pings, so disabling those disables
+# this too. Currently consulted only on the `/v1/messages` SSE path, the one
+# that builds its response through the keepalive wrapper.
+stream_max_upstream_idle_seconds: float | None = None
 route_all_chat_openai_to_responses: bool = (
     os.getenv("LITELLM_ROUTE_ALL_CHAT_OPENAI_TO_RESPONSES", "false").lower() == "true"
 )  # When True, routes all OpenAI /chat/completions requests through the Responses API bridge

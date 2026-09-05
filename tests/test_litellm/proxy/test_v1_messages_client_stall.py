@@ -54,6 +54,10 @@ STALL_TIMEOUT_SECONDS = 0.25
 # Every assertion is bounded: the defect under test is an unbounded wait, so a
 # test that hangs is a failure, not a slow pass.
 TEST_DEADLINE_SECONDS = 10.0
+# The upstream-idle cap the tests run with, and the ping cadence it is measured
+# on. Both scaled down from the shipped defaults (600s / 15s) by the same order.
+IDLE_CAP_SECONDS = 0.3
+IDLE_PING_INTERVAL_SECONDS = 0.02
 
 
 class _FakeAnthropicStream:
@@ -84,6 +88,27 @@ class _FakeAnthropicStream:
 
     async def aclose(self) -> None:
         self.closed.set()
+
+
+class _HungAnthropicStream(_FakeAnthropicStream):
+    """An upstream that delivers `chunks_before_hang` chunks and then goes quiet.
+
+    The measured production shape: 29 of 33 orphaned requests delivered under
+    4,746 total wire bytes across 555-884s, against ~5.5 KB/s for a healthy
+    stream on the same route. They were not truncated long answers - they were
+    hung upstreams held open by the proxy's own keepalive pings until the
+    platform's request cap.
+    """
+
+    def __init__(self, chunks_before_hang: int = 0) -> None:
+        super().__init__()
+        self._chunks_before_hang = chunks_before_hang
+
+    async def __anext__(self) -> dict[str, Any]:
+        if self.chunks_yielded >= self._chunks_before_hang:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+        return await super().__anext__()
 
 
 class _StallingClient:
@@ -163,8 +188,17 @@ def _proxy_logging_obj() -> MagicMock:
     return obj
 
 
-async def _stream_v1_messages_to(client: _StallingClient, upstream: _FakeAnthropicStream) -> None:
-    """Run the /v1/messages streaming path and serve its response to `client`."""
+async def _stream_v1_messages_to(
+    client: "_StallingClient | _ReadingClient",
+    upstream: _FakeAnthropicStream,
+    proxy_logging_obj: MagicMock | None = None,
+) -> dict[str, Any]:
+    """Run the /v1/messages streaming path and serve its response to `client`.
+
+    Returns the request data the run mutated, which is the dict the streaming
+    teardown stamps its termination metadata onto and the one every logging
+    callback reads.
+    """
     data = {
         "model": "claude-sonnet-4-5",
         "max_tokens": 4096,
@@ -201,13 +235,14 @@ async def _stream_v1_messages_to(client: _StallingClient, upstream: _FakeAnthrop
             fastapi_response=MagicMock(),
             user_api_key_dict=UserAPIKeyAuth(api_key="sk-test", user_id="u1"),
             route_type="anthropic_messages",
-            proxy_logging_obj=_proxy_logging_obj(),
+            proxy_logging_obj=proxy_logging_obj or _proxy_logging_obj(),
             general_settings={},
             proxy_config=MagicMock(),
             llm_router=None,
         )
 
     await response(_asgi_scope(), client.receive, client.send)
+    return data
 
 
 async def test_stalled_client_closes_the_upstream_anthropic_stream(monkeypatch):
@@ -278,3 +313,272 @@ async def test_stalled_client_on_openai_sse_path_closes_the_upstream(monkeypatch
 
     assert client.stalled.is_set()
     assert closed.is_set()
+
+
+# ---------------------------------------------------------------------------
+# Upstream-idle cap
+#
+# The deadline above needs the peer to apply backpressure. Measured behind a
+# terminating proxy that buffers the response instead: the proxy kept accepting
+# the app's writes for the whole run, every keepalive ping succeeded, no write
+# ever stalled, and the requests ran to the platform's request cap having
+# delivered essentially nothing - a hung upstream held open by our own pings.
+#
+# `litellm.stream_max_upstream_idle_seconds` is the second, independent trigger
+# for that shape. It measures the model's side of the proxy, so it does not care
+# what the transport does or does not report.
+# ---------------------------------------------------------------------------
+
+
+class _ReadingClient:
+    """An ASGI client that reads the whole response and records every message.
+
+    The opposite of `_StallingClient`: this peer always drains, so a write never
+    stalls and the per-write deadline can never fire. Whatever ends the request
+    here is the upstream-idle cap.
+    """
+
+    def __init__(self) -> None:
+        self.messages: list[dict[str, Any]] = []
+
+    async def receive(self) -> dict[str, Any]:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    async def send(self, message: dict[str, Any]) -> None:
+        self.messages.append(message)
+
+    @property
+    def body(self) -> str:
+        return "".join(m.get("body", b"").decode() for m in self.messages if m["type"] == "http.response.body")
+
+    @property
+    def ended_cleanly(self) -> bool:
+        """Whether Starlette finished the response rather than being torn down.
+
+        A `StreamWriteStalled` raise abandons `stream_response` before its
+        terminating empty-body frame, so this is False when the per-write
+        deadline is what ended the request.
+        """
+        return bool(self.messages) and not self.messages[-1].get("more_body", False)
+
+
+def _use_scaled_idle_cap(monkeypatch, cap_seconds: float | None) -> None:
+    monkeypatch.setattr(litellm, "stream_max_upstream_idle_seconds", cap_seconds)
+    monkeypatch.setattr(litellm, "anthropic_sse_ping_interval_seconds", IDLE_PING_INTERVAL_SECONDS)
+
+
+async def test_hung_upstream_ends_with_a_terminal_error_event(monkeypatch):
+    """The reframed regression: nothing about the client is wrong, the model is.
+
+    `stream_stalled_write_timeout_seconds` is left at its shipped default, which
+    is three orders of magnitude past this test's deadline - so if anything ends
+    this request it is the idle cap, and the two triggers demonstrably coexist.
+    """
+    _use_scaled_idle_cap(monkeypatch, IDLE_CAP_SECONDS)
+    upstream = _HungAnthropicStream(chunks_before_hang=1)
+    client = _ReadingClient()
+
+    await asyncio.wait_for(_stream_v1_messages_to(client, upstream), timeout=TEST_DEADLINE_SECONDS)
+
+    assert "tok1" in client.body, "the real chunk the upstream did produce was lost"
+    assert '"type": "error"' in client.body, "the client was left to infer the truncation"
+    assert '"timeout_error"' in client.body
+    assert upstream.closed.is_set(), "the hung upstream connection was left open"
+    assert client.ended_cleanly, "torn down by the per-write deadline rather than ended by the idle cap"
+
+
+async def test_without_the_idle_cap_a_hung_upstream_wedges_the_request(monkeypatch):
+    """Pin the defect itself: a reading client and a dead model, and nothing ends it.
+
+    This is the production shape - the request survived to the platform's request
+    cap. Kept so a change that silently disables the cap shows up as a behaviour
+    change rather than a quietly passing suite.
+    """
+    _use_scaled_idle_cap(monkeypatch, None)
+    upstream = _HungAnthropicStream(chunks_before_hang=1)
+    client = _ReadingClient()
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(_stream_v1_messages_to(client, upstream), timeout=1.0)
+
+    assert "tok1" in client.body, "the stream never opened, so nothing was under test"
+
+
+async def test_a_hung_upstream_that_produced_nothing_refunds_the_budget_reservation(monkeypatch):
+    """The teardown accounting the cap inherits, on the shape that dominates.
+
+    29 of the 33 measured requests delivered no content at all, so the reservation
+    taken up front is owed back in full: `async_streaming_data_generator` refunds
+    only when no provider output was ever delivered, and the cap must reach that
+    path rather than around it.
+    """
+    _use_scaled_idle_cap(monkeypatch, IDLE_CAP_SECONDS)
+    refund = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "litellm.proxy.spend_tracking.budget_reservation.release_budget_reservation_on_cancel",
+        refund,
+    )
+    upstream = _HungAnthropicStream(chunks_before_hang=0)
+
+    await asyncio.wait_for(_stream_v1_messages_to(_ReadingClient(), upstream), timeout=TEST_DEADLINE_SECONDS)
+
+    assert refund.await_count == 1, "a request that produced nothing kept its reservation"
+    assert upstream.closed.is_set()
+
+
+async def test_delivered_output_is_not_refunded_when_the_idle_cap_fires(monkeypatch):
+    """The other half of the same rule: a partial stream still owes its spend."""
+    _use_scaled_idle_cap(monkeypatch, IDLE_CAP_SECONDS)
+    refund = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "litellm.proxy.spend_tracking.budget_reservation.release_budget_reservation_on_cancel",
+        refund,
+    )
+    upstream = _HungAnthropicStream(chunks_before_hang=3)
+
+    await asyncio.wait_for(_stream_v1_messages_to(_ReadingClient(), upstream), timeout=TEST_DEADLINE_SECONDS)
+
+    assert refund.await_count == 0, "output was delivered, so nothing is owed back"
+
+
+async def test_the_write_deadline_still_fires_with_the_idle_cap_enabled(monkeypatch):
+    """The two triggers are independent: a live upstream and a client that left.
+
+    The upstream here talks continuously, so the idle cap can never fire; the
+    stall deadline must still end the request exactly as before.
+    """
+    monkeypatch.setattr(litellm, "stream_stalled_write_timeout_seconds", STALL_TIMEOUT_SECONDS)
+    _use_scaled_idle_cap(monkeypatch, IDLE_CAP_SECONDS)
+    upstream = _FakeAnthropicStream()
+    client = _StallingClient(read_chunks=3)
+
+    await asyncio.wait_for(_stream_v1_messages_to(client, upstream), timeout=TEST_DEADLINE_SECONDS)
+
+    assert client.stalled.is_set(), "the test never reached the stalled write"
+    assert upstream.closed.is_set()
+
+
+class _FiniteAnthropicStream(_FakeAnthropicStream):
+    """A healthy upstream that talks steadily for `chunks` chunks and then ends."""
+
+    def __init__(self, chunks: int, gap_seconds: float) -> None:
+        super().__init__()
+        self._chunks = chunks
+        self._gap_seconds = gap_seconds
+
+    async def __anext__(self) -> dict[str, Any]:
+        if self.chunks_yielded >= self._chunks:
+            raise StopAsyncIteration
+        await asyncio.sleep(self._gap_seconds)
+        self.chunks_yielded += 1
+        return {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": f"tok{self.chunks_yielded}"},
+        }
+
+
+def _buffering_proxy_logging_obj() -> MagicMock:
+    """A proxy logging object whose iterator hook withholds every chunk to end of stream.
+
+    The shape `streaming_buffer_until_moderated` produces: the hook consumes a
+    perfectly healthy upstream continuously and deliberately yields nothing until
+    its end-of-stream moderation pass has completed, then releases the originals.
+    """
+    obj = _proxy_logging_obj()
+
+    async def _buffer_until_end_of_stream(response: Any) -> Any:
+        held = [chunk async for chunk in response]
+        for chunk in held:
+            yield chunk
+
+    obj.async_post_call_streaming_iterator_hook = MagicMock(
+        side_effect=lambda response, **_: _buffer_until_end_of_stream(response)
+    )
+    return obj
+
+
+async def test_a_buffering_guardrail_is_not_mistaken_for_a_silent_upstream(monkeypatch):
+    """Measuring the processed stream measures the wrong thing.
+
+    The wrapper sits above the post-call hooks, so a guardrail buffering until
+    end-of-stream moderation makes a talking model look mute for the whole
+    response - and the cap, reading that, would end a healthy stream and blame
+    the provider. The upstream here withholds output for three times the cap
+    while never being quiet, and must be delivered whole.
+    """
+    _use_scaled_idle_cap(monkeypatch, IDLE_CAP_SECONDS)
+    upstream = _FiniteAnthropicStream(chunks=12, gap_seconds=IDLE_CAP_SECONDS / 4)
+    client = _ReadingClient()
+
+    await asyncio.wait_for(
+        _stream_v1_messages_to(client, upstream, proxy_logging_obj=_buffering_proxy_logging_obj()),
+        timeout=TEST_DEADLINE_SECONDS,
+    )
+
+    assert "tok12" in client.body, "the buffered response was truncated by the idle cap"
+    assert '"timeout_error"' not in client.body, "a healthy upstream was ended as silent"
+    assert client.ended_cleanly
+
+
+async def test_a_dead_upstream_behind_the_same_buffering_guardrail_still_ends(monkeypatch):
+    """The other half: buffering must not become a way to disarm the cap.
+
+    Same hook, same silence on the wire - but nothing is being produced behind
+    it, which is exactly the production shape. Without this the test above would
+    pass just as well against a cap that had been switched off.
+    """
+    _use_scaled_idle_cap(monkeypatch, IDLE_CAP_SECONDS)
+    upstream = _HungAnthropicStream(chunks_before_hang=1)
+    client = _ReadingClient()
+
+    await asyncio.wait_for(
+        _stream_v1_messages_to(client, upstream, proxy_logging_obj=_buffering_proxy_logging_obj()),
+        timeout=TEST_DEADLINE_SECONDS,
+    )
+
+    assert '"timeout_error"' in client.body, "a hung upstream survived because a hook was buffering"
+    assert upstream.closed.is_set()
+
+
+async def test_the_idle_cap_is_not_recorded_as_a_client_disconnect(monkeypatch):
+    """#688 exists because the telemetry lied. This is the fix not re-telling it.
+
+    The client here reads every byte and never goes away; the model is what
+    failed. Recording that as a client disconnect - which is what the cap's own
+    teardown does by default, since closing the generator is indistinguishable
+    from a client leaving - would rebuild the same blind spot one layer up, with
+    the proxy's own timeouts hidden inside the 499s.
+    """
+    _use_scaled_idle_cap(monkeypatch, IDLE_CAP_SECONDS)
+    upstream = _HungAnthropicStream(chunks_before_hang=1)
+
+    data = await asyncio.wait_for(
+        _stream_v1_messages_to(_ReadingClient(), upstream), timeout=TEST_DEADLINE_SECONDS
+    )
+
+    metadata = data["metadata"]
+    assert metadata.get("stream_ended_upstream_idle") is True, "the cap's own termination went unrecorded"
+    assert "client_disconnected" not in metadata, "the proxy's timeout was filed as the client leaving"
+    assert metadata["error_information"]["error_code"] == "504"
+    assert metadata["error_information"]["error_class"] == "UpstreamStreamIdle"
+
+
+async def test_a_client_that_stops_reading_is_still_recorded_as_a_client_disconnect(monkeypatch):
+    """The contrast that makes the flag above worth reading.
+
+    A separate signal that fired on every teardown would separate nothing, so the
+    real disconnect - live upstream, client gone - has to keep its own 499.
+    """
+    monkeypatch.setattr(litellm, "stream_stalled_write_timeout_seconds", STALL_TIMEOUT_SECONDS)
+    _use_scaled_idle_cap(monkeypatch, IDLE_CAP_SECONDS)
+    upstream = _FakeAnthropicStream()
+    client = _StallingClient(read_chunks=3)
+
+    data = await asyncio.wait_for(_stream_v1_messages_to(client, upstream), timeout=TEST_DEADLINE_SECONDS)
+
+    metadata = data["metadata"]
+    assert metadata.get("client_disconnected") is True
+    assert "stream_ended_upstream_idle" not in metadata, "a client that left was blamed on the upstream"
+    assert metadata["error_information"]["error_code"] == "499"

@@ -3,7 +3,16 @@ import contextlib
 import json
 import logging
 import math
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterable,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Mapping,
+    Sequence,
+)
 from datetime import datetime
 from functools import lru_cache
 from types import MappingProxyType
@@ -24,9 +33,11 @@ from litellm.constants import (
     DEFAULT_MAX_RECURSE_DEPTH,
     LITELLM_DETAILED_TIMING,
     LITELLM_HTTP_STATUS_CLIENT_DISCONNECTED,
+    LITELLM_HTTP_STATUS_UPSTREAM_STREAM_IDLE,
     MAX_PAYLOAD_SIZE_FOR_DEBUG_LOG,
     NON_INFERENCE_CALL_TYPES,
     RETURN_RAW_MODEL_NAME_METADATA_KEY,
+    STREAM_ENDED_UPSTREAM_IDLE_METADATA_KEY,
     STREAM_SSE_DATA_PREFIX,
     STREAM_SSE_KEEPALIVE_PING_BYTES,
     UNSAFE_PROXY_RESPONSE_HEADERS,
@@ -57,8 +68,10 @@ from litellm.proxy.common_utils.callback_utils import (
 )
 from litellm.proxy.common_utils.sse_keepalive import (
     SSE_COMMENT_PING_BYTES,
+    UpstreamStreamMonitor,
     coerce_keepalive_interval,
     resolve_ttft_keepalive_interval,
+    upstream_stream_monitor_for,
     wrap_sse_stream_with_keepalive_pings,
 )
 from litellm.proxy.dd_span_tagger import DDSpanTagger
@@ -204,10 +217,81 @@ _CLIENT_DISCONNECTED_ERROR_INFORMATION: Final[StandardLoggingPayloadErrorInforma
     "error_message": "Client disconnected the request",
     "error_class": "ClientDisconnected",
 }
+_UPSTREAM_STREAM_IDLE_ERROR_INFORMATION: Final[StandardLoggingPayloadErrorInformation] = {
+    "error_code": str(LITELLM_HTTP_STATUS_UPSTREAM_STREAM_IDLE),
+    "error_message": "Upstream produced no output within the configured idle window",
+    "error_class": "UpstreamStreamIdle",
+}
+
+
+class _StreamTermination(NamedTuple):
+    """Why a stream ended before its upstream finished, as logs and callbacks see it.
+
+    Only two things end one early, and they are opposites: the caller went away,
+    or this proxy gave up on an upstream that had gone silent. Both tear down
+    through the same generator close, so nothing downstream can tell them apart
+    unless the reason is carried explicitly - and #688 exists precisely because
+    streaming telemetry reported a cause that was not the real one.
+    """
+
+    metadata_key: str
+    error_information: StandardLoggingPayloadErrorInformation
+
+
+CLIENT_DISCONNECTED_TERMINATION: Final = _StreamTermination(
+    metadata_key="client_disconnected",
+    error_information=_CLIENT_DISCONNECTED_ERROR_INFORMATION,
+)
+UPSTREAM_IDLE_TERMINATION: Final = _StreamTermination(
+    metadata_key=STREAM_ENDED_UPSTREAM_IDLE_METADATA_KEY,
+    error_information=_UPSTREAM_STREAM_IDLE_ERROR_INFORMATION,
+)
 
 
 def _withheld_provider_output(response: object) -> bool:
     return getattr(response, "has_buffered_provider_output", False) is True
+
+
+class _UpstreamActivityStamper:
+    """Relay the raw provider stream, stamping every chunk on an ``UpstreamStreamMonitor``.
+
+    Sits between the provider iterator and the post-call hook chain, which is the
+    only place the provider's own liveness is still visible. Above it the chain
+    can legitimately be silent while the provider talks: a guardrail configured
+    with ``streaming_buffer_until_moderated`` consumes the whole response and
+    yields nothing until its end-of-stream scan passes. The upstream-idle cap
+    reads the stamp rather than what reaches it, so buffering is never mistaken
+    for a dead model.
+
+    Attribute access falls through to the wrapped stream, so a hook that reads
+    ``has_buffered_provider_output`` or calls ``aclose()`` reaches the real one.
+    Installed only when the cap is armed, so the default path allocates nothing.
+    """
+
+    __slots__ = ("_iterator", "_monitor", "_stream")
+
+    def __init__(self, stream: AsyncIterable[object], monitor: UpstreamStreamMonitor) -> None:
+        self._stream = stream
+        self._monitor = monitor
+        # Resolved through `__aiter__` rather than assuming the wrapped object is
+        # its own iterator, and up front so a consumer reaching straight for
+        # `__anext__` gets a stream rather than a crash.
+        self._iterator: AsyncIterator[object] = stream.__aiter__()
+
+    def __aiter__(self) -> "_UpstreamActivityStamper":
+        return self
+
+    async def __anext__(self) -> object:
+        chunk: Final = await self._iterator.__anext__()
+        self._monitor.record_upstream_activity()
+        return chunk
+
+    def __getattr__(self, name: str) -> object:
+        # `getattr` on an arbitrary provider stream is untyped by construction;
+        # all this promises is that a hook reading or closing the stream reaches
+        # the real object rather than this relay.
+        delegated: Final[object] = getattr(self._stream, name)  # pyright: ignore[reportAny]  # untyped by construction
+        return delegated
 
 
 def _should_return_raw_model_name(request_data: dict[str, object]) -> bool:
@@ -217,19 +301,38 @@ def _should_return_raw_model_name(request_data: dict[str, object]) -> bool:
     )
 
 
-def _apply_client_disconnect_metadata(target_metadata: dict[str, object] | None) -> None:
+def _apply_stream_termination_metadata(
+    target_metadata: dict[str, object] | None,
+    termination: _StreamTermination = CLIENT_DISCONNECTED_TERMINATION,
+) -> None:
     if target_metadata is None:
         return
-    target_metadata["client_disconnected"] = True
-    target_metadata["error_information"] = dict(_CLIENT_DISCONNECTED_ERROR_INFORMATION)
+    target_metadata[termination.metadata_key] = True
+    target_metadata["error_information"] = dict(termination.error_information)
+
+
+# The pre-existing name for the client-disconnect case, kept as an alias so the
+# generalisation above did not have to rename a call site or a test.
+_apply_client_disconnect_metadata: Final = _apply_stream_termination_metadata
 
 
 async def _record_streaming_client_disconnect_if_needed(
     request: Request | None,
     request_data: dict,
     client_disconnected: bool = False,
+    termination: _StreamTermination | None = None,
 ) -> bool:
-    if not client_disconnected:
+    """Stamp why a stream ended early onto every metadata bucket the loggers read.
+
+    ``termination`` names the cause and defaults to the client disconnect this is
+    usually called for. Passing ``UPSTREAM_IDLE_TERMINATION`` instead records the
+    proxy's own upstream-idle cap, which must not be filed as a client going away:
+    the client may still be attached and reading. A caller that names a cause is
+    asserting the stream has already ended for it, so no ``is_disconnected()``
+    probe is made - the probe exists only to discover an unreported disconnect.
+    """
+    reason: Final = CLIENT_DISCONNECTED_TERMINATION if termination is None else termination
+    if not client_disconnected and termination is None:
         if request is None:
             return False
         try:
@@ -246,19 +349,19 @@ async def _record_streaming_client_disconnect_if_needed(
         if _lp_metadata is None:
             _lp_metadata = {}
             litellm_params["metadata"] = _lp_metadata
-        _apply_client_disconnect_metadata(_lp_metadata)
+        _apply_stream_termination_metadata(_lp_metadata, reason)
 
         _mcd_metadata = logging_obj.model_call_details.get("metadata")
         if _mcd_metadata is None:
             _mcd_metadata = {}
             logging_obj.model_call_details["metadata"] = _mcd_metadata
-        _apply_client_disconnect_metadata(_mcd_metadata)
+        _apply_stream_termination_metadata(_mcd_metadata, reason)
 
     _rd_metadata = request_data.get("metadata")
     if _rd_metadata is None:
         _rd_metadata = {}
         request_data["metadata"] = _rd_metadata
-    _apply_client_disconnect_metadata(_rd_metadata)
+    _apply_stream_termination_metadata(_rd_metadata, reason)
 
     _rd_litellm_params = request_data.get("litellm_params")
     if _rd_litellm_params is None:
@@ -268,10 +371,12 @@ async def _record_streaming_client_disconnect_if_needed(
     if _rd_lp_metadata is None:
         _rd_lp_metadata = {}
         _rd_litellm_params["metadata"] = _rd_lp_metadata
-    _apply_client_disconnect_metadata(_rd_lp_metadata)
+    _apply_stream_termination_metadata(_rd_lp_metadata, reason)
 
     verbose_proxy_logger.debug(
-        "Recorded streaming client disconnect with error_code=499 for litellm_call_id=%s",
+        "Recorded streaming termination %s with error_code=%s for litellm_call_id=%s",
+        reason.metadata_key,
+        reason.error_information.get("error_code"),
         request_data.get("litellm_call_id"),
     )
     return True
@@ -2629,6 +2734,16 @@ class ProxyBaseLLMRequestProcessing:
                     # This handles cases like websearch_interception agentic loop
                     # which returns a non-streaming dict even for streaming requests
                     if self._is_streaming_response(response):
+                        # Shared by the generator and the wrapper around it, and
+                        # `None` unless the upstream-idle cap will actually arm.
+                        # The wrapper only sees what survives the post-call hooks,
+                        # which a buffering guardrail can hold back for the whole
+                        # response; the monitor carries the provider's own
+                        # liveness up, and the cap's termination back down.
+                        stream_idle_monitor: Final = upstream_stream_monitor_for(
+                            ping_interval_seconds=litellm.anthropic_sse_ping_interval_seconds,
+                            max_upstream_idle_seconds=litellm.stream_max_upstream_idle_seconds,
+                        )
                         selected_data_generator = ProxyBaseLLMRequestProcessing.async_sse_data_generator(
                             response=response,
                             user_api_key_dict=user_api_key_dict,
@@ -2638,11 +2753,14 @@ class ProxyBaseLLMRequestProcessing:
                             restamp_model=(
                                 None if _should_return_raw_model_name(self.data) else requested_model_from_client
                             ),
+                            upstream_stream_monitor=stream_idle_monitor,
                         )
                         return await create_response(
                             generator=wrap_sse_stream_with_keepalive_pings(
                                 stream=selected_data_generator,
                                 ping_interval_seconds=litellm.anthropic_sse_ping_interval_seconds,
+                                max_upstream_idle_seconds=litellm.stream_max_upstream_idle_seconds,
+                                monitor=stream_idle_monitor,
                             ),
                             media_type="text/event-stream",
                             headers=custom_headers,
@@ -3609,15 +3727,24 @@ class ProxyBaseLLMRequestProcessing:
         client_disconnected: bool = False,
         user_api_key_dict: UserAPIKeyAuth | None = None,
         proxy_logging_obj: ProxyLogging | None = None,
+        ended_by_upstream_idle: bool = False,
     ) -> None:
         with anyio.CancelScope(shield=True):
-            should_record_client_disconnect: Final = client_disconnected or (not stream_completed)
+            should_record_client_disconnect: Final = (
+                client_disconnected or ended_by_upstream_idle or (not stream_completed)
+            )
             recorded_client_disconnect = False
             if should_record_client_disconnect:
+                # Same bookkeeping either way -- the reservation is refunded or
+                # the partial billed exactly as before -- but recorded under the
+                # cause that actually applies. An upstream-idle termination is
+                # asserted rather than probed for: the client is typically still
+                # there, so `is_disconnected()` would report nothing at all.
                 recorded_client_disconnect = await _record_streaming_client_disconnect_if_needed(
                     request,
                     request_data,
                     client_disconnected,
+                    termination=UPSTREAM_IDLE_TERMINATION if ended_by_upstream_idle else None,
                 )
             if recorded_client_disconnect:
                 deferred_stream_logging_armed: Final = _deferred_stream_logging_is_armed(request_data)
@@ -3661,6 +3788,7 @@ class ProxyBaseLLMRequestProcessing:
         serialize_error: StreamErrorSerializer,
         request: Request | None = None,
         flush_tail: Callable[[], bytes] | None = None,
+        upstream_stream_monitor: UpstreamStreamMonitor | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         Shared streaming data generator: runs proxy iterator hook, per-chunk hook,
@@ -3670,6 +3798,13 @@ class ProxyBaseLLMRequestProcessing:
         ``flush_tail`` runs once after the upstream iterator completes cleanly and
         its non-empty result is yielded, so a serializer that buffers bytes across
         chunks can emit anything still held at end of stream.
+
+        ``upstream_stream_monitor`` connects this generator to the SSE keepalive
+        wrapper's upstream-idle cap (``litellm.stream_max_upstream_idle_seconds``),
+        in both directions: provider chunks are stamped on it below the post-call
+        hooks, and its ``ended_by_upstream_idle`` flag says whether the cap - not
+        the client - is what closed this generator. Only the ``/v1/messages`` SSE
+        path passes one; everywhere else it is ``None`` and nothing changes.
         """
         verbose_proxy_logger.debug("inside generator")
         # Resolve per-stream (not per-chunk) whether the heavy per-chunk path
@@ -3685,12 +3820,17 @@ class ProxyBaseLLMRequestProcessing:
         debug_enabled: Final = verbose_proxy_logger.isEnabledFor(logging.DEBUG)
         stream_completed = False
         client_disconnected = False
+        ended_by_upstream_idle = False  # rebind-ok: decided in the cancellation path below
         delivered_chunk = False
         try:
             str_so_far = ""
             async for chunk in proxy_logging_obj.async_post_call_streaming_iterator_hook(
                 user_api_key_dict=user_api_key_dict,
-                response=response,
+                response=(
+                    response
+                    if upstream_stream_monitor is None
+                    else _UpstreamActivityStamper(response, upstream_stream_monitor)
+                ),
                 request_data=request_data,
             ):
                 # ``.format(chunk)`` was previously evaluated for every chunk
@@ -3745,7 +3885,20 @@ class ProxyBaseLLMRequestProcessing:
             # billing and release exactly once. This is the outermost generator
             # Starlette closes on disconnect, so the nested iterator hook (which
             # only sees GeneratorExit on GC) cannot own the refund.
-            client_disconnected = not stream_completed
+            # The upstream-idle cap ends the stream from the wrapper ABOVE this
+            # generator, and it does so by closing it - which arrives here as the
+            # very same GeneratorExit a client disconnect does. Recording that as
+            # a client disconnect would put the proxy's own timeout in the logs,
+            # the status and the callbacks under the one cause it is not, which
+            # is the blind spot the cap was built to remove. The monitor the
+            # wrapper shares carries the real reason across; the refund and
+            # partial-billing bookkeeping below is identical either way.
+            ended_by_upstream_idle = (  # rebind-ok: the cancellation path is where the cause is known
+                not stream_completed
+                and upstream_stream_monitor is not None
+                and upstream_stream_monitor.ended_by_upstream_idle
+            )
+            client_disconnected = not stream_completed and not ended_by_upstream_idle
             if not delivered_chunk and not _withheld_provider_output(response):
                 from litellm.proxy.spend_tracking.budget_reservation import (
                     release_budget_reservation_on_cancel,
@@ -3789,6 +3942,7 @@ class ProxyBaseLLMRequestProcessing:
                 client_disconnected=client_disconnected,
                 user_api_key_dict=user_api_key_dict,
                 proxy_logging_obj=proxy_logging_obj,
+                ended_by_upstream_idle=ended_by_upstream_idle,
             )
 
     @staticmethod
@@ -3799,6 +3953,7 @@ class ProxyBaseLLMRequestProcessing:
         proxy_logging_obj: ProxyLogging,
         request: Request | None = None,
         restamp_model: str | None = None,
+        upstream_stream_monitor: UpstreamStreamMonitor | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         Anthropic /messages and Google /generateContent streaming data generator require SSE events.
@@ -3818,6 +3973,7 @@ class ProxyBaseLLMRequestProcessing:
             user_api_key_dict=user_api_key_dict,
             request_data=request_data,
             proxy_logging_obj=proxy_logging_obj,
+            upstream_stream_monitor=upstream_stream_monitor,
             serialize_chunk=ProxyBaseLLMRequestProcessing._sse_chunk_serializer(restamper),
             serialize_error=lambda proxy_exc: (
                 f"{STREAM_SSE_DATA_PREFIX}{json.dumps({'error': proxy_exc.to_dict()})}\n\n"

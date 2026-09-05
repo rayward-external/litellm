@@ -1,22 +1,45 @@
 import asyncio
+import json
+import time
 from collections.abc import AsyncGenerator
 from typing import Final, cast
 
 import pytest
 from fastapi.responses import StreamingResponse
 
+import litellm
 from litellm.proxy.common_request_processing import create_response
 from litellm.proxy.common_utils.sse_keepalive import (
     ANTHROPIC_PING_SSE_CHUNK,
+    SSE_COMMENT_PING,
     SSE_COMMENT_PING_BYTES,
+    UPSTREAM_IDLE_SSE_ERROR_TYPE,
+    UpstreamStreamMonitor,
+    anthropic_upstream_idle_sse_chunk,
     resolve_ttft_keepalive_interval,
     split_complete_sse_frames,
+    upstream_stream_monitor_for,
     wrap_passthrough_sse_bytes_with_keepalive_pings,
     wrap_sse_stream_with_keepalive_pings,
 )
 
 MESSAGE_START_CHUNK: Final = 'data: {"type": "message_start"}\n\n'
 TEXT_DELTA_CHUNK: Final = 'data: {"type": "content_block_delta"}\n\n'
+
+
+async def _collect(stream: AsyncGenerator[str, None]) -> list[str]:
+    return [chunk async for chunk in stream]
+
+
+async def _drain_into(stream: AsyncGenerator[str, None], sink: list[str]) -> None:
+    """Like ``_collect``, but what arrived survives the cancellation of a stream that never ends."""
+    async for chunk in stream:
+        sink.append(chunk)
+
+
+# Distinguishes "the caller passed a disabling value" from "the caller never
+# mentioned the cap at all", which are different code paths into the same state.
+_CAP_ARGUMENT_OMITTED: Final = object()
 
 
 @pytest.mark.parametrize("delimiter", [b"\n\n", b"\r\n\r\n", b"\r\r"])
@@ -173,6 +196,383 @@ async def test_create_response_streams_ping_first_for_slow_upstream():
     collected: Final = [chunk async for chunk in response.body_iterator]
     assert collected[0] == ANTHROPIC_PING_SSE_CHUNK
     assert collected[-1] == MESSAGE_START_CHUNK
+
+
+# ---------------------------------------------------------------------------
+# Upstream-idle cap.
+#
+# The per-write stall deadline (`litellm.stream_stalled_write_timeout_seconds`)
+# can only fire when the peer applies backpressure. Measured behind a
+# terminating proxy that buffers the response instead: the proxy kept accepting
+# the app's writes for the whole run, every keepalive ping succeeded, no write
+# ever stalled, and the requests ran to the platform's request cap having
+# produced essentially no content - a hung upstream held open by our own pings.
+# These cover the second, independent trigger for that shape, which measures
+# upstream silence rather than anything about the transport.
+#
+# Timings are scaled down from the production defaults and every wait is
+# bounded, because the defect under test is an unbounded wait: a test that hangs
+# is a failure, not a slow pass.
+# ---------------------------------------------------------------------------
+
+# Small enough to keep the suite fast, large enough that several scheduler turns
+# are never mistaken for silence.
+IDLE_CAP_SECONDS: Final = 0.3
+IDLE_PING_INTERVAL_SECONDS: Final = 0.02
+TEST_DEADLINE_SECONDS: Final = 10.0
+
+
+def _sse_event_payload(chunk: str) -> dict[str, object]:
+    data_line: Final = next(line for line in chunk.splitlines() if line.startswith("data: "))
+    return cast("dict[str, object]", json.loads(data_line[len("data: ") :]))
+
+
+async def _hung_after(chunks: list[str], closed: asyncio.Event) -> AsyncGenerator[str, None]:
+    """Deliver ``chunks``, then produce nothing ever again."""
+    try:
+        for chunk in chunks:
+            yield chunk
+        await asyncio.Event().wait()
+    finally:
+        closed.set()
+
+
+def test_idle_error_chunk_is_a_parseable_anthropic_error_event():
+    payload: Final = _sse_event_payload(anthropic_upstream_idle_sse_chunk(600.0))
+
+    assert anthropic_upstream_idle_sse_chunk(600.0).startswith("event: error\n")
+    assert payload["type"] == "error"
+    assert cast("dict[str, object]", payload["error"])["type"] == UPSTREAM_IDLE_SSE_ERROR_TYPE
+    assert "600s" in cast("str", cast("dict[str, object]", payload["error"])["message"])
+
+
+@pytest.mark.asyncio
+async def test_upstream_idle_cap_ends_a_hung_stream_with_a_terminal_error_event():
+    closed: Final = asyncio.Event()
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=_hung_after([MESSAGE_START_CHUNK], closed),
+        ping_interval_seconds=IDLE_PING_INTERVAL_SECONDS,
+        max_upstream_idle_seconds=IDLE_CAP_SECONDS,
+    )
+
+    collected: Final = await asyncio.wait_for(_collect(wrapped), timeout=TEST_DEADLINE_SECONDS)
+
+    assert collected[0] == MESSAGE_START_CHUNK
+    assert collected[-1] == anthropic_upstream_idle_sse_chunk(IDLE_CAP_SECONDS)
+    assert closed.is_set(), "the hung upstream was left open"
+
+
+@pytest.mark.asyncio
+async def test_keepalive_pings_do_not_reset_the_upstream_idle_cap():
+    """The load-bearing property: the cap measures the UPSTREAM, not the wire.
+
+    Pings are this proxy's own bytes and are written into exactly the silence the
+    cap is counting. If emitting one restamped the clock the cap could never be
+    reached on a ping-filled stream -- which is every stream it exists for -- and
+    this collection would run until the test deadline instead of ending.
+    """
+    closed: Final = asyncio.Event()
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=_hung_after([MESSAGE_START_CHUNK], closed),
+        ping_interval_seconds=IDLE_PING_INTERVAL_SECONDS,
+        max_upstream_idle_seconds=IDLE_CAP_SECONDS,
+    )
+
+    started: Final = time.monotonic()
+    collected: Final = await asyncio.wait_for(_collect(wrapped), timeout=TEST_DEADLINE_SECONDS)
+    elapsed: Final = time.monotonic() - started
+
+    pings: Final = [chunk for chunk in collected if chunk == ANTHROPIC_PING_SSE_CHUNK]
+    assert len(pings) >= 5, "the cap must be reached across many ping cycles, not one"
+    assert elapsed >= IDLE_CAP_SECONDS, "ended before the configured silence had elapsed"
+    # Bounded well under `len(pings) * IDLE_PING_INTERVAL_SECONDS + IDLE_CAP_SECONDS`,
+    # which is what a per-ping restamp would cost.
+    assert elapsed < IDLE_CAP_SECONDS * 3
+
+
+@pytest.mark.asyncio
+async def test_slow_but_alive_upstream_is_not_capped():
+    """Length is legitimate; only silence is not.
+
+    The upstream here talks for four times the cap while never going quiet for
+    longer than a fraction of it, and it is delivered whole.
+    """
+
+    async def slow_stream() -> AsyncGenerator[str, None]:
+        for _ in range(8):
+            await asyncio.sleep(IDLE_CAP_SECONDS / 2)
+            yield TEXT_DELTA_CHUNK
+
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=slow_stream(),
+        ping_interval_seconds=IDLE_PING_INTERVAL_SECONDS,
+        max_upstream_idle_seconds=IDLE_CAP_SECONDS,
+    )
+
+    collected: Final = await asyncio.wait_for(_collect(wrapped), timeout=TEST_DEADLINE_SECONDS)
+
+    assert [chunk for chunk in collected if chunk != ANTHROPIC_PING_SSE_CHUNK] == [TEXT_DELTA_CHUNK] * 8
+    assert not any("event: error" in chunk for chunk in collected)
+
+
+@pytest.mark.asyncio
+async def test_a_consumer_that_stops_reading_is_not_counted_as_upstream_silence():
+    """A slow reader is the other knob's business, not this one's.
+
+    The consumer parks for longer than the whole cap between reads while the
+    upstream answers well inside it. Timing the cap from anywhere but the start
+    of the wait on the next upstream chunk folds that consumer pause into the
+    measurement and fires on a perfectly healthy stream.
+
+    The upstream is deliberately slower than the ping interval, so a ping - and
+    with it the cap check - happens on every chunk; an instant upstream would
+    skip the check entirely and the test would pass without measuring anything.
+    """
+
+    async def alive_upstream() -> AsyncGenerator[str, None]:
+        for _ in range(3):
+            await asyncio.sleep(IDLE_PING_INTERVAL_SECONDS * 3)
+            yield TEXT_DELTA_CHUNK
+
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=alive_upstream(),
+        ping_interval_seconds=IDLE_PING_INTERVAL_SECONDS,
+        max_upstream_idle_seconds=IDLE_CAP_SECONDS,
+    )
+
+    collected: list[str] = []
+    async for chunk in wrapped:
+        collected.append(chunk)
+        if chunk != ANTHROPIC_PING_SSE_CHUNK:
+            await asyncio.sleep(IDLE_CAP_SECONDS * 1.5)
+
+    assert [chunk for chunk in collected if chunk != ANTHROPIC_PING_SSE_CHUNK] == [TEXT_DELTA_CHUNK] * 3
+    assert ANTHROPIC_PING_SSE_CHUNK in collected, "no ping fired, so the cap was never checked"
+    assert not any("event: error" in chunk for chunk in collected)
+
+
+def test_the_shipped_default_leaves_the_cap_off():
+    """The mechanism ships; the number does not.
+
+    The cap has to sit above the longest silence a deployment's own healthy
+    streams produce, which is a fact about that deployment's traffic and not
+    something this library can know. A non-None default here would end streams
+    for every operator who never asked for one, so the value is opted into
+    through config. Pinned, because changing it is a behaviour change for
+    everybody rather than a tuning tweak.
+    """
+    assert litellm.stream_max_upstream_idle_seconds is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "disabled_cap",
+    [_CAP_ARGUMENT_OMITTED, None, 0, "0", -1, "abc", float("nan")],
+)
+async def test_a_disabled_cap_leaves_the_stream_exactly_as_it_was(disabled_cap: object):
+    """Off must mean untouched, not merely "does not fire".
+
+    This is the default path, so it is the one that must be indistinguishable
+    from the wrapper before the cap existed: a hung upstream is pinged forever,
+    the only chunks on the wire are the upstream's own and the keepalive ping,
+    no error frame is ever constructed, and nothing ends the stream.
+
+    Covers the omitted argument alongside every spelling `coerce_keepalive_interval`
+    rejects, so a coercion change cannot quietly arm the cap on a bad value.
+    """
+    closed: Final = asyncio.Event()
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=_hung_after([MESSAGE_START_CHUNK], closed),
+        ping_interval_seconds=IDLE_PING_INTERVAL_SECONDS,
+        **({} if disabled_cap is _CAP_ARGUMENT_OMITTED else {"max_upstream_idle_seconds": disabled_cap}),
+    )
+    collected: Final[list[str]] = []
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(_drain_into(wrapped, collected), timeout=IDLE_CAP_SECONDS * 3)
+
+    assert collected[0] == MESSAGE_START_CHUNK
+    assert set(collected[1:]) == {ANTHROPIC_PING_SSE_CHUNK}, "the disabled path put something new on the wire"
+    assert len(collected) > 5, "the stream stopped being pinged well inside the window a cap would have used"
+
+
+@pytest.mark.asyncio
+async def test_a_caller_speaking_another_protocol_can_supply_its_own_error_frame():
+    closed: Final = asyncio.Event()
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=_hung_after([MESSAGE_START_CHUNK], closed),
+        ping_interval_seconds=IDLE_PING_INTERVAL_SECONDS,
+        ping_chunk=SSE_COMMENT_PING,
+        max_upstream_idle_seconds=IDLE_CAP_SECONDS,
+        idle_error_chunk='data: {"error": "upstream idle"}\n\n',
+    )
+
+    collected: Final = await asyncio.wait_for(_collect(wrapped), timeout=TEST_DEADLINE_SECONDS)
+
+    assert collected[-1] == 'data: {"error": "upstream idle"}\n\n'
+    assert ANTHROPIC_PING_SSE_CHUNK not in collected
+
+
+@pytest.mark.asyncio
+async def test_a_cap_shorter_than_the_ping_interval_is_still_an_upper_bound():
+    """The configured value bounds the silence. The ping cadence does not.
+
+    The wait before each deadline check used to be a whole ping interval, so a
+    cap below that cadence was silently rounded up to it -- a 1s cap on the
+    shipped 15s cadence fired at ~15s. That is not an upper bound, and an
+    operator who set one has no way to tell from the outside.
+
+    Here the cadence is more than 13x the cap, so a cadence-bound check cannot
+    reach the assertions below at all.
+    """
+    closed: Final = asyncio.Event()
+    cap: Final = 0.15
+    ping_interval: Final = 2.0
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=_hung_after([MESSAGE_START_CHUNK], closed),
+        ping_interval_seconds=ping_interval,
+        max_upstream_idle_seconds=cap,
+    )
+
+    started: Final = time.monotonic()
+    collected: Final = await asyncio.wait_for(_collect(wrapped), timeout=TEST_DEADLINE_SECONDS)
+    elapsed: Final = time.monotonic() - started
+
+    assert collected[-1] == anthropic_upstream_idle_sse_chunk(cap)
+    assert elapsed >= cap, "ended before the configured silence had elapsed"
+    assert elapsed < ping_interval / 2, f"fired at the ping cadence ({elapsed:.2f}s) rather than at the {cap}s cap"
+    assert ANTHROPIC_PING_SSE_CHUNK not in collected, "a ping went out inside a window shorter than the cadence"
+
+
+@pytest.mark.asyncio
+async def test_the_cap_names_itself_as_what_ended_the_stream():
+    """#688 exists because the telemetry lied; the fix must not re-tell the story.
+
+    The cap ends the stream by closing the generator below it, which is the same
+    thing a client going away does. Unless the cap says so, that generator's
+    teardown files the proxy's own timeout as a client disconnect - the one cause
+    it demonstrably is not.
+    """
+    monitor: Final = UpstreamStreamMonitor()
+    closed: Final = asyncio.Event()
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=_hung_after([MESSAGE_START_CHUNK], closed),
+        ping_interval_seconds=IDLE_PING_INTERVAL_SECONDS,
+        max_upstream_idle_seconds=IDLE_CAP_SECONDS,
+        monitor=monitor,
+    )
+
+    assert not monitor.ended_by_upstream_idle, "flagged before anything had happened"
+    collected: Final = await asyncio.wait_for(_collect(wrapped), timeout=TEST_DEADLINE_SECONDS)
+
+    assert collected[-1] == anthropic_upstream_idle_sse_chunk(IDLE_CAP_SECONDS)
+    assert monitor.ended_by_upstream_idle, "the cap fired without saying it was the cap"
+
+
+@pytest.mark.asyncio
+async def test_a_consumer_that_walks_away_is_not_claimed_by_the_cap():
+    """The other half of the same signal: a real client disconnect stays one.
+
+    A flag that were set on every teardown would separate nothing.
+    """
+    monitor: Final = UpstreamStreamMonitor()
+    closed: Final = asyncio.Event()
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=_hung_after([MESSAGE_START_CHUNK], closed),
+        ping_interval_seconds=IDLE_PING_INTERVAL_SECONDS,
+        max_upstream_idle_seconds=IDLE_CAP_SECONDS,
+        monitor=monitor,
+    )
+
+    assert await wrapped.__anext__() == MESSAGE_START_CHUNK
+    await wrapped.aclose()
+
+    assert closed.is_set()
+    assert not monitor.ended_by_upstream_idle, "a consumer that stopped reading was blamed on the upstream"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_keeps_talking", [True, False])
+async def test_the_cap_measures_stamped_provider_activity_not_what_reaches_it(provider_keeps_talking: bool):
+    """A buffering hook is silent on purpose; a dead model is silent by failure.
+
+    `streaming_buffer_until_moderated` consumes the whole response and yields
+    nothing until its end-of-stream scan passes, so on the processed stream the
+    two look identical - and the wrapper only ever sees the processed stream.
+    Reading the monitor's provider stamps is what tells them apart, and both
+    cases are asserted here because a cap that never fires would pass the first
+    one on its own.
+    """
+    monitor: Final = UpstreamStreamMonitor()
+    withheld_for: Final = IDLE_CAP_SECONDS * 3
+
+    async def buffering_stream() -> AsyncGenerator[str, None]:
+        deadline = time.monotonic() + withheld_for
+        while time.monotonic() < deadline:
+            await asyncio.sleep(IDLE_PING_INTERVAL_SECONDS)
+            if provider_keeps_talking:
+                monitor.record_upstream_activity()
+        yield TEXT_DELTA_CHUNK
+
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=buffering_stream(),
+        ping_interval_seconds=IDLE_PING_INTERVAL_SECONDS,
+        max_upstream_idle_seconds=IDLE_CAP_SECONDS,
+        monitor=monitor,
+    )
+
+    collected: Final = await asyncio.wait_for(_collect(wrapped), timeout=TEST_DEADLINE_SECONDS)
+    content: Final = [chunk for chunk in collected if chunk != ANTHROPIC_PING_SSE_CHUNK]
+
+    if provider_keeps_talking:
+        assert content == [TEXT_DELTA_CHUNK], "a healthy upstream behind a buffering hook was killed as silent"
+        assert not monitor.ended_by_upstream_idle
+    else:
+        assert content == [anthropic_upstream_idle_sse_chunk(IDLE_CAP_SECONDS)]
+        assert monitor.ended_by_upstream_idle, "an upstream that stamped nothing was allowed to hang"
+
+
+@pytest.mark.parametrize(
+    ("ping_interval", "cap", "expect_monitor"),
+    [
+        (15.0, 600.0, True),
+        (15.0, None, False),
+        (None, 600.0, False),
+        (0, 600.0, False),
+        (15.0, 0, False),
+    ],
+)
+def test_a_monitor_is_created_exactly_when_the_cap_can_fire(
+    ping_interval: object, cap: object, expect_monitor: bool
+):
+    """No monitor, no per-chunk stamp: the arming rule lives in one place.
+
+    The cap needs a value of its own AND the keepalive pings whose gap it is
+    measured in, so every disabling spelling of either has to leave the default
+    path carrying nothing extra.
+    """
+    monitor: Final = upstream_stream_monitor_for(
+        ping_interval_seconds=cast("float | str | None", ping_interval),
+        max_upstream_idle_seconds=cast("float | str | None", cap),
+    )
+
+    assert (monitor is not None) is expect_monitor
+
+
+@pytest.mark.asyncio
+async def test_cap_is_unreachable_when_keepalive_pings_are_disabled():
+    """The measurement lives in the gap between two pings, so no pings, no cap."""
+    closed: Final = asyncio.Event()
+    stream: Final = _hung_after([MESSAGE_START_CHUNK], closed)
+
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=stream,
+        ping_interval_seconds=0,
+        max_upstream_idle_seconds=IDLE_CAP_SECONDS,
+    )
+
+    assert wrapped is stream
+    await stream.aclose()
 
 
 SSE_FRAME_BYTES: Final = b'event: content_block_delta\ndata: {"type": "content_block_delta"}\n\n'

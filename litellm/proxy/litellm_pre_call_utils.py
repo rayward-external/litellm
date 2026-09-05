@@ -26,6 +26,7 @@ from litellm.constants import (
     SESSION_DEPLOYMENT_AFFINITY_TTL_METADATA_KEY,
     SESSION_ID_GENERATED_METADATA_KEY,
     SESSION_ID_OMITTED_METADATA_KEY,
+    STREAM_ENDED_UPSTREAM_IDLE_METADATA_KEY,
 )
 from litellm.litellm_core_utils.credential_accessor import CredentialAccessor
 from litellm.litellm_core_utils.initialize_dynamic_callback_params import (
@@ -302,6 +303,7 @@ _UNTRUSTED_METADATA_CONTROL_FIELDS: Final = (
     "_guardrail_pipelines",
     "_pipeline_managed_guardrails",
     "client_disconnected",
+    STREAM_ENDED_UPSTREAM_IDLE_METADATA_KEY,
     "error_information",
     PRE_CALL_EXECUTED_GUARDRAILS_KEY,
     # Server-authoritative provider-pin routing signal: only the pinned routes
