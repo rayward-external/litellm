@@ -14,9 +14,11 @@ from litellm.proxy.common_utils.sse_keepalive import (
     SSE_COMMENT_PING,
     SSE_COMMENT_PING_BYTES,
     UPSTREAM_IDLE_SSE_ERROR_TYPE,
+    UpstreamStreamMonitor,
     anthropic_upstream_idle_sse_chunk,
     resolve_ttft_keepalive_interval,
     split_complete_sse_frames,
+    upstream_stream_monitor_for,
     wrap_passthrough_sse_bytes_with_keepalive_pings,
     wrap_sse_stream_with_keepalive_pings,
 )
@@ -409,6 +411,152 @@ async def test_a_caller_speaking_another_protocol_can_supply_its_own_error_frame
 
     assert collected[-1] == 'data: {"error": "upstream idle"}\n\n'
     assert ANTHROPIC_PING_SSE_CHUNK not in collected
+
+
+@pytest.mark.asyncio
+async def test_a_cap_shorter_than_the_ping_interval_is_still_an_upper_bound():
+    """The configured value bounds the silence. The ping cadence does not.
+
+    The wait before each deadline check used to be a whole ping interval, so a
+    cap below that cadence was silently rounded up to it -- a 1s cap on the
+    shipped 15s cadence fired at ~15s. That is not an upper bound, and an
+    operator who set one has no way to tell from the outside.
+
+    Here the cadence is more than 13x the cap, so a cadence-bound check cannot
+    reach the assertions below at all.
+    """
+    closed: Final = asyncio.Event()
+    cap: Final = 0.15
+    ping_interval: Final = 2.0
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=_hung_after([MESSAGE_START_CHUNK], closed),
+        ping_interval_seconds=ping_interval,
+        max_upstream_idle_seconds=cap,
+    )
+
+    started: Final = time.monotonic()
+    collected: Final = await asyncio.wait_for(_collect(wrapped), timeout=TEST_DEADLINE_SECONDS)
+    elapsed: Final = time.monotonic() - started
+
+    assert collected[-1] == anthropic_upstream_idle_sse_chunk(cap)
+    assert elapsed >= cap, "ended before the configured silence had elapsed"
+    assert elapsed < ping_interval / 2, f"fired at the ping cadence ({elapsed:.2f}s) rather than at the {cap}s cap"
+    assert ANTHROPIC_PING_SSE_CHUNK not in collected, "a ping went out inside a window shorter than the cadence"
+
+
+@pytest.mark.asyncio
+async def test_the_cap_names_itself_as_what_ended_the_stream():
+    """#688 exists because the telemetry lied; the fix must not re-tell the story.
+
+    The cap ends the stream by closing the generator below it, which is the same
+    thing a client going away does. Unless the cap says so, that generator's
+    teardown files the proxy's own timeout as a client disconnect - the one cause
+    it demonstrably is not.
+    """
+    monitor: Final = UpstreamStreamMonitor()
+    closed: Final = asyncio.Event()
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=_hung_after([MESSAGE_START_CHUNK], closed),
+        ping_interval_seconds=IDLE_PING_INTERVAL_SECONDS,
+        max_upstream_idle_seconds=IDLE_CAP_SECONDS,
+        monitor=monitor,
+    )
+
+    assert not monitor.ended_by_upstream_idle, "flagged before anything had happened"
+    collected: Final = await asyncio.wait_for(_collect(wrapped), timeout=TEST_DEADLINE_SECONDS)
+
+    assert collected[-1] == anthropic_upstream_idle_sse_chunk(IDLE_CAP_SECONDS)
+    assert monitor.ended_by_upstream_idle, "the cap fired without saying it was the cap"
+
+
+@pytest.mark.asyncio
+async def test_a_consumer_that_walks_away_is_not_claimed_by_the_cap():
+    """The other half of the same signal: a real client disconnect stays one.
+
+    A flag that were set on every teardown would separate nothing.
+    """
+    monitor: Final = UpstreamStreamMonitor()
+    closed: Final = asyncio.Event()
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=_hung_after([MESSAGE_START_CHUNK], closed),
+        ping_interval_seconds=IDLE_PING_INTERVAL_SECONDS,
+        max_upstream_idle_seconds=IDLE_CAP_SECONDS,
+        monitor=monitor,
+    )
+
+    assert await wrapped.__anext__() == MESSAGE_START_CHUNK
+    await wrapped.aclose()
+
+    assert closed.is_set()
+    assert not monitor.ended_by_upstream_idle, "a consumer that stopped reading was blamed on the upstream"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_keeps_talking", [True, False])
+async def test_the_cap_measures_stamped_provider_activity_not_what_reaches_it(provider_keeps_talking: bool):
+    """A buffering hook is silent on purpose; a dead model is silent by failure.
+
+    `streaming_buffer_until_moderated` consumes the whole response and yields
+    nothing until its end-of-stream scan passes, so on the processed stream the
+    two look identical - and the wrapper only ever sees the processed stream.
+    Reading the monitor's provider stamps is what tells them apart, and both
+    cases are asserted here because a cap that never fires would pass the first
+    one on its own.
+    """
+    monitor: Final = UpstreamStreamMonitor()
+    withheld_for: Final = IDLE_CAP_SECONDS * 3
+
+    async def buffering_stream() -> AsyncGenerator[str, None]:
+        deadline = time.monotonic() + withheld_for
+        while time.monotonic() < deadline:
+            await asyncio.sleep(IDLE_PING_INTERVAL_SECONDS)
+            if provider_keeps_talking:
+                monitor.record_upstream_activity()
+        yield TEXT_DELTA_CHUNK
+
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=buffering_stream(),
+        ping_interval_seconds=IDLE_PING_INTERVAL_SECONDS,
+        max_upstream_idle_seconds=IDLE_CAP_SECONDS,
+        monitor=monitor,
+    )
+
+    collected: Final = await asyncio.wait_for(_collect(wrapped), timeout=TEST_DEADLINE_SECONDS)
+    content: Final = [chunk for chunk in collected if chunk != ANTHROPIC_PING_SSE_CHUNK]
+
+    if provider_keeps_talking:
+        assert content == [TEXT_DELTA_CHUNK], "a healthy upstream behind a buffering hook was killed as silent"
+        assert not monitor.ended_by_upstream_idle
+    else:
+        assert content == [anthropic_upstream_idle_sse_chunk(IDLE_CAP_SECONDS)]
+        assert monitor.ended_by_upstream_idle, "an upstream that stamped nothing was allowed to hang"
+
+
+@pytest.mark.parametrize(
+    ("ping_interval", "cap", "expect_monitor"),
+    [
+        (15.0, 600.0, True),
+        (15.0, None, False),
+        (None, 600.0, False),
+        (0, 600.0, False),
+        (15.0, 0, False),
+    ],
+)
+def test_a_monitor_is_created_exactly_when_the_cap_can_fire(
+    ping_interval: object, cap: object, expect_monitor: bool
+):
+    """No monitor, no per-chunk stamp: the arming rule lives in one place.
+
+    The cap needs a value of its own AND the keepalive pings whose gap it is
+    measured in, so every disabling spelling of either has to leave the default
+    path carrying nothing extra.
+    """
+    monitor: Final = upstream_stream_monitor_for(
+        ping_interval_seconds=cast("float | str | None", ping_interval),
+        max_upstream_idle_seconds=cast("float | str | None", cap),
+    )
+
+    assert (monitor is not None) is expect_monitor
 
 
 @pytest.mark.asyncio

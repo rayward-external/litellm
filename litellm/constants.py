@@ -561,6 +561,17 @@ DD_TRACER_STREAMING_CHUNK_YIELD_RESOURCE: Final = os.getenv(
 )
 
 LITELLM_HTTP_STATUS_CLIENT_DISCONNECTED: Final = 499
+# A stream the proxy itself ended because the upstream model produced nothing
+# for longer than ``litellm.stream_max_upstream_idle_seconds``. Deliberately NOT
+# the client-disconnect code above: the client may still be attached and
+# reading, and filing the proxy's own timeout as a client going away rebuilds
+# the blind spot that cap exists to remove.
+LITELLM_HTTP_STATUS_UPSTREAM_STREAM_IDLE: Final = 504
+# Metadata flag the streaming teardown stamps for that termination, the
+# upstream-idle counterpart of ``client_disconnected``. Read by the standard
+# logging payload, and stripped from client-supplied metadata so a caller can
+# forge neither one.
+STREAM_ENDED_UPSTREAM_IDLE_METADATA_KEY: Final = "stream_ended_upstream_idle"
 
 EMAIL_BUDGET_ALERT_TTL: Final = int(os.getenv("EMAIL_BUDGET_ALERT_TTL", 24 * 60 * 60))  # 24 hours in seconds
 EMAIL_BUDGET_ALERT_MAX_SPEND_ALERT_PERCENTAGE: Final = float(

@@ -42,8 +42,10 @@ from litellm.caching.caching_handler import LLMCachingHandler
 from litellm.constants import (
     DEFAULT_MOCK_RESPONSE_COMPLETION_TOKEN_COUNT,
     DEFAULT_MOCK_RESPONSE_PROMPT_TOKEN_COUNT,
+    LITELLM_HTTP_STATUS_UPSTREAM_STREAM_IDLE,
     SENTRY_DENYLIST,
     SENTRY_PII_DENYLIST,
+    STREAM_ENDED_UPSTREAM_IDLE_METADATA_KEY,
 )
 from litellm.cost_calculator import (
     RealtimeAPITokenUsageProcessor,
@@ -5654,26 +5656,43 @@ class StandardLoggingPayloadSetup:
         error_information = StandardLoggingPayloadSetup.get_error_information(
             original_exception=original_exception,
         )
-        if not metadata.get("client_disconnected"):
+        # Two opposite causes end a stream early, and a row that files one as
+        # the other is worse than a row with no error at all: the proxy's own
+        # upstream-idle cap (`litellm.stream_max_upstream_idle_seconds`) fires
+        # while the client is typically still attached and reading.
+        ended_by_upstream_idle: Final[bool] = bool(metadata.get(STREAM_ENDED_UPSTREAM_IDLE_METADATA_KEY))
+        if not metadata.get("client_disconnected") and not ended_by_upstream_idle:
             return error_information, error_str
 
-        client_disconnect_error: Final = metadata.get("error_information")
-        if isinstance(client_disconnect_error, dict):
+        recorded_error: Final[object] = metadata.get("error_information")
+        if isinstance(recorded_error, dict):
             error_information = cast(
                 StandardLoggingPayloadErrorInformation,
-                client_disconnect_error,
+                recorded_error,
             )
         else:
+            # The recorder stamps error_information alongside the flag, so this
+            # is the shape of a row that lost one half of the pair; keep it
+            # reporting the cause the surviving flag names.
+            fallback: Final = (
+                (
+                    str(LITELLM_HTTP_STATUS_UPSTREAM_STREAM_IDLE),
+                    "Upstream produced no output within the configured idle window",
+                    "UpstreamStreamIdle",
+                )
+                if ended_by_upstream_idle
+                else ("499", "Client disconnected the request", "ClientDisconnected")
+            )
             error_information = cast(
                 StandardLoggingPayloadErrorInformation,
                 {
-                    "error_code": "499",
-                    "error_message": "Client disconnected the request",
-                    "error_class": "ClientDisconnected",
+                    "error_code": fallback[0],
+                    "error_message": fallback[1],
+                    "error_class": fallback[2],
                 },
             )
         if not error_str:
-            error_str = "Client disconnected the request"
+            error_str = error_information.get("error_message") or "Client disconnected the request"
         return error_information, error_str
 
     @staticmethod

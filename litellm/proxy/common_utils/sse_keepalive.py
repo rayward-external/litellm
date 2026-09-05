@@ -63,12 +63,69 @@ def anthropic_upstream_idle_sse_chunk(max_upstream_idle_seconds: float) -> str:
     )
 
 
+class UpstreamStreamMonitor:
+    """The two-way channel between the SSE keepalive wrapper and the stream under it.
+
+    Both directions exist because the wrapper sits on the *processed* stream and
+    the thing it is reasoning about is the *provider*:
+
+    - ``record_upstream_activity`` is stamped where the raw provider chunks are
+      pulled, below every post-call hook. A hook that withholds output until an
+      end-of-stream moderation pass completes (``streaming_buffer_until_moderated``)
+      consumes a perfectly healthy upstream while deliberately yielding nothing,
+      so silence measured on the processed side is not a statement about the
+      provider at all. Reading the stamp instead keeps the cap measuring the one
+      thing it claims to.
+    - ``ended_by_upstream_idle`` carries the termination the other way. When the
+      cap fires it is this proxy, not the client, that ends the stream - but it
+      ends it by closing the generator below, whose cancellation path would
+      otherwise file the proxy's own timeout as a client disconnect.
+
+    Created only when the cap will actually arm (``upstream_stream_monitor_for``),
+    so the default configuration allocates nothing and stamps nothing.
+    """
+
+    __slots__ = ("_last_upstream_activity", "ended_by_upstream_idle")
+
+    def __init__(self) -> None:
+        # Seeded now rather than at 0: the wrapper takes the later of this and
+        # its own restamp, and an epoch-zero seed would simply never win.
+        self._last_upstream_activity = time.monotonic()
+        self.ended_by_upstream_idle = False
+
+    @property
+    def last_upstream_activity(self) -> float:
+        """``time.monotonic()`` when the provider last produced a chunk."""
+        return self._last_upstream_activity
+
+    def record_upstream_activity(self) -> None:
+        self._last_upstream_activity = time.monotonic()
+
+
+def upstream_stream_monitor_for(
+    ping_interval_seconds: float | str | None,
+    max_upstream_idle_seconds: float | str | None,
+) -> UpstreamStreamMonitor | None:
+    """A monitor when this pair of settings will arm the idle cap, else ``None``.
+
+    Keeps the arming rule in one place: the cap needs a value of its own AND the
+    keepalive pings whose gap it is measured in, so a caller cannot end up paying
+    for the monitor on a stream the cap can never fire on.
+    """
+    if coerce_keepalive_interval(ping_interval_seconds) is None:
+        return None
+    if coerce_keepalive_interval(max_upstream_idle_seconds) is None:
+        return None
+    return UpstreamStreamMonitor()
+
+
 def wrap_sse_stream_with_keepalive_pings(
     stream: AsyncGenerator[str, None],
     ping_interval_seconds: float | str | None,
     ping_chunk: str = ANTHROPIC_PING_SSE_CHUNK,
     max_upstream_idle_seconds: float | str | None = None,
     idle_error_chunk: str | None = None,
+    monitor: UpstreamStreamMonitor | None = None,
 ) -> AsyncGenerator[str, None]:
     """Fill idle gaps in an SSE stream, including the one before its first chunk.
 
@@ -82,6 +139,11 @@ def wrap_sse_stream_with_keepalive_pings(
     default the matching Anthropic ``error`` event). Off unless a caller asks for
     it, and necessarily off when pings are disabled, since the gap between two
     pings is where the measurement lives.
+
+    ``monitor`` is that cap's channel to the stream underneath: the caller stamps
+    provider activity on it (so a post-call hook that buffers a healthy upstream
+    does not read as silence) and the stream's own teardown reads back whether
+    the cap, rather than the client, is what ended it.
     """
     interval: Final = coerce_keepalive_interval(ping_interval_seconds)
     if interval is None:
@@ -97,6 +159,7 @@ def wrap_sse_stream_with_keepalive_pings(
             if idle_error_chunk is None and max_idle is not None
             else idle_error_chunk
         ),
+        monitor=monitor,
     )
 
 
@@ -106,42 +169,77 @@ async def _keepalive_ping_stream(
     ping_chunk: str,
     max_upstream_idle_seconds: float | None = None,
     idle_error_chunk: str | None = None,
+    monitor: UpstreamStreamMonitor | None = None,
 ) -> AsyncGenerator[str, None]:
-    pending = asyncio.ensure_future(
-        stream.__anext__()
-    )  # rebind-ok: re-armed with the next __anext__ after each delivered chunk
-    # Restamped whenever the wrapper starts waiting on the upstream's next chunk,
-    # so what it measures is upstream silence and nothing else. Time spent
-    # suspended at a `yield` belongs to a consumer that is not reading, which is
-    # `litellm.stream_stalled_write_timeout_seconds`' business, not this cap's.
+    # `upstream_wait_started` is restamped whenever the wrapper starts waiting on
+    # the next chunk of the stream it consumes, so time spent suspended at a
+    # `yield` -- a consumer that is not reading, which is
+    # `litellm.stream_stalled_write_timeout_seconds`' business, not this cap's --
+    # is never charged to the upstream. `monitor` supplies the other half: the
+    # last moment the PROVIDER produced something, stamped below the post-call
+    # hooks, so a hook that buffers a healthy upstream is not read as silence.
+    # The idle window runs from whichever of the two is later, which is exactly
+    # "the wrapper has been waiting, and so has the provider".
     #
-    # Both the clock read and the restamp are guarded on the cap being
+    # Every clock read and both restamps are guarded on the cap being
     # configured, and it is off by default. With it off this generator does
     # exactly what it did before the cap existed: same chunks, same order, and
     # not one extra clock read per chunk on the streaming hot path.
     idle_deadline_seconds: Final = max_upstream_idle_seconds
+    pending = asyncio.ensure_future(
+        stream.__anext__()
+    )  # rebind-ok: re-armed with the next __anext__ after each delivered chunk
     upstream_wait_started = (  # rebind-ok: restamped per upstream __anext__
         time.monotonic() if idle_deadline_seconds is not None else 0.0
     )
+    next_ping_at = upstream_wait_started + ping_interval_seconds  # rebind-ok: re-armed after each ping and chunk
+
+    def idle_window_started() -> float:
+        if monitor is not None and monitor.last_upstream_activity > upstream_wait_started:
+            return monitor.last_upstream_activity
+        return upstream_wait_started
+
     try:
         while True:
-            await asyncio.wait({pending}, timeout=ping_interval_seconds)
+            if idle_deadline_seconds is not None:
+                # Sleep to whichever lands first. Waiting a whole ping interval
+                # regardless is what made a cap shorter than the ping cadence
+                # fire at the cadence instead of at the configured value, i.e.
+                # not an upper bound at all.
+                wake_at = min(  # rebind-ok: recomputed each wake
+                    next_ping_at, idle_window_started() + idle_deadline_seconds
+                )
+                await asyncio.wait((pending,), timeout=max(wake_at - time.monotonic(), 0.0))
+            else:
+                await asyncio.wait((pending,), timeout=ping_interval_seconds)
             if not pending.done():
                 if idle_deadline_seconds is not None:
-                    idle_seconds = time.monotonic() - upstream_wait_started  # rebind-ok: re-measured each ping cycle
+                    now = time.monotonic()  # rebind-ok: re-measured each wake
+                    idle_seconds = now - idle_window_started()  # rebind-ok: re-measured each wake
                     if idle_seconds >= idle_deadline_seconds:
                         verbose_proxy_logger.warning(
                             "upstream produced no output for %.1fs (cap %ss); ending the stream",
                             idle_seconds,
                             idle_deadline_seconds,
                         )
+                        # Told to the stream below before it is closed, so its
+                        # teardown reports the proxy's own timeout as itself
+                        # rather than as the client disconnect a close looks
+                        # like. Writing to the caller's object is the point: the
+                        # monitor exists to carry exactly this.
+                        if monitor is not None:
+                            monitor.ended_by_upstream_idle = True  # rebind-ok: the monitor is the channel
                         if idle_error_chunk:
                             yield idle_error_chunk
                         return
+                    if now < next_ping_at:
+                        # Woken by the idle deadline rather than the ping cadence.
+                        continue
+                    next_ping_at = now + ping_interval_seconds
                 # A ping is this proxy's own byte, not upstream output, so it
-                # deliberately leaves `upstream_wait_started` alone. Resetting it
-                # here would make the cap unreachable on exactly the stream shape
-                # it exists for: a hung upstream held open by our own pings.
+                # deliberately leaves the idle window alone. Resetting it here
+                # would make the cap unreachable on exactly the stream shape it
+                # exists for: a hung upstream held open by our own pings.
                 yield ping_chunk
                 continue
             try:
@@ -153,6 +251,7 @@ async def _keepalive_ping_stream(
                 # the wait on the NEXT upstream chunk, so a consumer that parked
                 # at that yield is not charged to the upstream.
                 upstream_wait_started = time.monotonic()
+                next_ping_at = upstream_wait_started + ping_interval_seconds
             pending = asyncio.ensure_future(stream.__anext__())
     finally:
         pending.cancel()
