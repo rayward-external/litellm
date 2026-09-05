@@ -1,8 +1,8 @@
 from copy import deepcopy
-from typing import TYPE_CHECKING, Any, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar
 
 import httpx
-from openai.types.responses import ResponseReasoningItem
+from openai.types.responses import ResponseInputItemParam, ResponseReasoningItem
 
 from litellm._logging import verbose_logger
 from litellm.litellm_core_utils.url_utils import encode_url_path_segment
@@ -26,11 +26,15 @@ else:
 # rayward-internal/llm-gateway-infra#755
 _INTERNAL_CHAT_MESSAGE_METADATA_PASSTHROUGH_KEY: Final = "internal_chat_message_metadata_passthrough"
 
+_ResponseInputItemT: Final = TypeVar("_ResponseInputItemT", bound=ResponseInputItemParam)
 
-def _without_internal_chat_message_metadata_passthrough(item: object) -> object:
+
+def _without_internal_chat_message_metadata_passthrough(item: _ResponseInputItemT) -> _ResponseInputItemT:
     if not isinstance(item, dict) or _INTERNAL_CHAT_MESSAGE_METADATA_PASSTHROUGH_KEY not in item:
         return item
-    return {key: value for key, value in item.items() if key != _INTERNAL_CHAT_MESSAGE_METADATA_PASSTHROUGH_KEY}
+    item_without_metadata: Final = item.copy()
+    del item_without_metadata[_INTERNAL_CHAT_MESSAGE_METADATA_PASSTHROUGH_KEY]
+    return item_without_metadata
 
 
 class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
@@ -125,8 +129,10 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
             return input
         if not any(_INTERNAL_CHAT_MESSAGE_METADATA_PASSTHROUGH_KEY in item for item in input if isinstance(item, dict)):
             return input
-        sanitized: Final = [_without_internal_chat_message_metadata_passthrough(item) for item in input]
-        return cast("ResponseInputParam", sanitized)  # cast-ok: items keep their shape, minus a rejected key
+        sanitized: Final = [  # mutable-ok: ResponseInputParam is a list; this is a JSON request body field
+            _without_internal_chat_message_metadata_passthrough(item) for item in input
+        ]
+        return sanitized
 
     def transform_responses_api_request(
         self,

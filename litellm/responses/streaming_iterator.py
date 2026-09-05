@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import datetime
 from functools import lru_cache
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast, overload, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, overload, runtime_checkable
 
 import httpx
 from openai._streaming import SSEDecoder
@@ -39,7 +39,6 @@ from litellm.types.llms.openai import (
     ResponseCompletedEvent,
     ResponseFailedEvent,
     ResponseIncompleteEvent,
-    ResponseInputParam,
     ResponsesAPIResponse,
     ResponsesAPIStreamEvents,
     ResponsesAPIStreamingResponse,
@@ -1972,14 +1971,10 @@ class ResponsesWebSocketStreaming:
         original_input: Final = msg_obj.get("input")
         if not isinstance(original_input, (str, list)):
             return False
-        sanitized_input: Final = self.responses_api_provider_config.sanitize_input_items(
-            cast("str | ResponseInputParam", original_input)
-        )
+        sanitized_input: Final = self.responses_api_provider_config.sanitize_input_items(original_input)
         if sanitized_input is original_input:
             return False
-        msg_obj["input"] = (
-            sanitized_input  # rebind-ok: frame normalised in place before forwarding, like _flatten_response_create above
-        )
+        msg_obj["input"] = sanitized_input  # rebind-ok: frame normalised in place before forwarding
         return True
 
     async def _mask_response_create(self, message: str) -> str:
