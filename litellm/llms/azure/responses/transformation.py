@@ -30,7 +30,7 @@ _ResponseInputItemT: Final = TypeVar("_ResponseInputItemT", bound=ResponseInputI
 
 
 def _without_internal_chat_message_metadata_passthrough(item: _ResponseInputItemT) -> _ResponseInputItemT:
-    if not isinstance(item, dict) or _INTERNAL_CHAT_MESSAGE_METADATA_PASSTHROUGH_KEY not in item:
+    if _INTERNAL_CHAT_MESSAGE_METADATA_PASSTHROUGH_KEY not in item:
         return item
     item_without_metadata: Final = item.copy()
     del item_without_metadata[_INTERNAL_CHAT_MESSAGE_METADATA_PASSTHROUGH_KEY]
@@ -127,7 +127,7 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
     def sanitize_input_items(self, input: str | ResponseInputParam) -> str | ResponseInputParam:
         if not isinstance(input, list):
             return input
-        if not any(_INTERNAL_CHAT_MESSAGE_METADATA_PASSTHROUGH_KEY in item for item in input if isinstance(item, dict)):
+        if not any(_INTERNAL_CHAT_MESSAGE_METADATA_PASSTHROUGH_KEY in item for item in input):
             return input
         sanitized: Final = [  # mutable-ok: ResponseInputParam is a list; this is a JSON request body field
             _without_internal_chat_message_metadata_passthrough(item) for item in input
