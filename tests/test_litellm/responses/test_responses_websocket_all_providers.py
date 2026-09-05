@@ -2146,6 +2146,193 @@ class TestNativeWebSocketGuardrailMasking:
         assert obj["input"] == "hi"
 
     @pytest.mark.asyncio
+    async def test_mask_response_create_strips_passthrough_for_azure_flat(self):
+        """Codex CLI attaches internal_chat_message_metadata_passthrough to
+        response.create input items; Azure's native websocket relay must not
+        forward it (rayward-internal/llm-gateway-infra#755)."""
+        handler = _make_streaming(
+            request_data={},
+            responses_api_provider_config=AzureOpenAIResponsesAPIConfig(),
+        )
+
+        masked = await handler._mask_response_create(
+            json.dumps(
+                {
+                    "type": "response.create",
+                    "input": [
+                        {"type": "message", "role": "user", "content": "hi"},
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": "second",
+                            "internal_chat_message_metadata_passthrough": {
+                                "turn_id": "t1",
+                                "content_item_kinds": ["text"],
+                            },
+                        },
+                    ],
+                }
+            )
+        )
+        obj = json.loads(masked)
+
+        assert "internal_chat_message_metadata_passthrough" not in obj["input"][1]
+        assert obj["input"][1]["content"] == "second"
+        assert "internal_chat_message_metadata_passthrough" not in obj["input"][0]
+
+    @pytest.mark.asyncio
+    async def test_mask_response_create_strips_passthrough_for_azure_nested(self):
+        """Same strip on the nested {"response": {...}} envelope shape."""
+        handler = _make_streaming(
+            request_data={},
+            responses_api_provider_config=AzureOpenAIResponsesAPIConfig(),
+        )
+
+        masked = await handler._mask_response_create(
+            json.dumps(
+                {
+                    "type": "response.create",
+                    "response": {
+                        "model": "m",
+                        "input": [
+                            {"type": "message", "role": "user", "content": "hi"},
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": "second",
+                                "internal_chat_message_metadata_passthrough": {"turn_id": "t1"},
+                            },
+                        ],
+                    },
+                }
+            )
+        )
+        obj = json.loads(masked)
+
+        assert "response" not in obj
+        assert "internal_chat_message_metadata_passthrough" not in obj["input"][1]
+        assert obj["input"][1]["content"] == "second"
+
+    @pytest.mark.asyncio
+    async def test_mask_response_create_keeps_passthrough_for_openai(self):
+        """api.openai.com accepts internal_chat_message_metadata_passthrough and
+        Codex relies on the echo, so an OpenAI-backed connection must forward
+        it unchanged."""
+        handler = _make_streaming(
+            request_data={},
+            responses_api_provider_config=OpenAIResponsesAPIConfig(),
+        )
+        passthrough_input = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": "hi",
+                "internal_chat_message_metadata_passthrough": {"turn_id": "t1"},
+            }
+        ]
+
+        masked = await handler._mask_response_create(
+            json.dumps({"type": "response.create", "input": passthrough_input})
+        )
+        obj = json.loads(masked)
+
+        assert obj["input"][0]["internal_chat_message_metadata_passthrough"] == {"turn_id": "t1"}
+
+    @pytest.mark.asyncio
+    async def test_mask_response_create_no_provider_config_keeps_passthrough(self):
+        """No provider config bound (the default) must be a no-op on input."""
+        handler = _make_streaming(request_data={})
+        passthrough_input = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": "hi",
+                "internal_chat_message_metadata_passthrough": {"turn_id": "t1"},
+            }
+        ]
+
+        masked = await handler._mask_response_create(
+            json.dumps({"type": "response.create", "input": passthrough_input})
+        )
+
+        assert json.loads(masked)["input"] == passthrough_input
+
+    @pytest.mark.asyncio
+    async def test_async_responses_websocket_wires_provider_config_for_azure(self):
+        """Regression test for the wiring, not just the strip helper: the tests
+        above call ResponsesWebSocketStreaming with responses_api_provider_config
+        injected directly, so they still pass even if
+        BaseLLMHTTPHandler.async_responses_websocket stops passing it through.
+        This drives the real native-websocket branch end to end -- the one
+        production traffic actually takes -- and checks the frame that lands on
+        the backend socket."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        real_config = AzureOpenAIResponsesAPIConfig()
+        mock_config = MagicMock(spec=AzureOpenAIResponsesAPIConfig)
+        mock_config.supports_native_websocket.return_value = True
+        mock_config.get_websocket_url.return_value = (
+            "wss://myresource.cognitiveservices.azure.com/openai/v1/responses"
+        )
+        mock_config.model_in_websocket_url.return_value = False
+        mock_config.validate_environment.return_value = {}
+        mock_config.sanitize_input_items.side_effect = real_config.sanitize_input_items
+
+        backend_ws = MagicMock()
+        backend_ws.send = AsyncMock()
+        backend_ws.recv = AsyncMock(side_effect=Exception("stop"))
+        backend_ws.close = AsyncMock()
+
+        class FakeConnect:
+            def __init__(self, url, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return backend_ws
+
+            async def __aexit__(self, *args):
+                pass
+
+        mock_ws = MagicMock()
+        mock_ws.close = AsyncMock()
+        mock_ws.receive_text = AsyncMock(side_effect=RuntimeError("client gone"))
+
+        first_message = json.dumps(
+            {
+                "type": "response.create",
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": "hi",
+                        "internal_chat_message_metadata_passthrough": {"turn_id": "t1"},
+                    }
+                ],
+            }
+        )
+
+        from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
+
+        handler = BaseLLMHTTPHandler()
+
+        with patch("websockets.connect", FakeConnect):
+            await handler.async_responses_websocket(
+                model="gpt-5.5",
+                websocket=mock_ws,
+                logging_obj=MagicMock(),
+                responses_api_provider_config=mock_config,
+                api_key="sk-azure-test",
+                api_base="https://myresource.cognitiveservices.azure.com",
+                custom_llm_provider="azure",
+                first_message=first_message,
+            )
+
+        backend_ws.send.assert_awaited_once()
+        sent = json.loads(backend_ws.send.await_args.args[0])
+        assert "internal_chat_message_metadata_passthrough" not in sent["input"][0]
+        assert sent["input"][0]["content"] == "hi"
+
+    @pytest.mark.asyncio
     async def test_client_to_backend_forwards_flattened_frame(self):
         """The frame actually written to the backend socket is the flat one --
         asserted at the send boundary, not just on the masking helper."""

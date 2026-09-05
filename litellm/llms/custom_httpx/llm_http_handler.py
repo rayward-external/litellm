@@ -6619,6 +6619,7 @@ class BaseLLMHTTPHandler:
                     quota_callbacks=_ws_quota_callbacks,
                     authorized_model=model,
                     request_defaults=request_defaults,
+                    responses_api_provider_config=responses_api_provider_config,
                 )
                 await streaming.bidirectional_forward()
 

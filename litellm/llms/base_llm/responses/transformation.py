@@ -276,6 +276,17 @@ class BaseResponsesAPIConfig(ABC):
         """
         return True
 
+    def sanitize_input_items(
+        self,
+        input: str | ResponseInputParam,
+    ) -> str | ResponseInputParam:
+        """
+        Drop or rewrite Responses API input items before they reach this provider's
+        backend, on both the HTTP and native WebSocket paths. Default is a no-op;
+        override where this backend rejects a field another accepts.
+        """
+        return input
+
     #########################################################
     ########## CANCEL RESPONSE API TRANSFORMATION ##########
     #########################################################
