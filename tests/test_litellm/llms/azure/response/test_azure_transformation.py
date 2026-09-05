@@ -612,6 +612,7 @@ class TestAzureResponsesAPIConfig:
         )
 
         assert result["tools"][0] is tool
+        assert "anyOf" in result["tools"][0]["parameters"]
 
     def test_azure_strips_internal_chat_message_metadata_passthrough_from_message_item(self):
         """Codex CLI attaches internal_chat_message_metadata_passthrough to input items.
