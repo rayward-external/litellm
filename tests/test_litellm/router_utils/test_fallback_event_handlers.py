@@ -1501,6 +1501,54 @@ class TestOrderLadderPreservesUpstreamErrorForPinnedRequests:
             litellm.callbacks.remove(drop_order_2)
 
     @pytest.mark.asyncio
+    async def test_team_scope_is_applied_before_the_tag_probe(self):
+        """Selection removes other teams' deployments before tag filtering; so must the probe.
+
+        The only order-2 deployment carries the request's pin but belongs to another
+        team, so for this request the level was structurally empty. A probe that
+        checks tags alone sees a match there and wrongly keeps the selection 429.
+        """
+        router: Final = litellm.Router(
+            model_list=[
+                {
+                    "model_name": "pooled-model",
+                    "litellm_params": {
+                        "model": "openai/primary-a",
+                        "api_key": "synthetic-key",
+                        "mock_response": _SyntheticUpstream400(self.UPSTREAM_MESSAGE),
+                        "order": 1,
+                        "tags": ["pin:azure"],
+                    },
+                    "model_info": {"id": "primary-a", "team_id": "team-a"},
+                },
+                {
+                    "model_name": "pooled-model",
+                    "litellm_params": {
+                        "model": "openai/other-team",
+                        "api_key": "synthetic-key",
+                        "mock_response": "another team's deployment must never serve team-a",
+                        "order": 2,
+                        "tags": ["pin:azure"],
+                    },
+                    "model_info": {"id": "other-team", "team_id": "team-b"},
+                },
+            ],
+            enable_tag_filtering=True,
+            tag_filtering_match_any=False,
+            num_retries=0,
+        )
+
+        with pytest.raises(litellm.BadRequestError) as excinfo:
+            await router.acompletion(
+                model="pooled-model",
+                messages=[{"role": "user", "content": "hi"}],
+                metadata={"tags": ["pin:azure"], "user_api_key_team_id": "team-a"},
+            )
+
+        assert self.UPSTREAM_MESSAGE in str(excinfo.value)
+        assert "another team" not in str(excinfo.value)
+
+    @pytest.mark.asyncio
     async def test_retryable_original_status_is_not_swapped(self):
         """408 is transient under litellm._should_retry; it must not be reported as permanent."""
         router: Final = self._router(

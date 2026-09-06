@@ -17,6 +17,7 @@ from litellm.router_utils.add_retry_fallback_headers import (
     get_fallback_error_info,
 )
 from litellm.router_utils.batch_utils import _get_router_metadata_variable_name
+from litellm.router_utils.common_utils import filter_team_based_models
 from litellm.router_utils.cooldown_handlers import (
     _first_present,  # pyright: ignore[reportPrivateUsage] - shared internal helper, used across router_utils
     _set_cooldown_deployments,  # pyright: ignore[reportPrivateUsage] - shared helper, used across router_utils
@@ -597,14 +598,14 @@ async def run_async_fallback(
     # upstream error -- reporting a deterministic 4xx as a retryable 429 and destroying
     # the provider's own message. error_from_fallbacks starts life as
     # original_exception at the top of this function; this restores it for that
-    # structural case only, established causally by _pin_emptied_target_order.
+    # structural case only, established causally by _request_constraints_emptied_target_order.
     # RouterRateLimitErrorBasic is deliberately NOT swapped: its single raise site
     # fires only when the target's configured rpm ceiling is exhausted, which is
     # always a genuine rate-limit condition and never the structural case.
     if (
         isinstance(error_from_fallbacks, RouterRateLimitError)
         and _is_deterministic_client_error(original_exception)
-        and await _pin_emptied_target_order(
+        and await _request_constraints_emptied_target_order(
             litellm_router=litellm_router,
             original_model_group=original_model_group,
             kwargs=kwargs,
@@ -626,18 +627,20 @@ def _is_deterministic_client_error(exc: BaseException) -> bool:
     return isinstance(status, int) and 400 <= status < 500 and not litellm._should_retry(status)
 
 
-async def _pin_emptied_target_order(
+async def _request_constraints_emptied_target_order(
     *,
     litellm_router: "_Router",
     original_model_group: str,
     kwargs: Mapping[str, object],
 ) -> bool:
-    """True only when the last hop's target order was emptied by THIS request's tags.
+    """True only when the last hop's target order was emptied by THIS request's own constraints.
 
-    Re-applies the request's own tag filter to exactly the deployments at the failed
-    hop's target order, on a copy of the request so nothing is stamped twice. If none
-    of them survives, the level was structurally empty for this request and the
-    selection error carried no information about it. Any OTHER cause of an empty
+    Re-applies, in selection's own order, the request's team scope
+    (filter_team_based_models, router.py:12842) and then its tag filter to exactly the
+    deployments at the failed hop's target order -- the same candidate set the ladder
+    built with get_model_list(team_id=...) -- on a copy of the request so nothing is
+    stamped twice. If none survives, the level was structurally empty for this request
+    and the selection error carried no information about it. Any OTHER cause of an empty
     selection -- cooldown, health checks, a filter callback -- leaves at least one of
     them matching the tags, so this returns False and the selection error surfaces
     unchanged. A router-wide cooldown_list cannot draw this line: it is populated
@@ -648,7 +651,22 @@ async def _pin_emptied_target_order(
     target_order: Final = kwargs.get("_target_order")
     if not isinstance(target_order, int):
         return False
-    group: Final = litellm_router.get_model_list(model_name=original_model_group) or ()
+    metadata_for_team: Final = kwargs.get("metadata")
+    litellm_metadata_for_team: Final = kwargs.get("litellm_metadata")
+    request_team_id: Final = (
+        metadata_for_team.get("user_api_key_team_id") if isinstance(metadata_for_team, Mapping) else None
+    ) or (
+        litellm_metadata_for_team.get("user_api_key_team_id")
+        if isinstance(litellm_metadata_for_team, Mapping)
+        else None
+    )
+    group: Final = (
+        litellm_router.get_model_list(
+            model_name=original_model_group,
+            team_id=request_team_id if isinstance(request_team_id, str) else None,
+        )
+        or ()
+    )
     at_order: Final = tuple(
         cast(dict, d)  # cast-ok: router deployments are plain dicts
         for d in group
@@ -667,11 +685,17 @@ async def _pin_emptied_target_order(
             MappingProxyType({**kwargs, metadata_key: metadata_copy}),
         )
     )
+    team_scoped: Final = filter_team_based_models(
+        cast(list, at_order),  # cast-ok: the function only iterates the sequence
+        probe_kwargs,
+    )
+    if not team_scoped:
+        return True
     try:
         surviving: Final = await get_deployments_for_tag(
             llm_router_instance=litellm_router,
             model=original_model_group,
-            healthy_deployments=at_order,
+            healthy_deployments=team_scoped,
             request_kwargs=probe_kwargs,
             metadata_variable_name=metadata_key,
         )
