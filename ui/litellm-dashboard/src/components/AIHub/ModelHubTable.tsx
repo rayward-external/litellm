@@ -33,7 +33,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Copy, Inbox, Search as SearchIcon, X } from "lucide-react";
-import { useRouter } from "next/navigation";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { prism } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -73,7 +72,6 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({ accessToken, publicPage, 
   const [modelHubData, setModelHubData] = useState<ModelHubData[] | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [isModalVisible, setIsModalVisible] = useState(false);
-  const [isPublicPageModalVisible, setIsPublicPageModalVisible] = useState(false);
   const [selectedModel, setSelectedModel] = useState<null | ModelHubData>(null);
   const [filteredData, setFilteredData] = useState<ModelHubData[]>([]);
   const [isMakePublicModalVisible, setIsMakePublicModalVisible] = useState(false);
@@ -94,7 +92,6 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({ accessToken, publicPage, 
   const [skillHubData, setSkillHubData] = useState<Plugin[]>([]);
   const [skillLoading, setSkillLoading] = useState<boolean>(false);
   const [isMakeSkillPublicModalVisible, setIsMakeSkillPublicModalVisible] = useState(false);
-  const router = useRouter();
   const { data: uiSettings, isLoading: isUISettingsLoading } = useUISettings();
 
   // Check authentication requirement for public AI Hub
@@ -257,10 +254,6 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({ accessToken, publicPage, 
     setIsMcpModalVisible(true);
   }, []);
 
-  const goToPublicModelPage = () => {
-    router.replace(`/model_hub_table?key=${accessToken}`);
-  };
-
   const handleMakePublicPage = () => {
     if (!accessToken) {
       return;
@@ -290,7 +283,6 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({ accessToken, publicPage, 
 
   const handleOk = () => {
     setIsModalVisible(false);
-    setIsPublicPageModalVisible(false);
     setSelectedModel(null);
     setIsAgentModalVisible(false);
     setSelectedAgent(null);
@@ -300,7 +292,6 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({ accessToken, publicPage, 
 
   const handleCancel = () => {
     setIsModalVisible(false);
-    setIsPublicPageModalVisible(false);
     setSelectedModel(null);
     setIsAgentModalVisible(false);
     setSelectedAgent(null);
@@ -475,6 +466,7 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({ accessToken, publicPage, 
                   {/* Model Table */}
                   <DataTable
                     data={filteredData}
+                    paginationMode="client"
                     columns={modelColumns}
                     getRowId={(model, index) => model.model_group || String(index)}
                     sortingMode="client"
@@ -541,6 +533,7 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({ accessToken, publicPage, 
                   {/* Agent Table */}
                   <DataTable
                     data={filteredAgentData}
+                    paginationMode="client"
                     columns={agentColumns}
                     getRowId={(agent, index) => agent.agent_id || agent.name || String(index)}
                     sortingMode="client"
@@ -582,6 +575,7 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({ accessToken, publicPage, 
                   {/* MCP Server Table */}
                   <DataTable
                     data={mcpHubData || []}
+                    paginationMode="client"
                     columns={mcpColumns}
                     getRowId={(server, index) => server.server_id || String(index)}
                     sortingMode="client"
@@ -636,26 +630,6 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({ accessToken, publicPage, 
           </p>
         </Card>
       )}
-
-      {/* Public Page Modal */}
-      <Dialog open={isPublicPageModalVisible} onOpenChange={(open) => !open && handleCancel()}>
-        <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-[600px]">
-          <DialogHeader>
-            <DialogTitle>{"Public Model Hub"}</DialogTitle>
-          </DialogHeader>
-          <div className="pt-5 pb-5">
-            <div className="flex justify-between mb-4">
-              <p className="text-base mr-2">Shareable Link:</p>
-              <p className="max-w-sm ml-2 bg-border pr-2 pl-2 pt-1 pb-1 text-center rounded-sm">
-                {`${getProxyBaseUrl()}/ui/model_hub_table`}
-              </p>
-            </div>
-            <div className="flex justify-end">
-              <Button onClick={goToPublicModelPage}>See Page</Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* Model Details Modal */}
       <Dialog open={isModalVisible} onOpenChange={(open) => !open && handleCancel()}>

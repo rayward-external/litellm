@@ -3279,6 +3279,8 @@ class TestNativeWebSocketUrlConstruction:
         """
         from unittest.mock import AsyncMock, MagicMock, patch
 
+        from litellm.responses import streaming_iterator as streaming_iterator_module
+
         class FakeConnect:
             def __init__(self, url, **kwargs):
                 pass
@@ -3310,8 +3312,9 @@ class TestNativeWebSocketUrlConstruction:
         fake_managed_handler.run = AsyncMock()
         fake_managed_handler_cls = MagicMock(return_value=fake_managed_handler)
 
-        with patch("websockets.connect", FakeConnect), patch(  # test-quality-ok: the bridge class is the seam that tells "native failed, then bridged" apart from "native never tried"; a faked HTTP boundary cannot distinguish them. Client-observable half asserted below.
-            "litellm.responses.streaming_iterator.ManagedResponsesWebSocketHandler",
+        with patch("websockets.connect", FakeConnect), patch.object(  # test-quality-ok: the bridge class is the seam that tells "native failed, then bridged" apart from "native never tried"; a faked HTTP boundary cannot distinguish them. Client-observable half asserted below.
+            streaming_iterator_module,
+            "ManagedResponsesWebSocketHandler",
             fake_managed_handler_cls,
         ):
             await handler.async_responses_websocket(

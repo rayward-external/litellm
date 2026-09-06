@@ -179,15 +179,20 @@ def test_tree_walk_rewrites_in_place_rather_than_discarding_the_body():
 
 def test_deeply_nested_body_does_not_blow_the_stack():
     # The body is UPSTREAM-CONTROLLED, so nesting depth is attacker-influenced.
-    # The original tree walk was recursive and would raise RecursionError from
-    # inside a security control at roughly this depth; the iterative version is
-    # bounded by the heap. CI's recursive-function gate flagged this, correctly.
+    #
+    # Built as raw text, not a nested dict passed through json.dumps: building
+    # the fixture that way raised RecursionError from the TEST's own setup,
+    # before sanitize_error_body ever ran, on any depth beyond the recursion
+    # limit -- json.dumps's encoder is exactly as recursive as json.loads's
+    # decoder, which is why sanitize_error_body's own json.loads is wrapped in
+    # an explicit `except RecursionError` (see its docstring). A real attacker
+    # sends bytes, never a Python object, so this also matches the threat this
+    # test models.
     depth = 5000
-    node: dict = {"message": PROD_LEAK_MESSAGE}
-    for _ in range(depth):
-        node = {"error": node}
+    encoded_message = json.dumps({"message": PROD_LEAK_MESSAGE})
+    raw = ('{"error": ' * depth) + encoded_message + ("}" * depth)
 
-    out = sanitize_error_body(json.dumps(node).encode(), 400)
+    out = sanitize_error_body(raw.encode(), 400)
     assert_no_leak(out.decode())
 
 
