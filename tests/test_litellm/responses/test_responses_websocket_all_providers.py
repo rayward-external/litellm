@@ -3279,6 +3279,16 @@ class TestNativeWebSocketUrlConstruction:
         """
         from unittest.mock import AsyncMock, MagicMock, patch
 
+        # Forces litellm.responses to resolve to the streaming_iterator submodule
+        # rather than the top-level litellm.responses(...) SDK function (both
+        # bind the same dotted name; whichever import happens last in this
+        # worker process wins). Every sibling test below imports from this
+        # submodule directly before touching it; this one only referenced it
+        # through the mock.patch string target, so in a worker where no prior
+        # test had done that import yet, the patch target resolved to the SDK
+        # function instead of the module and raised AttributeError.
+        import litellm.responses.streaming_iterator  # noqa: F401  # import-only: fixes litellm.responses resolution for the patch below
+
         class FakeConnect:
             def __init__(self, url, **kwargs):
                 pass
