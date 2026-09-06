@@ -1400,7 +1400,7 @@ class TestOrderLadderPreservesUpstreamErrorForPinnedRequests:
         # Warm-up: each pinned request 400s on order 1, ladders to order 2, and meets a
         # genuine 429 there, which puts the order-2 deployments into cooldown.
         for _ in range(6):
-            with pytest.raises(Exception):
+            with pytest.raises((litellm.BadRequestError, litellm.RateLimitError, RouterRateLimitError)):
                 await router.acompletion(model="pooled-model", messages=messages, metadata=metadata)
         await asyncio.sleep(0.2)
 
@@ -1452,7 +1452,7 @@ class TestOrderLadderPreservesUpstreamErrorForPinnedRequests:
         )
         messages: Final = [{"role": "user", "content": "hi"}]
         for _ in range(6):
-            with pytest.raises(Exception):
+            with pytest.raises((litellm.BadRequestError, litellm.RateLimitError, RouterRateLimitError)):
                 await router.acompletion(model="other-model", messages=messages)
         await asyncio.sleep(0.2)
 
