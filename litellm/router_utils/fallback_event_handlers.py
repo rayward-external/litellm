@@ -4,7 +4,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Final,
+    cast,  # noqa: TID251  # two router boundaries whose callee protocols only an untyped dict satisfies; each site carries cast-ok
+)
 
 import litellm
 from litellm._logging import verbose_router_logger
