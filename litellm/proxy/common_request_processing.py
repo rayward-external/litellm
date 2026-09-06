@@ -2746,6 +2746,16 @@ class ProxyBaseLLMRequestProcessing:
                             user_api_key_dict=user_api_key_dict,
                             proxy_logging_obj=proxy_logging_obj,
                         )
+                        # Shared by the generator and the wrapper around it, and
+                        # `None` unless the upstream-idle cap will actually arm.
+                        # The wrapper only sees what survives the post-call hooks,
+                        # which a buffering guardrail can hold back for the whole
+                        # response; the monitor carries the provider's own
+                        # liveness up, and the cap's termination back down.
+                        stream_idle_monitor: Final = upstream_stream_monitor_for(
+                            ping_interval_seconds=litellm.anthropic_sse_ping_interval_seconds,
+                            max_upstream_idle_seconds=litellm.stream_max_upstream_idle_seconds,
+                        )
                         selected_data_generator = ProxyBaseLLMRequestProcessing.async_sse_data_generator(
                             response=response,
                             user_api_key_dict=user_api_key_dict,

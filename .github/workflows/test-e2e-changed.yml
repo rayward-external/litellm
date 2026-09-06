@@ -58,7 +58,8 @@ jobs:
   run:
     name: Run changed e2e tests against the stage-mirror stack
     needs: detect
-    if: needs.detect.outputs.any == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    # fork-patches.txt: quarantined until E2E_AWS_ROLE_TO_ASSUME is configured for this fork
+    if: needs.detect.outputs.any == 'true' && github.event.pull_request.head.repo.full_name == github.repository && vars.E2E_AWS_ROLE_TO_ASSUME != ''
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: e2e-changed
@@ -225,6 +226,7 @@ jobs:
           DETECT_RESULT: ${{ needs.detect.result }}
           ANY_TESTS: ${{ needs.detect.outputs.any }}
           RUN_RESULT: ${{ needs.run.result }}
+          E2E_ROLE_CONFIGURED: ${{ vars.E2E_AWS_ROLE_TO_ASSUME != '' }}
         run: |
           if [ "${DETECT_RESULT}" != "success" ]; then
             echo "::error::changed-test detection did not succeed"
@@ -232,6 +234,10 @@ jobs:
           fi
           if [ "${ANY_TESTS}" = "false" ]; then
             echo "no changed e2e test files supported by this stack; nothing to run"
+            exit 0
+          fi
+          if [ "${E2E_ROLE_CONFIGURED}" != "true" ]; then
+            echo "::notice::E2E_AWS_ROLE_TO_ASSUME is not configured for this fork; skipping the stage-mirror e2e run (fork-patches.txt)"
             exit 0
           fi
           if [ "${ANY_TESTS}" != "true" ] || [ "${RUN_RESULT}" != "success" ]; then
