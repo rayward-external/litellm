@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import litellm
 from litellm._logging import verbose_router_logger
@@ -608,7 +608,6 @@ async def run_async_fallback(
             litellm_router=litellm_router,
             original_model_group=original_model_group,
             kwargs=kwargs,
-            metadata_variable_name=metadata_variable_name,
         )
     ):
         raise original_exception
@@ -632,7 +631,6 @@ async def _pin_emptied_target_order(
     litellm_router: "_Router",
     original_model_group: str,
     kwargs: Mapping[str, object],
-    metadata_variable_name: Literal["metadata", "litellm_metadata"],
 ) -> bool:
     """True only when the last hop's target order was emptied by THIS request's tags.
 
@@ -651,21 +649,29 @@ async def _pin_emptied_target_order(
     if not isinstance(target_order, int):
         return False
     group: Final = litellm_router.get_model_list(model_name=original_model_group) or ()
-    at_order: Final = tuple(d for d in group if _get_deployment_order(d) == target_order)
+    at_order: Final = tuple(
+        cast(dict, d)  # cast-ok: router deployments are plain dicts
+        for d in group
+        if _get_deployment_order(d) == target_order
+    )
     if not at_order:
         return False
-    metadata: Final = kwargs.get(metadata_variable_name)
+    metadata_key: Final = get_metadata_variable_name_from_kwargs(kwargs)
+    metadata: Final = kwargs.get(metadata_key)
     # The tag filter stamps consumed tags into request metadata, so the probe gets its
     # own copy and the real request is never stamped twice.
     metadata_copy: Final = dict(metadata if isinstance(metadata, Mapping) else ())  # mutable-ok: callee stamps into it
-    probe_kwargs: Final = MappingProxyType({**kwargs, metadata_variable_name: metadata_copy})
+    probe_kwargs: Final = cast(
+        dict,  # cast-ok: the router passes an untyped dict here; this read-only proxy has the same keys
+        MappingProxyType({**kwargs, metadata_key: metadata_copy}),
+    )
     try:
         surviving: Final = await get_deployments_for_tag(
             llm_router_instance=litellm_router,
             model=original_model_group,
             healthy_deployments=at_order,
             request_kwargs=probe_kwargs,
-            metadata_variable_name=metadata_variable_name,
+            metadata_variable_name=metadata_key,
         )
     except litellm.BadRequestError as no_match:
         # A hard provider pin that matches nothing raises instead of returning an empty pool.
