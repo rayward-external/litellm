@@ -3,13 +3,15 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Final
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 import litellm
 from litellm._logging import verbose_router_logger
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.core_helpers import get_metadata_variable_name_from_kwargs
 from litellm.litellm_core_utils.sensitive_data_masker import mask_sensitive_structure
+from litellm.router_strategy.tag_based_routing import get_deployments_for_tag
 from litellm.router_utils.add_retry_fallback_headers import (
     add_fallback_headers_to_response,
     get_fallback_error_info,
@@ -26,9 +28,11 @@ from litellm.router_utils.router_callbacks.track_deployment_metrics import (
 )
 from litellm.types.router import (
     LiteLLMParamsTypedDict,
+    RouterErrors,
     RouterRateLimitError,
     RouterRateLimitErrorBasic,
 )
+from litellm.utils import _get_deployment_order
 
 if TYPE_CHECKING:
     from litellm.router import Router as _Router
@@ -593,36 +597,80 @@ async def run_async_fallback(
     # upstream error -- reporting a deterministic 4xx as a retryable 429 and destroying
     # the provider's own message. error_from_fallbacks starts life as
     # original_exception at the top of this function; this restores it for that
-    # structural case only.
-    #
-    # Two conditions bound the swap, because RouterRateLimitError has two causes a
-    # bare isinstance cannot tell apart:
-    #   1. cooldown_list must be EMPTY. A non-empty list means the target order's
-    #      deployments are cooling down from GENUINE upstream 429s and would serve the
-    #      request in cooldown_time seconds. That is a real rate-limit condition; the
-    #      caller must see it, with its cooldown_time (which the proxy turns into
-    #      retry-after), not a spurious "this request is permanently bad".
-    #   2. original_exception must be a deterministic client error: a 4xx that is not
-    #      itself a rate limit. A rate-limit original stays a rate-limit result -- the
-    #      contract the order-fallback tests pin for a filtered-out order.
+    # structural case only, established causally by _pin_emptied_target_order.
     # RouterRateLimitErrorBasic is deliberately NOT swapped: its single raise site
     # fires only when the target's configured rpm ceiling is exhausted, which is
     # always a genuine rate-limit condition and never the structural case.
     if (
         isinstance(error_from_fallbacks, RouterRateLimitError)
-        and not error_from_fallbacks.cooldown_list
         and _is_deterministic_client_error(original_exception)
+        and await _pin_emptied_target_order(
+            litellm_router=litellm_router,
+            original_model_group=original_model_group,
+            kwargs=kwargs,
+            metadata_variable_name=metadata_variable_name,
+        )
     ):
         raise original_exception
     raise error_from_fallbacks
 
 
 def _is_deterministic_client_error(exc: BaseException) -> bool:
-    """A 4xx that is not a rate limit: the request itself is bad and retrying it is futile."""
+    """A 4xx the shared retry policy would not retry: the request itself is bad.
+
+    Delegates to litellm._should_retry so 408 and 409 -- which that policy treats as
+    transient -- are never mistaken for a permanent client error.
+    """
     if isinstance(exc, (litellm.RateLimitError, RouterRateLimitError, RouterRateLimitErrorBasic)):
         return False
-    status = getattr(exc, "status_code", None)
-    return isinstance(status, int) and 400 <= status < 500 and status != 429
+    status: Final = getattr(exc, "status_code", None)
+    return isinstance(status, int) and 400 <= status < 500 and not litellm._should_retry(status)
+
+
+async def _pin_emptied_target_order(
+    *,
+    litellm_router: "_Router",
+    original_model_group: str,
+    kwargs: Mapping[str, object],
+    metadata_variable_name: Literal["metadata", "litellm_metadata"],
+) -> bool:
+    """True only when the last hop's target order was emptied by THIS request's tags.
+
+    Re-applies the request's own tag filter to exactly the deployments at the failed
+    hop's target order, on a copy of the request so nothing is stamped twice. If none
+    of them survives, the level was structurally empty for this request and the
+    selection error carried no information about it. Any OTHER cause of an empty
+    selection -- cooldown, health checks, a filter callback -- leaves at least one of
+    them matching the tags, so this returns False and the selection error surfaces
+    unchanged. A router-wide cooldown_list cannot draw this line: it is populated
+    from every cooled deployment across all model groups (handle_error.py), so an
+    unrelated cooldown would mask the structural case and a callback-emptied level
+    would look structural.
+    """
+    target_order: Final = kwargs.get("_target_order")
+    if not isinstance(target_order, int):
+        return False
+    group: Final = litellm_router.get_model_list(model_name=original_model_group) or ()
+    at_order: Final = tuple(d for d in group if _get_deployment_order(d) == target_order)
+    if not at_order:
+        return False
+    metadata: Final = kwargs.get(metadata_variable_name)
+    # The tag filter stamps consumed tags into request metadata, so the probe gets its
+    # own copy and the real request is never stamped twice.
+    metadata_copy: Final = dict(metadata if isinstance(metadata, Mapping) else ())  # mutable-ok: callee stamps into it
+    probe_kwargs: Final = MappingProxyType({**kwargs, metadata_variable_name: metadata_copy})
+    try:
+        surviving: Final = await get_deployments_for_tag(
+            llm_router_instance=litellm_router,
+            model=original_model_group,
+            healthy_deployments=at_order,
+            request_kwargs=probe_kwargs,
+            metadata_variable_name=metadata_variable_name,
+        )
+    except litellm.BadRequestError as no_match:
+        # A hard provider pin that matches nothing raises instead of returning an empty pool.
+        return RouterErrors.no_deployments_with_tag_routing.value in str(no_match)
+    return len(surviving) == 0
 
 
 async def log_success_fallback_event(original_model_group: str, kwargs: dict, original_exception: Exception):
