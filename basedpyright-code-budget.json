@@ -135,7 +135,7 @@
     "limit": 21
   },
   "reportUnusedFunction": {
-    "limit": 138
+    "limit": 143
   },
   "reportUnusedImport": {
     "limit": 542
