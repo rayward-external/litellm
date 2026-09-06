@@ -24,7 +24,11 @@ from litellm.router_utils.cooldown_handlers import (
 from litellm.router_utils.router_callbacks.track_deployment_metrics import (
     increment_deployment_failures_for_current_minute,
 )
-from litellm.types.router import LiteLLMParamsTypedDict
+from litellm.types.router import (
+    LiteLLMParamsTypedDict,
+    RouterRateLimitError,
+    RouterRateLimitErrorBasic,
+)
 
 if TYPE_CHECKING:
     from litellm.router import Router as _Router
@@ -580,6 +584,17 @@ async def run_async_fallback(
                     kwargs=kwargs,
                     exception=e,
                 )
+    # A hop that could not even SELECT a deployment says nothing about the request:
+    # the order ladder (router.py:7563-7576) builds its order levels from the FULL
+    # model group, while selection applies tag filtering first (router.py:12920), so a
+    # provider-pinned request can be handed a target order whose only deployments the
+    # pin already removed. That hop raises RouterRateLimitError ("No deployments
+    # available, Try again in N seconds"), and raising it here DISCARDS the real
+    # upstream error -- reporting a deterministic 4xx as a retryable 429 and destroying
+    # the provider's own message. error_from_fallbacks already starts life as
+    # original_exception (line 492); this restores it for that case only.
+    if isinstance(error_from_fallbacks, (RouterRateLimitError, RouterRateLimitErrorBasic)):
+        raise original_exception
     raise error_from_fallbacks
 
 
