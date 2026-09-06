@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import NoReturn
 from unittest.mock import MagicMock, patch
@@ -10,13 +11,14 @@ from litellm.router_utils.cooldown_handlers import mark_advisor_orchestration_fa
 from litellm.router_utils.fallback_event_handlers import (
     AttemptedFallbackTargets,
     _trigger_cooldown_for_failed_deployment,
-    fallback_attempt_key,
     clear_pre_routing_selection,
+    fallback_attempt_key,
     get_fallback_model_group,
     get_pre_routing_selection,
     record_pre_routing_selection,
     run_async_fallback,
 )
+from litellm.types.router import RouterRateLimitError
 
 
 class StreamingWrapper:
@@ -711,9 +713,7 @@ async def test_run_async_fallback_keeps_a_request_override_distinct_from_the_bar
     with pytest.raises(RuntimeError, match="fallback model also failed"):
         await run_async_fallback(
             litellm_router=router,
-            fallback_model_group=[
-                {"model": "already-attempted", "messages": [{"role": "user", "content": "shorter"}]}
-            ],
+            fallback_model_group=[{"model": "already-attempted", "messages": [{"role": "user", "content": "shorter"}]}],
             original_model_group="primary-model",
             original_exception=RuntimeError("original failed"),
             max_fallbacks=3,
@@ -1238,9 +1238,7 @@ class TestOrderedFallbackLookupGroups:
             "smart-router",
             "requested-model",
         )
-        assert fallback_lookup_groups({"metadata": {"model_group": []}}, "requested-model") == (
-            "requested-model",
-        )
+        assert fallback_lookup_groups({"metadata": {"model_group": []}}, "requested-model") == ("requested-model",)
 
     def test_first_resolving_group_wins_and_generic_idx_survives_a_miss(self):
         from litellm.router_utils.fallback_event_handlers import (
@@ -1264,6 +1262,12 @@ class _SyntheticUpstream500(Exception):
     """Deep-copyable stand-in for a provider's 500."""
 
     status_code = 500
+
+
+class _SyntheticUpstream429(Exception):
+    """Deep-copyable stand-in for a provider's genuine rate limit."""
+
+    status_code = 429
 
 
 class TestOrderLadderPreservesUpstreamErrorForPinnedRequests:
@@ -1354,4 +1358,47 @@ class TestOrderLadderPreservesUpstreamErrorForPinnedRequests:
             )
 
         assert self.SPILL_MESSAGE in str(excinfo.value)
+        assert self.UPSTREAM_MESSAGE not in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_ladder_cooled_down_by_real_429s_still_surfaces_the_rate_limit(self):
+        """The swap must not fire when the selection error is GENUINE.
+
+        RouterRateLimitError has two causes: the pin emptied the target order
+        (structural, cooldown_list=[]), or every deployment at that order is cooling
+        down from real upstream 429s (cooldown_list non-empty) and would serve the
+        request in cooldown_time seconds. Reporting the second as the original 400
+        would tell a client with 429-backoff that the request is permanently bad.
+        """
+        router = litellm.Router(
+            model_list=[
+                self._deployment(
+                    "primary-a", order=1, tags=["pin:azure"], mock_response=_SyntheticUpstream400(self.UPSTREAM_MESSAGE)
+                ),
+                self._deployment(
+                    "secondary-1", order=2, tags=["pin:azure"], mock_response=_SyntheticUpstream429("rate limited")
+                ),
+                self._deployment(
+                    "secondary-2", order=2, tags=["pin:azure"], mock_response=_SyntheticUpstream429("rate limited")
+                ),
+            ],
+            enable_tag_filtering=True,
+            tag_filtering_match_any=False,
+            num_retries=0,
+            cooldown_time=30,
+        )
+        messages = [{"role": "user", "content": "hi"}]
+        metadata = {"tags": ["pin:azure"]}
+
+        # Warm-up: each pinned request 400s on order 1, ladders to order 2, and meets a
+        # genuine 429 there, which puts the order-2 deployments into cooldown.
+        for _ in range(6):
+            with pytest.raises(Exception):
+                await router.acompletion(model="pooled-model", messages=messages, metadata=metadata)
+        await asyncio.sleep(0.2)
+
+        with pytest.raises(RouterRateLimitError) as excinfo:
+            await router.acompletion(model="pooled-model", messages=messages, metadata=metadata)
+
+        assert excinfo.value.cooldown_list, "order-2 deployments were expected to be in cooldown"
         assert self.UPSTREAM_MESSAGE not in str(excinfo.value)

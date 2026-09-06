@@ -591,11 +591,38 @@ async def run_async_fallback(
     # pin already removed. That hop raises RouterRateLimitError ("No deployments
     # available, Try again in N seconds"), and raising it here DISCARDS the real
     # upstream error -- reporting a deterministic 4xx as a retryable 429 and destroying
-    # the provider's own message. error_from_fallbacks already starts life as
-    # original_exception (line 492); this restores it for that case only.
-    if isinstance(error_from_fallbacks, (RouterRateLimitError, RouterRateLimitErrorBasic)):
+    # the provider's own message. error_from_fallbacks starts life as
+    # original_exception at the top of this function; this restores it for that
+    # structural case only.
+    #
+    # Two conditions bound the swap, because RouterRateLimitError has two causes a
+    # bare isinstance cannot tell apart:
+    #   1. cooldown_list must be EMPTY. A non-empty list means the target order's
+    #      deployments are cooling down from GENUINE upstream 429s and would serve the
+    #      request in cooldown_time seconds. That is a real rate-limit condition; the
+    #      caller must see it, with its cooldown_time (which the proxy turns into
+    #      retry-after), not a spurious "this request is permanently bad".
+    #   2. original_exception must be a deterministic client error: a 4xx that is not
+    #      itself a rate limit. A rate-limit original stays a rate-limit result -- the
+    #      contract the order-fallback tests pin for a filtered-out order.
+    # RouterRateLimitErrorBasic is deliberately NOT swapped: its single raise site
+    # fires only when the target's configured rpm ceiling is exhausted, which is
+    # always a genuine rate-limit condition and never the structural case.
+    if (
+        isinstance(error_from_fallbacks, RouterRateLimitError)
+        and not error_from_fallbacks.cooldown_list
+        and _is_deterministic_client_error(original_exception)
+    ):
         raise original_exception
     raise error_from_fallbacks
+
+
+def _is_deterministic_client_error(exc: BaseException) -> bool:
+    """A 4xx that is not a rate limit: the request itself is bad and retrying it is futile."""
+    if isinstance(exc, (litellm.RateLimitError, RouterRateLimitError, RouterRateLimitErrorBasic)):
+        return False
+    status = getattr(exc, "status_code", None)
+    return isinstance(status, int) and 400 <= status < 500 and status != 429
 
 
 async def log_success_fallback_event(original_model_group: str, kwargs: dict, original_exception: Exception):
