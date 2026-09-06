@@ -359,7 +359,13 @@ class PassThroughStreamingHandler:
             )
             standard_logging_response_object = anthropic_passthrough_logging_handler_result["result"]
             kwargs = anthropic_passthrough_logging_handler_result["kwargs"]
-        elif endpoint_type == EndpointType.VERTEX_AI:
+        elif endpoint_type in (EndpointType.VERTEX_AI, EndpointType.GEMINI):
+            # Gemini shares the Vertex handler rather than a dedicated one: both
+            # APIs emit the same chunk shape, and the handler itself resolves
+            # provider attribution (gemini vs vertex_ai) and pricing from the
+            # request rather than from endpoint_type. See
+            # test_streamed_gemini_is_costed_by_the_vertex_path and the removal
+            # note atop gemini_passthrough_logging_handler.py.
             vertex_passthrough_logging_handler_result: Final = (
                 VertexPassthroughLoggingHandler._handle_logging_vertex_collected_chunks(
                     litellm_logging_obj=litellm_logging_obj,

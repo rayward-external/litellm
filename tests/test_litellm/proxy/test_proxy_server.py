@@ -9593,6 +9593,23 @@ async def _lit6973_drive_realtime_session(
     return ws
 
 
+# FORK PATCH (rayward-internal/llm-gateway-infra#646): realtime_websocket_endpoint
+# closes with code 1008 BEFORE any of phase one's own logic runs, because no
+# realtime-capable model is served on this deployment. The four tests below
+# drive the handler directly with a rejection they expect it to reach deeper
+# in the function (rate limit, model access, ...); the fork's refusal block
+# short-circuits before any of that, so the endpoint always exits with our
+# 1008 close and the reservation released by our block's own finally, not by
+# the branch under test. Skipped rather than deleted: restoring the handler
+# restores them with it.
+# REMOVAL CONDITION: drop this mark together with the refusal block.
+_REALTIME_WS_DISABLED = pytest.mark.skip(
+    reason="Realtime WebSocket mode is disabled on this fork "
+    "(rayward-internal/llm-gateway-infra#646); see .github/fork-patches.txt"
+)
+
+
+@_REALTIME_WS_DISABLED
 @pytest.mark.asyncio
 async def test_refused_realtime_session_releases_the_budget_reservation():
     """LIT-6973: a refused realtime session enqueues no success cost callback, so
@@ -9606,6 +9623,7 @@ async def test_refused_realtime_session_releases_the_budget_reservation():
     assert reservation["finalized"] is True
 
 
+@_REALTIME_WS_DISABLED
 @pytest.mark.asyncio
 async def test_realtime_session_rejected_in_pre_call_releases_the_budget_reservation():
     """A rate-limit or guardrail rejection happens before route_request, so the
@@ -9625,6 +9643,7 @@ async def test_realtime_session_rejected_in_pre_call_releases_the_budget_reserva
     ws.close.assert_awaited_once_with(code=1011, reason="Pre-call error")
 
 
+@_REALTIME_WS_DISABLED
 @pytest.mark.asyncio
 async def test_realtime_session_denied_model_access_releases_the_budget_reservation():
     """The key/model access check rejects before the socket is even accepted;
@@ -9639,6 +9658,7 @@ async def test_realtime_session_denied_model_access_releases_the_budget_reservat
     ws.close.assert_awaited_once_with(code=1008, reason="key cannot access model")
 
 
+@_REALTIME_WS_DISABLED
 @pytest.mark.asyncio
 async def test_rejected_realtime_session_closes_the_client_before_releasing_the_reservation():
     """The counter release can block on a slow or unreachable store, and a
@@ -9662,6 +9682,7 @@ async def test_rejected_realtime_session_closes_the_client_before_releasing_the_
     assert reservation["finalized"] is True
 
 
+@_REALTIME_WS_DISABLED
 @pytest.mark.asyncio
 async def test_rejected_realtime_session_releases_the_reservation_when_the_client_is_already_gone():
     """A client that hung up before the rejection makes the close raise; the
