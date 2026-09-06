@@ -1504,34 +1504,52 @@ class TestOrderLadderPreservesUpstreamErrorForPinnedRequests:
     async def test_team_scope_is_applied_before_the_tag_probe(self):
         """Selection removes other teams' deployments before tag filtering; so must the probe.
 
-        The only order-2 deployment carries the request's pin but belongs to another
-        team, so for this request the level was structurally empty. A probe that
-        checks tags alone sees a match there and wrongly keeps the selection 429.
+        The ladder targets order 2 because the requesting team has a deployment there,
+        but that deployment carries the other pin, so for this team the level is
+        structurally empty. Another team's deployment at the same order DOES carry the
+        request's pin: a probe that checks tags without team scope sees that match,
+        keeps the selection 429, and the fix silently never fires. Note the ladder
+        itself already scopes by team (get_model_list(team_id=...)), which is why an
+        order owned entirely by another team is never targeted -- the mismatch only
+        surfaces when both teams share an order.
         """
+
+        def _team_deployment(dep_id: str, *, order: int, tags: list[str], team: str, mock_response: object) -> dict:
+            return {
+                "model_name": "pooled-model",
+                "litellm_params": {
+                    "model": f"openai/{dep_id}",
+                    "api_key": "synthetic-key",
+                    "mock_response": mock_response,
+                    "order": order,
+                    "tags": tags,
+                },
+                "model_info": {"id": dep_id, "team_id": team},
+            }
+
         router: Final = litellm.Router(
             model_list=[
-                {
-                    "model_name": "pooled-model",
-                    "litellm_params": {
-                        "model": "openai/primary-a",
-                        "api_key": "synthetic-key",
-                        "mock_response": _SyntheticUpstream400(self.UPSTREAM_MESSAGE),
-                        "order": 1,
-                        "tags": ["pin:azure"],
-                    },
-                    "model_info": {"id": "primary-a", "team_id": "team-a"},
-                },
-                {
-                    "model_name": "pooled-model",
-                    "litellm_params": {
-                        "model": "openai/other-team",
-                        "api_key": "synthetic-key",
-                        "mock_response": "another team's deployment must never serve team-a",
-                        "order": 2,
-                        "tags": ["pin:azure"],
-                    },
-                    "model_info": {"id": "other-team", "team_id": "team-b"},
-                },
+                _team_deployment(
+                    "team-a-primary",
+                    order=1,
+                    tags=["pin:azure"],
+                    team="team-a",
+                    mock_response=_SyntheticUpstream400(self.UPSTREAM_MESSAGE),
+                ),
+                _team_deployment(
+                    "team-a-spill",
+                    order=2,
+                    tags=["pin:openai"],
+                    team="team-a",
+                    mock_response="wrong pin for this request",
+                ),
+                _team_deployment(
+                    "team-b-pinned",
+                    order=2,
+                    tags=["pin:azure"],
+                    team="team-b",
+                    mock_response="another team's deployment",
+                ),
             ],
             enable_tag_filtering=True,
             tag_filtering_match_any=False,
