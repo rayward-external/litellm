@@ -8,7 +8,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Final,
-    cast,  # noqa: TID251  # two router boundaries whose callee protocols only an untyped dict satisfies; each site carries cast-ok
+    cast,  # noqa: TID251  # boundary cast into untyped router dicts, see cast-ok comments
 )
 
 import litellm
