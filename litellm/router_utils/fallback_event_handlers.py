@@ -661,9 +661,11 @@ async def _pin_emptied_target_order(
     # The tag filter stamps consumed tags into request metadata, so the probe gets its
     # own copy and the real request is never stamped twice.
     metadata_copy: Final = dict(metadata if isinstance(metadata, Mapping) else ())  # mutable-ok: callee stamps into it
-    probe_kwargs: Final = cast(
-        dict,  # cast-ok: the router passes an untyped dict here; this read-only proxy has the same keys
-        MappingProxyType({**kwargs, metadata_key: metadata_copy}),
+    probe_kwargs: Final = (
+        cast(  # cast-ok: the router passes an untyped dict here; this read-only proxy has the same keys
+            dict,
+            MappingProxyType({**kwargs, metadata_key: metadata_copy}),
+        )
     )
     try:
         surviving: Final = await get_deployments_for_tag(
