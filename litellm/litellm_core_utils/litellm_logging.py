@@ -36,7 +36,7 @@ from litellm._logging import (
     verbose_logger,
 )
 from litellm._uuid import uuid
-from litellm.batches.batch_utils import _handle_completed_batch
+from litellm.batches.batch_utils import _handle_completed_batch, batch_cost_is_final
 from litellm.caching.caching import DualCache, InMemoryCache
 from litellm.caching.caching_handler import LLMCachingHandler
 from litellm.constants import (
@@ -2901,13 +2901,6 @@ class Logging(LiteLLMLoggingBaseClass):
             ):  # polling job will query these frequently, don't spam db logs
                 return
 
-            from litellm.proxy.openai_files_endpoints.common_utils import (
-                _is_base64_encoded_unified_file_id,
-            )
-
-            # check if file id is a unified file id
-            is_base64_unified_file_id: Final = _is_base64_encoded_unified_file_id(result.id)
-
             batch_cost: Final = kwargs.get("batch_cost", None)
             batch_usage = kwargs.get("batch_usage", None)
             batch_models = kwargs.get("batch_models", None)
@@ -2915,9 +2908,7 @@ class Logging(LiteLLMLoggingBaseClass):
             batch_failed_requests: Final = kwargs.get("batch_failed_requests", None)
             has_explicit_batch_data: Final = all(x is not None for x in (batch_cost, batch_usage, batch_models))
 
-            should_compute_batch_data: Final = (
-                not is_base64_unified_file_id or not has_explicit_batch_data and result.status == "completed"
-            )
+            should_compute_batch_data: Final = not has_explicit_batch_data and batch_cost_is_final(result)
             if has_explicit_batch_data:
                 result._hidden_params["response_cost"] = batch_cost
                 result._hidden_params["batch_models"] = batch_models
