@@ -113,37 +113,13 @@ class AzureAIStudioConfig(OpenAIConfig):
         model: str,
         drop_params: bool,
     ) -> dict[str, object]:  # mutable-ok: OpenAIConfig.map_openai_params signature
-        if not azureAIGPT5Config.is_model_gpt_5_model(model):
-            return super().map_openai_params(
+        if azureAIGPT5Config.is_model_gpt_5_model(model):
+            return azureAIGPT5Config.map_openai_params(
                 non_default_params=non_default_params,
                 optional_params=optional_params,
                 model=model,
                 drop_params=drop_params,
             )
-        return azureAIGPT5Config.map_openai_params(
-            non_default_params=non_default_params,
-            optional_params=optional_params,
-            model=model,
-            drop_params=drop_params,
-        )
-
-    def _supports_stop_reason(self, model: str) -> bool:
-        """
-        Check if the model supports stop tokens.
-        """
-        if "grok" in model:
-            # Reuse Xai method for Grok model
-            xai_config: Final = XAIChatConfig()
-            return xai_config._supports_stop_reason(model)
-        return True
-
-    def map_openai_params(
-        self,
-        non_default_params: dict,
-        optional_params: dict,
-        model: str,
-        drop_params: bool,
-    ) -> dict:
         optional_params = super().map_openai_params(
             non_default_params=non_default_params,
             optional_params=optional_params,
@@ -163,6 +139,16 @@ class AzureAIStudioConfig(OpenAIConfig):
         if "reasoning_effort" in non_default_params and self._supports_reasoning(model):
             optional_params["reasoning_effort"] = non_default_params["reasoning_effort"]
         return optional_params
+
+    def _supports_stop_reason(self, model: str) -> bool:
+        """
+        Check if the model supports stop tokens.
+        """
+        if "grok" in model:
+            # Reuse Xai method for Grok model
+            xai_config: Final = XAIChatConfig()
+            return xai_config._supports_stop_reason(model)
+        return True
 
     def _supports_reasoning(self, model: str) -> bool:
         """
