@@ -17,6 +17,7 @@ from litellm.litellm_core_utils.prompt_templates.common_utils import (
 from litellm.llms.azure.common_utils import BaseAzureLLM
 from litellm.llms.azure_ai.common_utils import is_foundry_model_inference_base
 from litellm.llms.base_llm.chat.transformation import LiteLLMLoggingObj
+from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
 from litellm.llms.openai.common_utils import drop_params_from_unprocessable_entity_error
 from litellm.llms.openai.openai import OpenAIConfig
 from litellm.llms.xai.chat.transformation import XAIChatConfig
@@ -42,12 +43,37 @@ NON_OPENAI_SPEC_MESSAGE_FIELDS: Final = (
 )
 
 
+class AzureAIGPT5Config(OpenAIGPT5Config):
+    @classmethod
+    def _model_map_lookup_name(cls, model: str) -> str:
+        """Normalise a Foundry routing name to its cost-map key, when the map has one.
+
+        A Foundry deployment and its OpenAI-hosted namesake are different products with
+        different capabilities, so ``azure_ai/<model>`` is the entry to read whenever the map
+        carries it. Most gpt-5-family names have no ``azure_ai/`` row, though, and prefixing
+        those anyway costs them every flag: ``get_llm_provider`` re-resolves an ``azure_ai/``
+        name to the azure provider when a global AZURE_AI_API_BASE points at an
+        openai.azure.com host, ``azure/<model>`` is not a key either, so the lookup lands
+        nowhere and every effort answer degrades to False. A missing key defers to the base
+        resolver instead.
+        """
+        prefixed: Final = model if model.startswith("azure_ai/") else f"azure_ai/{model}"
+        return prefixed if prefixed in litellm.model_cost else super()._model_map_lookup_name(model)
+
+
+azureAIGPT5Config: Final = AzureAIGPT5Config()
+
+
 class AzureAIStudioConfig(OpenAIConfig):
     def get_supported_openai_params(self, model: str) -> list:
         model_supports_tool_choice = True  # azure ai supports this by default
         if not supports_tool_choice(model=f"azure_ai/{model}"):
             model_supports_tool_choice = False
-        supported_params = super().get_supported_openai_params(model)
+        supported_params = (
+            azureAIGPT5Config.get_supported_openai_params(model)
+            if azureAIGPT5Config.is_model_gpt_5_model(model)
+            else super().get_supported_openai_params(model)
+        )
         if not model_supports_tool_choice:
             filtered_supported_params: Final = []
             for param in supported_params:
@@ -80,23 +106,20 @@ class AzureAIStudioConfig(OpenAIConfig):
 
         return supported_params
 
-    def _supports_stop_reason(self, model: str) -> bool:
-        """
-        Check if the model supports stop tokens.
-        """
-        if "grok" in model:
-            # Reuse Xai method for Grok model
-            xai_config: Final = XAIChatConfig()
-            return xai_config._supports_stop_reason(model)
-        return True
-
     def map_openai_params(
         self,
-        non_default_params: dict,
-        optional_params: dict,
+        non_default_params: dict[str, object],  # mutable-ok: OpenAIConfig.map_openai_params signature
+        optional_params: dict[str, object],  # mutable-ok: OpenAIConfig.map_openai_params signature
         model: str,
         drop_params: bool,
-    ) -> dict:
+    ) -> dict[str, object]:  # mutable-ok: OpenAIConfig.map_openai_params signature
+        if azureAIGPT5Config.is_model_gpt_5_model(model):
+            return azureAIGPT5Config.map_openai_params(
+                non_default_params=non_default_params,
+                optional_params=optional_params,
+                model=model,
+                drop_params=drop_params,
+            )
         optional_params = super().map_openai_params(
             non_default_params=non_default_params,
             optional_params=optional_params,
@@ -116,6 +139,16 @@ class AzureAIStudioConfig(OpenAIConfig):
         if "reasoning_effort" in non_default_params and self._supports_reasoning(model):
             optional_params["reasoning_effort"] = non_default_params["reasoning_effort"]
         return optional_params
+
+    def _supports_stop_reason(self, model: str) -> bool:
+        """
+        Check if the model supports stop tokens.
+        """
+        if "grok" in model:
+            # Reuse Xai method for Grok model
+            xai_config: Final = XAIChatConfig()
+            return xai_config._supports_stop_reason(model)
+        return True
 
     def _supports_reasoning(self, model: str) -> bool:
         """
