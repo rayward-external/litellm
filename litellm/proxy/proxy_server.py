@@ -18467,6 +18467,14 @@ if _server_root_paths:
             _server_root_paths,
         )
     app.add_middleware(PerRequestRootPathMiddleware, root_paths=_server_root_paths)
+# RAYWARD FORK PATCH — keep this the LAST add_middleware call in this file.
+# Starlette makes the last-added middleware outermost, and this one must observe
+# the final response header set produced by every inner middleware (CORS's
+# access-control-expose-headers included) before it strips gateway-identifying
+# headers for external callers. Registered here rather than next to the other
+# middlewares for that reason. See external_audience_middleware.py for what
+# breaks if this line is dropped by an upstream rebase.
+app.add_middleware(ExternalAudienceHeaderMiddleware)
 
 
 async def _stream_mcp_asgi_response(handle_fn, scope: dict, receive) -> "StreamingResponse":

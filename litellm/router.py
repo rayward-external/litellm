@@ -205,6 +205,7 @@ from litellm.types.llms.openai import (
     AllMessageValues,
     ChatCompletionToolParam,
     FileTypes,
+    HttpxBinaryResponseContent,
     OpenAIFileObject,
     OpenAIFilesPurpose,
 )
@@ -4991,7 +4992,7 @@ class Router:
             )
             raise e
 
-    async def _aspeech(self, model: str, input: str, voice: str | None = None, **kwargs):
+    async def _aspeech(self, model: str, input: str, voice: str | None = None, **kwargs) -> HttpxBinaryResponseContent:
         model_name: Final = model
         try:
             verbose_router_logger.debug("Inside _aspeech()- model: %s; kwargs: %s", model, kwargs)

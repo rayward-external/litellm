@@ -76,6 +76,27 @@ SCALAR: Final = (str, int, float)
 MATRIX_DIRECTIVES: Final = frozenset({"include", "exclude"})
 LOCAL_CALL_PREFIX: Final = "./"
 
+# RAYWARD FORK PATCH: required-checks-complement-*.yml workflows intentionally
+# publish the same job `name:` as the real, path-filtered workflow they complement
+# (see those files' own header comments), so litellm_internal_staging's branch
+# protection can require one context without deadlocking PRs that never touch the
+# filtered paths. Each pair is provably mutually exclusive: pull_request
+# `paths`/`paths-ignore` partition every commit into exactly one runner, an
+# invariant those files' own comments require staying byte-equal. This check is
+# deliberately blind to trigger conditions (see module docstring), so without this
+# allowlist it flags a working, path-partitioned pair as an ambiguous duplicate.
+# REMOVAL CONDITION: drop a name once its real workflow's required check is no
+# longer required by litellm_internal_staging's branch protection (making the
+# complement unnecessary), or once this checker understands path-trigger
+# partitioning well enough to verify the invariant instead of trusting this list.
+INTENTIONAL_COMPLEMENT_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "gofmt, vet, build, test",
+        "Provider endpoints vs proxy OpenAPI schema",
+        "Verify schema.d.ts matches the proxy OpenAPI spec",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Unreadable:
@@ -446,6 +467,8 @@ def owners_by_name(sources: Mapping[str, str]) -> Iterator[tuple[str, tuple[str,
 def clash(name: str, owners: Sequence[str]) -> str | None:
     """Why one name is ambiguous, whether two jobs carry it or one job repeats it over its matrix."""
     jobs: Final = tuple(dict.fromkeys(owners))
+    if name in INTENTIONAL_COMPLEMENT_NAMES and len(jobs) == 2:
+        return None
     if len(jobs) > 1:
         return (
             f"`{name}` is published by {len(jobs)} jobs: {', '.join(jobs)}. A required status check matching "
