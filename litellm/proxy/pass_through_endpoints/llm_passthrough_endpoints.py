@@ -852,6 +852,10 @@ BEDROCK_ENDPOINT_ACTIONS = {
 BEDROCK_STREAMING_ACTIONS = {"invoke-with-response-stream", "converse-stream"}
 
 
+def is_bedrock_count_tokens_endpoint(endpoint: str) -> bool:
+    return "count_tokens" in endpoint or "count-tokens" in endpoint
+
+
 def _extract_model_from_bedrock_endpoint(endpoint: str) -> str:
     """
     Extract model name from Bedrock endpoint path.
@@ -1082,7 +1086,14 @@ async def handle_bedrock_count_tokens(
     except BedrockError as e:
         # Convert BedrockError to HTTPException for FastAPI
         verbose_proxy_logger.error("BedrockError in handle_bedrock_count_tokens: %s", e)
-        raise HTTPException(status_code=e.status_code, detail={"error": e.message})
+        from litellm.litellm_core_utils.llm_response_utils.get_headers import get_response_headers
+
+        provider_headers: Final = getattr(getattr(e, "response", None), "headers", None)
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={"error": e.message},
+            headers=get_response_headers(provider_headers) if provider_headers else None,
+        )
     except HTTPException:
         # Re-raise HTTP exceptions as-is
         raise
@@ -1150,8 +1161,7 @@ async def bedrock_llm_proxy_route(
     except PassthroughAdmissionError as e:
         raise HTTPException(status_code=e.status_code, detail={"error": e.message})
 
-    # Special handling for count_tokens endpoints
-    if "count_tokens" in endpoint or "count-tokens" in endpoint:
+    if is_bedrock_count_tokens_endpoint(endpoint):
         return await handle_bedrock_count_tokens(
             endpoint=endpoint,
             request=request,

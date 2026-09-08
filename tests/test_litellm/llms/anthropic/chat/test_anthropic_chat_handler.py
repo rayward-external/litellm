@@ -2323,7 +2323,7 @@ class TestRustChatCompletionsHook:
     def _reset_bridge(self, monkeypatch):
         from litellm.rust_bridge import chat_completions as bridge
 
-        monkeypatch.delenv("LITELLM_RUST", raising=False)
+        monkeypatch.setenv("LITELLM_RUST", "1")
         bridge.set_rust_chat_completions(
             chat_completions=None, achat_completions=None, decline=None
         )
@@ -2349,7 +2349,7 @@ class TestRustChatCompletionsHook:
             "logging_obj": MagicMock(),
             "optional_params": {"max_tokens": 16},
             "timeout": 30.0,
-            "litellm_params": {"rust": True},
+            "litellm_params": {},
             "acompletion": False,
             "headers": {},
             "client": None,
@@ -2433,7 +2433,8 @@ class TestRustChatCompletionsHook:
         )
         assert seen["call"][0]["optional_params"]["max_tokens"] == 7
 
-    def test_without_the_opt_in_the_core_is_never_consulted(self):
+    def test_without_the_opt_in_the_core_is_never_consulted(self, monkeypatch):
+        monkeypatch.setenv("LITELLM_RUST", "0")
         from litellm.llms.anthropic.chat.handler import AnthropicChatCompletion
         from litellm.llms.anthropic.chat.transformation import AnthropicConfig
 
@@ -2654,6 +2655,7 @@ class TestRustChatCompletionsHook:
 
     def test_pre_call_logging_still_fires_when_rust_is_not_involved(self, monkeypatch):
         """The suppression must not swallow the log on the ordinary path."""
+        monkeypatch.setenv("LITELLM_RUST", "0")
         from litellm.llms.anthropic.chat.handler import AnthropicChatCompletion
         from litellm.llms.anthropic.chat.transformation import AnthropicConfig
 
