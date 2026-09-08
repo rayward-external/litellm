@@ -1,0 +1,38 @@
+name: "Validate model_prices_and_context_window.json (required-check shim)"
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+      - litellm_internal_staging
+      - litellm_oss_staging
+      - "litellm_**"
+
+# The 2026-09-08 sync deleted .github/workflows/test-model-map.yml (job id
+# validate-model-prices-json), matching upstream's own removal: it replaced that
+# workflow's jq-empty-plus-schema-check with cost-map-guard.yml (job id
+# cost-map-guard), a pull_request_target workflow that validates the same JSON
+# and schema more thoroughly (see ci_cd/cost_map_guard.py: JSON parses, the
+# schema file is regenerated and byte-compared, and the cost map is validated
+# against it) plus enforces the cost-map-sync-bot branch/author rules. But
+# litellm_internal_staging's branch protection still lists the old workflow's
+# job name (validate-model-prices-json) as a required status check, which can
+# now never report on any PR -> every PR is permanently blocked from merging
+# ("... required status checks are expected"). This shim reproduces only the
+# job name so the required check can report; same pattern as
+# server-root-path-required-check-shim.yml and
+# proxy-legacy-required-check-shim.yml.
+# REMOVAL CONDITION: remove once an admin updates litellm_internal_staging's
+# required status checks (Settings > Branches) to drop this obsolete context
+# (or to require cost-map-guard's own check instead).
+jobs:
+  validate-model-prices-json:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Shim - see fork-patches.txt
+        run: |
+          echo "Required-check shim for the job upstream's test-model-map.yml used to produce."
+          echo "Real coverage of model_prices_and_context_window.json now lives in cost-map-guard.yml. See .github/fork-patches.txt."
