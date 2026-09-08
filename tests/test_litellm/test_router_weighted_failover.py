@@ -15,10 +15,10 @@ import pytest
 
 import litellm
 from litellm import Router
-from litellm.utils import _get_excluded_filtered_deployments
+from litellm.utils import get_excluded_filtered_deployments
 
 # ---------------------------------------------------------------------------
-# Unit tests for _get_excluded_filtered_deployments
+# Unit tests for get_excluded_filtered_deployments
 # ---------------------------------------------------------------------------
 
 
@@ -36,17 +36,17 @@ def _make_dep(dep_id: str, weight: Optional[int] = None) -> dict:
 class TestGetExcludedFilteredDeployments:
     def test_no_excluded_returns_all(self):
         deps = [_make_dep("a"), _make_dep("b")]
-        result = _get_excluded_filtered_deployments(deps, excluded_deployment_ids=None)
+        result = get_excluded_filtered_deployments(deps, excluded_deployment_ids=None)
         assert len(result) == 2
 
     def test_empty_excluded_returns_all(self):
         deps = [_make_dep("a"), _make_dep("b")]
-        result = _get_excluded_filtered_deployments(deps, excluded_deployment_ids=[])
+        result = get_excluded_filtered_deployments(deps, excluded_deployment_ids=[])
         assert len(result) == 2
 
     def test_drops_excluded(self):
         deps = [_make_dep("a"), _make_dep("b"), _make_dep("c")]
-        result = _get_excluded_filtered_deployments(deps, excluded_deployment_ids=["b"])
+        result = get_excluded_filtered_deployments(deps, excluded_deployment_ids=["b"])
         ids = sorted(d["model_info"]["id"] for d in result)
         assert ids == ["a", "c"]
 
@@ -56,12 +56,12 @@ class TestGetExcludedFilteredDeployments:
         # error. Returning the original list here would re-include the
         # just-failed deployment and let weighted failover re-pick it.
         deps = [_make_dep("a"), _make_dep("b")]
-        result = _get_excluded_filtered_deployments(deps, excluded_deployment_ids=["a", "b"])
+        result = get_excluded_filtered_deployments(deps, excluded_deployment_ids=["a", "b"])
         assert result == []
 
     def test_excluded_set_with_unknown_ids(self):
         deps = [_make_dep("a"), _make_dep("b")]
-        result = _get_excluded_filtered_deployments(deps, excluded_deployment_ids=["zzz"])
+        result = get_excluded_filtered_deployments(deps, excluded_deployment_ids=["zzz"])
         assert len(result) == 2
 
     def test_handles_missing_model_info(self):
@@ -69,7 +69,7 @@ class TestGetExcludedFilteredDeployments:
             {"model_name": "x", "litellm_params": {"model": "gpt-4o"}},  # no model_info
             _make_dep("b"),
         ]
-        result = _get_excluded_filtered_deployments(deps, excluded_deployment_ids=["b"])
+        result = get_excluded_filtered_deployments(deps, excluded_deployment_ids=["b"])
         assert len(result) == 1
 
 
