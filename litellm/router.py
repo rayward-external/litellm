@@ -4176,25 +4176,22 @@ class Router:
         # This same kwargs dict is REUSED across retries/fallbacks. Appending the
         # selected deployment's tags to whatever is already in metadata["tags"]
         # would ACCUMULATE every failed attempt's tags, so rebuild the attribution
-        # tag list from the caller's ORIGINAL_REQUEST_TAGS_METADATA_KEY snapshot
+        # tag list from the caller's ROUTING_REQUEST_TAGS_METADATA_KEY snapshot
         # (captured once above, before any deployment merge) plus ONLY this
         # (winning) deployment's own tags + credential tag.
-        deployment_tags = deployment.get("litellm_params", {}).get("tags")
-        credential_name = deployment.get("litellm_params", {}).get("litellm_credential_name")
+        deployment_tags: Final = deployment.get("litellm_params", {}).get("tags")
+        credential_name: Final = deployment.get("litellm_params", {}).get("litellm_credential_name")
+        credential_tag: Final = f"Credential: {credential_name}" if credential_name else None
 
-        deployment_attribution_tags: list = list(deployment_tags) if deployment_tags else []
-        if credential_name:
-            credential_tag = f"Credential: {credential_name}"
-            if credential_tag not in deployment_attribution_tags:
-                deployment_attribution_tags.append(credential_tag)
+        deployment_attribution_tags: Final = tuple(
+            dict.fromkeys((*(deployment_tags or ()), *((credential_tag,) if credential_tag else ())))
+        )
 
         if deployment_attribution_tags:
-            caller_baseline = list(kwargs[metadata_variable_name][ROUTING_REQUEST_TAGS_METADATA_KEY])
-            merged_tags: Final = list(caller_baseline)
-            for tag in deployment_attribution_tags:
-                if tag not in merged_tags:
-                    merged_tags.append(tag)
-            kwargs[metadata_variable_name]["tags"] = merged_tags
+            caller_baseline: Final = kwargs[metadata_variable_name][ROUTING_REQUEST_TAGS_METADATA_KEY]
+            kwargs[metadata_variable_name]["tags"] = list(
+                dict.fromkeys((*caller_baseline, *deployment_attribution_tags))
+            )
 
         kwargs["model_info"] = model_info
 
