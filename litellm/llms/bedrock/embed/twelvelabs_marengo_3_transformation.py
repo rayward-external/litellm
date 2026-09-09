@@ -84,10 +84,10 @@ class Marengo3Params(BaseModel):
     def timed_media_options(self) -> TwelveLabsMarengo3TimedMediaOptions:
         return TIMED_MEDIA_OPTIONS.validate_python(self.given_timed_media_options())
 
-    def given_timed_media_options(self) -> dict[str, object]:
+    def given_timed_media_options(self) -> Mapping[str, object]:
         return self.model_dump(include=TIMED_MEDIA_OPTION_FIELDS, exclude_none=True)
 
-    def given_2_7_only_params(self) -> dict[str, object]:
+    def given_2_7_only_params(self) -> Mapping[str, object]:
         return self.model_dump(include=MARENGO_2_7_ONLY_FIELDS, exclude_none=True)
 
 
