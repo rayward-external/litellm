@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from types import MappingProxyType
 from typing import Final
@@ -79,7 +79,7 @@ def build_metrics_app(multiproc_dir: str) -> FastAPI:
     app.mount(METRICS_PATH, _add_pid_header(make_metrics_asgi_app(registry)))
 
     @app.get(HEALTH_PATH)
-    def health() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]  # FastAPI route registered via decorator, dispatched by the ASGI app, not called by name
+    def health() -> Mapping[str, str]:  # pyright: ignore[reportUnusedFunction]  # FastAPI route registered via decorator, dispatched by the ASGI app, not called by name
         return {"status": "healthy", "multiproc_dir": multiproc_dir}
 
     return app
