@@ -2957,6 +2957,29 @@ class TestBatchCostAttributionStashOverlayReachesLoggingCall:
         assert metadata["user_api_key_alias"] == "already-resolved-alias"
         assert metadata["user_api_key"] == "hash-stashed"
 
+    @pytest.mark.asyncio
+    async def test_stash_fills_in_the_hash_alongside_a_stash_only_key(self):
+        """user_api_key_hash has no stash counterpart of its own (the stash only carries
+        user_api_key). A row attributed purely from the stash must still get a matching
+        user_api_key_hash, or DailyUserSpend.api_key stops joining VerificationToken for
+        every /v1/messages/batches batch, the same join
+        test_metadata_provenance_keeps_spend_log_api_key_joinable guards on the DB-backed
+        path."""
+        metadata = await self._run(resolved_metadata={})
+
+        assert metadata["user_api_key"] == "hash-stashed"
+        assert metadata["user_api_key_hash"] == "hash-stashed"
+
+    @pytest.mark.asyncio
+    async def test_stash_does_not_override_an_already_resolved_hash(self):
+        """NEVER-OVERWRITE also covers the hash: a DB-resolved user_api_key_hash survives
+        even when the stash carries a different raw key."""
+        metadata = await self._run(
+            resolved_metadata={"user_api_key": "hash-db", "user_api_key_hash": "hash-db"}
+        )
+
+        assert metadata["user_api_key_hash"] == "hash-db"
+
 
 class TestPollPageStarvation:
     """LIT-5462 regression: a row that can never be costed used to keep its slot in the

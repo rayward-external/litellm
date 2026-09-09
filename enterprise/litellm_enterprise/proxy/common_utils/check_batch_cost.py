@@ -1170,6 +1170,13 @@ class CheckBatchCost:
         ):
             if not metadata.get(attribution_key) and attribution.get(attribution_key):
                 metadata[attribution_key] = attribution[attribution_key]
+        # user_api_key_hash has no stash counterpart (attribution only carries the raw
+        # key hash under user_api_key); a row attributed purely from the stash above
+        # would otherwise carry user_api_key with no matching hash, breaking the
+        # DailyUserSpend.api_key join the same way test_metadata_provenance_keeps_spend_log_api_key_joinable
+        # guards for the DB-backed path.
+        if not metadata.get("user_api_key_hash") and metadata.get("user_api_key"):
+            metadata["user_api_key_hash"] = metadata["user_api_key"]
         # spend logs read the deployment identity off these metadata keys, so
         # without them the batch cost row carries no model_id or model_group
         metadata["model_info"] = {"id": model_id}

@@ -95,7 +95,6 @@
     "vitest": "4.1.11"
   },
   "overrides": {
-    "sharp": "0.35.0",
     "prismjs": "1.30.0",
     "js-yaml": "4.3.2",
     "brace-expansion": "5.0.9",
