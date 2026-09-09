@@ -4172,12 +4172,26 @@ class Router:
             tuple(_get_tags_from_request_kwargs(kwargs, metadata_variable_name=metadata_variable_name)),
         )
 
-        ## DEPLOYMENT-LEVEL TAGS
-        deployment_tags: Final = deployment.get("litellm_params", {}).get("tags")
-        if deployment_tags:
-            existing_tags = kwargs[metadata_variable_name].get("tags") or []
-            merged_tags: Final = list(existing_tags)
-            for tag in deployment_tags:
+        ## DEPLOYMENT-LEVEL ATTRIBUTION TAGS (winning-deployment-only)
+        # This same kwargs dict is REUSED across retries/fallbacks. Appending the
+        # selected deployment's tags to whatever is already in metadata["tags"]
+        # would ACCUMULATE every failed attempt's tags, so rebuild the attribution
+        # tag list from the caller's ORIGINAL_REQUEST_TAGS_METADATA_KEY snapshot
+        # (captured once above, before any deployment merge) plus ONLY this
+        # (winning) deployment's own tags + credential tag.
+        deployment_tags = deployment.get("litellm_params", {}).get("tags")
+        credential_name = deployment.get("litellm_params", {}).get("litellm_credential_name")
+
+        deployment_attribution_tags: list = list(deployment_tags) if deployment_tags else []
+        if credential_name:
+            credential_tag = f"Credential: {credential_name}"
+            if credential_tag not in deployment_attribution_tags:
+                deployment_attribution_tags.append(credential_tag)
+
+        if deployment_attribution_tags:
+            caller_baseline = list(kwargs[metadata_variable_name][ROUTING_REQUEST_TAGS_METADATA_KEY])
+            merged_tags: Final = list(caller_baseline)
+            for tag in deployment_attribution_tags:
                 if tag not in merged_tags:
                     merged_tags.append(tag)
             kwargs[metadata_variable_name]["tags"] = merged_tags
