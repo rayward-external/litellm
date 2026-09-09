@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from types import MappingProxyType
 from typing import Final
@@ -30,6 +30,7 @@ from litellm.integrations.prometheus_metrics_endpoint import make_metrics_asgi_a
 from litellm.llms.custom_httpx.http_handler import HTTPHandler
 
 METRICS_PATH: Final = "/metrics"
+HEALTH_PATH: Final = "/health"
 PID_HEADER: Final = "x-litellm-metrics-pid"
 _PARENT_POLL_INTERVAL_SECONDS: Final = 1.0
 _STARTUP_TIMEOUT_SECONDS: Final = 30.0
@@ -76,6 +77,10 @@ def build_metrics_app(multiproc_dir: str) -> FastAPI:
     multiprocess.MultiProcessCollector(registry, path=multiproc_dir)
     app: Final = FastAPI(title="LiteLLM Prometheus metrics", docs_url=None, redoc_url=None, openapi_url=None)
     app.mount(METRICS_PATH, _add_pid_header(make_metrics_asgi_app(registry)))
+
+    @app.get(HEALTH_PATH)
+    def health() -> Mapping[str, str]:  # pyright: ignore[reportUnusedFunction]  # FastAPI route registered via decorator, dispatched by the ASGI app, not called by name
+        return {"status": "healthy", "multiproc_dir": multiproc_dir}
 
     return app
 

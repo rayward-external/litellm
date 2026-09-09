@@ -616,6 +616,90 @@ class TestCheckBatchCost:
         assert passed_model_info["output_cost_per_token_batches"] == 4e-06
 
     @pytest.mark.asyncio
+    async def test_poller_masks_api_base_credentials_before_logging(
+        self, check_batch_cost_instance, mock_prisma_client, mock_llm_router
+    ):
+        """Request rows mask `key=` query credentials out of api_base before it is
+        logged, but the poller skips that pre-call step, so an unmasked deployment
+        api_base would land verbatim on the batch cost row: regression test for the
+        poller masking the same way.
+        """
+        import base64
+        from unittest.mock import patch
+
+        import httpx
+        import respx
+
+        from litellm.litellm_core_utils.litellm_logging import Logging
+
+        mock_prisma_client.db.litellm_managedobjecttable.update_many = AsyncMock(return_value=1)
+        mock_prisma_client.db.litellm_managedobjecttable.update = AsyncMock()
+        mock_prisma_client.db.litellm_usertable.find_unique = AsyncMock(return_value=None)
+
+        mock_job = MagicMock()
+        mock_job.id = "job-masked-api-base-1"
+        mock_job.unified_object_id = base64.urlsafe_b64encode(
+            b"litellm_proxy;model_id:model-123;llm_batch_id:batch-456"
+        ).decode()
+        mock_job.created_by = "user-1"
+        mock_prisma_client.db.litellm_managedobjecttable.find_many = AsyncMock(return_value=[mock_job])
+
+        mock_response = MagicMock()
+        mock_response.status = "completed"
+        mock_response.output_file_id = "file-output-123"
+        mock_response.error_file_id = None
+        mock_response.model_dump_json.return_value = '{"id":"batch-1","status":"completed"}'
+        mock_llm_router.aretrieve_batch = AsyncMock(return_value=mock_response)
+        mock_llm_router.get_deployment_credentials_with_provider = MagicMock(return_value={"api_key": "sk-test"})
+
+        mock_deployment = MagicMock()
+        mock_deployment.litellm_params.custom_llm_provider = "openai"
+        mock_deployment.litellm_params.model = "gpt-5.4-mini"
+        mock_deployment.litellm_params.api_base = "https://gateway.example.com/v1?key=AIzaSyVERYSECRET7890"
+        mock_deployment.model_info.model_dump.return_value = {}
+        mock_llm_router.get_deployment = MagicMock(return_value=mock_deployment)
+
+        output_line = json.dumps(
+            {
+                "custom_id": "req-1",
+                "response": {
+                    "status_code": 200,
+                    "body": {
+                        "id": "chatcmpl-1",
+                        "object": "chat.completion",
+                        "model": "gpt-5.4-mini",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": "hi"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                    },
+                },
+                "error": None,
+            }
+        )
+
+        with (
+            respx.mock(assert_all_called=True) as provider,
+            patch.object(  # test-quality-ok: the poller builds Logging inline, the only seam to the row it logs
+                Logging, "async_success_handler", autospec=True
+            ) as success_handler,
+        ):
+            provider.get("https://api.openai.com/v1/files/file-output-123/content").mock(
+                return_value=httpx.Response(200, content=f"{output_line}\n".encode())
+            )
+            await check_batch_cost_instance.check_batch_cost()
+
+        cost_row_calls = [call for call in success_handler.await_args_list if "batch_cost" in call.kwargs]
+        assert len(cost_row_calls) == 1
+        logged_api_base = cost_row_calls[0].args[0].litellm_params["api_base"]
+        assert logged_api_base == "https://gateway.example.com/v1?key=*****7890"
+        assert "VERYSECRET" not in logged_api_base
+
+    @pytest.mark.asyncio
     async def test_primary_path_completion_update_includes_batch_processed(
         self, check_batch_cost_instance, mock_prisma_client, mock_llm_router
     ):
@@ -2628,6 +2712,85 @@ class TestBatchCostAttribution:
         assert metadata["user_api_key_alias"] == "prod-key"
 
     @pytest.mark.asyncio
+    async def test_org_id_snapshotted_on_the_row_wins(self):
+        """The org_id column captures the creating key's organization at submission time,
+        like team_id, so a key later moved to another org still bills the original one."""
+        from types import SimpleNamespace
+
+        instance = self._instance(
+            key_row=SimpleNamespace(key_alias="prod-key", organization_id="org-moved-to"),
+            team_row=SimpleNamespace(team_alias="Team Alpha", organization_id="org-team"),
+        )
+
+        metadata = await instance._build_creator_attribution_metadata(
+            self._job(org_id="org-at-creation"), "batch-1"
+        )
+
+        assert metadata["user_api_key_org_id"] == "org-at-creation"
+
+    @pytest.mark.asyncio
+    async def test_org_id_comes_from_the_creating_key(self):
+        """The spend update writer increments organization spend from user_api_key_org_id.
+        A legacy row without the org_id column falls back to the creating key's org."""
+        from types import SimpleNamespace
+
+        instance = self._instance(
+            key_row=SimpleNamespace(key_alias="prod-key", organization_id="org-42"),
+            team_row=SimpleNamespace(team_alias="Team Alpha", organization_id="org-team"),
+        )
+
+        metadata = await instance._build_creator_attribution_metadata(self._job(), "batch-1")
+
+        assert metadata["user_api_key_org_id"] == "org-42"
+
+    @pytest.mark.asyncio
+    async def test_org_id_falls_back_to_the_team_organization(self):
+        """A key with no org of its own still books batch spend against its team's
+        organization, matching how the request path resolves org attribution."""
+        from types import SimpleNamespace
+
+        instance = self._instance(
+            key_row=SimpleNamespace(key_alias="prod-key", organization_id=None),
+            team_row=SimpleNamespace(team_alias="Team Alpha", organization_id="org-team"),
+        )
+
+        metadata = await instance._build_creator_attribution_metadata(self._job(), "batch-1")
+
+        assert metadata["user_api_key_org_id"] == "org-team"
+
+    @pytest.mark.asyncio
+    async def test_key_lookup_failure_still_bills_the_team_org(self):
+        """A key-table error while resolving a legacy row's org must not drop the team's
+        organization: the two lookups fail independently, so org spend still lands."""
+        from types import SimpleNamespace
+
+        instance = self._instance(
+            team_row=SimpleNamespace(team_alias="Team Alpha", organization_id="org-team"),
+        )
+        instance.prisma_client.db.litellm_verificationtoken.find_unique = AsyncMock(
+            side_effect=Exception("db down")
+        )
+
+        metadata = await instance._build_creator_attribution_metadata(self._job(), "batch-1")
+
+        assert metadata["user_api_key_org_id"] == "org-team"
+
+    @pytest.mark.asyncio
+    async def test_no_org_leaves_the_key_unset(self):
+        """Without any org the key is absent entirely, so the spend writer's org update
+        stays skipped instead of matching an empty-string organization."""
+        from types import SimpleNamespace
+
+        instance = self._instance(
+            key_row=SimpleNamespace(key_alias="prod-key", organization_id=None),
+            team_row=SimpleNamespace(team_alias="Team Alpha", organization_id=None),
+        )
+
+        metadata = await instance._build_creator_attribution_metadata(self._job(), "batch-1")
+
+        assert "user_api_key_org_id" not in metadata
+
+    @pytest.mark.asyncio
     async def test_metadata_provenance_keeps_spend_log_api_key_joinable(self):
         """
         CheckBatchCost stores the VerificationToken hash on the managed object. The
@@ -2668,6 +2831,154 @@ class TestBatchCostAttribution:
         )
         assert payload["api_key"] == token_hash
         assert payload["api_key"] != hash_token(token_hash)
+
+
+class TestBatchCostAttributionStashOverlayReachesLoggingCall:
+    """Regression: /v1/messages/batches rows never populate the managed-object row's own
+    api_key/team_id columns (only the OpenAI-dialect /v1/batches route does), so
+    _build_creator_attribution_metadata alone resolves those fields to None for them. The
+    poller must fill in whatever the DB-backed columns left empty from the job's
+    file_object.litellm_attribution stash before handing metadata to
+    logging_obj.update_environment_variables. A prior sync merge dropped this overlay
+    (fixed and re-dropped across the 2026-08-09/08-20/08-21 syncs), which silently nulled
+    key- and team-level spend attribution for every /v1/messages/batches batch."""
+
+    async def _run(self, resolved_metadata: dict) -> dict:
+        from litellm_enterprise.proxy.common_utils.check_batch_cost import CheckBatchCost
+        from litellm.types.utils import LiteLLMBatch
+
+        job = MagicMock()
+        job.id = "job-stash-1"
+        job.unified_object_id = _CLAIM_UNIFIED_BATCH_ID
+        job.created_by = None
+        job.team_id = None
+        job.api_key = None
+        job.request_tags = None
+        job.file_object = json.dumps(
+            {
+                "litellm_attribution": {
+                    "user_api_key": "hash-stashed",
+                    "user_api_key_alias": "stashed-key",
+                    "user_api_key_team_id": "team-stashed",
+                    "user_api_key_end_user_id": "end-user-stashed",
+                }
+            }
+        )
+
+        router = MagicMock()
+        router.get_deployment_credentials_with_provider = MagicMock(return_value={"api_key": "sk-test"})
+        deployment = MagicMock()
+        deployment.litellm_params.custom_llm_provider = "anthropic"
+        deployment.litellm_params.model = "anthropic/claude-batch"
+        deployment.litellm_params.api_base = None
+        deployment.model_name = "claude-batch-group"
+        deployment.model_info.model_dump.return_value = {}
+        router.get_deployment = MagicMock(return_value=deployment)
+
+        proxy_logging_obj = MagicMock()
+        proxy_logging_obj.get_proxy_hook.return_value = None
+
+        instance = CheckBatchCost(
+            proxy_logging_obj=proxy_logging_obj,
+            prisma_client=MagicMock(),
+            llm_router=router,
+        )
+
+        response = LiteLLMBatch(
+            id="batch-stash-1",
+            completion_window="24h",
+            created_at=1,
+            endpoint="/v1/messages/batches",
+            input_file_id="file-input-1",
+            object="batch",
+            status="completed",
+        )
+        response.output_file_id = _CLAIM_OUTPUT_FILE_ID
+
+        file_content = MagicMock()
+        file_content.content = b'{"id":"req-1"}'
+
+        with (
+            patch(  # test-quality-ok: _track_completed_batch_cost imports afile_content locally; not DI-exposed, same seam TestManagedOutputFileIdEncodesPublicModelGroup._run above already uses
+                "litellm.files.main.afile_content",
+                new_callable=AsyncMock,
+                return_value=file_content,
+            ),
+            patch(  # test-quality-ok: same local-import seam as above, mirrors TestManagedOutputFileIdEncodesPublicModelGroup._run
+                "litellm.batches.batch_utils._get_file_content_as_dictionary",
+                return_value=[{"id": "req-1"}],
+            ),
+            patch(  # test-quality-ok: same local-import seam as above, mirrors TestManagedOutputFileIdEncodesPublicModelGroup._run
+                "litellm.batches.batch_utils.calculate_batch_cost_and_usage",
+                new_callable=AsyncMock,
+                return_value=_batch_cost_result(0.01, {"prompt_tokens": 10}, ["claude-batch"]),
+            ),
+            patch.object(
+                instance,
+                "_build_creator_attribution_metadata",
+                new_callable=AsyncMock,
+                return_value=dict(resolved_metadata),
+            ),
+            patch("litellm.litellm_core_utils.litellm_logging.Logging") as logging_cls,  # test-quality-ok: same local-import seam as above, mirrors TestManagedOutputFileIdEncodesPublicModelGroup._run
+        ):
+            logging_obj = MagicMock()
+            logging_obj.async_success_handler = AsyncMock()
+            logging_cls.return_value = logging_obj
+
+            await instance._track_completed_batch_cost(
+                job=job,
+                response=response,
+                model_id="model-stash-1",
+                batch_id="batch-stash-1",
+                prom_logger=None,
+            )
+
+        assert logging_obj.update_environment_variables.call_count == 1
+        return logging_obj.update_environment_variables.call_args.kwargs["litellm_params"]["metadata"]
+
+    @pytest.mark.asyncio
+    async def test_stash_fills_in_fields_the_db_columns_left_empty(self):
+        """DB-backed columns resolved nothing (empty dict, the /v1/messages/batches case):
+        every field must come from the litellm_attribution stash instead."""
+        metadata = await self._run(resolved_metadata={})
+
+        assert metadata["user_api_key"] == "hash-stashed"
+        assert metadata["user_api_key_alias"] == "stashed-key"
+        assert metadata["user_api_key_team_id"] == "team-stashed"
+        assert metadata["user_api_key_end_user_id"] == "end-user-stashed"
+
+    @pytest.mark.asyncio
+    async def test_stash_never_overrides_a_value_the_db_columns_already_resolved(self):
+        """A value _build_creator_attribution_metadata already resolved (the OpenAI-dialect
+        /v1/batches case) must survive untouched, even though the stash carries a different
+        value for the same key."""
+        metadata = await self._run(resolved_metadata={"user_api_key_alias": "already-resolved-alias"})
+
+        assert metadata["user_api_key_alias"] == "already-resolved-alias"
+        assert metadata["user_api_key"] == "hash-stashed"
+
+    @pytest.mark.asyncio
+    async def test_stash_fills_in_the_hash_alongside_a_stash_only_key(self):
+        """user_api_key_hash has no stash counterpart of its own (the stash only carries
+        user_api_key). A row attributed purely from the stash must still get a matching
+        user_api_key_hash, or DailyUserSpend.api_key stops joining VerificationToken for
+        every /v1/messages/batches batch, the same join
+        test_metadata_provenance_keeps_spend_log_api_key_joinable guards on the DB-backed
+        path."""
+        metadata = await self._run(resolved_metadata={})
+
+        assert metadata["user_api_key"] == "hash-stashed"
+        assert metadata["user_api_key_hash"] == "hash-stashed"
+
+    @pytest.mark.asyncio
+    async def test_stash_does_not_override_an_already_resolved_hash(self):
+        """NEVER-OVERWRITE also covers the hash: a DB-resolved user_api_key_hash survives
+        even when the stash carries a different raw key."""
+        metadata = await self._run(
+            resolved_metadata={"user_api_key": "hash-db", "user_api_key_hash": "hash-db"}
+        )
+
+        assert metadata["user_api_key_hash"] == "hash-db"
 
 
 class TestPollPageStarvation:

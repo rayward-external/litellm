@@ -468,6 +468,40 @@ class CheckBatchCost:
             verbose_proxy_logger.error(f"CheckBatchCost: could not look up team alias for team {team_id}: {e}")
             return None
 
+    async def _get_org_id(self, job: "LiteLLM_ManagedObjectTable", batch_id: str) -> str | None:
+        org_id = getattr(job, "org_id", None)
+        if org_id:
+            return org_id
+        api_key = getattr(job, "api_key", None)
+        team_id = getattr(job, "team_id", None)
+        if api_key:
+            try:
+                key_row: prisma_models.LiteLLM_VerificationToken | None = (
+                    await self.prisma_client.db.litellm_verificationtoken.find_unique(
+                        where={"token": api_key}
+                    )
+                )
+                key_org_id = getattr(key_row, "organization_id", None) if key_row is not None else None
+                if key_org_id:
+                    return key_org_id
+            except Exception as e:
+                verbose_proxy_logger.error(
+                    f"CheckBatchCost: could not resolve the key's org for batch {batch_id}, "
+                    f"still trying the team's: {e}"
+                )
+        if not team_id:
+            return None
+        try:
+            team_row: prisma_models.LiteLLM_TeamTable | None = (
+                await self.prisma_client.db.litellm_teamtable.find_unique(
+                    where={"team_id": team_id}
+                )
+            )
+            return getattr(team_row, "organization_id", None) if team_row is not None else None
+        except Exception as e:
+            verbose_proxy_logger.error(f"CheckBatchCost: could not resolve the team's org for batch {batch_id}: {e}")
+            return None
+
     async def _build_creator_attribution_metadata(
         self, job: "LiteLLM_ManagedObjectTable", batch_id: str
     ) -> dict[str, object]:
@@ -479,6 +513,10 @@ class CheckBatchCost:
         user_api_key_alias; when it has no alias, or the key has since been rotated or
         deleted, the field keeps the creating user's alias that _get_user_info filled in,
         because a resolvable name is more useful on the spend row than a null.
+
+        user_api_key_org_id must be resolved here too: the spend update writer reads it
+        off this metadata to increment organization spend, so leaving it out silently
+        drops batch cost from org accounting for keys and teams that belong to one.
         """
         api_key = getattr(job, "api_key", None)
         team_id = getattr(job, "team_id", None)
@@ -498,6 +536,9 @@ class CheckBatchCost:
         team_alias = await self._get_team_alias(team_id)
         if team_alias is not None:
             metadata["user_api_key_team_alias"] = team_alias
+        org_id: Final = await self._get_org_id(job, batch_id)
+        if org_id is not None:
+            metadata["user_api_key_org_id"] = org_id
         if isinstance(request_tags, list) and request_tags:
             metadata["tags"] = [tag for tag in request_tags if isinstance(tag, str)]
 
@@ -925,7 +966,7 @@ class CheckBatchCost:
         from litellm.files.main import afile_content
         from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
         from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLogging
-        from litellm.litellm_core_utils.litellm_logging import deployment_pricing_model_info
+        from litellm.litellm_core_utils.litellm_logging import deployment_pricing_model_info, mask_api_base_credentials
         from litellm.proxy.openai_files_endpoints.common_utils import (
             _is_base64_encoded_unified_file_id,
         )
@@ -1111,6 +1152,8 @@ class CheckBatchCost:
             function_id=str(uuid.uuid4()),
         )
 
+        deployment_api_base: Final = deployment_info.litellm_params.api_base
+
         # job.api_key/team_id are populated by the OpenAI-dialect /v1/batches route
         # (managed_files.py); _build_creator_attribution_metadata resolves those columns
         # plus key_alias/team_alias. Routes that create batches out-of-band
@@ -1127,6 +1170,17 @@ class CheckBatchCost:
         ):
             if not metadata.get(attribution_key) and attribution.get(attribution_key):
                 metadata[attribution_key] = attribution[attribution_key]
+        # user_api_key_hash has no stash counterpart (attribution only carries the raw
+        # key hash under user_api_key); a row attributed purely from the stash above
+        # would otherwise carry user_api_key with no matching hash, breaking the
+        # DailyUserSpend.api_key join the same way test_metadata_provenance_keeps_spend_log_api_key_joinable
+        # guards for the DB-backed path.
+        if not metadata.get("user_api_key_hash") and metadata.get("user_api_key"):
+            metadata["user_api_key_hash"] = metadata["user_api_key"]
+        # spend logs read the deployment identity off these metadata keys, so
+        # without them the batch cost row carries no model_id or model_group
+        metadata["model_info"] = {"id": model_id}
+        metadata["model_group"] = deployment_info.model_name
 
         logging_obj.update_environment_variables(
             litellm_params={
@@ -1136,9 +1190,11 @@ class CheckBatchCost:
                         "user-agent": CHECK_BATCH_COST_USER_AGENT,
                     }
                 },
+                **({"api_base": mask_api_base_credentials(deployment_api_base)} if deployment_api_base else {}),
                 "metadata": metadata,
             },
             optional_params={},
+            custom_llm_provider=str(llm_provider) if llm_provider else None,
         )
 
         # Claim HERE, after the results are in hand and immediately before the
@@ -1164,6 +1220,8 @@ class CheckBatchCost:
                 batch_models=batch_result.models,
                 batch_successful_requests=batch_result.successful_requests,
                 batch_failed_requests=batch_result.failed_requests,
+                batch_prompt_cost=batch_result.prompt_cost,
+                batch_completion_cost=batch_result.completion_cost,
             )
         except Exception:
             # Hand the row back so the next cycle retries it, rather than
