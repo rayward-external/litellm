@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn, Protocol, overl
 
 import litellm
 from litellm._logging import verbose_logger
-from litellm.constants import CONSUMED_REQUEST_TAGS_METADATA_KEY
+from litellm.constants import CONSUMED_REQUEST_TAGS_METADATA_KEY, ROUTING_REQUEST_TAGS_METADATA_KEY
 from litellm.litellm_core_utils.core_helpers import get_metadata_variable_name_from_kwargs
 from litellm.types.router import ConsumedRequestTagsStamp, DeploymentTypedDict, RouterErrors
 
@@ -614,7 +614,10 @@ def _request_tags_after_router_consumption(metadata: object, model: str) -> Sequ
     if not isinstance(metadata, Mapping):
         return None
     typed_metadata: Final[Mapping[str, object]] = metadata
-    request_tags: Final = _base_request_tags(typed_metadata)
+    request_tags: Final = _tags_in_metadata(
+        typed_metadata,
+        key=ROUTING_REQUEST_TAGS_METADATA_KEY if ROUTING_REQUEST_TAGS_METADATA_KEY in typed_metadata else "tags",
+    )
     stamp: Final = typed_metadata.get(CONSUMED_REQUEST_TAGS_METADATA_KEY)
     if not isinstance(stamp, ConsumedRequestTagsStamp) or stamp.model_group != model:
         return request_tags
@@ -828,7 +831,7 @@ async def get_deployments_for_tag(
     return healthy_deployments
 
 
-def _tags_in_metadata(metadata: object) -> list[str]:
+def _tags_in_metadata(metadata: object, key: str = "tags") -> list[str]:
     """
     Tags out of a metadata bucket the caller controls the shape of.
 
@@ -839,7 +842,7 @@ def _tags_in_metadata(metadata: object) -> list[str]:
     if not isinstance(metadata, Mapping):
         return []
     typed_metadata: Final[Mapping[str, object]] = metadata
-    tags: Final = typed_metadata.get("tags")
+    tags: Final = typed_metadata.get(key)
     if isinstance(tags, str) or not isinstance(tags, Sequence):
         return []
     typed_tags: Final[Sequence[object]] = tags
