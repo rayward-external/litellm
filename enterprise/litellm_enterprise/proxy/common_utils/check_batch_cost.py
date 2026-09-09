@@ -1153,6 +1153,28 @@ class CheckBatchCost:
         )
 
         deployment_api_base: Final = deployment_info.litellm_params.api_base
+
+        # job.api_key/team_id are populated by the OpenAI-dialect /v1/batches route
+        # (managed_files.py); _build_creator_attribution_metadata resolves those columns
+        # plus key_alias/team_alias. Routes that create batches out-of-band
+        # (/v1/messages/batches) never set those columns and stash the submitting key's
+        # identity in file_object.litellm_attribution instead (see _get_job_attribution),
+        # so fill in from the stash whatever the DB-backed columns left empty.
+        metadata = await self._build_creator_attribution_metadata(job, batch_id)
+        attribution = self._get_job_attribution(job)
+        for attribution_key in (
+            "user_api_key",
+            "user_api_key_alias",
+            "user_api_key_team_id",
+            "user_api_key_end_user_id",
+        ):
+            if not metadata.get(attribution_key) and attribution.get(attribution_key):
+                metadata[attribution_key] = attribution[attribution_key]
+        # spend logs read the deployment identity off these metadata keys, so
+        # without them the batch cost row carries no model_id or model_group
+        metadata["model_info"] = {"id": model_id}
+        metadata["model_group"] = deployment_info.model_name
+
         logging_obj.update_environment_variables(
             litellm_params={
                 # set the user-agent header so that S3 callback consumers can easily identify CheckBatchCost callbacks
@@ -1162,13 +1184,7 @@ class CheckBatchCost:
                     }
                 },
                 **({"api_base": mask_api_base_credentials(deployment_api_base)} if deployment_api_base else {}),
-                "metadata": {
-                    **(await self._build_creator_attribution_metadata(job, batch_id)),
-                    # spend logs read the deployment identity off these metadata keys, so
-                    # without them the batch cost row carries no model_id or model_group
-                    "model_info": {"id": model_id},
-                    "model_group": deployment_info.model_name,
-                },
+                "metadata": metadata,
             },
             optional_params={},
             custom_llm_provider=str(llm_provider) if llm_provider else None,

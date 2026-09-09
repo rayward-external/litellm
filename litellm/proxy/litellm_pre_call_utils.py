@@ -29,6 +29,7 @@ from litellm.constants import (
     SESSION_DEPLOYMENT_AFFINITY_TTL_METADATA_KEY,
     SESSION_ID_GENERATED_METADATA_KEY,
     SESSION_ID_OMITTED_METADATA_KEY,
+    STREAM_ENDED_UPSTREAM_IDLE_METADATA_KEY,
     X_LITELLM_DISABLE_CALLBACKS,
 )
 from litellm.litellm_core_utils.credential_accessor import CredentialAccessor

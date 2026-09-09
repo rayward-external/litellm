@@ -2833,6 +2833,131 @@ class TestBatchCostAttribution:
         assert payload["api_key"] != hash_token(token_hash)
 
 
+class TestBatchCostAttributionStashOverlayReachesLoggingCall:
+    """Regression: /v1/messages/batches rows never populate the managed-object row's own
+    api_key/team_id columns (only the OpenAI-dialect /v1/batches route does), so
+    _build_creator_attribution_metadata alone resolves those fields to None for them. The
+    poller must fill in whatever the DB-backed columns left empty from the job's
+    file_object.litellm_attribution stash before handing metadata to
+    logging_obj.update_environment_variables. A prior sync merge dropped this overlay
+    (fixed and re-dropped across the 2026-08-09/08-20/08-21 syncs), which silently nulled
+    key- and team-level spend attribution for every /v1/messages/batches batch."""
+
+    async def _run(self, resolved_metadata: dict) -> dict:
+        from litellm_enterprise.proxy.common_utils.check_batch_cost import CheckBatchCost
+        from litellm.types.utils import LiteLLMBatch
+
+        job = MagicMock()
+        job.id = "job-stash-1"
+        job.unified_object_id = _CLAIM_UNIFIED_BATCH_ID
+        job.created_by = None
+        job.team_id = None
+        job.api_key = None
+        job.request_tags = None
+        job.file_object = json.dumps(
+            {
+                "litellm_attribution": {
+                    "user_api_key": "hash-stashed",
+                    "user_api_key_alias": "stashed-key",
+                    "user_api_key_team_id": "team-stashed",
+                    "user_api_key_end_user_id": "end-user-stashed",
+                }
+            }
+        )
+
+        router = MagicMock()
+        router.get_deployment_credentials_with_provider = MagicMock(return_value={"api_key": "sk-test"})
+        deployment = MagicMock()
+        deployment.litellm_params.custom_llm_provider = "anthropic"
+        deployment.litellm_params.model = "anthropic/claude-batch"
+        deployment.litellm_params.api_base = None
+        deployment.model_name = "claude-batch-group"
+        deployment.model_info.model_dump.return_value = {}
+        router.get_deployment = MagicMock(return_value=deployment)
+
+        proxy_logging_obj = MagicMock()
+        proxy_logging_obj.get_proxy_hook.return_value = None
+
+        instance = CheckBatchCost(
+            proxy_logging_obj=proxy_logging_obj,
+            prisma_client=MagicMock(),
+            llm_router=router,
+        )
+
+        response = LiteLLMBatch(
+            id="batch-stash-1",
+            completion_window="24h",
+            created_at=1,
+            endpoint="/v1/messages/batches",
+            input_file_id="file-input-1",
+            object="batch",
+            status="completed",
+        )
+        response.output_file_id = _CLAIM_OUTPUT_FILE_ID
+
+        file_content = MagicMock()
+        file_content.content = b'{"id":"req-1"}'
+
+        with (
+            patch(
+                "litellm.files.main.afile_content",
+                new_callable=AsyncMock,
+                return_value=file_content,
+            ),
+            patch(
+                "litellm.batches.batch_utils._get_file_content_as_dictionary",
+                return_value=[{"id": "req-1"}],
+            ),
+            patch(
+                "litellm.batches.batch_utils.calculate_batch_cost_and_usage",
+                new_callable=AsyncMock,
+                return_value=_batch_cost_result(0.01, {"prompt_tokens": 10}, ["claude-batch"]),
+            ),
+            patch.object(
+                instance,
+                "_build_creator_attribution_metadata",
+                new_callable=AsyncMock,
+                return_value=dict(resolved_metadata),
+            ),
+            patch("litellm.litellm_core_utils.litellm_logging.Logging") as logging_cls,
+        ):
+            logging_obj = MagicMock()
+            logging_obj.async_success_handler = AsyncMock()
+            logging_cls.return_value = logging_obj
+
+            await instance._track_completed_batch_cost(
+                job=job,
+                response=response,
+                model_id="model-stash-1",
+                batch_id="batch-stash-1",
+                prom_logger=None,
+            )
+
+        assert logging_obj.update_environment_variables.call_count == 1
+        return logging_obj.update_environment_variables.call_args.kwargs["litellm_params"]["metadata"]
+
+    @pytest.mark.asyncio
+    async def test_stash_fills_in_fields_the_db_columns_left_empty(self):
+        """DB-backed columns resolved nothing (empty dict, the /v1/messages/batches case):
+        every field must come from the litellm_attribution stash instead."""
+        metadata = await self._run(resolved_metadata={})
+
+        assert metadata["user_api_key"] == "hash-stashed"
+        assert metadata["user_api_key_alias"] == "stashed-key"
+        assert metadata["user_api_key_team_id"] == "team-stashed"
+        assert metadata["user_api_key_end_user_id"] == "end-user-stashed"
+
+    @pytest.mark.asyncio
+    async def test_stash_never_overrides_a_value_the_db_columns_already_resolved(self):
+        """A value _build_creator_attribution_metadata already resolved (the OpenAI-dialect
+        /v1/batches case) must survive untouched, even though the stash carries a different
+        value for the same key."""
+        metadata = await self._run(resolved_metadata={"user_api_key_alias": "already-resolved-alias"})
+
+        assert metadata["user_api_key_alias"] == "already-resolved-alias"
+        assert metadata["user_api_key"] == "hash-stashed"
+
+
 class TestPollPageStarvation:
     """LIT-5462 regression: a row that can never be costed used to keep its slot in the
     MAX_OBJECTS_PER_POLL_CYCLE page forever, so once enough of them accumulated no newer
