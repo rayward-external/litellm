@@ -2899,16 +2899,16 @@ class TestBatchCostAttributionStashOverlayReachesLoggingCall:
         file_content.content = b'{"id":"req-1"}'
 
         with (
-            patch(
+            patch(  # test-quality-ok: _track_completed_batch_cost imports afile_content locally; not DI-exposed, same seam TestManagedOutputFileIdEncodesPublicModelGroup._run above already uses
                 "litellm.files.main.afile_content",
                 new_callable=AsyncMock,
                 return_value=file_content,
             ),
-            patch(
+            patch(  # test-quality-ok: same local-import seam as above, mirrors TestManagedOutputFileIdEncodesPublicModelGroup._run
                 "litellm.batches.batch_utils._get_file_content_as_dictionary",
                 return_value=[{"id": "req-1"}],
             ),
-            patch(
+            patch(  # test-quality-ok: same local-import seam as above, mirrors TestManagedOutputFileIdEncodesPublicModelGroup._run
                 "litellm.batches.batch_utils.calculate_batch_cost_and_usage",
                 new_callable=AsyncMock,
                 return_value=_batch_cost_result(0.01, {"prompt_tokens": 10}, ["claude-batch"]),
@@ -2919,7 +2919,7 @@ class TestBatchCostAttributionStashOverlayReachesLoggingCall:
                 new_callable=AsyncMock,
                 return_value=dict(resolved_metadata),
             ),
-            patch("litellm.litellm_core_utils.litellm_logging.Logging") as logging_cls,
+            patch("litellm.litellm_core_utils.litellm_logging.Logging") as logging_cls,  # test-quality-ok: same local-import seam as above, mirrors TestManagedOutputFileIdEncodesPublicModelGroup._run
         ):
             logging_obj = MagicMock()
             logging_obj.async_success_handler = AsyncMock()
