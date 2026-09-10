@@ -219,8 +219,8 @@ class AzureFoundryMAIImageGenerationConfig(BaseImageGenerationConfig):
             )
 
         self._validate_dimensions(model=model, size=size, width=width, height=height)
-        optional_params["width"] = width
-        optional_params["height"] = height
+        optional_params["width"] = width  # rebind-ok: normalizes width/height back into optional_params after validation
+        optional_params["height"] = height  # rebind-ok: normalizes width/height back into optional_params after validation
 
     def _validate_dimensions(self, model: str, size: str, width: int, height: int) -> None:
         if width < self.MIN_DIMENSION_PX or height < self.MIN_DIMENSION_PX:

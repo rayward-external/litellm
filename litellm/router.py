@@ -5594,7 +5594,7 @@ class Router:
                 # If get_llm_provider fails, fall back to using model_name as-is
                 replacement_model_name = model_name
 
-            kwargs["endpoint"] = replace_path_segment(kwargs["endpoint"], model, replacement_model_name)
+            kwargs["endpoint"] = replace_path_segment(kwargs["endpoint"], model, replacement_model_name)  # rebind-ok: rewrites the endpoint path segment to the stripped model name before dispatch
         return kwargs
 
     async def _ageneric_api_call_with_fallbacks_helper(self, model: str, original_generic_function: Callable, **kwargs):

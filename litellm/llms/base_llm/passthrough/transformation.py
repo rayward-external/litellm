@@ -74,9 +74,9 @@ def logged_relay_shape(
         parsed: Final = shape.parse(body)
     except ValidationError:
         return None
-    logging_obj.call_type = (
+    logging_obj.call_type = (  # rebind-ok: routes cost calculation to the relayed shape's pricing path
         shape.call_type.value
-    )  # rebind-ok: routes cost calculation to the relayed shape's pricing path
+    )
     return parsed
 
 

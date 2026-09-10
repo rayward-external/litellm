@@ -59,9 +59,9 @@ def logged_responses_stream(all_chunks: Sequence[str], logging_obj: Logging) -> 
     terminal_event: Final = OpenAIResponsesAPIConfig.parse_terminal_event_from_stream_chunks(all_chunks=all_chunks)
     if terminal_event is None:
         return None
-    logging_obj.call_type = (
+    logging_obj.call_type = (  # rebind-ok: routes cost calculation to the relayed shape's pricing path
         RESPONSES_RELAY_SHAPE.call_type.value
-    )  # rebind-ok: routes cost calculation to the relayed shape's pricing path
+    )
     return terminal_event
 
 

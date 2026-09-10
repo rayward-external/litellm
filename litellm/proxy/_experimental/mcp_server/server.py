@@ -4481,8 +4481,8 @@ if MCP_AVAILABLE:
             )
             diagnostics: Final = MCPAuthDiagnostics() if _debug_headers else None
             if diagnostics is not None:
-                scope[MCP_AUTH_DIAGNOSTICS_SCOPE_KEY] = diagnostics
-                send = MCPDebug.wrap_send_with_debug_headers(
+                scope[MCP_AUTH_DIAGNOSTICS_SCOPE_KEY] = diagnostics  # rebind-ok: stashes diagnostics on the ASGI scope for downstream handlers
+                send = MCPDebug.wrap_send_with_debug_headers(  # rebind-ok: wraps send once to attach debug headers to the response
                     send, _debug_headers, diagnostics.headers, request_method=scope.get("method")
                 )
 

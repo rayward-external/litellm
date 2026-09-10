@@ -2082,7 +2082,7 @@ class BaseLLMHTTPHandler:
                         max_attempts,
                     )
                     provider_config.transform_anthropic_messages_request_on_http_error(e=e, request_data=request_body)
-                    headers, signed_json_body = await sign_request_off_loop_if_aws(
+                    headers, signed_json_body = await sign_request_off_loop_if_aws(  # rebind-ok: re-signs the retried request with the stripped body
                         provider_config,
                         provider_config.sign_request,
                         headers=headers,

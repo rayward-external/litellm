@@ -212,14 +212,14 @@ async def _normalize_claude_model(
         requested, llm_router, valid_token.team_id, (valid_token.aliases, valid_token.team_model_aliases, aliases)
     )
     if request is not None:
-        request.scope[_CLAUDE_MODEL_NORMALIZED] = True
+        request.scope[_CLAUDE_MODEL_NORMALIZED] = True  # rebind-ok: marks this request as already normalized so retries don't re-run the routing lookup
     if source is None:
         return
-    request_data["model"] = source
+    request_data["model"] = source  # rebind-ok: rewrites the request body to the resolved model group before it reaches the router
     _safe_set_request_parsed_body(request=request, parsed_body=request_data)
     if request is not None:
-        request._json = request_data
-        request._body = orjson.dumps(request_data)
+        request._json = request_data  # rebind-ok: keeps Starlette's cached parsed body in sync with the rewritten model
+        request._body = orjson.dumps(request_data)  # rebind-ok: keeps Starlette's cached raw body in sync with the rewritten model
 
 
 def _get_model_names_for_budget_checks(
