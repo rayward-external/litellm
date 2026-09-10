@@ -496,7 +496,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         if "text" in self.responses_api_request:
             response_created_event_data["text"] = self.responses_api_request["text"]
         response_created_event_data["tool_choice"] = (
-            LiteLLMCompletionResponsesConfig._transform_tool_choice_for_responses_api_response(
+            LiteLLMCompletionResponsesConfig._transform_tool_choice_for_responses_api_response(  # pyright: ignore[reportPrivateUsage]  # sibling transformation
                 self.responses_api_request.get("tool_choice")
             )
         )

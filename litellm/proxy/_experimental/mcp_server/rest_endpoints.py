@@ -34,7 +34,9 @@ from litellm.proxy._experimental.mcp_server.faults.list_outcomes import (
     outcome_wire_value,
 )
 from litellm.proxy._experimental.mcp_server.faults.traversal import iter_exception_tree
-from litellm.proxy._experimental.mcp_server.oauth_utils import _redact_mcp_resource_url
+from litellm.proxy._experimental.mcp_server.oauth_utils import (
+    _redact_mcp_resource_url,  # pyright: ignore[reportPrivateUsage]  # shared redaction helper
+)
 from litellm.proxy._experimental.mcp_server.ui_session_utils import (
     acting_user_auth,
     build_effective_auth_contexts,

@@ -2369,7 +2369,9 @@ def _gateway_request_redis_buffer() -> GatewayRequestRedisBuffer | None:
     """Shares the spend writer's transaction-buffer Redis and pod lock when use_redis_transaction_buffer is on."""
     writer: Final = proxy_logging_obj.db_spend_update_writer
     redis_cache: Final = writer.redis_update_buffer.redis_cache
-    if redis_cache is None or not writer.redis_update_buffer._should_commit_spend_updates_to_redis():
+    if redis_cache is None or not (
+        writer.redis_update_buffer._should_commit_spend_updates_to_redis()  # pyright: ignore[reportPrivateUsage]  # same module family
+    ):
         return None
     return GatewayRequestRedisBuffer(redis_cache=redis_cache, pod_lock_manager=writer.pod_lock_manager)
 

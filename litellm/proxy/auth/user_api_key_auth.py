@@ -222,10 +222,8 @@ async def _normalize_claude_model(
     )
     _safe_set_request_parsed_body(request=request, parsed_body=request_data)
     if request is not None:
-        request._json = request_data  # rebind-ok: keeps Starlette's cached parsed body in sync with the rewritten model
-        request._body = orjson.dumps(
-            request_data
-        )  # rebind-ok: keeps Starlette's cached raw body in sync with the rewritten model
+        request._json = request_data  # pyright: ignore[reportPrivateUsage]  # rebind-ok: no public setter
+        request._body = orjson.dumps(request_data)  # pyright: ignore[reportPrivateUsage]  # rebind-ok: no public setter
 
 
 def _get_model_names_for_budget_checks(
