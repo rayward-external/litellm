@@ -159,6 +159,7 @@ def _verified_chain_der(tls: ssl.SSLSocket) -> tuple[bytes, ...]:
 def _server_trust_anchor(cafile: str, host: str, port: int) -> bytes | None:
     try:
         context: Final = ssl.create_default_context(cafile=cafile)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         with socket.create_connection((host, port), timeout=TLS_PROBE_TIMEOUT_SECONDS) as raw:
             raw.sendall(PG_SSL_REQUEST)
             if raw.recv(1) != b"S":
