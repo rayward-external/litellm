@@ -880,7 +880,7 @@ def _get_messages_for_spend_logs_payload(
     standard_logging_payload: StandardLoggingPayload | None,
     metadata: dict | None = None,
 ) -> str:
-    if should_store_prompts_and_responses_in_spend_logs():
+    if should_store_prompts_and_responses_in_spend_logs():  # noqa: SIM102  # sync ratchet, see fork-patches.txt
         if standard_logging_payload is not None:
             call_type = standard_logging_payload.get("call_type", "")
             if call_type == "_arealtime":

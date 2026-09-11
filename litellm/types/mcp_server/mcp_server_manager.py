@@ -250,7 +250,7 @@ class MCPServer(BaseModel):
     @model_validator(mode="after")
     def validate_identity_binding_mode(self) -> Self:
         binding: Final = self.oauth_identity_binding
-        if binding is not None and binding.mode != "disabled":
+        if binding is not None and binding.mode != "disabled":  # noqa: SIM102  # sync ratchet, see fork-patches.txt
             if not self.needs_user_oauth_token or self.delegate_auth_to_upstream:
                 raise ValueError("oauth_identity_binding requires gateway-managed per-user OAuth2 credentials")
         return self

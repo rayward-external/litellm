@@ -1640,7 +1640,7 @@ async def refresh_user_oauth_token(
     stale credential and triggering re-authentication.
     """
     binding: Final = server.oauth_identity_binding
-    if binding is not None and binding.mode == "enforce":
+    if binding is not None and binding.mode == "enforce":  # noqa: SIM102  # sync ratchet, see fork-patches.txt
         if not await credential_binding_matches(binding, user_id, server.server_id, cred):
             return None
 
@@ -1773,7 +1773,7 @@ async def resolve_valid_user_oauth_token(
     if cred is None or grant == "absent":
         return None
     binding: Final = server.oauth_identity_binding
-    if binding is not None and binding.mode == "enforce":
+    if binding is not None and binding.mode == "enforce":  # noqa: SIM102  # sync ratchet, see fork-patches.txt
         if not await credential_binding_matches(binding, user_id, server.server_id, cred):
             return None
     if grant == "valid":

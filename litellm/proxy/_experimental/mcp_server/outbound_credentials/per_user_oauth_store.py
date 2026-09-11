@@ -152,7 +152,7 @@ async def _read_bound_credential(
     credential: Final = await _read_credential(user_id, server_id)
     server: Final = server_lookup(server_id)
     binding: Final = server.oauth_identity_binding if server else None
-    if credential is not None and binding is not None and binding.mode == "enforce":
+    if credential is not None and binding is not None and binding.mode == "enforce":  # noqa: SIM102  # sync ratchet
         if not await credential_binding_matches(binding, user_id, server_id, credential):
             return None
     return credential
@@ -203,7 +203,7 @@ class LazyPerUserOAuthTokenStore:
         token: Final = await self._fetch_token(user_id, server_id)
         server: Final = self._server_lookup(server_id)
         binding: Final = server.oauth_identity_binding if server else None
-        if token is not None and binding is not None and binding.mode == "enforce":
+        if token is not None and binding is not None and binding.mode == "enforce":  # noqa: SIM102  # sync ratchet
             if not await credential_binding_matches(
                 binding, user_id, server_id, {"identity_binding_proof": token.identity_binding_proof}
             ):
