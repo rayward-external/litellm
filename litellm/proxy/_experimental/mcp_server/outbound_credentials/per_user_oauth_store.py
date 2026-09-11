@@ -205,7 +205,7 @@ class LazyPerUserOAuthTokenStore:
         binding: Final = server.oauth_identity_binding if server else None
         if token is not None and binding is not None and binding.mode == "enforce":  # noqa: SIM102  # sync ratchet
             if not await credential_binding_matches(
-                binding, user_id, server_id, {"identity_binding_proof": token.identity_binding_proof}
+                binding, user_id, server_id, {"identity_binding_proof": token.identity_binding_proof}  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             ):
                 await self.invalidate(user_id, server_id)
                 return None

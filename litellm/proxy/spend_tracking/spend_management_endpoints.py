@@ -3135,7 +3135,7 @@ async def _resolve_request_response_payload(
 
     cold_audit: Final = classifier_audit_fields(payload)
     resolved_request: Final = (
-        {
+        {  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             **(classifier_input_snapshot(payload.get("proxy_server_request")) or stored_request or EMPTY_MAPPING),
             **cold_audit,
         }

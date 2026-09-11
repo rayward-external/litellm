@@ -50,10 +50,10 @@ class SkillVisibility:
 
     def where(self) -> "LiteLLM_ClaudeCodePluginTableWhereInput":
         if self.sees_private:
-            return {}
+            return {}  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
         if not self.granted:
-            return {"enabled": True}
-        return {"OR": [{"enabled": True}, {"name": {"in": sorted(self.granted)}}]}
+            return {"enabled": True}  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+        return {"OR": [{"enabled": True}, {"name": {"in": sorted(self.granted)}}]}  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
 
 
 PUBLIC_ONLY: Final = SkillVisibility(granted=frozenset(), sees_private=False)

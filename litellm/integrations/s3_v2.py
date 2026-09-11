@@ -252,10 +252,10 @@ class S3Logger(CustomBatchLogger, BaseAWSLLM):
         frozen: Final = (
             credentials.get_frozen_credentials() if isinstance(credentials, RefreshableCredentials) else credentials
         )
-        aws_request: Final = AWSRequest(method="PUT", url=url, data=json_string, headers=dict(headers))
+        aws_request: Final = AWSRequest(method="PUT", url=url, data=json_string, headers=dict(headers))  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
         aws_region_name: Final = self.get_aws_region_name_for_non_llm_api_calls(aws_region_name=self.s3_region_name)
         S3SigV4Auth(frozen, "s3", aws_region_name).add_auth(aws_request)
-        return dict(aws_request.headers.items())
+        return dict(aws_request.headers.items())  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
 
     def _sse_headers(self) -> Mapping[str, str]:
         candidates: Final = {

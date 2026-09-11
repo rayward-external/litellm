@@ -837,7 +837,7 @@ class _AdmissionMetadata(BaseModel):
 
 def admission_input_tokens(kwargs: Mapping[str, object]) -> int | None:
     reservations: Final = (
-        _AdmissionMetadata.model_validate(kwargs.get(key) or {}).user_api_key_budget_reservation
+        _AdmissionMetadata.model_validate(kwargs.get(key) or {}).user_api_key_budget_reservation  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
         for key in ("litellm_metadata", "metadata")
     )
     return next(

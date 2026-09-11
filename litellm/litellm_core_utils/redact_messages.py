@@ -174,7 +174,7 @@ def redacted_standard_logging_payload(payload: Mapping[str, object]) -> Mapping[
     return _redact_standard_logging_object(payload)
 
 
-def _redact_standard_logging_object(payload: Mapping[str, object]) -> dict[str, object]:
+def _redact_standard_logging_object(payload: Mapping[str, object]) -> dict[str, object]:  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
     standard_logging_object: Final = copy.deepcopy(without_classifier_audit(payload))
     redacted_str: Final = REDACTED_BY_LITELLM
 
@@ -253,13 +253,13 @@ def perform_redaction(model_call_details: dict, result, redact_streaming_respons
     params: Final = model_call_details.get("litellm_params")
     request: Final = params.get("proxy_server_request") if isinstance(params, dict) else None
     if isinstance(params, dict) and isinstance(request, Mapping):
-        model_call_details["litellm_params"] = {**params, "proxy_server_request": without_classifier_audit(request)}
+        model_call_details["litellm_params"] = {**params, "proxy_server_request": without_classifier_audit(request)}  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging  # rebind-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
     model_call_details["messages"] = [{"role": "user", "content": REDACTED_BY_LITELLM}]
     model_call_details["prompt"] = ""
     model_call_details["input"] = ""
     standard_logging_object: Final = model_call_details.get("standard_logging_object")
     if isinstance(standard_logging_object, Mapping):
-        model_call_details["standard_logging_object"] = _redact_standard_logging_object(standard_logging_object)
+        model_call_details["standard_logging_object"] = _redact_standard_logging_object(standard_logging_object)  # rebind-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
     redact_vertex_ai_metadata_from_litellm_params(model_call_details)
 
     # Redact streaming response

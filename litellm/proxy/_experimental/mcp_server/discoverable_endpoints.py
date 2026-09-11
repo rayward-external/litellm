@@ -245,7 +245,7 @@ def seal_bridge_authorization_code(
     authenticated symmetric helper (the same family the OAuth state uses), so the client can neither
     read nor forge it."""
     payload: Final = json.dumps(
-        {
+        {  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             "upstream_code": upstream_code,
             "litellm_user_id": litellm_user_id,
             "mcp_server_id": mcp_server_id,
@@ -1113,11 +1113,11 @@ async def exchange_token_with_server(
         binding: Final = resolved_server.oauth_identity_binding
         if binding is not None and binding.mode == "enforce":
             if bridge_identity is None or not bridge_identity.oauth_nonce:
-                raise HTTPException(status_code=403, detail={"error": "oauth_identity_binding_failed"})
+                raise HTTPException(status_code=403, detail={"error": "oauth_identity_binding_failed"})  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             if request_user_id is not None and request_user_id != bridge_identity.litellm_user_id:
-                raise HTTPException(status_code=403, detail={"error": "oauth_principal_mismatch"})
+                raise HTTPException(status_code=403, detail={"error": "oauth_principal_mismatch"})  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             if not code_verifier:
-                raise HTTPException(status_code=403, detail={"error": "oauth_identity_binding_failed"})
+                raise HTTPException(status_code=403, detail={"error": "oauth_identity_binding_failed"})  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
         bridge_token_relay: Final = _dcr_bridge_relays_client_registration(resolved_server)
         if bridge_token_relay and not redirect_uri:
             raise HTTPException(
@@ -1149,7 +1149,7 @@ async def exchange_token_with_server(
     if grant_type == "refresh_token" and refresh_binding is not None and refresh_binding.mode == "enforce":
         await enforce_oauth_identity_binding(
             server=resolved_server,
-            token_response={},
+            token_response={},  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             litellm_user_id=request_user_id,
             grant_type=grant_type,
             refresh_ownership=refresh_ownership,

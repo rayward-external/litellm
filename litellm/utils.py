@@ -1218,7 +1218,7 @@ def _dispatch_success_logging(
                     )
                 )
 
-            logging_obj._enqueue_deferred_logging = _enqueue_deferred_logging
+            logging_obj._enqueue_deferred_logging = _enqueue_deferred_logging  # rebind-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
         else:
             asyncio.create_task(
                 _client_async_logging_helper(

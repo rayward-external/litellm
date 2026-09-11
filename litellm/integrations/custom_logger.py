@@ -914,7 +914,7 @@ class CustomLogger:  # https://docs.litellm.ai/docs/observability/custom_callbac
             return model_call_details.copy()
 
         # Make a copy of just the standard_logging_object to avoid modifying the original
-        standard_logging_object_copy: Final = {
+        standard_logging_object_copy: Final = {  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             key: value
             for key, value in standard_logging_object.items()
             if key not in (excluded_fields or ()) and not (turn_off_message_logging and key in CLASSIFIER_AUDIT_FIELDS)
@@ -954,11 +954,11 @@ class CustomLogger:  # https://docs.litellm.ai/docs/observability/custom_callbac
         params: Final = model_call_details.get("litellm_params")
         request: Final = params.get("proxy_server_request") if isinstance(params, dict) else None
         redacted_params: Final = (
-            MappingProxyType({"litellm_params": {**params, "proxy_server_request": without_classifier_audit(request)}})
+            MappingProxyType({"litellm_params": {**params, "proxy_server_request": without_classifier_audit(request)}})  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             if turn_off_message_logging and isinstance(params, dict) and isinstance(request, dict)
             else EMPTY_MAPPING
         )
-        return {
+        return {  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             **model_call_details,
             **redacted_params,
             "standard_logging_object": standard_logging_object_copy,

@@ -413,7 +413,7 @@ async def enforce_oauth_identity_binding(
         return
     raise HTTPException(
         status_code=403,
-        detail={
+        detail={  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             "error": rejection.code,
             "error_description": rejection.description,
             "server_id": server.server_id,

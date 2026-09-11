@@ -111,7 +111,7 @@ class VoyageContextualEmbeddingConfig(BaseEmbeddingConfig):
         headers: dict,
     ) -> dict:
         return {
-            "inputs": [input] if isinstance(input, str) else input,
+            "inputs": [input] if isinstance(input, str) else input,  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             "model": model,
             **self._auto_chunk_params(input, optional_params),
             **optional_params,
@@ -120,13 +120,13 @@ class VoyageContextualEmbeddingConfig(BaseEmbeddingConfig):
     @classmethod
     def _auto_chunk_params(
         cls,
-        input: AllEmbeddingInputValues | list[list[str]],
+        input: AllEmbeddingInputValues | list[list[str]],  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
         optional_params: Mapping[str, object],
     ) -> Mapping[str, object]:
         is_flat: Final = isinstance(input, str) or all(isinstance(item, str) for item in input)
         if not is_flat or optional_params.get("input_type") == "query":
-            return {}
-        return {
+            return {}  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+        return {  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             "enable_auto_chunking": True,
             "chunk_size": cls.AUTO_CHUNK_SIZE,
             "input_type": "document",

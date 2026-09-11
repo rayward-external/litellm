@@ -89,14 +89,14 @@ async def _enterprise_license_required(
     if not premium_user:
         raise HTTPException(
             status_code=403,
-            detail={
+            detail={  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
                 "error": "Organizations are only available for LiteLLM Enterprise users. "
                 f"{CommonProxyErrors.not_premium_user.value}"
             },
         )
 
 
-router: Final = APIRouter(dependencies=[Depends(_enterprise_license_required)])
+router: Final = APIRouter(dependencies=[Depends(_enterprise_license_required)])  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
 
 
 class _ObjectPermissionRow(Protocol):

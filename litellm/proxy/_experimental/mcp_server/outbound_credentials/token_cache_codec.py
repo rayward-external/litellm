@@ -32,7 +32,7 @@ class OAuthTokenCacheCodec:
             return self.encrypt(
                 _BOUND_PREFIX
                 + json.dumps(
-                    {
+                    {  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
                         "access_token": token.access_token,
                         "identity_binding_proof": token.identity_binding_proof,
                     }

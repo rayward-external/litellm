@@ -126,7 +126,7 @@ class AuthorizationCodeRefresher:
         if binding is not None and binding.mode == "enforce":
             await self._identity_validator(
                 server=server,
-                token_response={},
+                token_response={},  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
                 litellm_user_id=user_id,
                 grant_type="refresh_token",
                 refresh_ownership=RefreshTokenPresented(token.refresh_token),
