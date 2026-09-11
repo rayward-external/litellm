@@ -2110,12 +2110,17 @@ export interface paths {
          *     - claude plugin marketplace add <url>
          *     - claude plugin install <name>@<marketplace>
          *
+         *     Without `key` the catalog holds the enabled (public) plugins. With `?key=sk-...`
+         *     the key is authenticated and the catalog also holds the disabled plugins granted
+         *     to it through `object_permission.skills` on the key or its team.
+         *
          *     Returns:
          *         Marketplace catalog with list of available plugins and their git sources.
          *
          *     Example:
          *         ```bash
          *         claude plugin marketplace add http://localhost:4000/claude-code/marketplace.json
+         *         claude plugin marketplace add "http://localhost:4000/claude-code/marketplace.json?key=sk-..."
          *         claude plugin install my-plugin@litellm
          *         ```
          */
@@ -2152,8 +2157,8 @@ export interface paths {
          * @description Register a new plugin in the LiteLLM marketplace.
          *
          *     LiteLLM acts as a registry/discovery layer. Plugins are hosted on
-         *     GitHub/GitLab/Bitbucket. Claude Code will clone from the git source
-         *     when users install.
+         *     GitHub/GitLab/Bitbucket or as a zip archive on any https host (e.g. S3).
+         *     Claude Code clones the git source or downloads the archive when users install.
          *
          *     This endpoint is create-only and never overwrites. If a plugin with
          *     the same name already exists it returns 409 Conflict; use
@@ -2163,7 +2168,7 @@ export interface paths {
          *
          *     Parameters:
          *         - name: Plugin name (kebab-case)
-         *         - source: Git source reference (github, url, or git-subdir format)
+         *         - source: Plugin source reference (github, url, git-subdir, or archive format)
          *         - version: Semantic version (optional)
          *         - description: Plugin description (optional)
          *         - author: Author information (optional)
@@ -2229,7 +2234,7 @@ export interface paths {
          *
          *     Parameters:
          *         - plugin_name: Name of the plugin to update (path parameter)
-         *         - source: Git source reference (github, url, or git-subdir format)
+         *         - source: Plugin source reference (github, url, git-subdir, or archive format)
          *         - version: Semantic version (optional)
          *         - description: Plugin description (optional)
          *         - author: Author information (optional)
@@ -23783,6 +23788,15 @@ export interface components {
             /** @description The decision record this request would have written to its log row */
             routing_decision: components["schemas"]["StandardLoggingRoutingDecision"];
         };
+        /** AwsSessionTag */
+        AwsSessionTag: {
+            /** Key */
+            Key: string;
+            /** Value */
+            Value: string;
+        } & {
+            [key: string]: unknown;
+        };
         /** BaseLitellmParams */
         BaseLitellmParams: {
             /**
@@ -26427,6 +26441,31 @@ export interface components {
          *     independently of the response-cache backend in `litellm_settings.cache_params`.
          */
         CoordinationRedisParams: {
+            /**
+             * Aws Iam Auth
+             * @description enable AWS ElastiCache IAM authentication
+             */
+            aws_iam_auth?: boolean | string | null;
+            /**
+             * Aws Iam Cache Name
+             * @description AWS ElastiCache cache name
+             */
+            aws_iam_cache_name?: string | null;
+            /**
+             * Aws Iam Region
+             * @description AWS region for ElastiCache IAM authentication
+             */
+            aws_iam_region?: string | null;
+            /**
+             * Aws Iam Serverless
+             * @description the ElastiCache cache is serverless rather than a self-designed cluster
+             */
+            aws_iam_serverless?: boolean | string | null;
+            /**
+             * Aws Iam User Name
+             * @description AWS ElastiCache IAM user name
+             */
+            aws_iam_user_name?: string | null;
             /**
              * Host
              * @description Redis hostname
@@ -29394,6 +29433,8 @@ export interface components {
             models?: string[] | null;
             /** Search Tools */
             search_tools?: string[] | null;
+            /** Skills */
+            skills?: string[] | null;
             /** Vector Stores */
             vector_stores?: string[] | null;
         };
@@ -29447,6 +29488,8 @@ export interface components {
              * @default []
              */
             search_tools: string[] | null;
+            /** Skills */
+            skills?: string[] | null;
             /**
              * Vector Stores
              * @default []
@@ -29608,6 +29651,8 @@ export interface components {
             aws_secret_access_key?: string | null;
             /** Aws Session Name */
             aws_session_name?: string | null;
+            /** Aws Session Tags */
+            aws_session_tags?: components["schemas"]["AwsSessionTag"][] | null;
             /** Aws Session Token */
             aws_session_token?: string | null;
             /** Aws Sts Endpoint */
@@ -33697,7 +33742,7 @@ export interface components {
             name: string;
             /**
              * Source
-             * @description Git source reference
+             * @description Plugin source reference
              */
             source: {
                 [key: string]: string;
@@ -34946,7 +34991,7 @@ export interface components {
          * @description Request body for registering a plugin in the marketplace.
          *
          *     LiteLLM acts as a registry/discovery layer. Plugins are hosted on
-         *     GitHub/GitLab/Bitbucket and referenced by their git source.
+         *     GitHub/GitLab/Bitbucket or as a zip archive on any https host and referenced by their source.
          */
         RegisterPluginRequest: {
             /** @description Plugin author */
@@ -34988,10 +35033,11 @@ export interface components {
             namespace?: string | null;
             /**
              * Source
-             * @description Git source reference. Supported formats:
+             * @description Plugin source reference. Supported formats:
              *     - GitHub: {'source': 'github', 'repo': 'org/repo'}
              *     - Git URL: {'source': 'url', 'url': 'https://github.com/org/repo.git'}
              *     - Git Subdir: {'source': 'git-subdir', 'url': 'https://github.com/org/repo.git', 'path': 'plugins/plugin-name'}
+             *     - Zip archive on any https host (e.g. S3): {'source': 'archive', 'url': 'https://bucket.s3.amazonaws.com/plugin.zip', 'sha256': '<optional hex digest>'}
              */
             source: {
                 [key: string]: string;
@@ -35280,7 +35326,7 @@ export interface components {
             reasoning_override_min_score?: number | null;
             /**
              * Reminder Markers
-             * @description Override the delimiter pairs used to recognize and strip harness-injected reminder blocks before classification. A harness that wraps injected context differently per agent type (main, subagent, cron) lists every pair it emits. Replaces, rather than adds to, the built-in default of ('<system-reminder>', '</system-reminder>'), so a harness that also emits that pair lists it too. Matching is case-insensitive.
+             * @description Override the delimiter pairs used to recognize and strip harness-injected reminder blocks before classification. A harness that wraps injected context differently per agent type (main, subagent, cron) lists every pair it emits. Replaces, rather than adds to, the built-in system-reminder pair and the Codex envelope pairs enabled for Codex user agents, so list every built-in pair your harness also emits. Matching is case-insensitive.
              */
             reminder_markers?: components["schemas"]["ReminderMarkerPair"][] | null;
             /**
@@ -38270,10 +38316,11 @@ export interface components {
             namespace?: string | null;
             /**
              * Source
-             * @description Git source reference. Supported formats:
+             * @description Plugin source reference. Supported formats:
              *     - GitHub: {'source': 'github', 'repo': 'org/repo'}
              *     - Git URL: {'source': 'url', 'url': 'https://github.com/org/repo.git'}
              *     - Git Subdir: {'source': 'git-subdir', 'url': 'https://github.com/org/repo.git', 'path': 'plugins/plugin-name'}
+             *     - Zip archive on any https host (e.g. S3): {'source': 'archive', 'url': 'https://bucket.s3.amazonaws.com/plugin.zip', 'sha256': '<optional hex digest>'}
              */
             source: {
                 [key: string]: string;
@@ -39801,6 +39848,8 @@ export interface components {
             aws_secret_access_key?: string | null;
             /** Aws Session Name */
             aws_session_name?: string | null;
+            /** Aws Session Tags */
+            aws_session_tags?: components["schemas"]["AwsSessionTag"][] | null;
             /** Aws Session Token */
             aws_session_token?: string | null;
             /** Aws Sts Endpoint */
@@ -43261,7 +43310,9 @@ export interface operations {
     };
     get_marketplace_claude_code_marketplace_json_get: {
         parameters: {
-            query?: never;
+            query?: {
+                key?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -43275,6 +43326,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -49469,7 +49529,7 @@ export interface operations {
         parameters: {
             query: {
                 /** @description Specify the service being hit. */
-                service: ("slack_budget_alerts" | "langfuse" | "langfuse_otel" | "slack" | "ms_teams" | "openmeter" | "webhook" | "email" | "braintrust" | "datadog" | "datadog_llm_observability" | "generic_api" | "arize" | "galileo" | "newrelic" | "sqs") | string;
+                service: ("slack_budget_alerts" | "langfuse" | "langfuse_otel" | "slack" | "ms_teams" | "openmeter" | "webhook" | "email" | "braintrust" | "datadog" | "datadog_llm_observability" | "generic_api" | "arize" | "galileo" | "newrelic" | "pointfive" | "sqs") | string;
             };
             header?: never;
             path?: never;
