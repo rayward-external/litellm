@@ -45,7 +45,6 @@ from typing import (
     TYPE_CHECKING,
     Union,
 )
-from collections.abc import Mapping
 from litellm.types.integrations.datadog import DatadogInitParams
 from litellm.types.integrations.newrelic import NewRelicInitParams
 from litellm.litellm_core_utils.core_helpers import drop_params_env_flag
