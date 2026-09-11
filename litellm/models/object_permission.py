@@ -23,4 +23,6 @@ class LiteLLM_ObjectPermissionTable(LiteLLMPydanticObjectBase):
     blocked_tools: list[str] | None = []
     search_tools: list[str] | None = []
     mcp_tool_search_enabled: bool | None = None
-    skills: list[str] | None = None  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+    skills: list[str] | None = (
+        None  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+    )

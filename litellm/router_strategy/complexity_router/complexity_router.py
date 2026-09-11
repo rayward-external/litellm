@@ -500,7 +500,9 @@ def _human_text(content: object, marker_pairs: tuple[tuple[str, str], ...] = _DE
 def _encrypted_classifier_task(
     request_kwargs: Mapping[str, object] | None,
     marker_pairs: tuple[tuple[str, str], ...],
-) -> dict[str, object] | None:  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+) -> (
+    dict[str, object] | None
+):  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
     from litellm.litellm_core_utils.prompt_templates.factory import resolve_structured_messages
 
     raw_input: Final = (request_kwargs or EMPTY_MAPPING).get("input")
@@ -514,7 +516,9 @@ def _encrypted_classifier_task(
         (
             item
             for item in reversed(items)
-            if (messages := resolve_structured_messages(messages=None, request_kwargs={"input": [item]}))  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+            if (
+                messages := resolve_structured_messages(messages=None, request_kwargs={"input": [item]})
+            )  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             and any(_iter_human_asks_newest_first(messages, marker_pairs))
         ),
         None,
@@ -529,7 +533,9 @@ def _encrypted_classifier_task(
         return None
     return {  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
         **current,
-        "content": [part for part in parts if part.get("type") in ("input_text", "encrypted_content")],  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+        "content": [
+            part for part in parts if part.get("type") in ("input_text", "encrypted_content")
+        ],  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
     }
 
 
@@ -2005,7 +2011,9 @@ class ComplexityRouter(CustomLogger):
             raise ValueError("classifier_llm_config is not set")
 
         include_assistant: Final = self.config.classifier_context_include_assistant_turns
-        marker_pairs: Final = self._reminder_markers_for_request(request_kwargs or {})  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+        marker_pairs: Final = self._reminder_markers_for_request(
+            request_kwargs or {}
+        )  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
         context_enabled: Final = bool(messages) and self.config.classifier_context_window_size > 0
         prior_turns: Final = (
             _extract_prior_turns(
@@ -2079,7 +2087,10 @@ class ComplexityRouter(CustomLogger):
         )
         proxy_server_request: Final = {
             "originating_request_masked": masked_originating_request(request_kwargs),
-            "body": {"model": llm_config.model, **payload},  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+            "body": {
+                "model": llm_config.model,
+                **payload,
+            },  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
         }
         classify: Final = (
             self.litellm_router_instance.aresponses
@@ -2128,14 +2139,21 @@ class ComplexityRouter(CustomLogger):
         input_items, instructions = transformation.convert_chat_completion_messages_to_responses_api(messages)
         llm_config: Final = self.config.classifier_llm_config
         reasoning: Final = (
-            {"reasoning": {"effort": llm_config.reasoning_effort}}  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+            {
+                "reasoning": {"effort": llm_config.reasoning_effort}
+            }  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             if llm_config is not None and llm_config.reasoning_effort is not None
             else {}  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
         )
         return {  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
-            "input": [*input_items, encrypted_task],  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+            "input": [
+                *input_items,
+                encrypted_task,
+            ],  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             "instructions": instructions,
-            "text": transformation.transform_response_format_to_text_format(dict(response_format)),  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+            "text": transformation.transform_response_format_to_text_format(
+                dict(response_format)
+            ),  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             "store": False,
             "_require_encrypted_task_support": True,
             **reasoning,

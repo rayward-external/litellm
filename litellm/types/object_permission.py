@@ -23,4 +23,6 @@ class ObjectPermissionDict(TypedDict, total=False):
     models: list[str] | None
     search_tools: list[str] | None
     mcp_tool_search_enabled: bool | None
-    skills: ReadOnly[list[str] | None]  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+    skills: ReadOnly[
+        list[str] | None
+    ]  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging

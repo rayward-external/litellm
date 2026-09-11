@@ -40,7 +40,8 @@ class ObjectPermissionRepository(BaseRepository[LiteLLM_ObjectPermissionTable]):
         blocked_tools: list[str] | None = None,
         mcp_toolsets: list[str] | None = None,
         search_tools: list[str] | None = None,
-        skills: list[str] | None = None,  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+        skills: list[str]
+        | None = None,  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
     ) -> LiteLLM_ObjectPermissionTable:
         """Create a new object permission record."""
         data: Final[dict[str, Any]] = {}
@@ -82,7 +83,8 @@ class ObjectPermissionRepository(BaseRepository[LiteLLM_ObjectPermissionTable]):
         blocked_tools: list[str] | None = None,
         mcp_toolsets: list[str] | None = None,
         search_tools: list[str] | None = None,
-        skills: list[str] | None = None,  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+        skills: list[str]
+        | None = None,  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
     ) -> LiteLLM_ObjectPermissionTable | None:
         """Update an object permission record."""
         data: Final[dict[str, Any]] = {}

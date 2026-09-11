@@ -96,7 +96,9 @@ async def _enterprise_license_required(
         )
 
 
-router: Final = APIRouter(dependencies=[Depends(_enterprise_license_required)])  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+router: Final = APIRouter(
+    dependencies=[Depends(_enterprise_license_required)]
+)  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
 
 
 class _ObjectPermissionRow(Protocol):

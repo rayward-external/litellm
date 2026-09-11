@@ -63,5 +63,9 @@ def classifier_audit_fields(payload: Mapping[str, object]) -> ClassifierAudit:
     return ClassifierAudit(classifier_input=classifier_input, originating_request_masked=originating_request)
 
 
-def without_classifier_audit(payload: Mapping[str, object]) -> dict[str, object]:  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
-    return {key: value for key, value in payload.items() if key not in CLASSIFIER_AUDIT_FIELDS}  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+def without_classifier_audit(
+    payload: Mapping[str, object],
+) -> dict[str, object]:  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+    return {
+        key: value for key, value in payload.items() if key not in CLASSIFIER_AUDIT_FIELDS
+    }  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging

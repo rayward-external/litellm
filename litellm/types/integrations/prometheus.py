@@ -995,7 +995,11 @@ class PrometheusMetricLabels:
             )
             else ()
         )
-        return [*default_labels, *custom_labels, *input_sequence_length_labels]  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+        return [
+            *default_labels,
+            *custom_labels,
+            *input_sequence_length_labels,
+        ]  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
 
 
 _USER_API_KEY_LABEL_VALUE_INIT_ALIASES: Final[Mapping[str, str]] = MappingProxyType(

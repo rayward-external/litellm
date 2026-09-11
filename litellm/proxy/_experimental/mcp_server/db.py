@@ -1822,7 +1822,12 @@ async def resolve_user_oauth_access_token(
             bound_token: Final = await mcp_per_user_token_cache.get_token(user_id, server_id)
             if bound_token is not None:
                 if await credential_binding_matches(
-                    binding, user_id, server_id, {"identity_binding_proof": bound_token.identity_binding_proof}  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+                    binding,
+                    user_id,
+                    server_id,
+                    {
+                        "identity_binding_proof": bound_token.identity_binding_proof
+                    },  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
                 ):
                     return bound_token.access_token
                 await mcp_per_user_token_cache.delete(user_id, server_id)

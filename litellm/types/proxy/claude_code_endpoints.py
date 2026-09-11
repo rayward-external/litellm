@@ -78,7 +78,9 @@ class PluginResponse(BaseModel):
     name: str = Field(..., description="Plugin name")
     version: str | None = Field(None, description="Plugin version")
     description: str | None = Field(None, description="Plugin description")
-    source: dict[str, str] = Field(..., description="Plugin source reference")  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+    source: dict[str, str] = Field(
+        ..., description="Plugin source reference"
+    )  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
     enabled: bool = Field(..., description="Whether plugin is enabled")
 
 

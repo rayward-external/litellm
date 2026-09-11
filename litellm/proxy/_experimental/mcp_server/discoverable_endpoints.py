@@ -1113,11 +1113,17 @@ async def exchange_token_with_server(
         binding: Final = resolved_server.oauth_identity_binding
         if binding is not None and binding.mode == "enforce":
             if bridge_identity is None or not bridge_identity.oauth_nonce:
-                raise HTTPException(status_code=403, detail={"error": "oauth_identity_binding_failed"})  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+                raise HTTPException(
+                    status_code=403, detail={"error": "oauth_identity_binding_failed"}
+                )  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             if request_user_id is not None and request_user_id != bridge_identity.litellm_user_id:
-                raise HTTPException(status_code=403, detail={"error": "oauth_principal_mismatch"})  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+                raise HTTPException(
+                    status_code=403, detail={"error": "oauth_principal_mismatch"}
+                )  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             if not code_verifier:
-                raise HTTPException(status_code=403, detail={"error": "oauth_identity_binding_failed"})  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+                raise HTTPException(
+                    status_code=403, detail={"error": "oauth_identity_binding_failed"}
+                )  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
         bridge_token_relay: Final = _dcr_bridge_relays_client_registration(resolved_server)
         if bridge_token_relay and not redirect_uri:
             raise HTTPException(

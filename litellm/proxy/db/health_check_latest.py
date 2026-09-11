@@ -89,7 +89,9 @@ async def fetch_latest_health_checks_for_models(
     if not model_names:
         return ()
     try:
-        rows: Final = await prisma_client.db.query_raw(LATEST_HEALTH_CHECKS_FOR_MODELS_SQL, list(model_names))  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+        rows: Final = await prisma_client.db.query_raw(
+            LATEST_HEALTH_CHECKS_FOR_MODELS_SQL, list(model_names)
+        )  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
         return _ROWS_ADAPTER.validate_python(rows)
     except Exception as query_err:  # noqa: BLE001  # a paged model list must not fail on its health decoration
         verbose_proxy_logger.error("Error getting latest health checks for models: %s", query_err)

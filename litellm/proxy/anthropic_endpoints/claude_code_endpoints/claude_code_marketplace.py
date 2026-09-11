@@ -237,12 +237,16 @@ def _validate_plugin_source(source: Mapping[str, str]) -> None:
         if "sha256" in source and not _VALID_SHA256_RE.match(source["sha256"]):
             raise HTTPException(
                 status_code=400,
-                detail={"error": "archive 'sha256' must be a 64-character hex digest"},  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+                detail={
+                    "error": "archive 'sha256' must be a 64-character hex digest"
+                },  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             )
     else:
         raise HTTPException(
             status_code=400,
-            detail={"error": "source.source must be 'github', 'url', 'git-subdir', or 'archive'"},  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+            detail={
+                "error": "source.source must be 'github', 'url', 'git-subdir', or 'archive'"
+            },  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
         )
 
 
@@ -411,8 +415,12 @@ async def list_plugins(
         prisma_client: Final = await _get_prisma_client()
 
         visibility: Final[SkillVisibility] = skill_visibility(user_api_key_dict)
-        plugins: Final[Sequence[_PluginRecord]] = await ClaudeCodePluginRepository(prisma_client).table.find_many(
-            where={"enabled": True} if enabled_only else visibility.where()  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+        plugins: Final[Sequence[_PluginRecord]] = await ClaudeCodePluginRepository(
+            prisma_client
+        ).table.find_many(
+            where={"enabled": True}
+            if enabled_only
+            else visibility.where()  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
         )
 
         plugin_list: Final = []
@@ -493,7 +501,9 @@ async def get_plugin(
         if not skill_visibility(user_api_key_dict).allows(plugin):
             raise HTTPException(
                 status_code=403,
-                detail={"error": f"Plugin '{plugin_name}' is not granted to this key"},  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+                detail={
+                    "error": f"Plugin '{plugin_name}' is not granted to this key"
+                },  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             )
 
         manifest: Final[Mapping[str, object]] = json.loads(plugin.manifest_json or "{}") if plugin.manifest_json else {}

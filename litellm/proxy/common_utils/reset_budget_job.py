@@ -247,7 +247,8 @@ def _queue_enduser_resets(writes: LinkedSpendResetWrites, cascade: "_BudgetCasca
         where={"budget_id": None, "spend": {"gt": 0, "lte": cap}}  # mutable-ok: prisma where filter must be a dict
     )
     writes.queue_spend_decrement(
-        where={"budget_id": None, "spend": {"gt": cap}}, amount=cap  # mutable-ok: prisma where filter must be a dict
+        where={"budget_id": None, "spend": {"gt": cap}},
+        amount=cap,  # mutable-ok: prisma where filter must be a dict
     )
 
 

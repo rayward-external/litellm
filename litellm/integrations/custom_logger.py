@@ -954,7 +954,9 @@ class CustomLogger:  # https://docs.litellm.ai/docs/observability/custom_callbac
         params: Final = model_call_details.get("litellm_params")
         request: Final = params.get("proxy_server_request") if isinstance(params, dict) else None
         redacted_params: Final = (
-            MappingProxyType({"litellm_params": {**params, "proxy_server_request": without_classifier_audit(request)}})  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
+            MappingProxyType(
+                {"litellm_params": {**params, "proxy_server_request": without_classifier_audit(request)}}
+            )  # mutable-ok: upstream code, byte-identical to BerriAI/litellm's litellm_internal_staging
             if turn_off_message_logging and isinstance(params, dict) and isinstance(request, dict)
             else EMPTY_MAPPING
         )
