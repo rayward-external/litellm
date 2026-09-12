@@ -1,5 +1,8 @@
+import ast
 import base64
 import configparser
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -66,6 +69,24 @@ def _query(url: str) -> dict[str, str]:
     return dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query, keep_blank_values=True))
 
 
+def _scram_secret_matches(secret: str, password: str) -> bool:
+    scheme, rest = secret.split("$", 1)
+    iterations_field, rest = rest.split(":", 1)
+    salt_b64, rest = rest.split("$", 1)
+    stored_key_b64, server_key_b64 = rest.split(":", 1)
+    if scheme != "SCRAM-SHA-256":
+        return False
+    salted_password: Final = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), base64.b64decode(salt_b64), int(iterations_field)
+    )
+    stored_key: Final = hashlib.sha256(hmac.new(salted_password, b"Client Key", hashlib.sha256).digest()).digest()
+    server_key: Final = hmac.new(salted_password, b"Server Key", hashlib.sha256).digest()
+    return (
+        base64.b64encode(stored_key).decode("ascii") == stored_key_b64
+        and base64.b64encode(server_key).decode("ascii") == server_key_b64
+    )
+
+
 class TestPlanPgBouncer:
     def test_upstream_route_and_timeouts_move_into_the_pgbouncer_config_without_the_password(self):
         ini: Final = _ini(_plan())
@@ -74,10 +95,23 @@ class TestPlanPgBouncer:
             "connect_query='SET statement_timeout TO ''7000''; SET lock_timeout TO ''3000'''"
         )
 
-    def test_the_auth_file_holds_the_upstream_password_and_the_pool_users_own(self):
+    def test_the_auth_file_holds_the_upstream_password_plain_and_the_pool_user_as_a_scram_secret(self):
         plan: Final = _plan()
         assert plan.upstream_password == "p@ss'w"
-        assert plan.userlist("p@ss'w") == f'"app" "p@ss\'w"\n"litellm_pgbouncer" "{plan.pool_password}"\n'
+        upstream_line, pool_line = plan.userlist("p@ss'w").splitlines()
+        assert upstream_line == '"app" "p@ss\'w"'
+        assert pool_line.startswith('"litellm_pgbouncer" "SCRAM-SHA-256$')
+        secret: Final = pool_line.split(" ", 1)[1].strip('"')
+        assert "p@ss'w" not in secret
+        assert plan.pool_password not in secret
+        assert _scram_secret_matches(secret, plan.pool_password)
+        assert not _scram_secret_matches(secret, "definitely-wrong-password")
+
+    def test_the_pool_users_scram_secret_is_stable_across_userlist_calls(self):
+        plan: Final = _plan()
+        pool_line_first: Final = plan.userlist("first-token").splitlines()[1]
+        pool_line_second: Final = plan.userlist("second-token").splitlines()[1]
+        assert pool_line_first == pool_line_second
 
     def test_a_token_with_quotes_is_escaped_the_way_pgbouncer_reads_it(self):
         assert _plan().userlist('to"ken').startswith('"app" "to""ken"\n')
@@ -713,7 +747,10 @@ class TestStartInContainerPgBouncer:
         )
         assert _query(pooled) == {"connection_limit": "5", "pgbouncer": "true"}
         assert _listening(port)
-        assert auth_log.read_text() == repr(f'"app" "pw"\n"litellm_pgbouncer" "{parsed.password}"\n') + "\n"
+        upstream_line, pool_line = ast.literal_eval(auth_log.read_text()).splitlines()
+        assert upstream_line == '"app" "pw"'
+        secret: Final = pool_line.split(" ", 1)[1].strip('"')
+        assert _scram_secret_matches(secret, parsed.password)
 
     @pytest.mark.filterwarnings("ignore:This process .* is multi-threaded:DeprecationWarning")
     def test_a_forked_worker_exiting_leaves_the_pooler_and_its_files_to_the_parent(self, tmp_path: Path):
@@ -775,7 +812,10 @@ class TestStartInContainerPgBouncer:
         assert parsed.username == "litellm_pgbouncer"
         assert token not in pooled
         assert _listening(port)
-        assert auth_log.read_text() == repr(f'"app" "{token}"\n"litellm_pgbouncer" "{parsed.password}"\n') + "\n"
+        upstream_line, pool_line = ast.literal_eval(auth_log.read_text()).splitlines()
+        assert upstream_line == f'"app" "{token}"'
+        secret: Final = pool_line.split(" ", 1)[1].strip('"')
+        assert _scram_secret_matches(secret, parsed.password)
 
     def test_a_first_token_that_cannot_be_minted_is_reported_without_starting_anything(self, tmp_path: Path):
         port: Final = _free_port()

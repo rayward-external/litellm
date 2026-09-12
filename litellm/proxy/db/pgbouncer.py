@@ -33,7 +33,10 @@ tells them so, while a read replica keeps refreshing its own token.
 from __future__ import annotations
 
 import atexit
+import base64
 import functools
+import hashlib
+import hmac
 import os
 import re
 import secrets
@@ -82,6 +85,8 @@ PGBOUNCER_VERSION_PATTERN: Final = re.compile(r"PgBouncer (\d+)\.(\d+)")
 PGBOUNCER_TOKEN_REFRESH_BUFFER_SECONDS: Final = 180.0
 PGBOUNCER_TOKEN_FALLBACK_REFRESH_SECONDS: Final = 600.0
 PGBOUNCER_TOKEN_RETRY_SECONDS: Final = 30.0
+PGBOUNCER_SCRAM_ITERATIONS: Final = 4096
+PGBOUNCER_SCRAM_SALT_BYTES: Final = 16
 
 # Prisma's client-side TLS params describe the hop to Postgres, which becomes
 # PgBouncer's server side. They move into ``server_tls_*`` and must not stay on
@@ -117,12 +122,18 @@ class PgBouncerPlan:
     upstream_user: str
     upstream_password: str | None
     pool_password: str
+    pool_password_secret: str
     ca_source: str | None = None
 
     def userlist(self, upstream_password: str) -> str:
+        """The upstream entry carries a real Postgres password PgBouncer must replay outward, so it stays
+        plain; the pool user is only ever verified inbound, so its entry holds a stored SCRAM secret instead."""
         return "".join(
             f"{_userlist_quote(user)} {_userlist_quote(password)}\n"
-            for user, password in ((self.upstream_user, upstream_password), (PGBOUNCER_POOL_USER, self.pool_password))
+            for user, password in (
+                (self.upstream_user, upstream_password),
+                (PGBOUNCER_POOL_USER, self.pool_password_secret),
+            )
         )
 
 
@@ -138,6 +149,22 @@ def _single_quoted(value: str) -> str:
 
 def _userlist_quote(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
+
+
+def _scram_sha256_secret(password: str) -> str:
+    """A ``SCRAM-SHA-256$<iterations>:<salt>$<StoredKey>:<ServerKey>`` secret in the same form Postgres
+    stores for ``rolpassword``, which PgBouncer's ``auth_file`` accepts in place of a plaintext password
+    (https://www.pgbouncer.org/config.html#authentication-file-format) for a user it only ever verifies
+    inbound, never replays to an upstream server."""
+    salt: Final = secrets.token_bytes(PGBOUNCER_SCRAM_SALT_BYTES)
+    salted_password: Final = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PGBOUNCER_SCRAM_ITERATIONS)
+    client_key: Final = hmac.new(salted_password, b"Client Key", hashlib.sha256).digest()
+    stored_key: Final = hashlib.sha256(client_key).digest()
+    server_key: Final = hmac.new(salted_password, b"Server Key", hashlib.sha256).digest()
+    return (
+        f"SCRAM-SHA-256${PGBOUNCER_SCRAM_ITERATIONS}:{base64.b64encode(salt).decode('ascii')}$"
+        f"{base64.b64encode(stored_key).decode('ascii')}:{base64.b64encode(server_key).decode('ascii')}"
+    )
 
 
 def _option_settings(tokens: Sequence[str]) -> tuple[str, ...] | None:
@@ -276,6 +303,7 @@ def plan_pgbouncer(
         upstream_user=username,
         upstream_password=password,
         pool_password=pool_password,
+        pool_password_secret=_scram_sha256_secret(pool_password),
         ca_source=params.get("sslcert") or None,
     )
 
