@@ -2,3 +2,8 @@
 id = "GHSA-w8v5-vhqr-4h9v"
 ignoreUntil = 2026-10-01
 reason = "diskcache has no fixed release published; remove this entry once one exists"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+ignoreUntil = 2026-10-11
+reason = "paste (transitive dep of the new litellm-rust OCR/token-counter crates pulled in by the 2026-09-11 upstream sync) is unmaintained with no fixed release; remove this entry once one exists"

@@ -2333,11 +2333,6 @@
       "count": 4
     }
   },
-  "src/components/view_logs/LogDetailsDrawer/LogDetailContent.tsx": {
-    "no-nested-ternary": {
-      "count": 3
-    }
-  },
   "src/components/view_logs/LogDetailsDrawer/LogDetailsDrawer.tsx": {
     "no-nested-ternary": {
       "count": 2
