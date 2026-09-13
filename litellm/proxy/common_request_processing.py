@@ -3,7 +3,7 @@ import contextlib
 import json
 import logging
 import math
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from functools import lru_cache
 from types import MappingProxyType
@@ -24,6 +24,7 @@ from litellm.constants import (
     DEFAULT_MAX_RECURSE_DEPTH,
     LITELLM_DETAILED_TIMING,
     LITELLM_HTTP_STATUS_CLIENT_DISCONNECTED,
+    LITELLM_HTTP_STATUS_UPSTREAM_STREAM_IDLE,
     MAX_LITELLM_CALL_ID_LENGTH,
     MAX_PAYLOAD_SIZE_FOR_DEBUG_LOG,
     NON_INFERENCE_CALL_TYPES,
@@ -249,6 +250,48 @@ UPSTREAM_IDLE_TERMINATION: Final = _StreamTermination(
 
 def _withheld_provider_output(response: object) -> bool:
     return getattr(response, "has_buffered_provider_output", False) is True
+
+
+class _UpstreamActivityStamper:
+    """Relay the raw provider stream, stamping every chunk on an ``UpstreamStreamMonitor``.
+
+    Sits between the provider iterator and the post-call hook chain, which is the
+    only place the provider's own liveness is still visible. Above it the chain
+    can legitimately be silent while the provider talks: a guardrail configured
+    with ``streaming_buffer_until_moderated`` consumes the whole response and
+    yields nothing until its end-of-stream scan passes. The upstream-idle cap
+    reads the stamp rather than what reaches it, so buffering is never mistaken
+    for a dead model.
+
+    Attribute access falls through to the wrapped stream, so a hook that reads
+    ``has_buffered_provider_output`` or calls ``aclose()`` reaches the real one.
+    Installed only when the cap is armed, so the default path allocates nothing.
+    """
+
+    __slots__ = ("_iterator", "_monitor", "_stream")
+
+    def __init__(self, stream: AsyncIterable[object], monitor: UpstreamStreamMonitor) -> None:
+        self._stream = stream
+        self._monitor = monitor
+        # Resolved through `__aiter__` rather than assuming the wrapped object is
+        # its own iterator, and up front so a consumer reaching straight for
+        # `__anext__` gets a stream rather than a crash.
+        self._iterator: AsyncIterator[object] = stream.__aiter__()
+
+    def __aiter__(self) -> "_UpstreamActivityStamper":
+        return self
+
+    async def __anext__(self) -> object:
+        chunk: Final = await self._iterator.__anext__()
+        self._monitor.record_upstream_activity()
+        return chunk
+
+    def __getattr__(self, name: str) -> object:
+        # `getattr` on an arbitrary provider stream is untyped by construction;
+        # all this promises is that a hook reading or closing the stream reaches
+        # the real object rather than this relay.
+        delegated: Final[object] = getattr(self._stream, name)  # pyright: ignore[reportAny]  # untyped by construction
+        return delegated
 
 
 def resolve_litellm_call_id(client_call_id: str | None) -> str:
