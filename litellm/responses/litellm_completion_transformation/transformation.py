@@ -2175,13 +2175,10 @@ class LiteLLMCompletionResponsesConfig:
         # LiteLLMCompletionStreamingIterator._is_server_executed_web_search,
         # which this mirrors for the non-streaming path.
         client_function_tool_names: Final = frozenset(
-            tool.get("name")
-            for tool in (request_tools or [])
-            if isinstance(tool, Mapping) and tool.get("type") == "function" and tool.get("name")
+            tool.get("name") for tool in (request_tools or []) if tool.get("type") == "function" and tool.get("name")
         )
         request_declares_hosted_web_search: Final = any(
-            isinstance(tool, Mapping) and tool.get("type") in ("web_search", "web_search_preview")
-            for tool in (request_tools or [])
+            tool.get("type") in ("web_search", "web_search_preview") for tool in (request_tools or [])
         )
 
         web_search_calls: Final = LiteLLMCompletionResponsesConfig._web_search_calls_by_call_id(

@@ -1,6 +1,6 @@
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any, Final, cast
 
 import litellm
@@ -143,9 +143,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         # of the same name in principle, so a client-defined "web_search"/"web_fetch"
         # function must win over the server-executed heuristic below.
         self._client_function_tool_names: frozenset[str] = frozenset(
-            tool.get("name")
-            for tool in _request_tools
-            if isinstance(tool, Mapping) and tool.get("type") == "function" and tool.get("name")
+            tool.get("name") for tool in _request_tools if tool.get("type") == "function" and tool.get("name")
         )
         # Whether the request asked for one of OpenAI's own hosted web-search
         # tool types. Such a request is served by the structured
@@ -155,8 +153,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         # hosted search, and the id-prefix heuristic below must not override
         # that by guessing from the id/name shape instead.
         self._request_declares_hosted_web_search: bool = any(
-            isinstance(tool, Mapping) and tool.get("type") in ("web_search", "web_search_preview")
-            for tool in _request_tools
+            tool.get("type") in ("web_search", "web_search_preview") for tool in _request_tools
         )
         self._namespace_tool_names = LiteLLMCompletionResponsesConfig.namespace_tool_name_map(
             self.responses_api_request.get("tools")
@@ -480,17 +477,13 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         )
         output_index: Final = self._get_or_assign_tool_output_index(call_id)
         self._sequence_number += 1
+        added_item_kwargs: Final = {"id": item.id, "type": item.type, "status": "in_progress", "action": None}
         added: Final = OutputItemAddedEvent(
             type=ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED,
             output_index=output_index,
-            item=BaseLiteLLMOpenAIResponseObject(
-                id=item.id,
-                type=item.type,
-                status="in_progress",
-                action=None,
-            ),
+            item=BaseLiteLLMOpenAIResponseObject(**added_item_kwargs),
         )
-        added.__dict__["sequence_number"] = self._sequence_number
+        added.__dict__["sequence_number"] = self._sequence_number  # pyright: ignore[reportIndexIssue]  # extra field
         self._pending_tool_events.append(added)
         for event_type, event_class in (
             (ResponsesAPIStreamEvents.WEB_SEARCH_CALL_IN_PROGRESS, WebSearchCallInProgressEvent),
@@ -499,7 +492,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         ):
             self._sequence_number += 1
             event = event_class(type=event_type, output_index=output_index, item_id=item.id)
-            event.__dict__["sequence_number"] = self._sequence_number
+            event.__dict__["sequence_number"] = self._sequence_number  # pyright: ignore[reportIndexIssue]  # extra
             self._pending_tool_events.append(event)
         self._sequence_number += 1
         self._pending_tool_events.append(

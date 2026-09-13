@@ -102,7 +102,9 @@ class RawBytesStreamCollector:
         self._raw_bytes.append(chunk)
 
     def build_logged_response(self, litellm_logging_obj: LiteLLMLoggingObj) -> LoggedRelayResponse | None:
-        all_chunks: Final = self._provider_config._convert_raw_bytes_to_str_lines(self._raw_bytes)
+        all_chunks: Final = self._provider_config._convert_raw_bytes_to_str_lines(  # pyright: ignore[reportPrivateUsage]  # same module, tightly coupled by construction
+            self._raw_bytes
+        )
         return self._provider_config.handle_logging_collected_chunks(
             all_chunks=all_chunks,
             litellm_logging_obj=litellm_logging_obj,
