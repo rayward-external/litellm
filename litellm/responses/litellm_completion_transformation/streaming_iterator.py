@@ -1,6 +1,6 @@
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Final, cast
 
 import litellm
@@ -137,12 +137,33 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         self._accumulated_reasoning_content_parts: list[str] = []
         self._accumulated_provider_specific_fields: dict[str, object] = {}
         self._custom_tool_names: set[str] = extract_custom_tool_names(self.responses_api_request.get("tools"))
-        # Tool calls the PROVIDER ran itself. Only the first delta of a call
-        # carries its name, so the verdict is latched by call id.
-        self._server_executed_web_search_call_ids: set[str] = set()  # mutable-ok: per-call latch
+        _request_tools: Final = self.responses_api_request.get("tools") or []
+        # Names the CLIENT itself declared as an ordinary ``type: "function"`` tool.
+        # A provider-executed web search shares its id prefix with a client tool
+        # of the same name in principle, so a client-defined "web_search"/"web_fetch"
+        # function must win over the server-executed heuristic below.
+        self._client_function_tool_names: frozenset[str] = frozenset(
+            tool.get("name")
+            for tool in _request_tools
+            if isinstance(tool, Mapping) and tool.get("type") == "function" and tool.get("name")
+        )
+        # Whether the request asked for one of OpenAI's own hosted web-search
+        # tool types. Such a request is served by the structured
+        # ``provider_specific_fields.web_search_calls`` signal (see
+        # ``_reserve_web_search_indexes``/``_web_search_calls``) alone: a call
+        # that signal never reports is one the provider did not treat as a
+        # hosted search, and the id-prefix heuristic below must not override
+        # that by guessing from the id/name shape instead.
+        self._request_declares_hosted_web_search: bool = any(
+            isinstance(tool, Mapping) and tool.get("type") in ("web_search", "web_search_preview")
+            for tool in _request_tools
+        )
         self._namespace_tool_names = LiteLLMCompletionResponsesConfig.namespace_tool_name_map(
             self.responses_api_request.get("tools")
         )
+        # Tool calls the PROVIDER ran itself. Only the first delta of a call
+        # carries its name, so the verdict is latched by call id.
+        self._server_executed_web_search_call_ids: set[str] = set()  # mutable-ok: per-call latch
         self._web_search_calls: dict[str, object] = {}  # mutable-ok: latest call by provider id
         self._queued_web_search_call_ids: set[str] = set()  # mutable-ok: emitted call ids
 
@@ -250,6 +271,13 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                 fn_name = str(getattr(fn, "name", "") or "")
                 fn_args_delta = serialize_tool_call_arguments(getattr(fn, "arguments", ""))
             tool_name, tool_namespace = self._responses_namespace_tool_call_fields(fn_name)
+
+            # A provider-executed web search is reported once, at the end, as a
+            # ``web_search_call`` item -- never as streamed function-call events
+            # the client would answer.
+            if self._is_server_executed_web_search(call_id, tool_name):
+                continue
+
             output_index = self._get_or_assign_tool_output_index(call_id)
 
             if call_id not in self._tool_args_by_call_id:
@@ -290,6 +318,15 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
     def _is_server_executed_web_search(self, call_id: str, tool_name: str) -> bool:
         if call_id in self._server_executed_web_search_call_ids:
             return True
+        if tool_name in self._client_function_tool_names or self._request_declares_hosted_web_search:
+            # Either the client defined its own ``type: "function"`` tool under
+            # this name (so a matching id/name pair is that call, not the
+            # provider's own hosted search sharing the same id prefix and tool
+            # name), or the request asked for a hosted web-search tool type,
+            # whose calls are classified from ``_web_search_calls`` alone (see
+            # its docstring) -- the id-prefix heuristic below is only for
+            # bridges that never send that structured signal at all.
+            return False
         if is_server_executed_web_search_call(call_id, tool_name):
             self._server_executed_web_search_call_ids.add(call_id)
             return True

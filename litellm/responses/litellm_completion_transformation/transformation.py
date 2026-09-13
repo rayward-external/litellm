@@ -96,9 +96,11 @@ from litellm.types.utils import (
 )
 
 from .custom_tools import (
+    build_web_search_call_item,
     convert_custom_tool_to_function_tool,
     extract_custom_tool_names,
     is_custom_tool_call,
+    is_server_executed_web_search_call,
     openai_shaped_tool_call_item_id,
     serialize_tool_call_arguments,
     unwrap_custom_tool_arguments,
@@ -2166,6 +2168,21 @@ class LiteLLMCompletionResponsesConfig:
         request_tools: Final = responses_api_request.get("tools") if responses_api_request is not None else None
         custom_tool_names: Final = extract_custom_tool_names(request_tools)
         namespace_tool_names: Final = LiteLLMCompletionResponsesConfig.namespace_tool_name_map(request_tools)
+        # Names the CLIENT itself declared as an ordinary ``type: "function"``
+        # tool, and whether it asked for one of OpenAI's own hosted web-search
+        # tool types. Either one must win over the server-executed-web-search
+        # heuristic below -- see the matching gates in
+        # LiteLLMCompletionStreamingIterator._is_server_executed_web_search,
+        # which this mirrors for the non-streaming path.
+        client_function_tool_names: Final = frozenset(
+            tool.get("name")
+            for tool in (request_tools or [])
+            if isinstance(tool, Mapping) and tool.get("type") == "function" and tool.get("name")
+        )
+        request_declares_hosted_web_search: Final = any(
+            isinstance(tool, Mapping) and tool.get("type") in ("web_search", "web_search_preview")
+            for tool in (request_tools or [])
+        )
 
         web_search_calls: Final = LiteLLMCompletionResponsesConfig._web_search_calls_by_call_id(
             chat_completion_response
@@ -2183,6 +2200,15 @@ class LiteLLMCompletionResponsesConfig:
                 web_search_call = web_search_calls.get(tool_id)
                 if web_search_call is not None:
                     responses_tools.append(web_search_call)
+                elif (
+                    tool_name not in client_function_tool_names
+                    and not request_declares_hosted_web_search
+                    and is_server_executed_web_search_call(tool_id, tool_name)
+                ):
+                    # A web search the PROVIDER already ran is not a call the client
+                    # can make: emit OpenAI's ``web_search_call`` record instead of a
+                    # ``function_call`` the client would have to answer.
+                    responses_tools.append(build_web_search_call_item(tool_id, tool_name, tool_arguments, "completed"))
                 elif is_custom_tool_call(tool_name, custom_tool_names):
                     # Build custom_tool_call output item
                     input_str = unwrap_custom_tool_arguments(tool_arguments)
