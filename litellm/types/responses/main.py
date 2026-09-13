@@ -1,5 +1,5 @@
 from collections.abc import Mapping, Sequence
-from typing import Final, Literal, Optional, Union
+from typing import Final, Literal, Optional, TypeAlias, Union
 
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
 from openai.types.responses.response_function_web_search import ActionSearchSource, ResponseFunctionWebSearch
