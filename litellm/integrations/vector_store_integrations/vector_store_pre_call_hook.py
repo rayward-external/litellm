@@ -175,8 +175,8 @@ class VectorStorePreCallHook(CustomLogger):
     async def _augment_messages(
         self,
         messages: Sequence[AllMessageValues],
-        non_default_params: dict,
-        tools: list[dict] | None,
+        non_default_params: dict,  # mutable-ok: byte-identical to upstream's new _augment_messages (2026-09-13 sync)
+        tools: list[dict] | None,  # mutable-ok: byte-identical to upstream's new _augment_messages (2026-09-13 sync)
         litellm_logging_obj: LiteLLMLoggingObj,
     ) -> VectorStoreAugmentation | None:
         if litellm.vector_store_registry is None:

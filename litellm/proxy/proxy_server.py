@@ -4814,7 +4814,11 @@ class ProxyConfig:
         # verbose_proxy_logger.debug(f"loaded config={json.dumps(config, indent=4)}")
         return config
 
-    async def _process_includes(self, config: dict, config_file_path: str) -> dict:
+    async def _process_includes(
+        self,
+        config: dict,  # mutable-ok: byte-identical to upstream (2026-09-13 sync)
+        config_file_path: str,
+    ) -> dict:  # mutable-ok: byte-identical to upstream (2026-09-13 sync)
         """
         Process includes by appending their contents to the main config
 

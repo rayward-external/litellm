@@ -1453,7 +1453,11 @@ class Logging(LiteLLMLoggingBaseClass):
         return _get_masked_values(headers, ignore_sensitive_values=ignore_sensitive_headers)
 
     def record_post_call(
-        self, original_response: object, input: object, api_key: object, additional_args: dict[str, object]
+        self,
+        original_response: object,
+        input: object,
+        api_key: object,
+        additional_args: dict[str, object],  # mutable-ok: byte-identical to upstream (2026-09-13 sync)
     ) -> None:
         self.model_call_details["input"] = input
         self.model_call_details["api_key"] = api_key

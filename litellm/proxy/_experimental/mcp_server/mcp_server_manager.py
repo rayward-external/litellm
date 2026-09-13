@@ -1690,9 +1690,9 @@ class _DiscoveryCache(Generic[_DiscoveryItem]):
         self._ttl = ttl
         self._adapter = adapter
         self._entries = InMemoryCache(max_size_in_memory=_DISCOVERY_CACHE_LIMIT, max_size_per_item=64, clock=clock)
-        self._pending: dict[
+        self._pending: dict[  # mutable-ok: constant-time fetch registration
             _DiscoveryKey, asyncio.Task[list[_DiscoveryItem]]
-        ] = {}  # mutable-ok: constant-time fetch registration
+        ] = {}
         self._waiters: dict[asyncio.Task[list[_DiscoveryItem]], int] = {}  # mutable-ok: constant-time waiter accounting
 
     def invalidate(self, server_id: str) -> None:

@@ -3519,7 +3519,11 @@ class Router:
                 # api_base, additional_headers) keep flowing.
                 self._hidden_params = dict(getattr(source_iterator, "_hidden_params", None) or {})
 
-            def adopt_fallback_headers(self, fallback_response: object) -> tuple[dict[str, object], dict[str, object]]:
+            def adopt_fallback_headers(
+                self, fallback_response: object
+            ) -> tuple[  # mutable-ok: byte-identical to upstream's new fallback-header plumbing (2026-09-13 sync)
+                dict[str, object], dict[str, object]
+            ]:
                 prepared: Final = Router._prepare_fallback_hidden_params(fallback_response)
                 self._hidden_params = {**prepared[0], "additional_headers": prepared[1]}  # mutable-ok: stream metadata
                 self.fallback_headers_adopted = True
