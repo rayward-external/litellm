@@ -79,6 +79,14 @@ paths-ignore:
   # py/reflective-xss and py/regex-injection FPs surfaced from these paths.
   - "cookbook"
   - "scripts/benchmark_*"
+  # litellm/proxy/_experimental/out is upstream's own checked-in Next.js static
+  # export (production build output, committed by upstream's own "chore: update
+  # Next.js build artifacts" bot), not fork- or hand-authored source. Its chunk
+  # filenames are content-hashed and change on every UI rebuild, so a per-file
+  # exclude or an existing-alert dismissal would just recur under a new hash
+  # next sync; the findings are inside minified third-party bundled deps that
+  # neither this fork nor upstream's own source can meaningfully patch.
+  - "litellm/proxy/_experimental/out"
   # js/clear-text-storage-of-sensitive-data FP: the MCP OAuth access token is
   # held in per-tab window.sessionStorage with a short TTL because the SPA must
   # read it from JS to call MCP servers. sessionStorage is the standard place
