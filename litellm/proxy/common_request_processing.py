@@ -2788,6 +2788,8 @@ class ProxyBaseLLMRequestProcessing:
                         selected_data_generator = wrap_sse_stream_with_keepalive_pings(
                             stream=selected_data_generator,
                             ping_interval_seconds=litellm.anthropic_sse_ping_interval_seconds,
+                            max_upstream_idle_seconds=litellm.stream_max_upstream_idle_seconds,
+                            monitor=stream_idle_monitor,
                         )
                     # Non-streaming response - fall through to normal response handling
                 elif select_data_generator:
