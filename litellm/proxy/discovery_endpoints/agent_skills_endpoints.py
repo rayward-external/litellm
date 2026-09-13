@@ -116,7 +116,7 @@ async def agent_skills_index(
 )
 async def agent_skills_archive(
     skill_id: str,
-    skill: LiteLLM_SkillsTable | None = Depends(stored_skill),
+    skill: LiteLLM_SkillsTable | None = Depends(stored_skill),  # noqa: B008  # FastAPI dependency injection
 ) -> ZipArchiveResponse:
     """Stored skill upload, repacked so SKILL.md sits at the archive root."""
     archive: Final = await _archive_for(skill) if skill is not None else None

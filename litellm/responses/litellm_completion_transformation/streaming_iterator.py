@@ -447,12 +447,10 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             type=ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED,
             output_index=output_index,
             item=BaseLiteLLMOpenAIResponseObject(
-                **{  # mutable-ok: BaseLiteLLM object accepts dynamic item fields
-                    "id": item.id,
-                    "type": item.type,
-                    "status": "in_progress",
-                    "action": None,
-                }
+                id=item.id,
+                type=item.type,
+                status="in_progress",
+                action=None,
             ),
         )
         added.__dict__["sequence_number"] = self._sequence_number

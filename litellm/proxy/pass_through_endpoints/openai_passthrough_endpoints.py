@@ -21,7 +21,7 @@ async def openai_passthrough_route(
     endpoint: str,
     request: Request,
     fastapi_response: Response,
-    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),  # noqa: B008  # FastAPI dependency injection
 ) -> Response:
     """
     Dedicated pass-through to the OpenAI API with no overlap with LiteLLM's native
