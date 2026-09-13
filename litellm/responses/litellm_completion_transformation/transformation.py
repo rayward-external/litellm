@@ -96,11 +96,9 @@ from litellm.types.utils import (
 )
 
 from .custom_tools import (
-    build_web_search_call_item,
     convert_custom_tool_to_function_tool,
     extract_custom_tool_names,
     is_custom_tool_call,
-    is_server_executed_web_search_call,
     openai_shaped_tool_call_item_id,
     serialize_tool_call_arguments,
     unwrap_custom_tool_arguments,
