@@ -207,3 +207,39 @@ def test_per_stage_revert_to_vanilla_is_detected(tmp_path, dockerfile, stage, ar
         f"a failure was reported but none names {dockerfile}'s `{stage}` stage: "
         f"{failures}"
     )
+
+
+def test_unrelated_dockerfile_with_colliding_stage_name_is_not_flagged(tmp_path):
+    """STAGE_TO_ARG is keyed by stage name alone, not by file.
+
+    A Dockerfile outside the shared ARG_IMAGE convention (e.g. one that pins
+    its own base image directly, with no `ARG *_IMAGE` at all) can still name
+    one of its stages `runtime`/`builder`/`ui-builder`/`uvbin` by coincidence.
+    Adding a fork-patches.txt row for such a file must not make the checker
+    treat it as if it had dropped an ARG it never had -- that is exactly what
+    happened when litellm-rust/crates/ai-gateway/Dockerfile's `chef` stage pin
+    was tracked: its unrelated `runtime` stage was wrongly reported as a
+    dropped `ARG LITELLM_RUNTIME_IMAGE`.
+    """
+    dockerfile_text = (
+        "FROM rust:1.98-slim-bookworm@sha256:" + "a" * 64 + " AS chef\n"
+        "FROM chef AS builder\n"
+        "FROM python:3.11-slim-bookworm@sha256:" + "b" * 64 + " AS runtime\n"
+    )
+    rel_path = "unrelated/Dockerfile"
+    target = tmp_path / rel_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(dockerfile_text, encoding="utf-8")
+
+    assert rel_path not in verifier.EXPECTED_LITERAL_PIN_STAGES, (
+        "test fixture must stay outside the ARG_IMAGE convention to exercise "
+        "the collision this regression guards against"
+    )
+    row = verifier.Row(1, rel_path, r"^FROM \S+@sha256:", "synthetic test row")
+
+    all_failures = verifier.dockerfile_pin_failures([row], repo_root=str(tmp_path))
+    mine = [f for f in all_failures if f.startswith(f"{rel_path}:")]
+    assert mine == [], (
+        f"an unrelated file's coincidentally-named `runtime`/`builder` stage "
+        f"must not be compared against STAGE_TO_ARG's ARG names: {mine}"
+    )
