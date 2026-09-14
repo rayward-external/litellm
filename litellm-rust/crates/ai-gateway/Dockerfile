@@ -11,12 +11,14 @@
 # OPENAI_API_KEY referenced by config.yaml, etc.) is injected as environment
 # variables at deploy time.
 
+ARG LITELLM_RUNTIME_IMAGE=python:3.11-slim-bookworm@sha256:721dc13fd1be0a771e54b72097634291d628d0007dee9da777e2ce676a9c998f
+
 # ---- Chef -------------------------------------------------------------------
 # cargo-chef caches the dependency build so only the gateway crate recompiles on
 # a source-only change. python3-dev is present in every rust stage because the
 # `python-config` feature links libpython via pyo3 (even in the cook step), and
 # python3-pip builds the litellm wheel in the builder stage.
-FROM rust:1.98-slim-bookworm AS chef
+FROM rust:1.98-slim-bookworm@sha256:ebd900bae66fd508b466cef82d64a83a5fb34682e4c8b2797a42908bddc95a57 AS chef
 ENV PYO3_PYTHON=python3.11
 # rustup reads rust-toolchain.toml from any parent of the working directory, so
 # copying it in is what keeps every cargo call below on the repo's pinned
