@@ -554,6 +554,7 @@ disable_copilot_system_to_assistant: bool = False  # If false (default), convert
 public_mcp_servers: Optional[List[str]] = None
 public_mcp_hub_strict_whitelist: bool = True
 public_model_groups: Optional[List[str]] = None
+public_skills_index: bool = False
 public_agent_groups: Optional[List[str]] = None
 agent_search_embedding_model: Optional[str] = None
 mcp_tool_search: Optional[Mapping[str, object]] = None
@@ -1423,6 +1424,7 @@ from .exceptions import (
     InvalidRequestError,
     BadRequestError,
     ImageFetchError,
+    VectorStoreSearchError,
     NotFoundError,
     PermissionDeniedError,
     RateLimitError,
@@ -1524,9 +1526,11 @@ from .vector_stores.vector_store_registry import (
     VectorStoreRegistry,
     VectorStoreIndexRegistry,
 )
+from .types.vector_stores import VectorStoreSearchFailureMode
 
 vector_store_registry: Optional[VectorStoreRegistry] = None
 vector_store_index_registry: Optional[VectorStoreIndexRegistry] = None
+vector_store_search_failure_mode: VectorStoreSearchFailureMode = "annotate"
 
 ### RAG ###
 from . import rag

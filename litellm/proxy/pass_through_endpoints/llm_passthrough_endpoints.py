@@ -100,8 +100,7 @@ else:
     ProxyConfig = Any  # rebind-ok: runtime fallback
 
 vertex_llm_base: Final = VertexBase()
-router: Final[APIRouter] = APIRouter()
-openai_passthrough_router: Final[APIRouter] = APIRouter()
+router: Final = APIRouter()
 default_vertex_config: Final = None
 passthrough_endpoint_router: Final = PassthroughEndpointRouter()
 
@@ -2473,11 +2472,6 @@ async def vertex_proxy_route(
     )
 
 
-@openai_passthrough_router.api_route(
-    "/openai_passthrough/{endpoint:path}",
-    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
-    tags=["OpenAI Pass-through", "pass-through"],
-)
 @router.api_route(
     "/openai/{endpoint:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
