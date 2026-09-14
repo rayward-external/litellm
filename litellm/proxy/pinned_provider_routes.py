@@ -56,6 +56,17 @@ wins. The route-precedence test in
 ``tests/test_litellm/proxy/test_pinned_provider_routes.py`` guards this
 against upstream reorderings.
 
+Since the 2026-09-13 sync that catch-all may not EXIST yet when this module
+runs. ``llm_passthrough_endpoints`` became a LAZY feature
+(``litellm/proxy/_lazy_features.py``): ``proxy_server`` calls
+``reserve_lazy_slot(app, "llm_passthrough")`` instead of
+``include_router``, and the real routes appear only on the first request
+under one of its prefixes — which include ``/azure/``, ``/azure_ai/``,
+``/bedrock/`` and ``/vertex_ai/``. So ``_first_matching_route_index``
+matches nothing, the pinned routes are appended at the END, and
+``_force_load``'s ``_in_registry_order`` then re-splices the catch-alls at
+their reserved slot, AHEAD of them. See ``_lazy_passthrough_slot_index``.
+
 The ``/v1/messages`` delegate is imported inside the handler:
 ``litellm.proxy.anthropic_endpoints.endpoints`` is a lazily attached module
 (``litellm/proxy/_lazy_features.py``), and a module-level import here would
@@ -65,7 +76,7 @@ defeat that startup laziness.
 import asyncio
 import importlib
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Final
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.routing import APIRoute
@@ -467,6 +478,46 @@ def _existing_literal_post_route(app: "FastAPI", path: str) -> bool:
     return False
 
 
+_LAZY_PASSTHROUGH_MODULE: Final = "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints"
+
+
+def _lazy_passthrough_slot_index(app: "FastAPI") -> int | None:
+    """Splice target for when the pass-through catch-alls do not exist YET.
+
+    ``llm_passthrough_endpoints`` is a lazy feature, so at config-load time
+    its ``/{provider}/{endpoint:path}`` routes are not registered and
+    ``_first_matching_route_index`` has nothing to splice before. Appending is
+    not safe: ``_force_load`` rebuilds the table through ``_in_registry_order``,
+    which puts each lazy feature's routes back at its RESERVED slot — ahead of
+    anything appended after it.
+
+    Returns the index of the slot's anchor route, so the pinned routes land
+    immediately BEFORE it. Two things follow. ``_in_registry_order`` emits the
+    lazy routes at ``_slot_index`` (anchor + 1), i.e. after ours, so precedence
+    survives the reorder. And ``_eager_route_wins`` scans ``routes[:anchor + 1]``,
+    which now contains the pinned routes, so a pinned path short-circuits the
+    middleware and never force-loads the feature at all.
+
+    ``None`` means "not applicable, use the ordinary scan": no slot reserved
+    (vanilla or older proxy), the feature already loaded (the real catch-alls
+    are findable), or the anchor is no longer in the table.
+    """
+    # Read the registry off app.state rather than calling _lazy_features._lazy_slots:
+    # that helper is private, and it is exactly this getattr. Going direct keeps the
+    # coupling to one documented attribute name instead of a private function AND an
+    # import cycle we would have to break with a function-local import.
+    slots: Final = getattr(app.state, "lazy_slots", None)
+    if not slots or _LAZY_PASSTHROUGH_MODULE not in slots:
+        return None
+    loaded: Final = getattr(app.state, "lazy_loaded", None)
+    if loaded and _LAZY_PASSTHROUGH_MODULE in loaded:
+        return None
+    anchor: Final = slots[_LAZY_PASSTHROUGH_MODULE]
+    if anchor is None:
+        return 0
+    return next((i for i, route in enumerate(app.router.routes) if route is anchor), None)
+
+
 def _first_matching_route_index(app: "FastAPI", paths: list[str]) -> int:
     """Index of the first existing route that would match any of ``paths``
     (e.g. the provider pass-through catch-alls). The pinned routes must be
@@ -636,7 +687,14 @@ def initialize_pinned_provider_routes(
     # Splice before the first route (catch-all or otherwise) that would
     # swallow a pinned path — include_router alone would append AFTER the
     # pass-through catch-alls and lose the in-order match.
-    insert_at = _first_matching_route_index(app, registered_paths)
+    # Two candidate splice points, and whichever comes FIRST wins. The scan finds
+    # the catch-all that would swallow a pinned path; the lazy slot covers the case
+    # where that catch-all is not registered YET, so the scan returns len(routes)
+    # and appending would lose to the re-splice on load. min() keeps the scan
+    # authoritative once the feature has loaded and the real route is findable.
+    scanned_at: Final = _first_matching_route_index(app, registered_paths)
+    lazy_slot: Final = _lazy_passthrough_slot_index(app)
+    insert_at: Final = scanned_at if lazy_slot is None else min(scanned_at, lazy_slot)
     start = len(app.router.routes)
     app.include_router(pinned_router)
     new_routes = app.router.routes[start:]

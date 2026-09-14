@@ -112,6 +112,47 @@ def _remove_pinned_routes(app) -> None:
     registry.clear()
 
 
+
+def _ensure_lazy_passthrough_loaded(app) -> None:
+    """Register the pass-through catch-alls if they are still lazy.
+
+    Mirrors _force_load exactly — real module, real register_fn, then the same
+    _in_registry_order + hot_routes_first rebuild — because the REORDER is the
+    step that decides precedence, and a test that skips it grades a route table
+    production never has. Idempotent: a second call is a no-op.
+    """
+    import importlib
+
+    from litellm.proxy._lazy_features import (
+        LAZY_FEATURES,
+        _in_registry_order,
+        _lazy_slots,
+    )
+    from litellm.proxy.route_priority import hot_routes_first
+
+    module_path = "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints"
+    loaded = getattr(app.state, "lazy_loaded", None)
+    if loaded is None:
+        loaded = set()
+        app.state.lazy_loaded = loaded
+    if module_path in loaded:
+        return
+    feature = next((f for f in LAZY_FEATURES if f.module_path == module_path), None)
+    if feature is None:
+        return  # older proxy: the router was eagerly included, nothing to do
+
+    module = importlib.import_module(module_path)
+    before = len(app.router.routes)
+    feature.register_fn(app, module)
+    previous = getattr(app.state, "lazy_routes", {})
+    lazy_routes = {**previous, module_path: tuple(app.router.routes[before:])}
+    app.state.lazy_routes = lazy_routes
+    app.router.routes[:] = hot_routes_first(
+        _in_registry_order(app.router.routes, lazy_routes, LAZY_FEATURES, _lazy_slots(app))
+    )
+    loaded.add(module_path)
+
+
 @pytest.fixture
 def pinned_app():
     """The real proxy app with all seven pinned providers registered and
@@ -628,7 +669,15 @@ class TestRoutePrecedence:
     @pytest.mark.parametrize("provider", CATCH_ALL_PROVIDERS)
     def test_pinned_routes_precede_the_catch_all(self, pinned_app, provider):
         """The catch-all must still exist AND sit after the pinned routes —
-        proves the pinned routes actually beat a live overlapping route."""
+        proves the pinned routes actually beat a live overlapping route.
+
+        Since the 2026-09-13 sync the catch-alls are LAZY, so on a freshly
+        imported proxy app they are simply absent and this test failed with
+        "expected the catch-all to exist" — a red test that had stopped saying
+        anything about precedence. Load the feature the way the middleware does
+        before asserting, so it grades the real overlapping routes again.
+        """
+        _ensure_lazy_passthrough_loaded(pinned_app)
         routes = pinned_app.router.routes
         catch_all_path = f"/{provider}/{{endpoint:path}}"
         catch_all_idx = [i for i, r in enumerate(routes) if getattr(r, "path", None) == catch_all_path]
@@ -1402,3 +1451,131 @@ class TestConvergenceMatrixNoClientInputChangesPinnedRouting:
             assert "_pinned_provider_route" not in (updated.get(field) or {})
         router_field = get_metadata_variable_name_from_kwargs(updated)
         assert _resolve_request_tags(updated.get(router_field) or {}) != ["pin:bedrock"]
+
+
+class TestPrecedenceWhenTheCatchAllIsLazy:
+    """The 2026-09-13 sync made llm_passthrough_endpoints a LAZY feature, and
+    that silently reversed pinned-route precedence in production.
+
+    `proxy_server` stopped calling `include_router(llm_passthrough_router)` and
+    now calls `reserve_lazy_slot(app, "llm_passthrough")`; the real
+    `/{provider}/{endpoint:path}` routes appear only on the first request under
+    one of its prefixes -- which include /azure/, /azure_ai/, /bedrock/ and
+    /vertex_ai/. So at config-load time `_first_matching_route_index` matched
+    nothing, the pinned routes were appended at the end, and `_force_load`'s
+    `_in_registry_order` then re-spliced the catch-alls at their reserved slot
+    AHEAD of them.
+
+    Measured in production 2026-09-14: /azure and /azure_ai returned 500
+    ("Required 'AZURE_API_BASE' in environment"), /vertex_ai 401, /bedrock 403,
+    while ordinary /v1/chat/completions routing was unaffected.
+
+    TestRoutePrecedence above cannot catch this: its fixture asserts the
+    catch-all already exists and never replays the reorder, so it grades a table
+    production never has.
+    """
+
+    LAZY_MODULE = "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints"
+
+    def _app_with_reserved_slot(self):
+        """A proxy-shaped app: eager routes, the reserved slot, more eager
+        routes after it (proxy_server has ~a dozen include_router calls that
+        follow), and no catch-alls yet."""
+        from litellm.proxy._lazy_features import reserve_lazy_slot
+
+        app = FastAPI()
+
+        async def _stub(request: Request):  # noqa: ARG001
+            return {}
+
+        app.add_api_route("/v1/chat/completions", _stub, methods=["POST"])
+        app.add_api_route("/v1/files", _stub, methods=["POST"])
+        reserve_lazy_slot(app, "llm_passthrough")
+        # Registered AFTER the slot, exactly as proxy_server does.
+        app.add_api_route("/health/liveliness", _stub, methods=["GET"])
+        app.add_api_route("/key/generate", _stub, methods=["POST"])
+        return app
+
+    def _load_the_lazy_feature(self, app, providers):
+        """Replay _force_load's registration + reorder without importing the
+        real (heavy) module: add the catch-alls, record them as this feature's
+        lazy routes, then run the same two functions _force_load runs."""
+        from litellm.proxy._lazy_features import LAZY_FEATURES, _in_registry_order, _lazy_slots
+        from litellm.proxy.route_priority import hot_routes_first
+
+        async def _catch_all(request: Request):  # noqa: ARG001
+            return {}
+
+        before = len(app.router.routes)
+        for provider in providers:
+            app.add_api_route(
+                f"/{provider}/{{endpoint:path}}",
+                _catch_all,
+                methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+            )
+        lazy_routes = {self.LAZY_MODULE: tuple(app.router.routes[before:])}
+        app.router.routes[:] = hot_routes_first(
+            _in_registry_order(app.router.routes, lazy_routes, LAZY_FEATURES, _lazy_slots(app))
+        )
+
+    @pytest.mark.parametrize("provider", ["azure", "azure_ai", "bedrock", "vertex_ai"])
+    def test_pinned_routes_survive_the_lazy_reorder(self, provider):
+        app = self._app_with_reserved_slot()
+        registered = initialize_pinned_provider_routes(
+            app=app,
+            general_settings={PINNED_PROVIDER_ROUTES_SETTING: [provider]},
+        )
+        assert registered, f"{provider} registered no pinned routes"
+
+        self._load_the_lazy_feature(app, [provider])
+
+        routes = app.router.routes
+        catch_all_idx = [i for i, r in enumerate(routes) if getattr(r, "path", None) == f"/{provider}/{{endpoint:path}}"]
+        pinned_idx = [i for i, r in enumerate(routes) if _pinned_provider_of(app, r) == provider]
+        assert catch_all_idx, "the replayed lazy load registered no catch-all"
+        assert pinned_idx, f"pinned routes for {provider} vanished in the reorder"
+        assert max(pinned_idx) < min(catch_all_idx), (
+            f"pinned routes for {provider} ended up AFTER its catch-all once the lazy "
+            "feature loaded — every pinned request would hit the pass-through instead"
+        )
+
+    def test_a_pinned_path_never_force_loads_the_feature(self):
+        """The stronger property: the middleware short-circuits, so the pinned
+        route answers without the lazy module being imported at all."""
+        from litellm.proxy._lazy_features import LAZY_FEATURES, _eager_route_wins
+
+        app = self._app_with_reserved_slot()
+        initialize_pinned_provider_routes(
+            app=app,
+            general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["azure"]},
+        )
+        feature = next(f for f in LAZY_FEATURES if f.module_path == self.LAZY_MODULE)
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/azure/v1/chat/completions",
+            "path_params": {},
+            "root_path": "",
+            "headers": [],
+        }
+        assert _eager_route_wins(app, feature, scope) is True, (
+            "a pinned path does not beat the lazy slot, so every such request pays a "
+            "force-load and then loses to the catch-all it re-splices"
+        )
+
+    def test_the_ordinary_scan_still_wins_once_the_feature_is_loaded(self):
+        """The fix must not hijack the normal path: when the catch-alls are
+        already registered, splice before THEM, not at the stale slot."""
+        app = self._app_with_reserved_slot()
+        self._load_the_lazy_feature(app, ["azure"])
+        app.state.lazy_loaded = {self.LAZY_MODULE}
+
+        initialize_pinned_provider_routes(
+            app=app,
+            general_settings={PINNED_PROVIDER_ROUTES_SETTING: ["azure"]},
+        )
+
+        routes = app.router.routes
+        catch_all_idx = [i for i, r in enumerate(routes) if getattr(r, "path", None) == "/azure/{endpoint:path}"]
+        pinned_idx = [i for i, r in enumerate(routes) if _pinned_provider_of(app, r) == "azure"]
+        assert max(pinned_idx) < min(catch_all_idx)
