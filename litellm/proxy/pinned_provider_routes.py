@@ -502,15 +502,15 @@ def _lazy_passthrough_slot_index(app: "FastAPI") -> int | None:
     (vanilla or older proxy), the feature already loaded (the real catch-alls
     are findable), or the anchor is no longer in the table.
     """
-    # noqa: PLC0415 -- imported inside the function on purpose. _lazy_features
-    # imports proxy internals, and this module is imported from proxy_server at
-    # config-load time; a module-level import closes that cycle.
-    from litellm.proxy._lazy_features import _lazy_slots  # noqa: PLC0415  # avoids an import cycle with proxy_server
-
-    slots: Final = _lazy_slots(app)
-    if _LAZY_PASSTHROUGH_MODULE not in slots:
+    # Read the registry off app.state rather than calling _lazy_features._lazy_slots:
+    # that helper is private, and it is exactly this getattr. Going direct keeps the
+    # coupling to one documented attribute name instead of a private function AND an
+    # import cycle we would have to break with a function-local import.
+    slots: Final = getattr(app.state, "lazy_slots", None)
+    if not slots or _LAZY_PASSTHROUGH_MODULE not in slots:
         return None
-    if _LAZY_PASSTHROUGH_MODULE in getattr(app.state, "lazy_loaded", frozenset()):
+    loaded: Final = getattr(app.state, "lazy_loaded", None)
+    if loaded and _LAZY_PASSTHROUGH_MODULE in loaded:
         return None
     anchor: Final = slots[_LAZY_PASSTHROUGH_MODULE]
     if anchor is None:
