@@ -502,7 +502,10 @@ def _lazy_passthrough_slot_index(app: "FastAPI") -> int | None:
     (vanilla or older proxy), the feature already loaded (the real catch-alls
     are findable), or the anchor is no longer in the table.
     """
-    from litellm.proxy._lazy_features import _lazy_slots  # noqa: PLC0415
+    # noqa: PLC0415 -- imported inside the function on purpose. _lazy_features
+    # imports proxy internals, and this module is imported from proxy_server at
+    # config-load time; a module-level import closes that cycle.
+    from litellm.proxy._lazy_features import _lazy_slots  # noqa: PLC0415  # avoids an import cycle with proxy_server
 
     slots: Final = _lazy_slots(app)
     if _LAZY_PASSTHROUGH_MODULE not in slots:
@@ -684,13 +687,14 @@ def initialize_pinned_provider_routes(
     # Splice before the first route (catch-all or otherwise) that would
     # swallow a pinned path — include_router alone would append AFTER the
     # pass-through catch-alls and lose the in-order match.
-    insert_at = _first_matching_route_index(app, registered_paths)
-    # The catch-alls may be lazy and therefore absent; then the scan above
-    # returns len(routes) and appending would lose to the re-splice on load.
-    # min() keeps the ordinary scan authoritative once the feature is loaded.
+    # Two candidate splice points, and whichever comes FIRST wins. The scan finds
+    # the catch-all that would swallow a pinned path; the lazy slot covers the case
+    # where that catch-all is not registered YET, so the scan returns len(routes)
+    # and appending would lose to the re-splice on load. min() keeps the scan
+    # authoritative once the feature has loaded and the real route is findable.
+    scanned_at: Final = _first_matching_route_index(app, registered_paths)
     lazy_slot: Final = _lazy_passthrough_slot_index(app)
-    if lazy_slot is not None:
-        insert_at = min(insert_at, lazy_slot)
+    insert_at: Final = scanned_at if lazy_slot is None else min(scanned_at, lazy_slot)
     start = len(app.router.routes)
     app.include_router(pinned_router)
     new_routes = app.router.routes[start:]
