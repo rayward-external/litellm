@@ -8,6 +8,7 @@ on:
   schedule:
     # Run daily at 04:00 UTC
     - cron: "0 4 * * *"
+  workflow_dispatch:
 
 # Least-privilege default token; the analyze job elevates to security-events: write.
 permissions:
