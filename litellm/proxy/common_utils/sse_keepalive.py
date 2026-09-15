@@ -101,7 +101,7 @@ def _format_stream_identity(identity: "UpstreamStreamIdentity | None") -> str:
         ("model_id", identity.model_id),
         ("litellm_call_id", identity.litellm_call_id),
     )
-    present: Final = [f"{name}={value}" for name, value in fields if value]
+    present: Final = tuple(f"{name}={value}" for name, value in fields if value)
     return f" [{' '.join(present)}]" if present else ""
 
 
