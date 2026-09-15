@@ -11,6 +11,8 @@
 # OPENAI_API_KEY referenced by config.yaml, etc.) is injected as environment
 # variables at deploy time.
 
+ARG LITELLM_RUNTIME_IMAGE=python:3.11-slim-bookworm@sha256:721dc13fd1be0a771e54b72097634291d628d0007dee9da777e2ce676a9c998f
+
 # ---- Chef -------------------------------------------------------------------
 # cargo-chef caches the dependency build so only the gateway crate recompiles on
 # a source-only change. python3-dev is present in every rust stage because the
