@@ -182,8 +182,8 @@ async def _hash_password_in_dict(
             validate_password_policy(data["password"], general_settings)
             await validate_password_not_breached(data["password"], general_settings)
         data["password"] = hash_password(data["password"])
-        data["password_reset_required"] = True
-        data["last_breach_check_at"] = None
+        data["password_reset_required"] = True  # rebind-ok: helper mutates its dict param in place by design
+        data["last_breach_check_at"] = None  # rebind-ok: same in-place mutation contract as the line above
 
 
 def _strip_password_from_response(response) -> None:
