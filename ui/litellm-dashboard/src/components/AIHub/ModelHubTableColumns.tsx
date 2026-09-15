@@ -32,6 +32,7 @@ export interface ModelHubData {
   supports_function_calling: boolean;
   supported_openai_params?: string[];
   is_public_model_group: boolean;
+  description?: string;
   [key: string]: any;
 }
 
