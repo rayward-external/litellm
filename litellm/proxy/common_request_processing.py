@@ -66,6 +66,7 @@ from litellm.proxy.common_utils.openai_error_payload import (
 )
 from litellm.proxy.common_utils.sse_keepalive import (
     SSE_COMMENT_PING_BYTES,
+    UpstreamStreamIdentity,
     UpstreamStreamMonitor,
     coerce_keepalive_interval,
     resolve_ttft_keepalive_interval,
@@ -2774,6 +2775,25 @@ class ProxyBaseLLMRequestProcessing:
                             ping_interval_seconds=litellm.anthropic_sse_ping_interval_seconds,
                             max_upstream_idle_seconds=litellm.stream_max_upstream_idle_seconds,
                         )
+                        # Labels the cap's own warning if it fires (#791) -
+                        # built only when the cap can actually arm, matching
+                        # the monitor's own allocate-nothing-by-default rule.
+                        # `model`/`litellm_call_id` are set at logging-object
+                        # construction time and always present;
+                        # `custom_llm_provider` is set once the router has
+                        # resolved a deployment, which by this point it has -
+                        # a caller with no deployment (all fields absent) logs
+                        # exactly like today, not an error.
+                        stream_identity: Final = (
+                            UpstreamStreamIdentity(
+                                model=logging_obj.model,
+                                custom_llm_provider=getattr(logging_obj, "custom_llm_provider", None),
+                                model_id=self.maybe_get_model_id(logging_obj),
+                                litellm_call_id=logging_obj.litellm_call_id,
+                            )
+                            if stream_idle_monitor is not None
+                            else None
+                        )
                         selected_data_generator = ProxyBaseLLMRequestProcessing.async_sse_data_generator(
                             response=response,
                             user_api_key_dict=user_api_key_dict,
@@ -2790,6 +2810,7 @@ class ProxyBaseLLMRequestProcessing:
                             ping_interval_seconds=litellm.anthropic_sse_ping_interval_seconds,
                             max_upstream_idle_seconds=litellm.stream_max_upstream_idle_seconds,
                             monitor=stream_idle_monitor,
+                            identity=stream_identity,
                         )
                     # Non-streaming response - fall through to normal response handling
                 elif select_data_generator:

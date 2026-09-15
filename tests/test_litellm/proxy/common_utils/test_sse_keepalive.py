@@ -14,6 +14,7 @@ from litellm.proxy.common_utils.sse_keepalive import (
     SSE_COMMENT_PING,
     SSE_COMMENT_PING_BYTES,
     UPSTREAM_IDLE_SSE_ERROR_TYPE,
+    UpstreamStreamIdentity,
     UpstreamStreamMonitor,
     anthropic_upstream_idle_sse_chunk,
     resolve_ttft_keepalive_interval,
@@ -260,6 +261,96 @@ async def test_upstream_idle_cap_ends_a_hung_stream_with_a_terminal_error_event(
     assert collected[0] == MESSAGE_START_CHUNK
     assert collected[-1] == anthropic_upstream_idle_sse_chunk(IDLE_CAP_SECONDS)
     assert closed.is_set(), "the hung upstream was left open"
+
+
+@pytest.mark.asyncio
+async def test_upstream_idle_cap_warning_has_no_suffix_without_an_identity(caplog):
+    """The un-labelled shape (today's deployed behaviour) is unchanged byte-for-byte.
+
+    rayward-internal/llm-gateway-infra#791's log-based metric anchors on this
+    line's literal prefix; this pins the case with no ``identity`` passed at
+    all, matching every call site that predates this patch, so a caller that
+    never opts in produces exactly the line it always did.
+    """
+    closed: Final = asyncio.Event()
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=_hung_after([MESSAGE_START_CHUNK], closed),
+        ping_interval_seconds=IDLE_PING_INTERVAL_SECONDS,
+        max_upstream_idle_seconds=IDLE_CAP_SECONDS,
+    )
+
+    with caplog.at_level("WARNING", logger="LiteLLM Proxy"):
+        await asyncio.wait_for(_collect(wrapped), timeout=TEST_DEADLINE_SECONDS)
+
+    warnings: Final = [r.getMessage() for r in caplog.records if "upstream produced no output for" in r.getMessage()]
+    assert len(warnings) == 1
+    assert (
+        warnings[0]
+        == f"upstream produced no output for {IDLE_CAP_SECONDS:.1f}s (cap {IDLE_CAP_SECONDS:g}s); ending the stream"
+    )
+
+
+@pytest.mark.asyncio
+async def test_upstream_idle_cap_warning_labels_every_identity_field_when_given(caplog):
+    """The attribution this patch exists for: #791's whole blocker was that this
+    line carries no model, provider, deployment or call id.
+    """
+    closed: Final = asyncio.Event()
+    identity: Final = UpstreamStreamIdentity(
+        model="claude-opus-5",
+        custom_llm_provider="bedrock",
+        model_id="d34db33f",
+        litellm_call_id="call-123",
+    )
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=_hung_after([MESSAGE_START_CHUNK], closed),
+        ping_interval_seconds=IDLE_PING_INTERVAL_SECONDS,
+        max_upstream_idle_seconds=IDLE_CAP_SECONDS,
+        identity=identity,
+    )
+
+    with caplog.at_level("WARNING", logger="LiteLLM Proxy"):
+        await asyncio.wait_for(_collect(wrapped), timeout=TEST_DEADLINE_SECONDS)
+
+    warnings: Final = [r.getMessage() for r in caplog.records if "upstream produced no output for" in r.getMessage()]
+    assert len(warnings) == 1
+    assert warnings[0].startswith(
+        f"upstream produced no output for {IDLE_CAP_SECONDS:.1f}s (cap {IDLE_CAP_SECONDS:g}s); ending the stream"
+    ), "the identity suffix must come after the fork's own fixed text, not inside it"
+    assert warnings[0].endswith(
+        " [model=claude-opus-5 custom_llm_provider=bedrock model_id=d34db33f litellm_call_id=call-123]"
+    )
+
+
+@pytest.mark.asyncio
+async def test_upstream_idle_cap_warning_omits_absent_identity_fields(caplog):
+    """A caller that only has SOME of the identity is not blocked from labelling the rest.
+
+    Also the shape a route with no resolved deployment produces: every field
+    ``None`` renders no brackets at all, same as passing no identity.
+    """
+    closed: Final = asyncio.Event()
+    wrapped: Final = wrap_sse_stream_with_keepalive_pings(
+        stream=_hung_after([MESSAGE_START_CHUNK], closed),
+        ping_interval_seconds=IDLE_PING_INTERVAL_SECONDS,
+        max_upstream_idle_seconds=IDLE_CAP_SECONDS,
+        identity=UpstreamStreamIdentity(model="claude-opus-5", litellm_call_id="call-123"),
+    )
+
+    with caplog.at_level("WARNING", logger="LiteLLM Proxy"):
+        await asyncio.wait_for(_collect(wrapped), timeout=TEST_DEADLINE_SECONDS)
+
+    warnings: Final = [r.getMessage() for r in caplog.records if "upstream produced no output for" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "custom_llm_provider" not in warnings[0]
+    assert "model_id" not in warnings[0]
+    assert warnings[0].endswith(" [model=claude-opus-5 litellm_call_id=call-123]")
+
+
+def test_an_all_none_identity_renders_the_same_as_no_identity():
+    from litellm.proxy.common_utils.sse_keepalive import _format_stream_identity
+
+    assert _format_stream_identity(UpstreamStreamIdentity()) == _format_stream_identity(None) == ""
 
 
 @pytest.mark.asyncio
