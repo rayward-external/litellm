@@ -292,7 +292,13 @@ def dockerfile_pin_failures(rows: list[Row], repo_root: str = REPO_ROOT) -> list
         for m in _FROM_PIN_RE.finditer(text):
             ref = m.group("ref")
             stage = (m.group("stage") or "").lower()
-            expected_arg = STAGE_TO_ARG.get(stage)
+            # STAGE_TO_ARG is keyed by stage name alone, so it only applies to
+            # files that actually use the shared ARG_IMAGE indirection this map
+            # describes. Without this guard, an unrelated Dockerfile that
+            # happens to reuse a stage name like `runtime` (e.g. ai-gateway's,
+            # which pins its own base image with no ARG at all) is wrongly
+            # flagged as if it had dropped that ARG.
+            expected_arg = STAGE_TO_ARG.get(stage) if rel_path in EXPECTED_LITERAL_PIN_STAGES else None
             pinned_stages_seen[rel_path].add(stage)
 
             if expected_arg and expected_arg in args:
