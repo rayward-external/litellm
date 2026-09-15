@@ -4,6 +4,7 @@ import json
 import math
 import time
 from collections.abc import AsyncGenerator, Iterable, Mapping
+from dataclasses import dataclass
 from typing import Final
 
 import anyio
@@ -61,6 +62,47 @@ def anthropic_upstream_idle_sse_chunk(max_upstream_idle_seconds: float) -> str:
         f'event: error\ndata: {{"type": "error", "error": '
         f'{{"type": "{UPSTREAM_IDLE_SSE_ERROR_TYPE}", "message": {json.dumps(message)}}}}}\n\n'
     )
+
+
+@dataclass(frozen=True, slots=True)
+class UpstreamStreamIdentity:
+    """Caller-supplied identifiers for the upstream-idle cap's own warning.
+
+    The cap's log line otherwise carries only ``idle_seconds`` and the
+    configured cap - no model, provider, deployment or call id (gateway issue
+    rayward-internal/llm-gateway-infra#791) - so neither a log-based metric
+    nor any downstream join can attribute a firing to a leg. Every field is
+    optional: a caller that only has some of this (or none of it, on a route
+    that never resolved a deployment) should not be blocked from labelling
+    the rest, and the cap must keep firing and keep logging with everything
+    ``None``.
+    """
+
+    model: str | None = None
+    custom_llm_provider: str | None = None
+    model_id: str | None = None
+    litellm_call_id: str | None = None
+
+
+def _format_stream_identity(identity: "UpstreamStreamIdentity | None") -> str:
+    """Render ``identity`` as a trailing ``" [key=value ...]"``, or ``""``.
+
+    Appended after the cap warning's fixed text rather than woven into it, so
+    a log-based metric anchored on the format string's own prefix (the text
+    before its first ``%``-substitution) keeps matching whether or not a
+    caller ever passes an identity - the two are independent by construction,
+    not by coincidence.
+    """
+    if identity is None:
+        return ""
+    fields: Final = (
+        ("model", identity.model),
+        ("custom_llm_provider", identity.custom_llm_provider),
+        ("model_id", identity.model_id),
+        ("litellm_call_id", identity.litellm_call_id),
+    )
+    present: Final = [f"{name}={value}" for name, value in fields if value]
+    return f" [{' '.join(present)}]" if present else ""
 
 
 class UpstreamStreamMonitor:
@@ -126,6 +168,7 @@ def wrap_sse_stream_with_keepalive_pings(
     max_upstream_idle_seconds: float | str | None = None,
     idle_error_chunk: str | None = None,
     monitor: UpstreamStreamMonitor | None = None,
+    identity: UpstreamStreamIdentity | None = None,
 ) -> AsyncGenerator[str, None]:
     """Fill idle gaps in an SSE stream, including the one before its first chunk.
 
@@ -144,6 +187,11 @@ def wrap_sse_stream_with_keepalive_pings(
     provider activity on it (so a post-call hook that buffers a healthy upstream
     does not read as silence) and the stream's own teardown reads back whether
     the cap, rather than the client, is what ended it.
+
+    ``identity`` labels the cap's own warning line if and when it fires - see
+    ``UpstreamStreamIdentity``. Purely cosmetic to the stream itself: nothing
+    here reads it except the one log line, so passing it changes no chunk,
+    no timing and no termination behaviour.
     """
     interval: Final = coerce_keepalive_interval(ping_interval_seconds)
     if interval is None:
@@ -160,6 +208,7 @@ def wrap_sse_stream_with_keepalive_pings(
             else idle_error_chunk
         ),
         monitor=monitor,
+        identity=identity,
     )
 
 
@@ -170,6 +219,7 @@ async def _keepalive_ping_stream(
     max_upstream_idle_seconds: float | None = None,
     idle_error_chunk: str | None = None,
     monitor: UpstreamStreamMonitor | None = None,
+    identity: UpstreamStreamIdentity | None = None,
 ) -> AsyncGenerator[str, None]:
     # `upstream_wait_started` is restamped whenever the wrapper starts waiting on
     # the next chunk of the stream it consumes, so time spent suspended at a
@@ -218,9 +268,10 @@ async def _keepalive_ping_stream(
                     idle_seconds = now - idle_window_started()  # rebind-ok: re-measured each wake
                     if idle_seconds >= idle_deadline_seconds:
                         verbose_proxy_logger.warning(
-                            "upstream produced no output for %.1fs (cap %ss); ending the stream",
+                            "upstream produced no output for %.1fs (cap %ss); ending the stream%s",
                             idle_seconds,
                             idle_deadline_seconds,
+                            _format_stream_identity(identity),
                         )
                         # Told to the stream below before it is closed, so its
                         # teardown reports the proxy's own timeout as itself
