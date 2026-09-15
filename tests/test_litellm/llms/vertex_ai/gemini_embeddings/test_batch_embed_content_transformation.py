@@ -304,6 +304,12 @@ class TestProcessEmbedContentResponseUsage:
     Regression for multimodal calls recording prompt_tokens=0 / spend=$0.
     """
 
+    # These tests assert on hardcoded per-second/per-image rates, so they need the
+    # packaged cost map: the network-fetched `main` copy lags this branch until merge
+    # and can carry a different pricing shape (e.g. per-token instead of per-second)
+    # for the same model.
+    pytestmark = pytest.mark.usefixtures("local_model_cost_map")
+
     MODEL = "gemini-embedding-2"
 
     def test_multimodal_image_preserves_usage_metadata(self):
