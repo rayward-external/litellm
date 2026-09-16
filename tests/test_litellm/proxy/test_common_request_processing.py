@@ -3228,7 +3228,9 @@ class TestDDSpanTaggerTagRequest:
         """user_email is tagged so JWT-authenticated requests are traceable per person."""
         user_key = self._make_user_api_key_dict(user_email="user@example.com")
 
-        with patch("litellm.proxy.dd_span_tagger.set_active_span_tag") as mock_set_tag:
+        with patch(  # test-quality-ok: same best-effort tagger seam as the sibling tests above
+            "litellm.proxy.dd_span_tagger.set_active_span_tag"
+        ) as mock_set_tag:
             DDSpanTagger.tag_request(
                 user_api_key_dict=user_key,
                 requested_model=None,
@@ -3240,7 +3242,9 @@ class TestDDSpanTaggerTagRequest:
         """No user email tag when the authenticated identity has no email."""
         user_key = self._make_user_api_key_dict(key_alias="my-prod-key", user_email=None)
 
-        with patch("litellm.proxy.dd_span_tagger.set_active_span_tag") as mock_set_tag:
+        with patch(  # test-quality-ok: same best-effort tagger seam as the sibling tests above
+            "litellm.proxy.dd_span_tagger.set_active_span_tag"
+        ) as mock_set_tag:
             DDSpanTagger.tag_request(
                 user_api_key_dict=user_key,
                 requested_model="gpt-4o",
