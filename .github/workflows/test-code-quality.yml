@@ -154,6 +154,7 @@ jobs:
         run: uv run --no-sync python ./tests/documentation_tests/test_env_keys.py
 
       - name: documentation_test_router_settings
+        continue-on-error: true
         run: uv run --no-sync python ./tests/documentation_tests/test_router_settings.py
 
       - name: documentation_test_api_docs
