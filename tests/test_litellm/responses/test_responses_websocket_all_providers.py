@@ -3286,6 +3286,60 @@ class TestNativeWebSocketPerTurnCostAccounting:
         )
 
     @pytest.mark.asyncio
+    async def test_each_turn_preserves_resolved_provider_in_cost_logging(self):
+        """A native socket's resolved provider must survive every per-turn
+        synthetic logging dispatch, rather than being lost after connection
+        setup."""
+        from unittest.mock import AsyncMock
+
+        import websockets.exceptions  # noqa: F401  (lazy submodule must be importable)
+
+        from litellm.integrations.custom_logger import CustomLogger
+
+        class Spy(CustomLogger):
+            def __init__(self):
+                self.providers = []
+
+            async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+                standard_logging_object = kwargs.get("standard_logging_object") or {}
+                self.providers.append(
+                    (
+                        kwargs.get("custom_llm_provider"),
+                        standard_logging_object.get("custom_llm_provider"),
+                        kwargs.get("litellm_params", {}).get("api_base"),
+                    )
+                )
+
+        spy = Spy()
+        self._register_spy_and_fanout(spy)
+
+        websocket = MagicMock()
+        websocket.send_text = AsyncMock()
+        backend_ws = MagicMock()
+        backend_ws.recv = AsyncMock(
+            side_effect=[
+                self._completed_event("resp_provider_1", 100),
+                self._completed_event("resp_provider_2", 200),
+                Exception("stop"),
+            ]
+        )
+        handler = _make_streaming(
+            websocket=websocket,
+            backend_ws=backend_ws,
+            custom_llm_provider="azure",
+            api_base="https://example.openai.azure.com",
+            authorized_model="deployment-name",
+        )
+
+        await handler.backend_to_client()
+        await handler._drain_pending_cost_tasks()
+
+        assert spy.providers == [
+            ("azure", "azure", "https://example.openai.azure.com"),
+            ("azure", "azure", "https://example.openai.azure.com"),
+        ]
+
+    @pytest.mark.asyncio
     async def test_three_turn_session_costs_exactly_three_turns(self, monkeypatch):
         """Fails before the fix (0 costed events -- $0 spend, matching production);
         must show exactly 3, not 4 (a leftover close-time dispatch) or 6 (double

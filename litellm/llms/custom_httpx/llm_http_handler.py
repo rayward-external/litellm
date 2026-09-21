@@ -6766,6 +6766,8 @@ class BaseLLMHTTPHandler:
                     authorized_model=model,
                     request_defaults=request_defaults,
                     responses_api_provider_config=responses_api_provider_config,
+                    custom_llm_provider=custom_llm_provider,
+                    api_base=api_base,
                 )
                 await streaming.bidirectional_forward()
 
