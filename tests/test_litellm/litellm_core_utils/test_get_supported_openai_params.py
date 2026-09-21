@@ -70,19 +70,21 @@ def test_base_model_is_additive_not_replacement():
 def test_base_model_adds_capabilities_the_real_model_lacks():
     """Regression for #27717 (the behavior the union must preserve).
 
-    ``gemini-3.1-pro`` isn't in the cost map so it advertises no reasoning support,
-    but the registered ``gemini-3.1-pro-preview`` base_model does. The hint must add
-    ``reasoning_effort``/``thinking`` without the call erroring."""
+    An opaque deployment name advertises no reasoning support, but the registered
+    ``gemini-3.1-pro-preview`` base_model does. The hint must add
+    ``reasoning_effort``/``thinking`` without the call erroring. Keep the deployment
+    name neutral: provider-family fallbacks may legitimately teach released model
+    names new capabilities even when they have no exact cost-map entry."""
     real_only = set(
         get_supported_openai_params(
-            model="gemini-3.1-pro", custom_llm_provider="gemini"
+            model="unregistered-deployment", custom_llm_provider="gemini"
         )
     )
     assert "reasoning_effort" not in real_only
 
     combined = set(
         get_supported_openai_params(
-            model="gemini-3.1-pro",
+            model="unregistered-deployment",
             custom_llm_provider="gemini",
             base_model="gemini-3.1-pro-preview",
         )
