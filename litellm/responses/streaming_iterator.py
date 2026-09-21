@@ -1611,6 +1611,8 @@ class ResponsesWebSocketStreaming:
         authorized_model: str | None = None,
         request_defaults: Mapping[str, object] | None = None,
         responses_api_provider_config: BaseResponsesAPIConfig | None = None,
+        custom_llm_provider: str | None = None,
+        api_base: str | None = None,
     ):
         self.websocket = websocket
         self.backend_ws = backend_ws
@@ -1628,6 +1630,8 @@ class ResponsesWebSocketStreaming:
         self.authorized_model: str | None = authorized_model
         self.request_defaults: Mapping[str, object] = request_defaults or MappingProxyType({})
         self.responses_api_provider_config: BaseResponsesAPIConfig | None = responses_api_provider_config
+        self.custom_llm_provider = custom_llm_provider
+        self.api_base = api_base
         # Strong references to in-flight per-turn cost dispatch tasks
         # (_dispatch_turn_cost). asyncio only holds a WEAK reference to a
         # bare create_task() result -- per the stdlib docs, a task whose
@@ -1768,7 +1772,9 @@ class ResponsesWebSocketStreaming:
             litellm_params={  # mutable-ok: built fresh per turn, matching function_setup's own litellm_params construction
                 "metadata": turn_metadata,
                 "litellm_metadata": turn_metadata,
+                "api_base": self.api_base,
             },
+            custom_llm_provider=self.custom_llm_provider,
         )
         return turn_logging_obj
 
