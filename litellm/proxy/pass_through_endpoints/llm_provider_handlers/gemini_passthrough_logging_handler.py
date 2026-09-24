@@ -1,5 +1,6 @@
 import re
 from datetime import datetime
+from typing import Any, Final
 
 import httpx
 
@@ -7,6 +8,9 @@ import litellm
 from litellm._logging import verbose_proxy_logger
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.llms.gemini.videos.transformation import GeminiVideoConfig
+from litellm.llms.vertex_ai.gemini.vertex_and_google_ai_studio_gemini import (
+    ModelResponseIterator as GeminiModelResponseIterator,
+)
 from litellm.proxy._types import PassThroughEndpointLoggingTypedDict
 from litellm.proxy.pass_through_endpoints.llm_provider_handlers.vertex_passthrough_logging_handler import (
     VertexPassthroughLoggingHandler,
@@ -116,57 +120,17 @@ class GeminiPassthroughLoggingHandler:
                 "kwargs": kwargs,
             }
 
-    @staticmethod
-    def _handle_logging_gemini_collected_chunks(
-        litellm_logging_obj: LiteLLMLoggingObj,
-        passthrough_success_handler_obj: PassThroughEndpointLogging,
-        url_route: str,
-        request_body: dict,
-        endpoint_type: EndpointType,
-        start_time: datetime,
-        all_chunks: list[str],
-        model: str | None,
-        end_time: datetime,
-    ) -> PassThroughEndpointLoggingTypedDict:
-        """
-        Takes raw chunks from Gemini passthrough endpoint and logs them in litellm callbacks
-
-        - Builds complete response from chunks
-        - Creates standard logging object
-        - Logs in litellm callbacks
-        """
-        kwargs: dict[str, object] = {}
-        model = model or GeminiPassthroughLoggingHandler.extract_model_from_url(url_route)
-        complete_streaming_response: Final = GeminiPassthroughLoggingHandler._build_complete_streaming_response(
-            all_chunks=all_chunks,
-            litellm_logging_obj=litellm_logging_obj,
-            model=model,
-            url_route=url_route,
-        )
-
-        if complete_streaming_response is None:
-            verbose_proxy_logger.error(
-                "Unable to build complete streaming response for Gemini passthrough endpoint, not logging..."
-            )
-            return {
-                "result": None,
-                "kwargs": kwargs,
-            }
-
-        kwargs = GeminiPassthroughLoggingHandler._create_gemini_response_logging_payload_for_generate_content(
-            litellm_model_response=complete_streaming_response,
-            model=model,
-            kwargs=kwargs,
-            start_time=start_time,
-            end_time=end_time,
-            logging_obj=litellm_logging_obj,
-            custom_llm_provider="gemini",
-        )
-
-        return {
-            "result": complete_streaming_response,
-            "kwargs": kwargs,
-        }
+    # A `_handle_logging_gemini_collected_chunks` used to live here with no call
+    # site: streamed Gemini passthrough already gets costed via
+    # VertexPassthroughLoggingHandler (HttpPassThroughEndpointHelpers.get_endpoint_type
+    # classifies every generateContent/streamGenerateContent URL, Gemini's AI
+    # Studio host included, as EndpointType.VERTEX_AI, and
+    # VertexPassthroughLoggingHandler._get_custom_llm_provider_from_url resolves
+    # generativelanguage.googleapis.com to "gemini"), so a duplicate
+    # EndpointType.GEMINI dispatch branch is unreachable code that looks like
+    # coverage without providing any. See streaming_handler.py's dispatch and
+    # get_endpoint_type in pass_through_endpoints.py, which never returns
+    # EndpointType.GEMINI.
 
     @staticmethod
     def _build_complete_streaming_response(

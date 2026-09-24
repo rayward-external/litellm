@@ -2415,13 +2415,17 @@ async def _aresponses_websocket(
             api_base=resolved_api_base,
         )
 
-    resolved_api_key: Final = (
-        dynamic_api_key
-        or litellm_params.api_key
-        or litellm.api_key
-        or litellm.openai_key
-        or get_secret_str("OPENAI_API_KEY")
-    )
+    # _aresponses_websocket's resolved_api_key must stay None for a
+    # Bedrock/Vertex/SageMaker-style deployment, exactly like the HTTP path
+    # leaves litellm_params.api_key at None for those providers (litellm/main.py's
+    # bedrock dispatch never resolves an api_key at all -- boto3 reads keys from
+    # .env). A cross-provider secret-store tail (litellm.api_key, litellm.openai_key,
+    # OPENAI_API_KEY) races an OpenAI key in ahead of a provider's own
+    # config/completion() credential resolution, and base_aws_llm.py's
+    # get_request_headers treats ANY non-None api_key as an AWS bearer token,
+    # bypassing SigV4. Matching the HTTP path's litellm_params.api_key exactly
+    # instead lets each provider resolve its own credentials or fallback.
+    resolved_api_key: Final = dynamic_api_key or api_key or litellm_params.api_key
 
     # Extract params that we're passing explicitly to avoid duplicates in **kwargs
     _explicit_keys: Final = {

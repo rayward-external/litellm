@@ -98,6 +98,10 @@ from litellm.proxy.litellm_pre_call_utils import (
     LiteLLMProxyRequestSetup,
     _get_dynamic_logging_metadata,  # pyright: ignore[reportPrivateUsage]  # shared proxy helper, same import style as _read_request_body above
 )
+from litellm.proxy.pass_through_endpoints.passthrough_admission import (
+    PassthroughAdmissionError,
+    enforce_passthrough_admission,
+)
 from litellm.proxy.route_llm_request import ProxyModelNotFoundError
 from litellm.proxy.utils import normalize_route_for_root_path
 from litellm.repositories.team_repository import TeamRepository
@@ -113,6 +117,12 @@ from litellm.types.passthrough_endpoints.pass_through_endpoints import (
 )
 from litellm.types.utils import TRUSTED_CALLBACK_VARS_FIELD, Usage
 
+from .common_utils import (
+    is_cohere_streaming_url,
+    is_fireworks_url,
+    is_openai_compatible_url,
+    is_openai_wire_compatible_route,
+)
 from .llm_provider_handlers.tinyfish_passthrough_logging_handler import (
     is_tinyfish_agent_url,
 )

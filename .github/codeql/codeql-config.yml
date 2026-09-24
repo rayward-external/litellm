@@ -22,6 +22,10 @@ query-filters:
       id: py/clear-text-logging-sensitive-data  # CWE-312
   - exclude:
       id: py/polynomial-redos                   # CWE-730
+  # Taint explosion from pervasive logging, same scaling class as
+  # py/clear-text-logging-sensitive-data above; hangs the python leg without it.
+  - exclude:
+      id: py/log-injection                      # CWE-117
   # Import resolution confuses stdlib types with management_endpoints/types.py.
   # The generic cycle query also reports intentional deferred imports.
   - exclude:
@@ -33,6 +37,35 @@ query-filters:
       id: py/unused-global-variable
   - exclude:
       id: py/ineffectual-statement
+  # Tracebacks only reach loggers; ProxyException.to_dict() never serializes a
+  # traceback field, so CodeQL cannot distinguish log sinks from HTTP response
+  # sinks here.
+  - exclude:
+      id: py/stack-trace-exposure                # CWE-209
+  # Security-critical URL validation uses urlparse() tuple comparison; the
+  # flagged startswith/endswith calls are non-security normalization (JWT
+  # heuristics, trailing-slash strip), not the sanitization the query targets.
+  - exclude:
+      id: py/incomplete-url-substring-sanitization  # CWE-184
+  # Same FP class as py/incomplete-url-substring-sanitization above, surfaced
+  # in ui/litellm-dashboard/**/*.test.tsx files that assert on rendered DOM
+  # text via RTL's getByText(/https:\/\/.../) -- not a security decision on an
+  # untrusted URL. Not caught by the "tests" paths-ignore below, which only
+  # matches the top-level Python tests/ dir.
+  - exclude:
+      id: js/incomplete-url-substring-sanitization  # CWE-184
+  # Every httpx client resolves verify via get_ssl_verify()/get_ssl_configuration()
+  # (litellm/llms/custom_httpx/http_handler.py), defaulting to True and only
+  # disabled via explicit operator opt-in for enterprise self-signed/internal-CA
+  # deployments; CodeQL cannot follow the dynamic default so it flags every call site.
+  - exclude:
+      id: py/request-without-cert-validation      # CWE-295
+  # Fires on test-litellm-ui-lint.yml/test-litellm-ui-unit.yml for checking out
+  # PR content + npm ci under pull_request (non-privileged). Runners are
+  # ephemeral GitHub-hosted and no workflow_run/pull_request_target job in this
+  # repo consumes their artifacts/caches; permissions here are contents: read only.
+  - exclude:
+      id: actions/untrusted-checkout/medium       # CWE-829
 
 paths-ignore:
   - tests

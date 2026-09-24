@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from functools import partial
-from typing import TYPE_CHECKING, Any, Final, Literal, Optional, Union, cast, get_args
+from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn, Optional, Union, cast, get_args
 
 import httpx
 

@@ -10,6 +10,7 @@ from litellm.responses.litellm_completion_transformation.custom_tools import (
     build_web_search_call_item,
     extract_custom_tool_names,
     is_custom_tool_call,
+    is_server_executed_web_search_call,
     serialize_tool_call_arguments,
 )
 from litellm.responses.litellm_completion_transformation.transformation import (
@@ -389,6 +390,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             else:
                 fn_name = str(getattr(fn, "name", "") or "")
                 fn_args = serialize_tool_call_arguments(getattr(fn, "arguments", ""))
+            tool_name, tool_namespace = self._responses_namespace_tool_call_fields(fn_name)
             web_search_call = self._web_search_calls.get(call_id)
             if web_search_call is not None:
                 if call_id not in self._queued_web_search_call_ids:
