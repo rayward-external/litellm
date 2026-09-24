@@ -11738,6 +11738,7 @@ async def test_openai_exception_handler_no_denial_log_for_plain_proxy_exception(
     assert [r for r in caplog.records if r.levelname == "WARNING"] == []
 
 
+@_REALTIME_WS_DISABLED
 @pytest.mark.asyncio
 async def test_realtime_model_access_denial_logs_sanitized_internal_message(caplog):
     reservation = {"reserved_cost": 0.0, "input_cost": 0.0, "finalized": False, "entries": []}
