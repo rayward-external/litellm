@@ -2,11 +2,12 @@
 Polls LiteLLM_ManagedObjectTable to check if the batch job is complete, and if the cost has been tracked.
 """
 
+import json
 from collections.abc import Sequence
 from dataclasses import replace as dataclasses_replace
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, List, Literal, Optional, Protocol, Tuple, cast
+from typing import TYPE_CHECKING, Any, Final, List, Literal, Optional, Protocol, Tuple, cast
 
 from litellm._logging import verbose_proxy_logger
 from litellm._uuid import uuid
@@ -204,12 +205,12 @@ class CheckBatchCost:
         litellm_call_id backstops the double-bill side."""
         try:
             if not self._has_batch_processed_column:
-                await self.prisma_client.db.litellm_managedobjecttable.update(
+                await _managed_object_table(self.prisma_client).update(
                     where={"id": job.id},
                     data={"batch_processed": False, "status": "validating"},
                 )
                 return
-            released = await self.prisma_client.db.litellm_managedobjecttable.update_many(
+            released = await _managed_object_table(self.prisma_client).update_many(
                 where={"id": job.id, "status": "pricing", "batch_processed": True},
                 data={"batch_processed": False, "status": "validating"},
             )
@@ -685,26 +686,6 @@ class CheckBatchCost:
             )
             return False
         return claimed > 0
-
-    async def _release_job_claim(self, job: "_ManagedObjectRow") -> None:
-        """Give a claimed row back once billing it failed, so a later poll cycle retries it.
-
-        Safe to match on batch_processed=True: while this poller is active the retrieve
-        path leaves the column alone (batch_cost_poller_is_active), so a true value here
-        is always this pod's own claim.
-        """
-        if not self._has_batch_processed_column:
-            return
-        try:
-            await _managed_object_table(self.prisma_client).update_many(
-                where={"id": job.id, "batch_processed": True},
-                data={"batch_processed": False},
-            )
-        except Exception as db_err:
-            verbose_proxy_logger.error(
-                f"CheckBatchCost: failed to release the claim on job {job.id}, "
-                f"so its cost will not be retried: {db_err}"
-            )
 
     @staticmethod
     def _has_unified_id_without_model(job: "_ManagedObjectRow") -> bool:
@@ -1551,10 +1532,7 @@ class CheckBatchCost:
                     }
                     if self._has_batch_processed_column:
                         update_data["batch_processed"] = True
-                    await _managed_object_table(self.prisma_client).update(
-                        where={"id": job.id},
-                        data=update_data,
-                    )
+                    await self._finalize_job(job, update_data)
                 except Exception as db_err:
                     verbose_proxy_logger.error(
                         f"CheckBatchCost: failed to mark job {job.id} {terminal_status} in DB: {db_err}"
