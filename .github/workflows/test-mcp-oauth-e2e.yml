@@ -34,7 +34,9 @@ concurrency:
 
 jobs:
   oauth:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    # fork-patches.txt: quarantined until E2E_AWS_ROLE_TO_ASSUME and
+    # E2E_LINEAR_STORAGE_STATE_B64 are configured for this fork
+    if: (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && vars.E2E_AWS_ROLE_TO_ASSUME != '' && secrets.E2E_LINEAR_STORAGE_STATE_B64 != ''
     runs-on: ubuntu-latest
     environment: e2e-changed
     timeout-minutes: 45
