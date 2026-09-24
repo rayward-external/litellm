@@ -502,6 +502,11 @@ class LiteLLMRoutes(enum.Enum):
         "/nvidia_nim",
         "/deepgram",
         "/fal_ai",
+        # provider-pinned standard routes (litellm/proxy/pinned_provider_routes.py):
+        # fireworks/baseten have no pass-through catch-all, but their pinned
+        # literal routes must count as LLM API routes for non-admin keys.
+        "/fireworks",
+        "/baseten",
     ]
 
     #########################################################

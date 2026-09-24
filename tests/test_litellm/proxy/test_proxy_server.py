@@ -11040,6 +11040,7 @@ async def _lit6463_drive_realtime_session_holding_a_max_parallel_slot(
     return dual_cache, stash
 
 
+@_REALTIME_WS_DISABLED
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase_one_exit", [None, "pre_call", "pre_call_cancelled"])
 async def test_realtime_session_ending_without_llm_callbacks_releases_the_max_parallel_slot(
@@ -11059,6 +11060,7 @@ async def test_realtime_session_ending_without_llm_callbacks_releases_the_max_pa
     assert stash.parallel_slot is None
 
 
+@_REALTIME_WS_DISABLED
 @pytest.mark.asyncio
 async def test_successful_realtime_session_leaves_the_max_parallel_slot_for_the_limiter_callback():
     """A session that enqueued its success callback hands the slot to the limiter's
@@ -11078,6 +11080,7 @@ async def test_successful_realtime_session_leaves_the_max_parallel_slot_for_the_
     assert stash.parallel_slot == {"slot_id": "slot-1", "counter_keys": [_LIT6463_COUNTER_KEY]}
 
 
+@_REALTIME_WS_DISABLED
 @pytest.mark.asyncio
 async def test_refused_realtime_session_leaves_the_max_parallel_slot_for_the_limiter_failure_callback():
     """An upstream refusal before any frame enqueues the failure callback instead, and

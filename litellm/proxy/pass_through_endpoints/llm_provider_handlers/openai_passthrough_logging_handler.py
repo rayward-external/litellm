@@ -272,6 +272,7 @@ def _build_response_and_cost_for_surface(
             model=model,
             response_body=response_body,
             request_body=request_body,
+            custom_llm_provider=custom_llm_provider,
         )
         # Mark call type for downstream image-aware logic/metrics
         try:
@@ -293,6 +294,7 @@ def _build_response_and_cost_for_surface(
             model=model,
             response_body=response_body,
             request_body=request_body,
+            custom_llm_provider=custom_llm_provider,
         )
         # Mark call type for downstream image-aware logic/metrics
         try:
@@ -489,6 +491,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         model: str,
         response_body: dict,
         request_body: dict,
+        custom_llm_provider: str | None = "openai",
     ) -> float:
         """Calculate cost for OpenAI image generation."""
         try:
@@ -506,7 +509,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
             cost = default_image_cost_calculator(
                 model=model,
-                custom_llm_provider="openai",
+                custom_llm_provider=custom_llm_provider or "openai",
                 quality=quality,
                 n=n,
                 size=size,
@@ -523,6 +526,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         model: str,
         response_body: dict,
         request_body: dict,
+        custom_llm_provider: str | None = "openai",
     ) -> float:
         """Calculate cost for OpenAI image editing."""
         try:
@@ -540,7 +544,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
             cost = default_image_cost_calculator(
                 model=model,
-                custom_llm_provider="openai",
+                custom_llm_provider=custom_llm_provider or "openai",
                 quality=None,  # Image editing doesn't have quality parameter
                 n=n,
                 size=size,
