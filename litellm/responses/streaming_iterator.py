@@ -1830,7 +1830,9 @@ class ResponsesWebSocketStreaming:
         # silently is the same bug in a new place. Retained here and drained
         # with a bounded wait in bidirectional_forward's finally: before the
         # connection tears down.
-        self._pending_cost_tasks: set[asyncio.Task] = set()  # mutable-ok: registry, entries removed via add_done_callback
+        self._pending_cost_tasks: set[asyncio.Task] = (
+            set()
+        )  # mutable-ok: registry, entries removed via add_done_callback
 
     def _should_store_event(self, event_obj: _MutableJsonObject) -> bool:
         return event_obj.get("type") in RESPONSES_WS_LOGGED_EVENT_TYPES
