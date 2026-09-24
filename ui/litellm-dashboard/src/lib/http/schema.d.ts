@@ -37236,6 +37236,69 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * OutputWebSearchCall
+         * @description A web search the PROVIDER already ran on its own fleet.
+         *
+         *     Mirrors the ``web_search_call`` variant of OpenAI's Responses API output.
+         *     Unlike ``function_call``, this item carries no ``call_id``: it is a record
+         *     of work already done, not a request for the client to do any. Emitting a
+         *     provider-executed search as a ``function_call`` instead makes the client
+         *     answer a call it cannot run, and that answer has no ``tool_use`` to pair
+         *     with when the history is replayed.
+         */
+        OutputWebSearchCall: {
+            /** Action */
+            action?: components["schemas"]["OutputWebSearchCallSearchAction"] | components["schemas"]["OutputWebSearchCallOpenPageAction"] | null;
+            /** Id */
+            id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "in_progress" | "searching" | "completed" | "incomplete" | "failed";
+            /**
+             * Type
+             * @constant
+             */
+            type: "web_search_call";
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * OutputWebSearchCallOpenPageAction
+         * @description ``action.type == "open_page"``: the model fetched one URL.
+         *
+         *     OpenAI's Responses API models a page fetch as a ``web_search_call`` with
+         *     this action rather than an item type of its own -- see
+         *     ``openai.types.responses.response_function_web_search.ActionOpenPage``.
+         */
+        OutputWebSearchCallOpenPageAction: {
+            /**
+             * Type
+             * @constant
+             */
+            type: "open_page";
+            /** Url */
+            url: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * OutputWebSearchCallSearchAction
+         * @description ``action.type == "search"``: the model ran a query.
+         */
+        OutputWebSearchCallSearchAction: {
+            /** Query */
+            query: string;
+            /**
+             * Type
+             * @constant
+             */
+            type: "search";
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * PageLinks
          * @description Hypermedia for a paginated list. No `first`/`last`: without a total count the last page is unknown.
          */
@@ -41026,7 +41089,7 @@ export interface components {
             /** Output */
             output: (components["schemas"]["ResponseOutputMessage"] | components["schemas"]["ResponseFileSearchToolCall"] | components["schemas"]["ResponseFunctionToolCall"] | components["schemas"]["ResponseFunctionToolCallOutputItem"] | components["schemas"]["ResponseFunctionWebSearch"] | components["schemas"]["ResponseComputerToolCall"] | components["schemas"]["ResponseComputerToolCallOutputItem"] | components["schemas"]["ResponseReasoningItem"] | components["schemas"]["ResponseToolSearchCall"] | components["schemas"]["ResponseToolSearchOutputItem"] | components["schemas"]["ResponseCompactionItem"] | components["schemas"]["ImageGenerationCall"] | components["schemas"]["ResponseCodeInterpreterToolCall"] | components["schemas"]["LocalShellCall"] | components["schemas"]["LocalShellCallOutput"] | components["schemas"]["ResponseFunctionShellToolCall"] | components["schemas"]["ResponseFunctionShellToolCallOutput"] | components["schemas"]["ResponseApplyPatchToolCall"] | components["schemas"]["ResponseApplyPatchToolCallOutput"] | components["schemas"]["McpCall"] | components["schemas"]["McpListTools"] | components["schemas"]["McpApprovalRequest"] | components["schemas"]["McpApprovalResponse"] | components["schemas"]["ResponseCustomToolCall"] | components["schemas"]["ResponseCustomToolCallOutputItem"] | {
                 [key: string]: unknown;
-            })[] | (components["schemas"]["GenericResponseOutputItem"] | components["schemas"]["OutputCodeInterpreterCall"] | components["schemas"]["OutputFunctionToolCall"] | components["schemas"]["OutputImageGenerationCall"] | components["schemas"]["ResponseFunctionToolCall"] | components["schemas"]["ResponseFunctionWebSearch"] | components["schemas"]["CustomToolCallOutputItem"])[];
+            })[] | (components["schemas"]["GenericResponseOutputItem"] | components["schemas"]["OutputCodeInterpreterCall"] | components["schemas"]["OutputFunctionToolCall"] | components["schemas"]["OutputImageGenerationCall"] | components["schemas"]["OutputWebSearchCall"] | components["schemas"]["ResponseFunctionToolCall"] | components["schemas"]["ResponseFunctionWebSearch"] | components["schemas"]["CustomToolCallOutputItem"])[];
             /** Parallel Tool Calls */
             parallel_tool_calls?: boolean | null;
             /** Previous Response Id */

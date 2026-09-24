@@ -279,6 +279,14 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             else:
                 fn_name = str(getattr(fn, "name", "") or "")
                 fn_args_delta = serialize_tool_call_arguments(getattr(fn, "arguments", ""))
+            tool_name, _tool_namespace = self._responses_namespace_tool_call_fields(fn_name)
+
+            # A provider-executed web search is reported once, at the end, as a
+            # ``web_search_call`` item -- never as streamed function-call events
+            # the client would answer.
+            if self._is_server_executed_web_search(call_id, tool_name):
+                continue
+
             output_index = self._get_or_assign_tool_output_index(call_id)
 
             if call_id not in self._tool_args_by_call_id:

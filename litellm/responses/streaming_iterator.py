@@ -1702,7 +1702,17 @@ RESPONSES_WS_LOGGED_EVENT_TYPES: Final = [
 
 RESPONSES_WS_MASKABLE_TEXT_BLOCK_TYPES: Final = frozenset({"input_text", "output_text", "text"})
 
+_RESPONSES_WS_FAILURE_EVENT_TYPES: Final = frozenset({"error", "response.failed"})
+
 _RESPONSES_WS_OUTPUT_ITEM_EVENT_TYPES: Final = frozenset({"response.output_item.added", "response.output_item.done"})
+
+
+def _ws_event_error(event: Mapping[str, object]) -> object:
+    if event.get("type") == "error":
+        return event.get("error")
+    response: Final = event.get("response")
+    return response.get("error") if _is_json_object(response) else None
+
 
 # Terminal Responses API events that carry a final `response` object with
 # usage -- the only frames a completed/failed/incomplete turn can be costed
@@ -1891,23 +1901,63 @@ class ResponsesWebSocketStreaming:
         if self.logging_obj:
             self.logging_obj.pre_call(input=message, api_key="")
 
+    def _failure_exception(self) -> Exception | None:
+        failed_event: Final = next(
+            (event for event in self.messages if event.get("type") in _RESPONSES_WS_FAILURE_EVENT_TYPES), None
+        )
+        if failed_event is None:
+            return None
+        return _map_stream_error_to_exception(
+            _ws_event_error(failed_event), self.authorized_model or "", self.custom_llm_provider or ""
+        )
+
+    def _record_usage_for_failure(self) -> None:
+        from litellm.cost_calculator import ResponsesWebSocketTokenUsageProcessor
+        from litellm.types.utils import LiteLLMRealtimeStreamLoggingObject
+
+        usage: Final = ResponsesWebSocketTokenUsageProcessor.collect_and_combine_usage_from_responses_ws_results(
+            self.messages
+        )
+        tier_partition: Final = ResponsesWebSocketTokenUsageProcessor.partition_results_by_service_tier(self.messages)
+        service_tier: Final = next(iter(tier_partition)) if len(tier_partition) == 1 else None
+        logging_result: Final = LiteLLMRealtimeStreamLoggingObject(
+            usage=usage, results=self.messages, service_tier=service_tier
+        )
+        response_cost: Final = self.logging_obj._response_cost_calculator(result=logging_result) or 0.0  # pyright: ignore[reportPrivateUsage]  # as the HTTP streaming iterator does
+        self.logging_obj.record_partial_usage_for_failure(usage, response_cost)
+
     async def _log_messages(self) -> None:
-        """Connection-close bookkeeping only. Per-turn cost/usage dispatch
-        happens in _dispatch_turn_cost, called from backend_to_client as each
-        terminal event (response.completed/failed/incomplete) arrives -- NOT
-        here. This used to ALSO dispatch self.messages (a raw list of stored
-        WS event dicts) as the "response" for the connection's logging_obj,
-        once, at connection close. That shape cannot be costed at all
+        """Connection-close bookkeeping. Per-turn cost/usage dispatch for a
+        completed or incomplete turn happens in _dispatch_turn_cost, called
+        from backend_to_client as each terminal event arrives -- NOT here.
+        This used to ALSO dispatch self.messages (a raw list of stored WS
+        event dicts) as the "response" for a successful connection, once, at
+        connection close. That shape cannot be costed at all
         (_get_assembled_streaming_response has no branch for a bare list, so
         it silently computed $0 -- rayward-internal/llm-gateway-infra#657)
-        and, now that _dispatch_turn_cost costs every completed turn as it
-        happens, would ALSO double-count. Dropped entirely; only the input
-        message trace (harmless bookkeeping some loggers may read) remains.
+        and, now that _dispatch_turn_cost costs every completed/incomplete
+        turn as it happens, would ALSO double-count. Dropped.
+
+        The failure path below is unaffected by that bug -- it costs a typed
+        LiteLLMRealtimeStreamLoggingObject, not a bare list -- so it still
+        runs here, once, at connection close.
         """
         if not self.logging_obj:
             return
         if self.input_messages:
             self.logging_obj.model_call_details["messages"] = self.input_messages
+        if not self.messages:
+            return
+        exception: Final = self._failure_exception()
+        if exception is None:
+            return
+        self._record_usage_for_failure()
+        traceback_exception: Final = "".join(traceback.format_exception(exception))
+        failure_task: Final = asyncio.create_task(
+            self.logging_obj.dispatch_failure_handlers(exception, traceback_exception, prefer_async_handlers=True)
+        )
+        self._pending_cost_tasks.add(failure_task)
+        failure_task.add_done_callback(self._pending_cost_tasks.discard)
 
     def _build_per_turn_logging_obj(self, model_name: str) -> LiteLLMLoggingObj:
         """Fresh LiteLLMLoggingObj for ONE completed/failed/incomplete turn.
@@ -2571,8 +2621,13 @@ class ResponsesWebSocketStreaming:
                 LOGGING_WORKER_MAX_TIME_PER_COROUTINE,
             )
 
-    async def bidirectional_forward(self) -> None:
-        """Run both forwarding directions concurrently."""
+    async def bidirectional_forward(self) -> Exception | None:
+        """Run both forwarding directions concurrently.
+
+        Returns the provider's failure (if the connection ended in one) so
+        the caller can react to it, e.g. mark the request as failed at the
+        HTTP level. See _failure_exception.
+        """
         forward_task: Final = asyncio.create_task(self.backend_to_client())
         try:
             await self.client_to_backend()
@@ -2593,6 +2648,7 @@ class ResponsesWebSocketStreaming:
                 await self.backend_ws.close()
             except Exception:
                 pass
+        return self._failure_exception()
 
 
 # ---------------------------------------------------------------------------

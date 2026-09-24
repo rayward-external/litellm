@@ -20097,6 +20097,95 @@
           "title": "OutputTokensDetails",
           "type": "object"
         },
+        "OutputWebSearchCall": {
+          "additionalProperties": true,
+          "description": "A web search the PROVIDER already ran on its own fleet.\n\nMirrors the ``web_search_call`` variant of OpenAI's Responses API output.\nUnlike ``function_call``, this item carries no ``call_id``: it is a record\nof work already done, not a request for the client to do any. Emitting a\nprovider-executed search as a ``function_call`` instead makes the client\nanswer a call it cannot run, and that answer has no ``tool_use`` to pair\nwith when the history is replayed.",
+          "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/OutputWebSearchCallSearchAction"
+                },
+                {
+                  "$ref": "#/components/schemas/OutputWebSearchCallOpenPageAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Action"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "in_progress",
+                "searching",
+                "completed",
+                "incomplete",
+                "failed"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "type": {
+              "const": "web_search_call",
+              "title": "Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "status"
+          ],
+          "title": "OutputWebSearchCall",
+          "type": "object"
+        },
+        "OutputWebSearchCallOpenPageAction": {
+          "additionalProperties": true,
+          "description": "``action.type == \"open_page\"``: the model fetched one URL.\n\nOpenAI's Responses API models a page fetch as a ``web_search_call`` with\nthis action rather than an item type of its own -- see\n``openai.types.responses.response_function_web_search.ActionOpenPage``.",
+          "properties": {
+            "type": {
+              "const": "open_page",
+              "title": "Type",
+              "type": "string"
+            },
+            "url": {
+              "title": "Url",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ],
+          "title": "OutputWebSearchCallOpenPageAction",
+          "type": "object"
+        },
+        "OutputWebSearchCallSearchAction": {
+          "additionalProperties": true,
+          "description": "``action.type == \"search\"``: the model ran a query.",
+          "properties": {
+            "query": {
+              "title": "Query",
+              "type": "string"
+            },
+            "type": {
+              "const": "search",
+              "title": "Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "query"
+          ],
+          "title": "OutputWebSearchCallSearchAction",
+          "type": "object"
+        },
         "PendingSafetyCheck": {
           "additionalProperties": true,
           "description": "A pending safety check for the computer call.",
@@ -22454,6 +22543,9 @@
                       },
                       {
                         "$ref": "#/components/schemas/OutputImageGenerationCall"
+                      },
+                      {
+                        "$ref": "#/components/schemas/OutputWebSearchCall"
                       },
                       {
                         "$ref": "#/components/schemas/ResponseFunctionToolCall"

@@ -27,6 +27,7 @@ from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
     HttpPassThroughEndpointHelpers,
     InitPassThroughEndpointHelpers,
     _registered_pass_through_routes,
+    _with_trace_context,
     chat_completion_pass_through_endpoint,
     create_pass_through_route,
     initialize_pass_through_endpoints,
@@ -34,7 +35,6 @@ from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
     resolve_llm_passthrough_timeout,
     resolve_pass_through_request_timeout,
     websocket_passthrough_request,
-    _with_trace_context,
 )
 from litellm.proxy.pass_through_endpoints.success_handler import (
     PassThroughEndpointLogging,
@@ -43,6 +43,7 @@ from litellm.proxy.route_llm_request import ProxyModelNotFoundError
 from litellm.types.passthrough_endpoints.pass_through_endpoints import (
     LITELLM_PASS_THROUGH_DEPLOYMENT_MODEL_INFO_STATE_KEY,
     LITELLM_PASS_THROUGH_RAW_BODY_STATE_KEY,
+    EndpointType,
 )
 
 MESSAGE_START_SSE_FRAME = b'event: message_start\ndata: {"type": "message_start"}\n\n'

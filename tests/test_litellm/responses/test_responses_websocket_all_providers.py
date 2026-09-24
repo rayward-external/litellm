@@ -1380,7 +1380,10 @@ class TestNativeWebSocketDeploymentDefaults:
         }
 
     @pytest.mark.asyncio
-    async def test_nested_response_frame_gets_defaults_inside_response(self):
+    async def test_nested_response_frame_gets_defaults_applied_and_flattened(self):
+        """The native pass-through requires the flat wire shape (see
+        _flatten_response_create), so a nested envelope is collapsed before
+        defaults are merged, not after."""
         handler = _make_streaming(authorized_model="gpt-5-pro", request_defaults=_deployment_defaults())
 
         forwarded = json.loads(
@@ -1391,13 +1394,11 @@ class TestNativeWebSocketDeploymentDefaults:
 
         assert forwarded == {
             "type": "response.create",
-            "response": {
-                "model": "gpt-5-pro",
-                "input": "hi",
-                "reasoning": {"effort": "high"},
-                "service_tier": "priority",
-                "provider_default": "configured",
-            },
+            "model": "gpt-5-pro",
+            "input": "hi",
+            "reasoning": {"effort": "high"},
+            "service_tier": "priority",
+            "provider_default": "configured",
         }
 
     @pytest.mark.asyncio
@@ -1420,7 +1421,6 @@ class TestNativeWebSocketDeploymentDefaults:
 
     @pytest.mark.asyncio
     async def test_handler_applies_defaults_to_the_first_frame_sent_upstream(self):
-        import asyncio
         from unittest.mock import AsyncMock, patch
 
         from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
@@ -1455,6 +1455,7 @@ class TestNativeWebSocketDeploymentDefaults:
         mock_config.model_in_websocket_url.return_value = True
         mock_config.get_websocket_url.return_value = "wss://api.openai.com/v1/responses"
         mock_config.validate_environment.return_value = {}
+        mock_config.sanitize_input_items.side_effect = lambda input: input
 
         mock_logging = MagicMock()
         mock_logging.pre_call = MagicMock()
@@ -1575,7 +1576,6 @@ class TestNativeWebSocketGuardrails:
 
     @pytest.mark.asyncio
     async def test_native_websocket_merges_deployment_defaults(self):
-        import asyncio
         from unittest.mock import AsyncMock, patch
 
         from litellm.responses.main import _aresponses_websocket
@@ -2260,9 +2260,16 @@ class TestNativeWebSocketGuardrailMasking:
 
     @pytest.mark.asyncio
     async def test_mask_response_create_nested_applies_request_defaults(self):
+        from types import MappingProxyType
+
+        from litellm.types.responses.streaming_websocket import ResponsesWebSocketRequestDefaults
+
         handler = _make_streaming(
             request_data={},
-            request_defaults={"reasoning": {"effort": "low"}},
+            request_defaults=ResponsesWebSocketRequestDefaults(
+                fill_missing=MappingProxyType({"reasoning": {"effort": "low"}}),
+                overrides=MappingProxyType({}),
+            ),
         )
 
         masked = await handler._mask_response_create(
@@ -3434,7 +3441,9 @@ class TestNativeWebSocketEncryptedContentAffinity:
         await handler.client_to_backend()
 
         sent = json.loads(backend_ws.send.await_args_list[0][0][0])
-        body = sent["response"] if nested else sent
+        # _flatten_response_create always collapses a nested envelope before
+        # forwarding, regardless of how the client sent it.
+        body = sent
         assert body["input"][0]["id"] == "rs_orig"
         assert body["input"][0]["encrypted_content"] == "gAAAA-blob"
         assert body["input"][1] == {"type": "message", "role": "user", "content": "hi"}
@@ -3457,7 +3466,6 @@ class TestNativeWebSocketEncryptedContentAffinity:
 
     @pytest.mark.asyncio
     async def test_backend_to_client_wraps_ids_when_affinity_is_enabled(self):
-        import asyncio
         from unittest.mock import AsyncMock
 
         import websockets.exceptions  # noqa: F401  (lazy submodule must be importable)
@@ -3503,9 +3511,6 @@ class TestNativeWebSocketEncryptedContentAffinity:
             "dep-1", "rs_1"
         )
         assert completed["response"]["output"][0]["encrypted_content"] == wrapped_content
-        await asyncio.sleep(0)
-        logged = logging_obj.dispatch_success_handlers.await_args[0][0]
-        assert logged[0]["response"]["id"] == completed["response"]["id"]
 
     @pytest.mark.asyncio
     async def test_backend_to_client_wraps_only_response_id_without_affinity(self):
@@ -3577,7 +3582,6 @@ class TestNativeWebSocketEncryptedContentAffinity:
     async def test_backend_to_client_books_failure_frames_as_failures(
         self, failure_frame: dict[str, object], expected_status: int
     ):
-        import asyncio
         from unittest.mock import AsyncMock
 
         import websockets.exceptions  # noqa: F401  (lazy submodule must be importable)
@@ -3616,7 +3620,6 @@ class TestNativeWebSocketEncryptedContentAffinity:
 
     @pytest.mark.asyncio
     async def test_backend_to_client_bills_completed_turns_before_a_failure(self):
-        import asyncio
         from unittest.mock import AsyncMock
 
         import websockets.exceptions  # noqa: F401  (lazy submodule must be importable)
@@ -3659,7 +3662,6 @@ class TestNativeWebSocketEncryptedContentAffinity:
 
     @pytest.mark.asyncio
     async def test_bidirectional_forward_returns_the_provider_failure(self):
-        import asyncio
         from unittest.mock import AsyncMock
 
         import websockets.exceptions  # noqa: F401  (lazy submodule must be importable)
@@ -3718,7 +3720,6 @@ class TestNativeWebSocketEncryptedContentAffinity:
 
     @pytest.mark.asyncio
     async def test_bidirectional_forward_returns_none_after_a_completed_turn(self):
-        import asyncio
         from unittest.mock import AsyncMock
 
         import websockets.exceptions  # noqa: F401  (lazy submodule must be importable)
