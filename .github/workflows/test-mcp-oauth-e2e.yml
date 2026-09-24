@@ -33,10 +33,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # fork-patches.txt: job-level `if:` cannot reference the `secrets` context
+  # (only `vars` is available there), so a cheap gate job surfaces the
+  # secret's presence as a job output the `oauth` job's own `if:` can read.
+  check-secret:
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Check whether the captured-login secret is provisioned
+        id: check
+        env:
+          STORAGE_STATE: ${{ secrets.E2E_LINEAR_STORAGE_STATE_B64 }}
+        run: |
+          if [ -n "${STORAGE_STATE}" ]; then
+            echo "configured=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "configured=false" >> "${GITHUB_OUTPUT}"
+          fi
+
   oauth:
+    needs: check-secret
     # fork-patches.txt: quarantined until E2E_AWS_ROLE_TO_ASSUME and
     # E2E_LINEAR_STORAGE_STATE_B64 are configured for this fork
-    if: (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && vars.E2E_AWS_ROLE_TO_ASSUME != '' && secrets.E2E_LINEAR_STORAGE_STATE_B64 != ''
+    if: (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && vars.E2E_AWS_ROLE_TO_ASSUME != '' && needs.check-secret.outputs.configured == 'true'
     runs-on: ubuntu-latest
     environment: e2e-changed
     timeout-minutes: 45
