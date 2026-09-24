@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import datetime, timedelta
 from typing import Final, NoReturn
 from unittest.mock import MagicMock, patch
 
@@ -29,6 +30,7 @@ class StreamingWrapper:
 
 class FakeRouter:
     fallback_access_check = None
+    fallback_budget_check = None
 
     def log_retry(self, kwargs, e):
         return kwargs
@@ -39,6 +41,7 @@ class FakeRouter:
 
 class AlwaysFailRouter:
     fallback_access_check = None
+    fallback_budget_check = None
 
     def log_retry(self, kwargs, e):
         return kwargs
@@ -103,6 +106,7 @@ async def test_run_async_fallback_raises_when_all_fallbacks_fail():
 
 class RecordingRouter:
     fallback_access_check = None
+    fallback_budget_check = None
 
     def __init__(self):
         self.received_kwargs = None
@@ -164,6 +168,7 @@ async def test_run_async_fallback_skips_original_model_group():
 
 class AttemptRecordingRouter:
     fallback_access_check = None
+    fallback_budget_check = None
 
     def __init__(self):
         self.attempted_model_groups = []
@@ -473,6 +478,8 @@ class AccessCheckedRouter(AttemptRecordingRouter):
         self.allowed_models = allowed_models
         self.access_checks = []
 
+    fallback_budget_check = None
+
     async def fallback_access_check(self, *, model, request_kwargs, llm_router):
         self.access_checks.append((model, request_kwargs["metadata"]["user_api_key"], llm_router is self))
         return model in self.allowed_models
@@ -544,6 +551,7 @@ async def test_run_async_fallback_does_not_consult_access_check_for_same_model_g
 
 class RecordingFailRouter:
     fallback_access_check = None
+    fallback_budget_check = None
 
     def __init__(self):
         self.attempted_models = []
@@ -956,7 +964,11 @@ class TestTriggerCooldownForFailedDeployment:
         """The proxy's x-litellm-timeout header lets a caller set an arbitrarily short
         timeout, which litellm.Timeout reports as status 408 regardless of the
         deployment's actual health. Without this guard, a caller could force a 408 on
-        every deployment in the fallback chain from a single request."""
+        every deployment in the fallback chain from a single request.
+
+        The failure logger never stamps end_time for a fallback hop (has_logged_async_failure
+        is already set), so model_call_details still carries the previous hop's end_time, which
+        predates this hop's api_call_start_time. The guard must not trust it."""
         mock_router = MagicMock()
         mock_router.cooldown_time = 60.0
         mock_router.get_model_info.return_value = None
@@ -974,10 +986,60 @@ class TestTriggerCooldownForFailedDeployment:
                 litellm_router=mock_router,
                 kwargs={"client_side_timeout": True},
                 exception=exc,
+                model_call_details={
+                    "litellm_params": {"client_side_timeout": True, "timeout": 0.5},
+                    "api_call_start_time": datetime.now() - timedelta(seconds=1),
+                    "end_time": datetime.now() - timedelta(seconds=5),
+                },
             )
 
             mock_set_cooldown.assert_not_called()
             mock_increment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_still_cools_down_provider_408_before_caller_deadline(self):
+        """client_side_timeout only records that the caller configured a timeout. A 408
+        that comes back before that deadline was raised by the provider itself, so it is
+        a real health signal and must still cool the deployment down."""
+        from litellm.router_utils.router_callbacks.track_deployment_metrics import (
+            get_deployment_failures_for_current_minute,
+        )
+
+        router = litellm.Router(
+            model_list=[
+                {
+                    "model_name": "fallback-model",
+                    "litellm_params": {"model": "openai/gpt-5.6", "api_key": "sk-fake"},
+                    "model_info": {"id": "fallback-deployment"},
+                }
+            ],
+            allowed_fails=0,
+            cooldown_time=60,
+            num_retries=0,
+        )
+        exc = litellm.Timeout(message="timeout", model="gpt-5.6", llm_provider="openai")
+        exc.failed_deployment_id = "fallback-deployment"
+        started = datetime.now()
+
+        _trigger_cooldown_for_failed_deployment(
+            litellm_router=router,
+            kwargs={"client_side_timeout": True},
+            exception=exc,
+            model_call_details={
+                "litellm_params": {"client_side_timeout": True, "timeout": 30},
+                "api_call_start_time": started,
+                "end_time": started + timedelta(seconds=1),
+            },
+        )
+
+        assert (
+            get_deployment_failures_for_current_minute(
+                litellm_router_instance=router, deployment_id="fallback-deployment"
+            )
+            == 1
+        )
+        active = router.cooldown_cache.get_active_cooldowns(model_ids=["fallback-deployment"], parent_otel_span=None)
+        assert [entry[0] for entry in active] == ["fallback-deployment"]
 
     def test_still_cools_down_408_without_client_side_timeout_flag(self):
         """The client-side-timeout guard is scoped to caller-supplied timeouts only: a
@@ -999,6 +1061,7 @@ class TestTriggerCooldownForFailedDeployment:
 class TestRunAsyncFallbackTriggersCooldown:
     class RouterWithLoggingKwarg:
         fallback_access_check = None
+        fallback_budget_check = None
 
         def __init__(self):
             self.cooldown_time = 60.0
@@ -1241,6 +1304,14 @@ class TestOrderedFallbackLookupGroups:
         )
         assert fallback_lookup_groups({"metadata": {"model_group": []}}, "requested-model") == ("requested-model",)
 
+    def test_fallback_hop_resumes_the_original_groups_chain_last(self):
+        from litellm.router_utils.fallback_event_handlers import fallback_lookup_groups
+
+        kwargs = {"metadata": {"model_group": "fb1", "original_model_group": "primary"}}
+
+        assert fallback_lookup_groups(kwargs, "fb1") == ("fb1", "primary")
+        assert fallback_lookup_groups({"metadata": {"original_model_group": 42}}, "fb1") == ("fb1",)
+
     def test_first_resolving_group_wins_and_generic_idx_survives_a_miss(self):
         from litellm.router_utils.fallback_event_handlers import (
             get_fallback_model_group_for_lookup_groups,
@@ -1253,332 +1324,18 @@ class TestOrderedFallbackLookupGroups:
         assert get_fallback_model_group_for_lookup_groups([{"tier1": ["backup-a"]}], ("no", "nope")) == (None, None)
 
 
-class _SyntheticUpstream400(Exception):
-    """Deep-copyable stand-in for a provider's deterministic 400."""
-
-    status_code = 400
-
-
-class _SyntheticUpstream500(Exception):
-    """Deep-copyable stand-in for a provider's 500."""
-
-    status_code = 500
-
-
-class _SyntheticUpstream429(Exception):
-    """Deep-copyable stand-in for a provider's genuine rate limit."""
-
-    status_code = 429
-
-
-class _SyntheticUpstream408(Exception):
-    """Deep-copyable stand-in for a provider timeout, which the retry policy treats as transient."""
-
-    status_code = 408
-
-
-class TestOrderLadderPreservesUpstreamErrorForPinnedRequests:
-    """A provider-pinned request on a pooled group must surface the provider's real
-    error, not the selection error of an order level the pin already emptied.
-
-    The order ladder builds its levels from the FULL model group, while selection
-    applies tag filtering first. So a request pinned to the provider that owns
-    orders 1 and 2 is still handed order 3 as a fallback target -- an order whose
-    only deployment carries a different pin and was removed before the order
-    filter ran. That hop raises RouterRateLimitError ("No deployments available"),
-    and run_async_fallback used to raise THAT, turning a deterministic upstream 400
-    into a retryable 429 and destroying the provider's message.
-    """
-
-    UPSTREAM_MESSAGE = "upstream rejected parameter 'reasoning_effort' (synthetic-400-marker)"
-    SPILL_MESSAGE = "spill deployment exploded (synthetic-500-marker)"
-
-    @staticmethod
-    def _deployment(dep_id: str, *, order: int, tags: list[str], mock_response: object) -> dict:
-        return {
-            "model_name": "pooled-model",
-            "litellm_params": {
-                "model": f"openai/{dep_id}",
-                "api_key": "synthetic-key",
-                "mock_response": mock_response,
-                "order": order,
-                "tags": tags,
-            },
-            "model_info": {"id": dep_id},
-        }
-
-    @classmethod
-    def _router(cls, *, spill_tags: list[str], spill_mock_response: object) -> litellm.Router:
-        # Router deep-copies litellm_params, and litellm's own exception classes
-        # cannot be reconstructed by copy.deepcopy, so the upstream failures are plain
-        # exceptions carrying a status_code: the mock path maps them to the matching
-        # litellm exception type (400 -> BadRequestError, 500 -> InternalServerError)
-        # with the message preserved.
-        return litellm.Router(
-            model_list=[
-                cls._deployment(
-                    "primary-a", order=1, tags=["pin:azure"], mock_response=_SyntheticUpstream400(cls.UPSTREAM_MESSAGE)
-                ),
-                cls._deployment(
-                    "primary-b", order=2, tags=["pin:azure"], mock_response=_SyntheticUpstream400(cls.UPSTREAM_MESSAGE)
-                ),
-                cls._deployment("spill", order=3, tags=spill_tags, mock_response=spill_mock_response),
-            ],
-            enable_tag_filtering=True,
-            tag_filtering_match_any=False,
-            num_retries=0,
+class TestHasUnattemptedFallbackTarget:
+    def test_exhausted_chain_is_not_recoverable_but_a_fresh_entry_is(self):
+        from litellm.router_utils.fallback_event_handlers import (
+            has_unattempted_fallback_target,
         )
 
-    @pytest.mark.asyncio
-    async def test_pinned_request_surfaces_the_upstream_400_not_a_selection_429(self):
-        router = self._router(
-            spill_tags=["pin:openai"],
-            spill_mock_response="spill must never be selected by a pin:azure request",
-        )
+        attempted: Final = AttemptedFallbackTargets()
+        attempted.record("primary")
+        attempted.record("fb1")
+        attempted.record("fb2")
 
-        with pytest.raises(litellm.BadRequestError) as excinfo:
-            await router.acompletion(
-                model="pooled-model",
-                messages=[{"role": "user", "content": "hi"}],
-                metadata={"tags": ["pin:azure"]},
-            )
-
-        assert self.UPSTREAM_MESSAGE in str(excinfo.value)
-        assert excinfo.value.status_code == 400
-        assert not isinstance(excinfo.value, litellm.RateLimitError)
-
-    @pytest.mark.asyncio
-    async def test_ladder_that_exhausts_on_a_real_error_still_surfaces_the_last_hop(self):
-        """Inverse guard: the swap applies ONLY when the final error is the selection
-        error. When order 3 is selectable and fails with its own error, that error is
-        what the caller sees -- the original 400 is not smuggled back in."""
-        router = self._router(
-            spill_tags=["pin:azure"],
-            spill_mock_response=_SyntheticUpstream500(self.SPILL_MESSAGE),
-        )
-
-        with pytest.raises(litellm.InternalServerError) as excinfo:
-            await router.acompletion(
-                model="pooled-model",
-                messages=[{"role": "user", "content": "hi"}],
-                metadata={"tags": ["pin:azure"]},
-            )
-
-        assert self.SPILL_MESSAGE in str(excinfo.value)
-        assert self.UPSTREAM_MESSAGE not in str(excinfo.value)
-
-    @pytest.mark.asyncio
-    async def test_ladder_cooled_down_by_real_429s_still_surfaces_the_rate_limit(self):
-        """The swap must not fire when the selection error is GENUINE.
-
-        RouterRateLimitError has two causes: the pin emptied the target order
-        (structural, cooldown_list=[]), or every deployment at that order is cooling
-        down from real upstream 429s (cooldown_list non-empty) and would serve the
-        request in cooldown_time seconds. Reporting the second as the original 400
-        would tell a client with 429-backoff that the request is permanently bad.
-        """
-        router: Final = litellm.Router(
-            model_list=[
-                self._deployment(
-                    "primary-a", order=1, tags=["pin:azure"], mock_response=_SyntheticUpstream400(self.UPSTREAM_MESSAGE)
-                ),
-                self._deployment(
-                    "secondary-1", order=2, tags=["pin:azure"], mock_response=_SyntheticUpstream429("rate limited")
-                ),
-                self._deployment(
-                    "secondary-2", order=2, tags=["pin:azure"], mock_response=_SyntheticUpstream429("rate limited")
-                ),
-            ],
-            enable_tag_filtering=True,
-            tag_filtering_match_any=False,
-            num_retries=0,
-            cooldown_time=30,
-        )
-        messages: Final = [{"role": "user", "content": "hi"}]
-        metadata: Final = {"tags": ["pin:azure"]}
-
-        # Warm-up: each pinned request 400s on order 1, ladders to order 2, and meets a
-        # genuine 429 there, which puts the order-2 deployments into cooldown.
-        for _ in range(6):
-            with pytest.raises((litellm.BadRequestError, litellm.RateLimitError, RouterRateLimitError)):
-                await router.acompletion(model="pooled-model", messages=messages, metadata=metadata)
-        await asyncio.sleep(0.2)
-
-        with pytest.raises(RouterRateLimitError) as excinfo:
-            await router.acompletion(model="pooled-model", messages=messages, metadata=metadata)
-
-        assert excinfo.value.cooldown_list, "order-2 deployments were expected to be in cooldown"
-        assert self.UPSTREAM_MESSAGE not in str(excinfo.value)
-
-    @pytest.mark.asyncio
-    async def test_unrelated_cooldown_elsewhere_does_not_suppress_the_fix(self):
-        """cooldown_list is router-wide, not target-order-scoped.
-
-        A deployment in a DIFFERENT model group cooling down from real 429s must not
-        make the pinned request's structural case look like a genuine rate limit.
-        """
-        router: Final = litellm.Router(
-            model_list=[
-                self._deployment(
-                    "primary-a", order=1, tags=["pin:azure"], mock_response=_SyntheticUpstream400(self.UPSTREAM_MESSAGE)
-                ),
-                self._deployment(
-                    "primary-b", order=2, tags=["pin:azure"], mock_response=_SyntheticUpstream400(self.UPSTREAM_MESSAGE)
-                ),
-                self._deployment("spill", order=3, tags=["pin:openai"], mock_response="never selected by pin:azure"),
-                {
-                    "model_name": "other-model",
-                    "litellm_params": {
-                        "model": "openai/other-1",
-                        "api_key": "synthetic-key",
-                        "mock_response": _SyntheticUpstream429("rate limited"),
-                    },
-                    "model_info": {"id": "other-1"},
-                },
-                {
-                    "model_name": "other-model",
-                    "litellm_params": {
-                        "model": "openai/other-2",
-                        "api_key": "synthetic-key",
-                        "mock_response": _SyntheticUpstream429("rate limited"),
-                    },
-                    "model_info": {"id": "other-2"},
-                },
-            ],
-            enable_tag_filtering=True,
-            tag_filtering_match_any=False,
-            num_retries=0,
-            cooldown_time=30,
-        )
-        messages: Final = [{"role": "user", "content": "hi"}]
-        for _ in range(6):
-            with pytest.raises((litellm.BadRequestError, litellm.RateLimitError, RouterRateLimitError)):
-                await router.acompletion(model="other-model", messages=messages)
-        await asyncio.sleep(0.2)
-
-        with pytest.raises(litellm.BadRequestError) as excinfo:
-            await router.acompletion(model="pooled-model", messages=messages, metadata={"tags": ["pin:azure"]})
-
-        assert self.UPSTREAM_MESSAGE in str(excinfo.value)
-        assert not isinstance(excinfo.value, litellm.RateLimitError)
-
-    @pytest.mark.asyncio
-    async def test_callback_emptied_order_is_not_the_structural_case(self):
-        """An order emptied by a filter callback, not by the pin, keeps the selection error.
-
-        The order-2 deployment carries the request's own pin, so it survives the tag
-        filter; something else removed it. That is not the case this fix is for.
-        """
-
-        class _DropOrder2(CustomLogger):
-            async def async_filter_deployments(
-                self, model, healthy_deployments, messages, request_kwargs=None, parent_otel_span=None
-            ):
-                return [d for d in healthy_deployments if d.get("litellm_params", {}).get("order") != 2]
-
-        router: Final = litellm.Router(
-            model_list=[
-                self._deployment(
-                    "primary-a", order=1, tags=["pin:azure"], mock_response=_SyntheticUpstream400(self.UPSTREAM_MESSAGE)
-                ),
-                self._deployment("primary-b", order=2, tags=["pin:azure"], mock_response="would succeed if selectable"),
-            ],
-            enable_tag_filtering=True,
-            tag_filtering_match_any=False,
-            num_retries=0,
-        )
-        drop_order_2: Final = _DropOrder2()
-        litellm.callbacks.append(drop_order_2)
-        try:
-            with pytest.raises(RouterRateLimitError) as excinfo:
-                await router.acompletion(
-                    model="pooled-model",
-                    messages=[{"role": "user", "content": "hi"}],
-                    metadata={"tags": ["pin:azure"]},
-                )
-            assert self.UPSTREAM_MESSAGE not in str(excinfo.value)
-        finally:
-            litellm.callbacks.remove(drop_order_2)
-
-    @pytest.mark.asyncio
-    async def test_team_scope_is_applied_before_the_tag_probe(self):
-        """Selection removes other teams' deployments before tag filtering; so must the probe.
-
-        The ladder targets order 2 because the requesting team has a deployment there,
-        but that deployment carries the other pin, so for this team the level is
-        structurally empty. Another team's deployment at the same order DOES carry the
-        request's pin: a probe that checks tags without team scope sees that match,
-        keeps the selection 429, and the fix silently never fires. Note the ladder
-        itself already scopes by team (get_model_list(team_id=...)), which is why an
-        order owned entirely by another team is never targeted -- the mismatch only
-        surfaces when both teams share an order.
-        """
-
-        def _team_deployment(dep_id: str, *, order: int, tags: list[str], team: str, mock_response: object) -> dict:
-            return {
-                "model_name": "pooled-model",
-                "litellm_params": {
-                    "model": f"openai/{dep_id}",
-                    "api_key": "synthetic-key",
-                    "mock_response": mock_response,
-                    "order": order,
-                    "tags": tags,
-                },
-                "model_info": {"id": dep_id, "team_id": team},
-            }
-
-        router: Final = litellm.Router(
-            model_list=[
-                _team_deployment(
-                    "team-a-primary",
-                    order=1,
-                    tags=["pin:azure"],
-                    team="team-a",
-                    mock_response=_SyntheticUpstream400(self.UPSTREAM_MESSAGE),
-                ),
-                _team_deployment(
-                    "team-a-spill",
-                    order=2,
-                    tags=["pin:openai"],
-                    team="team-a",
-                    mock_response="wrong pin for this request",
-                ),
-                _team_deployment(
-                    "team-b-pinned",
-                    order=2,
-                    tags=["pin:azure"],
-                    team="team-b",
-                    mock_response="another team's deployment",
-                ),
-            ],
-            enable_tag_filtering=True,
-            tag_filtering_match_any=False,
-            num_retries=0,
-        )
-
-        with pytest.raises(litellm.BadRequestError) as excinfo:
-            await router.acompletion(
-                model="pooled-model",
-                messages=[{"role": "user", "content": "hi"}],
-                metadata={"tags": ["pin:azure"], "user_api_key_team_id": "team-a"},
-            )
-
-        assert self.UPSTREAM_MESSAGE in str(excinfo.value)
-        assert "another team" not in str(excinfo.value)
-
-    @pytest.mark.asyncio
-    async def test_retryable_original_status_is_not_swapped(self):
-        """408 is transient under litellm._should_retry; it must not be reported as permanent."""
-        router: Final = self._router(
-            spill_tags=["pin:openai"],
-            spill_mock_response="never selected by pin:azure",
-        )
-        router.model_list[0]["litellm_params"]["mock_response"] = _SyntheticUpstream408("upstream timeout")
-        router.model_list[1]["litellm_params"]["mock_response"] = _SyntheticUpstream408("upstream timeout")
-
-        with pytest.raises(RouterRateLimitError):
-            await router.acompletion(
-                model="pooled-model",
-                messages=[{"role": "user", "content": "hi"}],
-                metadata={"tags": ["pin:azure"]},
-            )
+        assert has_unattempted_fallback_target(["fb1", "fb2"], {"attempted_targets": attempted}) is False
+        assert has_unattempted_fallback_target(["fb1", "fb3"], {"attempted_targets": attempted}) is True
+        assert has_unattempted_fallback_target(["fb1"], {}) is True
+        assert has_unattempted_fallback_target(None, {}) is False

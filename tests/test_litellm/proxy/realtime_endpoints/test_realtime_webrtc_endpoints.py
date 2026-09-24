@@ -298,7 +298,7 @@ async def test_client_secrets_transcription_rejects_disallowed_nested_model(
             )
 
         assert response.status_code == 403
-        assert "Tried to access gpt-realtime-whisper" in response.text
+        assert "The requested model 'gpt-realtime-whisper' is not available for this API key" in response.text
         mock_route_request.assert_not_called()
     finally:
         proxy_app.dependency_overrides.pop(user_api_key_auth, None)
@@ -622,7 +622,7 @@ async def test_transcription_sessions_rejects_disallowed_resolved_model(
             )
 
         assert response.status_code == 403
-        assert "Tried to access gpt-realtime-whisper" in response.text
+        assert "The requested model 'gpt-realtime-whisper' is not available for this API key" in response.text
         mock_route_request.assert_not_called()
     finally:
         proxy_app.dependency_overrides.pop(user_api_key_auth, None)
@@ -669,7 +669,7 @@ async def test_transcription_sessions_rejects_disallowed_team_model_scope(
 
         assert response.status_code == 403
         assert "team" in response.text.lower()
-        assert "Tried to access gpt-realtime-whisper" in response.text
+        assert "The requested model 'gpt-realtime-whisper' is not available for this API key" in response.text
         mock_route_request.assert_not_called()
     finally:
         proxy_app.dependency_overrides.pop(user_api_key_auth, None)
@@ -714,7 +714,7 @@ async def test_transcription_sessions_rejects_disallowed_project_model_scope(
 
         assert response.status_code == 403
         assert "project" in response.text.lower()
-        assert "Tried to access gpt-realtime-whisper" in response.text
+        assert "The requested model 'gpt-realtime-whisper' is not available for this API key" in response.text
         mock_route_request.assert_not_called()
     finally:
         proxy_app.dependency_overrides.pop(user_api_key_auth, None)
@@ -768,7 +768,7 @@ async def test_transcription_sessions_rejects_disallowed_team_member_model_scope
             )
 
         assert response.status_code == 403
-        assert "Team member not allowed to access model" in response.text
+        assert "is not available for this API key" in response.text
         mock_route_request.assert_not_called()
     finally:
         proxy_app.dependency_overrides.pop(user_api_key_auth, None)
@@ -795,7 +795,7 @@ async def test_realtime_transcription_websocket_default_model_checks_key_scope()
     websocket.close.assert_awaited_once()
     _, close_kwargs = websocket.close.call_args
     assert close_kwargs["code"] == 1008
-    assert "not allowed to access model" in close_kwargs["reason"]
+    assert "is not available for this API key" in close_kwargs["reason"]
 
 
 @_REALTIME_WS_DISABLED
@@ -838,7 +838,7 @@ async def test_realtime_transcription_websocket_default_model_checks_team_scope(
     websocket.close.assert_awaited_once()
     _, close_kwargs = websocket.close.call_args
     assert close_kwargs["code"] == 1008
-    assert "not allowed to access model" in close_kwargs["reason"]
+    assert "is not available for this API key" in close_kwargs["reason"]
 
 
 @_REALTIME_WS_DISABLED

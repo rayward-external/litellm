@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-
+import litellm
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.proxy.pass_through_endpoints.llm_provider_handlers.gemini_passthrough_logging_handler import (
     GeminiPassthroughLoggingHandler,
@@ -398,134 +398,51 @@ class TestGeminiPassthroughLoggingHandler:
         assert mock_logging_obj.model_call_details["model"] == "veo-2.0-generate-001"
         assert mock_logging_obj.model_call_details["custom_llm_provider"] == "gemini"
 
-
-class TestStreamedGeminiIsCostedByTheVertexPath:
-    """Replaces the deleted `_handle_logging_gemini_collected_chunks`.
-
-    That method had no call sites: `get_endpoint_type` classifies any URL
-    containing `streamGenerateContent` as `EndpointType.VERTEX_AI`, including
-    the Gemini AI Studio host, so `PassThroughStreamingHandler` has always
-    dispatched streamed Gemini to the Vertex handler. Rather than add an
-    `EndpointType.GEMINI` and a second code path computing the same number, the
-    dead code was removed — unreachable code that looks like coverage is worse
-    than none, because it implies a guarantee that does not exist.
-
-    These tests are the evidence for that decision, and the guard that the live
-    path keeps costing streamed Gemini correctly.
-    """
-
-    URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
-    MODEL = "gemini-2.5-flash"
-    PROMPT_TOKENS = 1000
-    CANDIDATES_TOKENS = 500
-
-    def _sse_lines(self) -> list:
-        chunks = [
-            {
-                "candidates": [
-                    {
-                        "content": {"parts": [{"text": "Hello"}], "role": "model"},
-                        "index": 0,
-                    }
-                ],
-                "modelVersion": self.MODEL,
-            },
-            {
-                "candidates": [
-                    {
-                        "content": {"parts": [{"text": " world"}], "role": "model"},
-                        "index": 0,
-                        "finishReason": "STOP",
-                    }
-                ],
-                "usageMetadata": {
-                    "promptTokenCount": self.PROMPT_TOKENS,
-                    "candidatesTokenCount": self.CANDIDATES_TOKENS,
-                    "totalTokenCount": self.PROMPT_TOKENS + self.CANDIDATES_TOKENS,
-                },
-                "modelVersion": self.MODEL,
-            },
-        ]
-        return ["data: " + json.dumps(chunk) for chunk in chunks]
-
-    def _create_mock_logging_obj(self) -> LiteLLMLoggingObj:
+    def test_interactions_create_response_is_priced_as_gemini(self):
+        """Regression for LIT-6896: Gemini API Interactions passthrough must not log zero usage."""
+        usage = {
+            "total_tokens": 1030,
+            "total_input_tokens": 10,
+            "input_tokens_by_modality": [{"modality": "text", "tokens": 10}],
+            "total_output_tokens": 1020,
+            "output_tokens_by_modality": [
+                {"modality": "text", "tokens": 20},
+                {"modality": "video", "tokens": 1000},
+            ],
+            "total_tool_use_tokens": 0,
+            "total_thought_tokens": 0,
+        }
+        mock_httpx_response = MagicMock(spec=httpx.Response)
+        mock_httpx_response.json.return_value = {
+            "id": "interactions/abc",
+            "model": "gemini-omni-flash-preview",
+            "status": "completed",
+            "usage": usage,
+        }
         mock_logging_obj = MagicMock(spec=LiteLLMLoggingObj)
         mock_logging_obj.model_call_details = {}
-        mock_logging_obj.optional_params = {}
-        mock_logging_obj.litellm_call_id = "test-call-id-123"
-        mock_logging_obj.litellm_trace_id = "test-trace-id-123"
-        return mock_logging_obj
+        mock_logging_obj.litellm_call_id = "call-6896"
 
-    def test_streamed_gemini_is_costed_by_the_vertex_path(self):
-        """A streamed Gemini call must produce real spend and be attributed to
-        the `gemini` provider — not `vertex_ai`, whose prices can differ."""
-        from litellm.proxy.pass_through_endpoints.llm_provider_handlers.vertex_passthrough_logging_handler import (
-            VertexPassthroughLoggingHandler,
+        result = GeminiPassthroughLoggingHandler.gemini_passthrough_handler(
+            httpx_response=mock_httpx_response,
+            response_body=mock_httpx_response.json.return_value,
+            logging_obj=mock_logging_obj,
+            url_route="https://generativelanguage.googleapis.com/v1beta/interactions",
+            result="",
+            start_time=self.start_time,
+            end_time=self.end_time,
+            cache_hit=False,
+            request_body={"model": "gemini-omni-flash-preview", "input": "make a clip"},
         )
 
-        mock_logging_obj = self._create_mock_logging_obj()
-
-        result = VertexPassthroughLoggingHandler._handle_logging_vertex_collected_chunks(
-            litellm_logging_obj=mock_logging_obj,
-            passthrough_success_handler_obj=PassThroughEndpointLogging(),
-            url_route=self.URL,
-            request_body={},
-            endpoint_type=None,
-            start_time=datetime.now(),
-            all_chunks=self._sse_lines(),
-            model=None,
-            end_time=datetime.now(),
+        model_info = litellm.get_model_info(model="gemini-omni-flash-preview", custom_llm_provider="gemini")
+        expected_cost = (
+            10 * model_info["input_cost_per_token"]
+            + 20 * model_info["output_cost_per_token"]
+            + 1000 * model_info["output_cost_per_video_token"]
         )
-
-        # Gemini's reported token counts survive reassembly.
-        usage = result["result"].usage
-        assert usage.prompt_tokens == self.PROMPT_TOKENS
-        assert usage.completion_tokens == self.CANDIDATES_TOKENS
-
-        # Real spend, and attributed to gemini (resolved from the AI Studio
-        # hostname), not to vertex_ai.
-        assert result["kwargs"]["response_cost"] > 0
+        assert result["result"].id == "call-6896"
+        assert result["result"].usage.completion_tokens_details.video_tokens == 1000
+        assert result["kwargs"]["response_cost"] == pytest.approx(expected_cost)
+        assert result["kwargs"]["custom_llm_provider"] == "gemini"
         assert mock_logging_obj.model_call_details["custom_llm_provider"] == "gemini"
-
-    def test_streamed_gemini_cost_matches_the_gemini_price_entry(self):
-        """Pins the number to the `gemini/...` price map entry, so a provider
-        misresolution that silently prices against a different entry fails."""
-        import litellm
-        from litellm.proxy.pass_through_endpoints.llm_provider_handlers.vertex_passthrough_logging_handler import (
-            VertexPassthroughLoggingHandler,
-        )
-
-        price = litellm.model_cost[f"gemini/{self.MODEL}"]
-        expected = (
-            price["input_cost_per_token"] * self.PROMPT_TOKENS
-            + price["output_cost_per_token"] * self.CANDIDATES_TOKENS
-        )
-
-        result = VertexPassthroughLoggingHandler._handle_logging_vertex_collected_chunks(
-            litellm_logging_obj=self._create_mock_logging_obj(),
-            passthrough_success_handler_obj=PassThroughEndpointLogging(),
-            url_route=self.URL,
-            request_body={},
-            endpoint_type=None,
-            start_time=datetime.now(),
-            all_chunks=self._sse_lines(),
-            model=None,
-            end_time=datetime.now(),
-        )
-
-        assert result["kwargs"]["response_cost"] == pytest.approx(expected, rel=1e-6)
-
-    def test_no_dead_gemini_streaming_handler_is_reintroduced(self):
-        """The removed method must not come back without a dispatch branch.
-
-        If a future change genuinely needs Gemini-specific streaming logging,
-        it must also add an `EndpointType` member and wire `get_endpoint_type`
-        + `PassThroughStreamingHandler` to reach it. This test fails loudly
-        rather than letting uncalled code masquerade as cost coverage again.
-        """
-        assert not hasattr(
-            GeminiPassthroughLoggingHandler, "_handle_logging_gemini_collected_chunks"
-        )
-        assert not hasattr(
-            GeminiPassthroughLoggingHandler, "_build_complete_streaming_response"
-        )

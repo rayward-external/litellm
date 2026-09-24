@@ -42,6 +42,7 @@ async def test_openai_moderation_guardrail_streaming_latency():
                 choice.delta.content = content
                 # Last chunk gets finish_reason
                 choice.finish_reason = "stop" if i == len(chunks_data) - 1 else None
+                choice.index = 0
                 chunk.choices = [choice]
                 yield chunk
 
@@ -127,6 +128,7 @@ async def test_openai_moderation_guardrail_streaming_harmful_content():
                 choice.delta.content = content
                 # Last chunk gets finish_reason
                 choice.finish_reason = "stop" if i == len(chunks_data) - 1 else None
+                choice.index = 0
                 chunk.choices = [choice]
                 yield chunk
 
@@ -234,6 +236,7 @@ async def test_openai_moderation_streaming_end_of_stream_request_data_passthroug
                 choice.delta = MagicMock()
                 choice.delta.content = content
                 choice.finish_reason = "stop" if i == len(chunks_data) - 1 else None
+                choice.index = 0
                 chunk.choices = [choice]
                 yield chunk
 

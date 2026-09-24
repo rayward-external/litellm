@@ -221,34 +221,7 @@ async def _keepalive_ping_stream(
     monitor: UpstreamStreamMonitor | None = None,
     identity: UpstreamStreamIdentity | None = None,
 ) -> AsyncGenerator[str, None]:
-    # `upstream_wait_started` is restamped whenever the wrapper starts waiting on
-    # the next chunk of the stream it consumes, so time spent suspended at a
-    # `yield` -- a consumer that is not reading, which is
-    # `litellm.stream_stalled_write_timeout_seconds`' business, not this cap's --
-    # is never charged to the upstream. `monitor` supplies the other half: the
-    # last moment the PROVIDER produced something, stamped below the post-call
-    # hooks, so a hook that buffers a healthy upstream is not read as silence.
-    # The idle window runs from whichever of the two is later, which is exactly
-    # "the wrapper has been waiting, and so has the provider".
-    #
-    # Every clock read and both restamps are guarded on the cap being
-    # configured, and it is off by default. With it off this generator does
-    # exactly what it did before the cap existed: same chunks, same order, and
-    # not one extra clock read per chunk on the streaming hot path.
-    idle_deadline_seconds: Final = max_upstream_idle_seconds
-    pending = asyncio.ensure_future(
-        stream.__anext__()
-    )  # rebind-ok: re-armed with the next __anext__ after each delivered chunk
-    upstream_wait_started = (  # rebind-ok: restamped per upstream __anext__
-        time.monotonic() if idle_deadline_seconds is not None else 0.0
-    )
-    next_ping_at = upstream_wait_started + ping_interval_seconds  # rebind-ok: re-armed after each ping and chunk
-
-    def idle_window_started() -> float:
-        if monitor is not None and monitor.last_upstream_activity > upstream_wait_started:
-            return monitor.last_upstream_activity
-        return upstream_wait_started
-
+    pending = asyncio.ensure_future(stream.__anext__())
     try:
         while True:
             if idle_deadline_seconds is not None:
@@ -350,9 +323,7 @@ async def _keepalive_ping_byte_stream(
     stream: AsyncGenerator[bytes, None],
     ping_interval_seconds: float,
 ) -> AsyncGenerator[bytes, None]:
-    pending = asyncio.ensure_future(
-        stream.__anext__()
-    )  # rebind-ok: re-armed with the next __anext__ after each delivered chunk
+    pending = asyncio.ensure_future(stream.__anext__())
     # The tail of the bytes relayed so far, long enough to hold any delimiter.
     # Seeded as a delimiter because a stream starts at a frame boundary, and kept
     # across chunks because a delimiter can be split between two transport reads,

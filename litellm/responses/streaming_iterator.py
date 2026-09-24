@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import time
 import traceback
@@ -33,7 +34,11 @@ from litellm.litellm_core_utils.llm_response_utils.response_metadata import (
 )
 from litellm.litellm_core_utils.thread_pool_executor import executor
 from litellm.llms.base_llm.responses.transformation import BaseResponsesAPIConfig
+from litellm.responses.litellm_completion_transformation.transformation import (
+    LiteLLMCompletionResponsesConfig,
+)
 from litellm.responses.utils import ResponseAPILoggingUtils, ResponsesAPIRequestUtils
+from litellm.types.integrations.custom_logger import converted_stream_requested
 from litellm.types.llms.openai import (
     PART_UNION_TYPES,
     ResponseAPIUsage,
@@ -54,6 +59,7 @@ if TYPE_CHECKING:
         PresidioGuardrailCallback,
         ResponsesBackendWebSocket,
         ResponsesClientWebSocket,
+        ResponsesWebSocketRequestDefaults,
     )
     from litellm.types.router import LiteLLM_Params
 
@@ -153,7 +159,7 @@ def _load_json_value(payload: str | bytes) -> object:
     return json.loads(payload)
 
 
-def _model_id_from_metadata(litellm_metadata: dict[str, object] | None) -> str | None:
+def _model_id_from_metadata(litellm_metadata: Mapping[str, object] | None) -> str | None:
     model_info: Final = litellm_metadata.get("model_info") if litellm_metadata else None
     model_id: Final = model_info.get("id") if _is_json_object(model_info) else None
     return model_id if isinstance(model_id, str) else None
@@ -168,7 +174,7 @@ def _log_background_task_failure(task: asyncio.Task[object], *, task_name: str) 
 
 
 _ERROR_CODE_HTTP_STATUS: Final[Mapping[str, int]] = MappingProxyType(
-    {  # mutable-ok: immediately frozen by MappingProxyType
+    {
         "server_error": 500,
         "rate_limit_exceeded": 429,
         "insufficient_quota": 429,
@@ -211,18 +217,51 @@ def _error_event_fields(error_obj: object) -> tuple[str, str | None, str | None]
         raw_code = None
     message: Final = str(raw_message) if raw_message is not None else "Response API in-stream error"
     error_type: Final = raw_type if isinstance(raw_type, str) else None
-    code: Final = raw_code if isinstance(raw_code, str) else None
+    code: Final = str(raw_code) if isinstance(raw_code, (str, int)) and not isinstance(raw_code, bool) else None
     return message, error_type, code
+
+
+def _status_code_for_error_field(field: str) -> int | None:
+    if field.isdecimal() and 400 <= int(field) <= 599:
+        return int(field)
+    return _ERROR_CODE_HTTP_STATUS.get(field)
 
 
 def _status_code_for_error_fields(error_type: str | None, error_code: str | None) -> int:
     fields: Final = tuple(field for field in (error_code, error_type) if field is not None)
     if any(field.startswith("rate_limit") or field == "insufficient_quota" for field in fields):
         return 429
-    return next(
-        (_ERROR_CODE_HTTP_STATUS[field] for field in fields if field in _ERROR_CODE_HTTP_STATUS),
-        500,
+    return next((status for status in map(_status_code_for_error_field, fields) if status is not None), 500)
+
+
+def _map_stream_error_to_exception(error_obj: object, model: str, custom_llm_provider: str) -> Exception:
+    from litellm.llms.base_llm.chat.transformation import BaseLLMException
+
+    error_message, error_type, error_code = _error_event_fields(error_obj)
+    status_code: Final = _status_code_for_error_fields(error_type, error_code)
+    error_body: Final = {"message": error_message, "type": error_type, "code": error_code}
+    provider_exception: Final = BaseLLMException(
+        status_code=status_code,
+        message=f"Error code: {status_code} - {{'error': {error_body}}}",
+        body=error_body,
     )
+    try:
+        return litellm.exception_type(
+            model=model,
+            custom_llm_provider=custom_llm_provider,
+            original_exception=provider_exception,
+            completion_kwargs={},
+            extra_kwargs={},
+        )
+    except Exception as mapped_exception:
+        return mapped_exception
+
+
+def _mid_stream_fallback_eligible(mapped_exception: Exception) -> bool:
+    if isinstance(mapped_exception, litellm.ContentPolicyViolationError):
+        return True
+    status_code: Final = getattr(mapped_exception, "status_code", None)
+    return not isinstance(status_code, int) or status_code >= 500 or status_code == 429
 
 
 class BaseResponsesAPIStreamingIterator:
@@ -253,6 +292,7 @@ class BaseResponsesAPIStreamingIterator:
         self._failure_handled = False  # Track if failure handler has been called
         self._yielded_first_chunk = False
         self._generated_content = ""
+        self._generated_tool_arguments = ""
         self._completed_response_cached = False
         self._completed_response_logged = False
         self._completed_response_cache_hit: bool | None = None
@@ -348,6 +388,10 @@ class BaseResponsesAPIStreamingIterator:
                     _delta: Final = getattr(openai_responses_api_chunk, "delta", None)
                     if isinstance(_delta, str):
                         self._generated_content += _delta
+                elif _event_type in _TOOL_ARGUMENTS_DELTA_EVENTS:
+                    _args_delta: Final = getattr(openai_responses_api_chunk, "delta", None)
+                    if isinstance(_args_delta, str):
+                        self._generated_tool_arguments += _args_delta
                 _stream_model_id: Final = _model_id_from_metadata(self.litellm_metadata)
                 if _event_type in (
                     ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED,
@@ -415,13 +459,40 @@ class BaseResponsesAPIStreamingIterator:
                     openai_types.ResponsesAPIStreamEvents.RESPONSE_INCOMPLETE,
                     openai_types.ResponsesAPIStreamEvents.RESPONSE_FAILED,
                 ):
-                    self.completed_response = openai_responses_api_chunk
-                    _stamp_responses_usage_cost(getattr(openai_responses_api_chunk, "response", None), self.logging_obj)
+                    _response_obj: Final[object] = getattr(openai_responses_api_chunk, "response", None)
+                    _estimate_wanted: Final[bool] = _chunk_type in (
+                        openai_types.ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
+                        openai_types.ResponsesAPIStreamEvents.RESPONSE_INCOMPLETE,
+                    )
+                    _billed_response: Final[ResponsesAPIResponse | None] = _billed_terminal_response(
+                        _response_obj,
+                        (
+                            lambda: (
+                                _estimate_usage_safely(
+                                    self.model or "",
+                                    self.request_data.get("input"),
+                                    self.request_data,
+                                    self._generated_content + self._generated_tool_arguments,
+                                )
+                                if _estimate_wanted
+                                else None
+                            )
+                        ),
+                    )
+                    _terminal_chunk: Final = (
+                        openai_responses_api_chunk
+                        if _billed_response is None or _billed_response is _response_obj
+                        else openai_responses_api_chunk.model_copy(update={"response": _billed_response})
+                    )
+                    self.completed_response = _terminal_chunk
+                    _stamp_responses_usage_cost(_billed_response, self.logging_obj)
 
                     if _chunk_type == openai_types.ResponsesAPIStreamEvents.RESPONSE_FAILED:
                         self._handle_logging_failed_response()
                     else:
                         self._handle_logging_completed_response()
+
+                    return _terminal_chunk
 
                 return openai_responses_api_chunk
 
@@ -525,15 +596,8 @@ class BaseResponsesAPIStreamingIterator:
             getattr(self.completed_response, "response", None) if self.completed_response else None
         )
         error_info: Final = getattr(response_obj, "error", None) if response_obj else None
-        error_message, error_type, error_code = _error_event_fields(error_info)
         self._record_failed_response_usage(response_obj)
-        exception: Final = litellm.APIError(
-            status_code=_status_code_for_error_fields(error_type, error_code),
-            message=error_message,
-            llm_provider=self.custom_llm_provider or "",
-            model=self.model or "",
-        )
-        self._handle_failure(exception)
+        self._handle_failure(self._map_error_event_exception(error_info))
 
     def _record_failed_response_usage(self, response_obj: ResponsesAPIResponse | None) -> None:
         if response_obj is None or self.logging_obj is None:
@@ -555,6 +619,9 @@ class BaseResponsesAPIStreamingIterator:
             self.logging_obj._response_cost_calculator(result=response_obj) or 0.0
         )
 
+    def _map_error_event_exception(self, error_obj: object) -> Exception:
+        return _map_stream_error_to_exception(error_obj, self.model or "", self.custom_llm_provider or "")
+
     def _maybe_raise_for_error_event(self, result: object) -> None:
         chunk_type: Final = getattr(result, "type", None)
         if chunk_type not in ("error", "response.failed"):
@@ -566,15 +633,8 @@ class BaseResponsesAPIStreamingIterator:
             else getattr(result, "error", None)
         )
 
-        error_message, error_type, error_code = _error_event_fields(error_obj)
-        status_code: Final = _status_code_for_error_fields(error_type, error_code)
-        mapped_exception: Final = litellm.APIError(
-            status_code=status_code,
-            message=error_message,
-            llm_provider=self.custom_llm_provider or "",
-            model=self.model or "",
-        )
-        if 400 <= status_code < 500 and status_code != 429:
+        mapped_exception: Final = self._map_error_event_exception(error_obj)
+        if not _mid_stream_fallback_eligible(mapped_exception):
             raise mapped_exception
         raise MidStreamFallbackError(
             message=str(mapped_exception),
@@ -615,7 +675,9 @@ class BaseResponsesAPIStreamingIterator:
             return
 
         request_kwargs = getattr(caching_handler, "request_kwargs", None)
-        if not _is_json_object(request_kwargs) or request_kwargs.get("stream") is not True:
+        if not _is_json_object(request_kwargs):
+            return
+        if request_kwargs.get("stream") is not True and not converted_stream_requested(request_kwargs):
             return
         request_kwargs = request_kwargs.copy()
         preset_cache_key = getattr(caching_handler, "preset_cache_key", None)
@@ -641,7 +703,9 @@ class BaseResponsesAPIStreamingIterator:
         if cache is None:
             return
 
-        cached_response: Final = response_obj.model_dump_json()
+        cached_response: Final = _dump_json_safely(response_obj)
+        if cached_response is None:
+            return
         if is_async:
             from litellm.caching.caching_handler import create_cache_write_task
 
@@ -1287,6 +1351,31 @@ def _add_text_like_part_events(
         )
 
 
+def _billed_terminal_response(
+    response_obj: object, estimate: Callable[[], ResponseAPIUsage | None] | None
+) -> ResponsesAPIResponse | None:
+    if isinstance(response_obj, ResponsesAPIResponse):
+        return (
+            response_obj
+            if response_obj.usage is not None or estimate is None
+            else response_obj.model_copy(update={"usage": estimate()})
+        )
+    if not isinstance(response_obj, dict):
+        return None
+    usage: Final[object] = response_obj.get("usage")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # a model_constructed terminal event leaves response as an untyped dict
+    return ResponsesAPIResponse.model_construct(
+        **{**response_obj, "usage": usage if usage is not None or estimate is None else estimate()}  # pyright: ignore[reportUnknownArgumentType, reportArgumentType]  # same untyped dict spread
+    )
+
+
+def _dump_json_safely(response: BaseModel) -> str | None:
+    try:
+        return response.model_dump_json()
+    except Exception as exc:
+        verbose_logger.debug("could not serialize completed response for cache: %s", exc)
+        return None
+
+
 def _logging_copy(event: object) -> object:
     """Hand logging callbacks a copy, so their usage rewrite (Responses shape to chat shape) never
     reaches the event the caller is iterating. The round trip through ``model_dump`` sidesteps the
@@ -1315,6 +1404,56 @@ def _usage_as_model(usage: object) -> ResponseAPIUsage | None:
     try:
         return ResponseAPIUsage.model_validate(usage)
     except ValidationError:
+        return None
+
+
+_TOOL_ARGUMENTS_DELTA_EVENTS: Final = frozenset(
+    {
+        ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DELTA,
+        ResponsesAPIStreamEvents.CUSTOM_TOOL_CALL_INPUT_DELTA,
+        ResponsesAPIStreamEvents.MCP_CALL_ARGUMENTS_DELTA,
+    }
+)
+
+
+def _estimate_usage_from_text(
+    model: str,
+    request_input: object,
+    responses_api_request: Mapping[str, object],
+    generated_text: str,
+) -> ResponseAPIUsage:
+    messages: Final = LiteLLMCompletionResponsesConfig.transform_responses_api_input_to_messages(  # pyright: ignore[reportUnknownMemberType]  # the transformer's signature is partially untyped
+        input=request_input,  # pyright: ignore[reportArgumentType]  # the raw Responses API input is a str or ResponseInputParam list, matching the helper's declared union
+        responses_api_request=dict(responses_api_request),
+    )
+    input_tokens: Final = litellm.token_counter(  # pyright: ignore[reportUnknownMemberType]  # token_counter's public signature is untyped
+        model=model, messages=messages
+    )
+    output_tokens: Final = litellm.token_counter(  # pyright: ignore[reportUnknownMemberType]  # token_counter's public signature is untyped
+        model=model, text=generated_text, count_response_tokens=True
+    )
+    return ResponseAPIUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
+    )
+
+
+def _estimate_usage_safely(
+    model: str,
+    request_input: object,
+    responses_api_request: Mapping[str, object],
+    generated_text: str,
+) -> ResponseAPIUsage | None:
+    try:
+        return _estimate_usage_from_text(
+            model=model,
+            request_input=request_input,
+            responses_api_request=responses_api_request,
+            generated_text=generated_text,
+        )
+    except Exception as e:
+        verbose_logger.debug("Could not estimate usage from stream text, billing $0: %s", e)
         return None
 
 
@@ -1498,9 +1637,7 @@ def _extract_frame_quota_estimate_inputs(msg_obj: Mapping[str, object]) -> tuple
     params: Final[Mapping[str, object]] = (
         nested
         if _is_json_object(nested) and nested
-        else MappingProxyType(  # mutable-ok: immediately frozen filtered frame
-            {k: v for k, v in msg_obj.items() if k != "type"}
-        )
+        else MappingProxyType({k: v for k, v in msg_obj.items() if k != "type"})
     )
     text_parts: Final[list[str]] = []  # mutable-ok: local accumulator built in one pass, not shared
     pending: Final[list[object]] = [  # mutable-ok: explicit worklist avoids recursion
@@ -1565,23 +1702,64 @@ RESPONSES_WS_LOGGED_EVENT_TYPES: Final = [
 
 RESPONSES_WS_MASKABLE_TEXT_BLOCK_TYPES: Final = frozenset({"input_text", "output_text", "text"})
 
-# Terminal Responses API events that carry a final `response` object with
-# usage -- the only frames a completed/failed/incomplete turn can be costed
-# from. Maps the wire `type` string to the pydantic event class so each one
-# can be reconstructed and hand it to LiteLLMLoggingObj.dispatch_success_handlers,
-# which routes it through _get_assembled_streaming_response's existing
-# ResponseCompletedEvent/ResponseIncompleteEvent/ResponseFailedEvent branch
-# (litellm/litellm_core_utils/litellm_logging.py:3672-3673) for real cost/usage
-# computation -- rather than the raw event-list shape that branch cannot parse.
-RESPONSES_WS_TERMINAL_EVENT_CLASSES: Final[
-    Mapping[str, type[ResponseCompletedEvent | ResponseFailedEvent | ResponseIncompleteEvent]]
-] = MappingProxyType(
-    {  # mutable-ok: immediately frozen by MappingProxyType
-        "response.completed": ResponseCompletedEvent,
-        "response.failed": ResponseFailedEvent,
-        "response.incomplete": ResponseIncompleteEvent,
+_RESPONSES_WS_FAILURE_EVENT_TYPES: Final = frozenset({"error", "response.failed"})
+
+_RESPONSES_WS_OUTPUT_ITEM_EVENT_TYPES: Final = frozenset({"response.output_item.added", "response.output_item.done"})
+
+
+def _ws_event_error(event: Mapping[str, object]) -> object:
+    if event.get("type") == "error":
+        return event.get("error")
+    response: Final = event.get("response")
+    return response.get("error") if _is_json_object(response) else None
+
+
+def _restore_input_item_ids(items: Sequence[object]) -> Sequence[object]:
+    return ResponsesAPIRequestUtils._restore_encrypted_content_item_ids_in_input(copy.deepcopy(list(items)))  # pyright: ignore[reportPrivateUsage]  # same restore the HTTP responses path runs
+
+
+def _restored_container_fields(container: Mapping[str, object]) -> Mapping[str, object]:
+    input_items: Final = container.get("input")
+    previous_response_id: Final = container.get("previous_response_id")
+    restored: Final = {
+        "input": _restore_input_item_ids(input_items) if _is_json_array(input_items) else input_items,
+        "previous_response_id": (
+            ResponsesAPIRequestUtils.decode_previous_response_id_to_original_previous_response_id(previous_response_id)
+            if isinstance(previous_response_id, str)
+            else previous_response_id
+        ),
     }
-)
+    return MappingProxyType({key: value for key, value in restored.items() if value != container.get(key)})
+
+
+def _restore_wrapped_ids_in_response_create(msg_obj: Mapping[str, object]) -> dict[str, object] | None:
+    nested: Final = msg_obj.get("response")
+    nested_fields: Final = _restored_container_fields(nested) if _is_json_object(nested) else EMPTY_MAPPING
+    top_fields: Final = _restored_container_fields(msg_obj)
+    if not nested_fields and not top_fields:
+        return None
+    restored_nested: Final = (
+        {"response": {**nested, **nested_fields}} if _is_json_object(nested) and nested_fields else EMPTY_MAPPING
+    )
+    return {**msg_obj, **top_fields, **restored_nested}
+
+
+def _wrap_output_item_encrypted_content(
+    event_obj: Mapping[str, object], litellm_metadata: Mapping[str, object]
+) -> dict[str, object] | None:
+    if not litellm_metadata.get("encrypted_content_affinity_enabled"):
+        return None
+    model_id: Final = _model_id_from_metadata(litellm_metadata)
+    item: Final = event_obj.get("item")
+    if model_id is None or not _is_json_object(item):
+        return None
+    encrypted_content: Final = item.get("encrypted_content")
+    if not isinstance(encrypted_content, str) or not encrypted_content:
+        return None
+    wrapped_content: Final = ResponsesAPIRequestUtils._wrap_encrypted_content_with_model_id(  # pyright: ignore[reportPrivateUsage]  # same wrap the HTTP streaming path applies
+        encrypted_content=encrypted_content, model_id=model_id
+    )
+    return {**event_obj, "item": {**item, "encrypted_content": wrapped_content}}
 
 
 class ResponsesWebSocketStreaming:
@@ -1609,16 +1787,17 @@ class ResponsesWebSocketStreaming:
         output_guardrail_callbacks: list[PresidioGuardrailCallback] | None = None,
         quota_callbacks: Sequence[ProjectQuotaCallback] | None = None,
         authorized_model: str | None = None,
-        request_defaults: Mapping[str, object] | None = None,
-        responses_api_provider_config: BaseResponsesAPIConfig | None = None,
         custom_llm_provider: str | None = None,
-        api_base: str | None = None,
+        request_defaults: ResponsesWebSocketRequestDefaults | None = None,
     ):
         self.websocket = websocket
         self.backend_ws = backend_ws
         self.logging_obj = logging_obj
         self.user_api_key_dict = user_api_key_dict
         self.request_data: dict[str, object] = request_data or {}
+        litellm_metadata: Final = self.request_data.get("litellm_metadata")
+        self.litellm_metadata: dict[str, object] = litellm_metadata if _is_json_object(litellm_metadata) else {}
+        self.custom_llm_provider: str | None = custom_llm_provider
         self.messages: list[_MutableJsonObject] = []
         self.input_messages: list[dict[str, object]] = []
         self.first_message = first_message
@@ -1628,21 +1807,7 @@ class ResponsesWebSocketStreaming:
         # Model name authorized at connection time; enforced on every
         # response.create frame to prevent deployment-substitution attacks.
         self.authorized_model: str | None = authorized_model
-        self.request_defaults: Mapping[str, object] = request_defaults or MappingProxyType({})
-        self.responses_api_provider_config: BaseResponsesAPIConfig | None = responses_api_provider_config
-        self.custom_llm_provider = custom_llm_provider
-        self.api_base = api_base
-        # Strong references to in-flight per-turn cost dispatch tasks
-        # (_dispatch_turn_cost). asyncio only holds a WEAK reference to a
-        # bare create_task() result -- per the stdlib docs, a task whose
-        # result is not retained anywhere can be garbage-collected mid-run.
-        # These tasks are now the ENTIRE billing path for the native WS
-        # bridge (rayward-internal/llm-gateway-infra#657), so losing one
-        # silently is the same bug in a new place. Retained here and drained
-        # with a bounded wait in bidirectional_forward's finally: before the
-        # connection tears down.
-        # Instance-owned task registry; entries removed via add_done_callback.
-        self._pending_cost_tasks: set[asyncio.Task] = set()  # mutable-ok: registry
+        self.request_defaults: ResponsesWebSocketRequestDefaults | None = request_defaults
 
     def _should_store_event(self, event_obj: _MutableJsonObject) -> bool:
         return event_obj.get("type") in RESPONSES_WS_LOGGED_EVENT_TYPES
@@ -1701,6 +1866,16 @@ class ResponsesWebSocketStreaming:
         if self.logging_obj:
             self.logging_obj.pre_call(input=message, api_key="")
 
+    def _failure_exception(self) -> Exception | None:
+        failed_event: Final = next(
+            (event for event in self.messages if event.get("type") in _RESPONSES_WS_FAILURE_EVENT_TYPES), None
+        )
+        if failed_event is None:
+            return None
+        return _map_stream_error_to_exception(
+            _ws_event_error(failed_event), self.authorized_model or "", self.custom_llm_provider or ""
+        )
+
     async def _log_messages(self) -> None:
         """Connection-close bookkeeping only. Per-turn cost/usage dispatch
         happens in _dispatch_turn_cost, called from backend_to_client as each
@@ -1718,117 +1893,50 @@ class ResponsesWebSocketStreaming:
             return
         if self.input_messages:
             self.logging_obj.model_call_details["messages"] = self.input_messages
-
-    def _build_per_turn_logging_obj(self, model_name: str) -> LiteLLMLoggingObj:
-        """Fresh LiteLLMLoggingObj for ONE completed/failed/incomplete turn.
-
-        MUST be a new instance per turn, not the connection-level
-        self.logging_obj: dispatch_success_handlers's stream-success dedup
-        guard (model_call_details["has_dispatched_final_stream_success"],
-        set the first time _is_assembled_stream_success(result) is True for
-        a given logging_obj) silently drops every call after the first on a
-        shared object once stream=True -- verified by running a 3-turn
-        simulation against one shared Logging(stream=True) instance: only
-        turn 1 fired, kwargs showed has_dispatched_final_stream_success go
-        None -> True after it. A fresh Logging(...) per turn (mirroring what
-        litellm.utils.function_setup builds per real HTTP/managed-path
-        completion call) does not carry that guard's state across turns.
-
-        stream=True is required: _get_assembled_streaming_response
-        (litellm/litellm_core_utils/litellm_logging.py:3670-3672) returns
-        None outright when self.stream is not True, before it ever reaches
-        the ResponseCompletedEvent/ResponseIncompleteEvent/ResponseFailedEvent
-        branch that computes real cost.
-
-        litellm_metadata mirrors self.request_data["litellm_metadata"] (the
-        SAME connection-level dict _build_litellm_metadata_for_ws built from
-        add_litellm_data_to_request's user_api_key-carrying metadata --
-        litellm/responses/main.py:2085-2090) into BOTH litellm_params
-        "metadata" and "litellm_metadata", exactly like
-        litellm.utils.function_setup does for a real call
-        (litellm/utils.py:1143-1154), so _PROXY_track_cost_callback and the
-        active rate limiter attribute this turn's cost/usage to the right key.
-        """
-        start_time: Final = datetime.now()  # noqa: DTZ005  # naive datetime, matching every other LiteLLMLoggingObj start_time in this file (e.g. line 206, 426)
-        turn_logging_obj: Final = LiteLLMLoggingObj(
-            model=model_name,
-            messages=[],  # mutable-ok: this turn's own text lives in the typed event handed to dispatch_success_handlers, not here
-            stream=True,
-            call_type=CallTypes.aresponses_websocket.value,
-            start_time=start_time,
-            litellm_call_id=str(uuid.uuid4()),
-            function_id="ResponsesWebSocketStreaming._dispatch_turn_cost",
+        if not self.messages:
+            return
+        exception: Final = self._failure_exception()
+        if exception is None:
+            asyncio.create_task(self.logging_obj.dispatch_success_handlers(self.messages, prefer_async_handlers=True))
+            return
+        self._record_usage_for_failure()
+        traceback_exception: Final = "".join(traceback.format_exception(exception))
+        asyncio.create_task(
+            self.logging_obj.dispatch_failure_handlers(exception, traceback_exception, prefer_async_handlers=True)
         )
-        _raw_turn_metadata: Final = self.request_data.get("litellm_metadata")
-        # Copied so per-turn mutation by downstream callbacks never leaks back
-        # into self.request_data.
-        turn_metadata: Final[dict[str, object]] = (  # mutable-ok: per-turn copy
-            dict(_raw_turn_metadata) if isinstance(_raw_turn_metadata, dict) else {}  # mutable-ok: see above
-        )
-        turn_logging_obj.update_environment_variables(
-            model=model_name,
-            user=None,
-            optional_params={},  # mutable-ok: no optional params to carry for a cost-only synthetic dispatch
-            litellm_params={  # mutable-ok: built fresh per turn, matching function_setup's own litellm_params construction
-                "metadata": turn_metadata,
-                "litellm_metadata": turn_metadata,
-                "api_base": self.api_base,
-            },
-            custom_llm_provider=self.custom_llm_provider,
-        )
-        return turn_logging_obj
 
-    def _dispatch_turn_cost(self, output_masked_str: str) -> None:
-        """Cost and log ONE completed/failed/incomplete turn as it happens.
+    def _record_usage_for_failure(self) -> None:
+        from litellm.cost_calculator import ResponsesWebSocketTokenUsageProcessor
+        from litellm.types.utils import LiteLLMRealtimeStreamLoggingObject
 
-        Reads output_masked_str -- the SAME string already sent to the
-        client (post output-masking) -- so a masked text block never gets
-        billed as if it were the unmasked original, and no event is ever
-        parsed or forwarded before this reads it. Masking only rewrites text
-        content, never the response's usage object, so read-after-mask does
-        not change what gets costed either way; ordering is kept this way
-        purely so this never races ahead of what the client actually saw.
-        """
+        usage: Final = ResponsesWebSocketTokenUsageProcessor.collect_and_combine_usage_from_responses_ws_results(
+            self.messages
+        )
+        tier_partition: Final = ResponsesWebSocketTokenUsageProcessor.partition_results_by_service_tier(self.messages)
+        service_tier: Final = next(iter(tier_partition)) if len(tier_partition) == 1 else None
+        logging_result: Final = LiteLLMRealtimeStreamLoggingObject(
+            usage=usage, results=self.messages, service_tier=service_tier
+        )
+        response_cost: Final = self.logging_obj._response_cost_calculator(result=logging_result) or 0.0  # pyright: ignore[reportPrivateUsage]  # as the HTTP streaming iterator does
+        self.logging_obj.record_partial_usage_for_failure(usage, response_cost)
+
+    def _wrap_response_event(self, response_str: str) -> str:
         try:
-            evt_obj: Final = _load_json_object(output_masked_str)
-        except (json.JSONDecodeError, TypeError) as exc:
-            # A terminal frame we cannot even parse as JSON is a silently
-            # unbilled turn -- the exact failure class rayward-internal/
-            # llm-gateway-infra#657 is about. Warn (not debug) so this is
-            # visible instead of repeating the original bug in a new place.
-            verbose_logger.warning(
-                "ResponsesWebSocketStreaming: could not parse a WS frame for cost logging, "
-                "this turn will NOT be billed: %s",
-                exc,
+            event_obj: Final = _load_json_object(response_str)
+        except (json.JSONDecodeError, TypeError):
+            return response_str
+        response: Final = event_obj.get("response")
+        if _is_json_object(response):
+            wrapped_response: Final = ResponsesAPIRequestUtils._update_responses_api_response_id_with_model_id(  # pyright: ignore[reportPrivateUsage]  # same wrap the HTTP streaming path applies
+                responses_api_response=response,
+                custom_llm_provider=self.custom_llm_provider,
+                litellm_metadata=self.litellm_metadata,
             )
-            return
-        event_type: Final = evt_obj.get("type") if _is_json_object(evt_obj) else None
-        event_cls: Final = RESPONSES_WS_TERMINAL_EVENT_CLASSES.get(event_type) if isinstance(event_type, str) else None
-        if event_cls is None:
-            return
-        try:
-            typed_event: Final = event_cls.model_validate(evt_obj)
-        except Exception as exc:  # noqa: BLE001  # a malformed/unexpected terminal-event shape must never crash frame forwarding; skip costing this turn and keep the connection alive
-            verbose_logger.warning(
-                "ResponsesWebSocketStreaming: could not build %s for cost logging, this turn will NOT be billed: %s",
-                event_type,
-                exc,
-            )
-            return
-        model_name: Final = typed_event.response.model or self.authorized_model or ""
-        turn_logging_obj: Final = self._build_per_turn_logging_obj(model_name)
-        # Retain a strong reference (see self._pending_cost_tasks in __init__)
-        # and self-discard on completion -- create_task() alone leaves this
-        # task reachable only via the event loop's WEAK reference, so it can
-        # be garbage-collected mid-run per asyncio's own documentation. These
-        # tasks carry the entire billing path for this code path; unowned is
-        # not acceptable here. Drained with a bounded wait in
-        # bidirectional_forward's finally: before the connection tears down.
-        cost_task: Final = asyncio.create_task(
-            turn_logging_obj.dispatch_success_handlers(typed_event, prefer_async_handlers=True)
-        )
-        self._pending_cost_tasks.add(cost_task)
-        cost_task.add_done_callback(self._pending_cost_tasks.discard)
+            return json.dumps({**event_obj, "response": wrapped_response})
+        if event_obj.get("type") not in _RESPONSES_WS_OUTPUT_ITEM_EVENT_TYPES:
+            return response_str
+        wrapped_event: Final = _wrap_output_item_encrypted_content(event_obj, self.litellm_metadata)
+        return response_str if wrapped_event is None else json.dumps(wrapped_event)
 
     async def backend_to_client(self) -> None:
         """Forward events from backend WebSocket to the client."""
@@ -1865,18 +1973,13 @@ class ResponsesWebSocketStreaming:
 
                 unmasked_str = self._unmask_response_event(response_str)
                 output_masked_str = await self._mask_response_completed(unmasked_str)
+                wrapped_str = self._wrap_response_event(output_masked_str)
 
                 # Log the output-masked form so PII redacted by apply_to_output
                 # guardrails does not appear in success logs.
-                self._store_event(output_masked_str)
+                self._store_event(wrapped_str)
 
-                # Cost/log this turn now, from the SAME (already masked)
-                # string just stored above -- not at connection close (see
-                # _log_messages). A no-op for every event type except the
-                # three terminal ones (response.completed/failed/incomplete).
-                self._dispatch_turn_cost(output_masked_str)
-
-                await self.websocket.send_text(output_masked_str)
+                await self.websocket.send_text(wrapped_str)
 
         except websockets.exceptions.ConnectionClosed as e:
             verbose_logger.debug("Responses WS backend connection closed: %s", e)
@@ -1912,100 +2015,23 @@ class ResponsesWebSocketStreaming:
             modified = True
         return modified
 
-    @staticmethod
-    def _flatten_response_create(
-        msg_obj: dict[str, object],  # mutable-ok: WS frame dict, mutated in place like _enforce_authorized_model above
-    ) -> bool:
-        """
-        Collapse a nested ``response.create`` envelope into the flat wire shape
-        before the frame is forwarded to the provider's own socket.
-
-        A client may send either shape:
-          flat:   ``{"type": "response.create", "input": ..., "model": ...}``
-          nested: ``{"type": "response.create", "response": {"input": ..., ...}}``
-
-        The nested one is what OpenAI's WebSocket-mode guide documents, but the
-        native path (``llm_http_handler.async_responses_websocket``) is a literal
-        pass-through: whatever we send is what the provider's ``/v1/responses``
-        socket receives. Measured 2026-09-02 against the real upstream through
-        that pass-through, the flat frame is accepted while the nested one is
-        rejected with ``missing_required_parameter: 'input'``
-        (rayward-internal/llm-gateway-infra#689), so a conformant client got a
-        400 on every turn.
-
-        Nothing between ``_mask_response_create`` and ``backend_ws.send`` ever
-        collapsed the envelope -- ``_apply_request_defaults`` and
-        ``_enforce_authorized_model`` read and write *inside* it but always
-        leave it nested -- so this runs FIRST in ``_mask_response_create``,
-        making every later step (defaults merge, authorized-model enforcement,
-        PII masking, input logging) operate on the flat frame that is actually
-        sent. Those steps keep their own nested handling; after this it is
-        dead-but-harmless defence for any other caller.
-
-        Nested values win over a same-named top-level key: the envelope is the
-        request the client meant, and a stray top-level duplicate is not.
-        ``type`` is never overwritten -- it identifies the client event, not a
-        request parameter.
-
-        Returns True if the object was modified.
-        """
+    def _with_request_defaults(self, msg_obj: dict[str, object]) -> dict[str, object]:
+        if self.request_defaults is None:
+            return msg_obj
         nested: Final = msg_obj.get("response")
-        if not _is_json_object(nested):
-            return False
-        del msg_obj["response"]  # rebind-ok: frame normalised in place before forwarding
-        hoisted: Final = MappingProxyType(  # mutable-ok: immediately frozen filtered envelope
-            {key: value for key, value in nested.items() if key != "type"}
-        )
-        msg_obj.update(hoisted)
-        return True
-
-    def _apply_request_defaults(
-        self,
-        msg_obj: dict[str, object],  # mutable-ok: WS frame dict, mutated in place like _enforce_authorized_model above
-    ) -> bool:
-        nested: Final = msg_obj.get("response")
-        request: Final = (
-            {
-                key: value for key, value in nested.items() if isinstance(key, str)
-            }  # mutable-ok: mutated in place below via request.update()
-            if isinstance(nested, dict)
-            else msg_obj
-        )
-        if request is not msg_obj:
-            msg_obj["response"] = request  # rebind-ok: msg_obj is filled in-place before forwarding
-        missing_defaults: Final = MappingProxyType(
-            {key: value for key, value in self.request_defaults.items() if key not in request}
-        )
-        request.update(missing_defaults)
-        return bool(missing_defaults)
-
-    def _sanitize_input_items(
-        self,
-        msg_obj: dict[str, object],  # mutable-ok: WS frame dict, mutated in place like _enforce_authorized_model above
-    ) -> bool:
-        """
-        Apply the backend provider config's ``sanitize_input_items`` to the frame's
-        top-level ``input``. Runs after ``_flatten_response_create``, so a nested
-        ``{"response": {"input": ...}}`` envelope has already been collapsed to the
-        flat shape checked here.
-        """
-        if self.responses_api_provider_config is None:
-            return False
-        original_input: Final = msg_obj.get("input")
-        if not isinstance(original_input, (str, list)):
-            return False
-        sanitized_input: Final = self.responses_api_provider_config.sanitize_input_items(original_input)
-        if sanitized_input is original_input:
-            return False
-        msg_obj["input"] = sanitized_input  # rebind-ok: frame normalised in place before forwarding
-        return True
+        if _is_json_object(nested):
+            return {**msg_obj, "response": self.request_defaults.merged_into(nested)}
+        return {**self.request_defaults.merged_into(msg_obj), "type": msg_obj["type"]}
 
     async def _mask_response_create(self, message: str) -> str:
         """
-        Enforce the authorized model and apply Presidio PII masking to a
-        ``response.create`` message before it is forwarded to the upstream
-        provider.
+        Merge deployment defaults, enforce the authorized model, and apply
+        Presidio PII masking to a ``response.create`` message before it is
+        forwarded to the upstream provider.
 
+        - Fills the deployment's ``litellm_params`` request defaults into the
+          frame the way the HTTP ``/v1/responses`` path does: client-set keys
+          win, ``extra_body`` entries override.
         - Overwrites any ``model`` field with the connection-authorized model
           to prevent deployment-substitution attacks (always applied).
         - Walks the ``input`` and ``instructions`` fields, calls ``check_pii``
@@ -2015,35 +2041,29 @@ class ResponsesWebSocketStreaming:
         Non-``response.create`` messages are returned unchanged.
         """
         try:
-            msg_obj: Final = _load_json_object(message)
+            parsed: Final = _load_json_object(message)
         except (json.JSONDecodeError, TypeError):
             return message
 
-        if msg_obj.get("type") != "response.create":
+        if parsed.get("type") != "response.create":
             return message
 
-        # FIRST: collapse a nested {"response": {...}} envelope to the flat
-        # shape the provider's socket accepts, so every step below (and the
-        # frame actually forwarded) sees one shape. See
-        # _flatten_response_create.
-        flattened: Final = self._flatten_response_create(msg_obj)
-        defaults_modified: Final = self._apply_request_defaults(msg_obj)
+        authorized_obj: Final = self._with_request_defaults(parsed)
+        defaults_applied: Final = authorized_obj != parsed
+
         # Always enforce the authorized model, even when PII masking is off.
-        model_modified: Final = self._enforce_authorized_model(msg_obj)
-        # Always strip provider-rejected input fields, even when PII masking is off.
-        input_sanitized: Final = self._sanitize_input_items(msg_obj)
+        model_modified: Final = self._enforce_authorized_model(authorized_obj)
+        restored_obj: Final = _restore_wrapped_ids_in_response_create(authorized_obj)
+        msg_obj: Final = authorized_obj if restored_obj is None else restored_obj
+        frame_modified: Final = model_modified or restored_obj is not None or defaults_applied
 
         if not self.guardrail_callbacks:
-            return (
-                json.dumps(msg_obj) if flattened or defaults_modified or model_modified or input_sanitized else message
-            )
+            return json.dumps(msg_obj) if frame_modified else message
 
         if "metadata" not in self.request_data:
             self.request_data["metadata"] = {}
 
-        modified = (
-            flattened or defaults_modified or model_modified or input_sanitized
-        )  # rebind-ok: accumulator flag flipped True by the PII-masking loop below
+        modified = frame_modified
         guardrail_cbs: Final[tuple[PresidioGuardrailCallback, ...]] = tuple(self.guardrail_callbacks)
         for cb in guardrail_cbs:
             presidio_config = cb.get_presidio_settings_from_request_data(self.request_data)
@@ -2291,7 +2311,7 @@ class ResponsesWebSocketStreaming:
         except RateLimitError as e:
             try:
                 await self.websocket.send_text(
-                    json.dumps(  # mutable-ok: WebSocket wire payload requires JSON objects
+                    json.dumps(
                         {  # mutable-ok: WebSocket wire payload requires JSON objects
                             "type": "error",
                             "error": {  # mutable-ok: nested WebSocket error object
@@ -2327,46 +2347,7 @@ class ResponsesWebSocketStreaming:
         except Exception as e:
             verbose_logger.debug("Responses WS client_to_backend ended: %s", e)
 
-    async def _drain_pending_cost_tasks(self) -> None:
-        """Wait (bounded) for every in-flight per-turn cost dispatch
-        (self._pending_cost_tasks, populated by _dispatch_turn_cost) before
-        the connection tears down. Call only once nothing can add MORE tasks
-        to the set (i.e. after backend_to_client has stopped running) --
-        otherwise this could return while a fresh dispatch is still being
-        registered.
-
-        These tasks are the entire billing path for this code path
-        (rayward-internal/llm-gateway-infra#657); returning without waiting on
-        them risks the exact teardown-before-write-lands gap that motivated
-        retaining them in the first place, e.g. Cloud Run scaling the
-        instance down (we run on Cloud Run and scale to zero) or a deploy
-        killing this coroutine's task mid-flight right after the client's
-        final response.completed -- the largest, last turn of the session,
-        with the least time to flush.
-
-        Bounded, not indefinite: a hung callback (a stuck DB write, a slow
-        webhook) must never wedge connection teardown, which is exactly the
-        failure mode a bound exists to prevent. Reuses
-        LOGGING_WORKER_MAX_TIME_PER_COROUTINE (litellm/constants.py) -- the
-        same env-overridable per-coroutine budget the rest of the SDK already
-        applies to one logging dispatch via GLOBAL_LOGGING_WORKER -- rather
-        than inventing a second, bespoke constant for what is the same kind
-        of wait.
-        """
-        if not self._pending_cost_tasks:
-            return
-        pending_tasks: Final = tuple(self._pending_cost_tasks)
-        _done, still_pending = await asyncio.wait(pending_tasks, timeout=LOGGING_WORKER_MAX_TIME_PER_COROUTINE)
-        if still_pending:
-            verbose_logger.warning(
-                "ResponsesWebSocketStreaming: %d turn cost dispatch(es) did not "
-                "finish within %.0fs of connection teardown; may be unbilled",
-                len(still_pending),
-                LOGGING_WORKER_MAX_TIME_PER_COROUTINE,
-            )
-
-    async def bidirectional_forward(self) -> None:
-        """Run both forwarding directions concurrently."""
+    async def bidirectional_forward(self) -> Exception | None:
         forward_task: Final = asyncio.create_task(self.backend_to_client())
         try:
             await self.client_to_backend()
@@ -2387,6 +2368,7 @@ class ResponsesWebSocketStreaming:
                 await self.backend_ws.close()
             except Exception:
                 pass
+        return self._failure_exception()
 
 
 # ---------------------------------------------------------------------------
@@ -2663,7 +2645,7 @@ class ManagedResponsesWebSocketHandler:
             await self.websocket.send_text(serialized)
 
     @staticmethod
-    def _build_base_call_kwargs(msg_obj: _MutableJsonObject) -> dict[str, Any]:
+    def _build_base_call_kwargs(msg_obj: _MutableJsonObject) -> dict[str, object]:
         """
         Extract Responses API params from the event, handling both wire formats:
           Nested: {"type": "response.create", "response": {"input": [...], ...}}
@@ -2817,9 +2799,7 @@ class ManagedResponsesWebSocketHandler:
         if "litellm_metadata" not in call_kwargs:
             call_kwargs["litellm_metadata"] = {}
         call_kwargs["litellm_metadata"]["proxy_server_request"] = proxy_server_request
-        call_kwargs["proxy_server_request"] = (
-            proxy_server_request  # rebind-ok: annotates in-flight kwargs before aresponses()
-        )
+        call_kwargs["proxy_server_request"] = proxy_server_request
 
     async def _stream_and_forward(self, model: str, call_kwargs: dict[str, Any]) -> _MutableJsonObject | None:
         """
@@ -2829,9 +2809,7 @@ class ManagedResponsesWebSocketHandler:
         directly (before serialization) to avoid a redundant JSON round-trip on
         every chunk.  Returns the completed event dict, or ``None``.
         """
-        completed_event: _MutableJsonObject | None = (
-            None  # rebind-ok: captures the completed event once the stream yields it
-        )
+        completed_event: _MutableJsonObject | None = None
         stream_response: Final = await litellm.aresponses(model=model, **call_kwargs)
         async for chunk in stream_response:
             if chunk is None:
