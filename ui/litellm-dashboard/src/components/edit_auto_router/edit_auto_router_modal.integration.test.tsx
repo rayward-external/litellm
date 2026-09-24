@@ -1450,7 +1450,12 @@ describe("EditAutoRouterModal classifier vision", () => {
     expect(screen.getByRole("switch", { name: "Use images for classification" })).toBeChecked();
     expect(screen.getByLabelText("Maximum images per request")).toHaveValue("2");
 
-    await waitFor(() => expect(screen.getByRole("button", { name: /save changes/i })).toBeEnabled());
+    // The very first availability fetch after mount lands before the 300ms debounce settles, so this
+    // is the one save-button wait in the file that also pays for a second debounced refetch; the
+    // default 1000ms waitFor window is too tight for that on this runner.
+    await waitFor(() => expect(screen.getByRole("button", { name: /save changes/i })).toBeEnabled(), {
+      timeout: 5000,
+    });
     await user.click(screen.getByRole("button", { name: /save changes/i }));
 
     await waitFor(() => expect(modelPatchUpdateCall).toHaveBeenCalled());
