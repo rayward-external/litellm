@@ -8,7 +8,13 @@ repository.workspace = true
 [dependencies]
 litellm-cache.workspace = true
 litellm-auth-aws.workspace = true
-aws-sdk-s3 = { version = "1.146.1", default-features = false, features = ["rustls", "rt-tokio"] }
+# aws-sdk-s3's "rustls" feature maps to aws-smithy-runtime's legacy
+# "tls-rustls" feature (hyper 0.14 + rustls 0.21.12 + rustls-webpki 0.101.7),
+# vulnerable to RUSTSEC-2026-0098/0099/0104/0258 -- this naming trap applies
+# across the whole aws-sdk-rust family, not just aws-sdk-sts (see
+# crates/auth-aws/Cargo.toml). Request "default-https-client" instead, the
+# modern rustls-aws-lc/webpki-0.103+ stack.
+aws-sdk-s3 = { version = "1.146.1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-credential-types = "1.3.0"
 aws-smithy-runtime-api = { version = "1.16.2", features = ["client", "http-1x"] }
 aws-smithy-types = { version = "1.6.0", features = ["http-body-1-x"] }

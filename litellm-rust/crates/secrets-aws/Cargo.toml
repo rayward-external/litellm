@@ -13,8 +13,15 @@ serde_json.workspace = true
 thiserror.workspace = true
 litellm-tracing.workspace = true
 veil.workspace = true
-aws-sdk-kms = "1.120.0"
-aws-sdk-secretsmanager = "1.117.0"
+# aws-sdk-kms/aws-sdk-secretsmanager's default features include "rustls",
+# which maps to aws-smithy-runtime's legacy "tls-rustls" feature (hyper 0.14
+# + rustls 0.21.12 + rustls-webpki 0.101.7), vulnerable to
+# RUSTSEC-2026-0098/0099/0104/0258, alongside "default-https-client" (the
+# modern rustls-aws-lc/webpki-0.103+ stack) -- both get compiled in. Request
+# "default-https-client" only, same fix already applied to aws-sdk-sts in
+# crates/auth-aws/Cargo.toml.
+aws-sdk-kms = { version = "1.120.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-secretsmanager = { version = "1.117.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-credential-types = "1.3.0"
 
 [dev-dependencies]

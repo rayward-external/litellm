@@ -16,13 +16,15 @@ thiserror.workspace = true
 
 aws-config = { version = "1.9.0", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-credential-types = { version = "1.3.0", features = ["hardcoded-credentials"] }
-# aws-sdk-sts's own "rustls" feature name is misleading: it maps to
+# Every aws-sdk-* crate's own "rustls" feature name is misleading: it maps to
 # aws-smithy-runtime's legacy "tls-rustls" feature (hyper 0.14 + rustls 0.21.12
-# + rustls-webpki 0.101.7), vulnerable to RUSTSEC-2026-0098/0099/0104. Request
-# "default-https-client" instead, which resolves to the same modern
+# + rustls-webpki 0.101.7), vulnerable to RUSTSEC-2026-0098/0099/0104/0258.
+# Request "default-https-client" instead, which resolves to the same modern
 # rustls-aws-lc/webpki-0.103+ stack that aws-config's own "rustls" feature
 # above already uses (aws-config's "rustls" = "client-hyper" =
-# "default-https-client"; only aws-sdk-sts's naming is inconsistent).
+# "default-https-client"; the inconsistency is in every generated aws-sdk-*
+# crate, not just aws-sdk-sts -- see crates/cache-s3 and crates/secrets-aws
+# for the same fix applied to aws-sdk-s3/kms/secretsmanager).
 aws-sdk-sts = { version = "1.108.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sigv4 = "1.5.1"
 aws-types = "1.4.0"
