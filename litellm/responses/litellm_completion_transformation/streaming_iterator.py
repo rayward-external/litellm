@@ -398,7 +398,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             else:
                 fn_name = str(getattr(fn, "name", "") or "")
                 fn_args = serialize_tool_call_arguments(getattr(fn, "arguments", ""))
-            tool_name, tool_namespace = self._responses_namespace_tool_call_fields(fn_name)
+            tool_name, _tool_namespace = self._responses_namespace_tool_call_fields(fn_name)
             web_search_call = self._web_search_calls.get(call_id)
             if web_search_call is not None:
                 if call_id not in self._queued_web_search_call_ids:

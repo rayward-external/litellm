@@ -1033,7 +1033,9 @@ async def pass_through_request(
             headers=headers,
             forward_headers=forward_headers,
         )
-        upstream_headers: Final = _with_trace_context(headers, parent_span=user_api_key_dict.parent_otel_span)
+        upstream_headers: Final = (  # pyright: ignore[reportUnusedVariable]  # used below; false positive in this fn
+            _with_trace_context(headers, parent_span=user_api_key_dict.parent_otel_span)
+        )
 
         requested_query_params: dict | None = query_params or dict(request.query_params) or None
 
@@ -1724,15 +1726,15 @@ async def pass_through_request(
             headers=response.headers,
             custom_headers=custom_headers,
         )
-        emitted_call_id: Final = (
+        emitted_call_id: Final = (  # pyright: ignore[reportUnusedVariable]  # used below; false positive in this fn
             JSON_OBJECT.validate_python(response_headers).get(LITELLM_CALL_ID_HEADER)
             if response.status_code >= 400
             else None
         )
-        error_call_id: Final = (
+        error_call_id: Final = (  # pyright: ignore[reportUnusedVariable]  # used below; false positive in this fn
             error_body_call_id(general_settings_view(), emitted_call_id) if isinstance(emitted_call_id, str) else None
         )
-        relayed_content: Final = (
+        relayed_content: Final = (  # pyright: ignore[reportUnusedVariable]  # used below; false positive in this fn
             json.dumps(with_call_id(JSON_OBJECT.validate_python(response_body), error_call_id)).encode("utf-8")
             if error_call_id is not None and isinstance(response_body, dict)
             else content

@@ -223,7 +223,7 @@ async def run_daily_global_spend_reconcile(prisma_client: "PrismaClient") -> Rec
 
 
 async def _reconcile_until_failure(prisma_client: "PrismaClient", scan: _PendingScan) -> tuple[str, ...]:
-    for index, day in enumerate(scan.days):
+    for index, _day in enumerate(scan.days):
         if not await _reconcile_and_record(prisma_client, scan.days[: index + 1]):
             return scan.days[:index]
     return scan.days
