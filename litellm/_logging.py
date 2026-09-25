@@ -89,14 +89,14 @@ def _is_redacted(record: logging.LogRecord) -> bool:
 def _scrubbing_changed_nothing(scrubbed: object, original: object) -> bool:
     try:
         return bool(scrubbed == original)
-    except Exception:
+    except Exception:  # noqa: BLE001  # logged values carry arbitrary caller __eq__, which can raise anything
         return False
 
 
 def _plain_text(value: object) -> str:
     try:
         return str(value)
-    except Exception:
+    except Exception:  # noqa: BLE001  # logged values carry arbitrary caller __str__, which can raise anything
         return UNSERIALIZABLE_OBJECT
 
 
@@ -139,7 +139,7 @@ def _substituted_color_message(record: logging.LogRecord) -> str | None:
         return None
     try:
         return color_message % record.args
-    except Exception:
+    except Exception:  # noqa: BLE001  # % formatting against caller-supplied args can raise TypeError, ValueError, or KeyError depending on the format spec
         return color_message
 
 
@@ -487,7 +487,7 @@ def _process_record(record: logging.LogRecord, *, base64_limit: int, text_limit:
         raw_color is not None and processed_leaves[len(extra_leaves) + int(raw_template is not None)] != raw_color
     )
     if raw_color_changed and getattr(record, "color_message", None) == substituted_color:
-        setattr(record, "color_message", "REDACTED")
+        record.__dict__["color_message"] = "REDACTED"
     setattr(record, _REDACTED_RECORD_ATTR, _REDACTED_STAMP)
     return True
 

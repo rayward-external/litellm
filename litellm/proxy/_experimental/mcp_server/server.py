@@ -2370,15 +2370,17 @@ if MCP_AVAILABLE:
                 await sse.handle_post_message(transport_scope, receive, send)
                 return
 
-            async with _gateway_initialize_instructions_request_scope(
-                user_api_key_auth,
-                mcp_servers,
-                _sse_client_ip,
-                scoped_server_endpoint=scoped_server_endpoint,
-                is_initialize=scope.get("method") == "GET",
+            async with (
+                _gateway_initialize_instructions_request_scope(
+                    user_api_key_auth,
+                    mcp_servers,
+                    _sse_client_ip,
+                    scoped_server_endpoint=scoped_server_endpoint,
+                    is_initialize=scope.get("method") == "GET",
+                ),
+                sse.connect_sse(transport_scope, receive, send) as (read_stream, write_stream),
             ):
-                async with sse.connect_sse(transport_scope, receive, send) as (read_stream, write_stream):
-                    await server.run(read_stream, write_stream, server.create_initialization_options())
+                await server.run(read_stream, write_stream, server.create_initialization_options())
         except MCPUpstreamAuthError as e:
             # Upstream delegated auth returned 401; surface it to the client so
             # standards-compliant MCP clients trigger the upstream OAuth flow.

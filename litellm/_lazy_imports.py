@@ -167,39 +167,7 @@ def _get_lazy_import_registry() -> dict[str, Callable[[str], object]]:
     """
     global _LAZY_IMPORT_REGISTRY
     if _LAZY_IMPORT_REGISTRY is None:
-        # Build the registry by going through each category and mapping
-        # all the names in that category to their handler function
-        _LAZY_IMPORT_REGISTRY = {}
-        # For each category, map all its names to the handler function
-        # Example: All names in UTILS_NAMES get mapped to _lazy_import_utils
-        for name in COST_CALCULATOR_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_cost_calculator
-        for name in LITELLM_LOGGING_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_litellm_logging
-        for name in UTILS_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_utils
-        for name in TOKEN_COUNTER_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_token_counter
-        for name in LLM_CLIENT_CACHE_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_llm_client_cache
-        for name in BEDROCK_TYPES_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_bedrock_types
-        for name in TYPES_UTILS_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_types_utils
-        for name in CACHING_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_caching
-        for name in HTTP_HANDLER_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_http_handlers
-        for name in DOTPROMPT_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_dotprompt
-        for name in LLM_CONFIG_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_llm_configs
-        for name in TYPES_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_types
-        for name in LLM_PROVIDER_LOGIC_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_llm_provider_logic
-        for name in UTILS_MODULE_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_utils_module
+        _LAZY_IMPORT_REGISTRY = {name: handler for names, handler in _CATEGORY_HANDLERS for name in names}
 
     return _LAZY_IMPORT_REGISTRY
 
@@ -453,3 +421,21 @@ def _lazy_import_http_handlers(name: str) -> object:
         return sync_client
 
     raise AttributeError(f"HTTP handlers lazy import: unknown attribute {name!r}")
+
+
+_CATEGORY_HANDLERS: Final[tuple[tuple[tuple[str, ...], Callable[[str], object]], ...]] = (
+    (COST_CALCULATOR_NAMES, _lazy_import_cost_calculator),
+    (LITELLM_LOGGING_NAMES, _lazy_import_litellm_logging),
+    (UTILS_NAMES, _lazy_import_utils),
+    (TOKEN_COUNTER_NAMES, _lazy_import_token_counter),
+    (LLM_CLIENT_CACHE_NAMES, _lazy_import_llm_client_cache),
+    (BEDROCK_TYPES_NAMES, _lazy_import_bedrock_types),
+    (TYPES_UTILS_NAMES, _lazy_import_types_utils),
+    (CACHING_NAMES, _lazy_import_caching),
+    (HTTP_HANDLER_NAMES, _lazy_import_http_handlers),
+    (DOTPROMPT_NAMES, _lazy_import_dotprompt),
+    (LLM_CONFIG_NAMES, _lazy_import_llm_configs),
+    (TYPES_NAMES, _lazy_import_types),
+    (LLM_PROVIDER_LOGIC_NAMES, _lazy_import_llm_provider_logic),
+    (UTILS_MODULE_NAMES, _lazy_import_utils_module),
+)
