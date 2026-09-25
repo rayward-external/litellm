@@ -3,6 +3,7 @@ Translates from OpenAI's `/v1/audio/transcriptions` to xAI's `/v1/stt`
 """
 
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import Final
 
 from httpx import Headers, Response
@@ -54,7 +55,9 @@ def _serialize_form_value(
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (list, tuple)):
-        return [str(item) for item in _OBJECT_TUPLE.validate_python(value)]
+        return [  # mutable-ok: httpx multipart data takes list values for repeated form fields
+            str(item) for item in _OBJECT_TUPLE.validate_python(value)
+        ]
     return str(value)
 
 
@@ -70,7 +73,7 @@ class XAIAudioTranscriptionConfig(BaseAudioTranscriptionConfig):
     def get_supported_openai_params(
         self, model: str
     ) -> list[OpenAIAudioTranscriptionOptionalParams]:  # mutable-ok: base class signature returns list
-        return ["language"]
+        return ["language"]  # mutable-ok: base contract returns a list
 
     def map_openai_params(
         self,
@@ -80,9 +83,11 @@ class XAIAudioTranscriptionConfig(BaseAudioTranscriptionConfig):
         drop_params: bool,
     ) -> dict[str, object]:  # mutable-ok: base class signature returns dict
         supported_params: Final = self.get_supported_openai_params(model)
-        return {
+        return {  # mutable-ok: base class signature returns dict
             **optional_params,
-            **{k: v for k, v in non_default_params.items() if k in supported_params},
+            **{  # mutable-ok: base class signature returns dict
+                k: v for k, v in non_default_params.items() if k in supported_params
+            },
         }
 
     def get_error_class(
@@ -103,24 +108,32 @@ class XAIAudioTranscriptionConfig(BaseAudioTranscriptionConfig):
         processed_audio: Final = process_audio_file(audio_file)
 
         extra_body: Final = optional_params.get("extra_body")
-        flat_params: Final[Mapping[str, object]] = {
-            **(_STRING_OBJECT_DICT.validate_python(extra_body) if isinstance(extra_body, Mapping) else {}),
-            **{k: v for k, v in optional_params.items() if k != "extra_body"},
-        }
+        flat_params: Final[Mapping[str, object]] = MappingProxyType(
+            {
+                **(
+                    _STRING_OBJECT_DICT.validate_python(extra_body)
+                    if isinstance(extra_body, Mapping)
+                    else {}  # mutable-ok: empty-dict fallback, immediately unpacked into the MappingProxyType above
+                ),
+                **{  # mutable-ok: unpacked directly into the MappingProxyType above
+                    k: v for k, v in optional_params.items() if k != "extra_body"
+                },
+            }
+        )
 
         excluded_params: Final = frozenset({"model", "OPENAI_TRANSCRIPTION_PARAMS", "extra_body"})
         form_data: Final[
             dict[str, str | list[str]]
         ] = {  # mutable-ok: AudioTranscriptionRequestData.data requires dict and httpx needs list values
             "model": model,
-            **{
+            **{  # mutable-ok: AudioTranscriptionRequestData.data requires dict and httpx needs list values
                 k: _serialize_form_value(v)
                 for k, v in flat_params.items()
                 if v is not None and k not in excluded_params
             },
         }
 
-        files: Final = {
+        files: Final = {  # mutable-ok: AudioTranscriptionRequestData.files requires dict
             "file": (
                 processed_audio.filename,
                 processed_audio.file_content,
@@ -147,7 +160,7 @@ class XAIAudioTranscriptionConfig(BaseAudioTranscriptionConfig):
             raise XAIAudioTranscriptionError(
                 message=f"Error parsing xAI response: {e}",
                 status_code=raw_response.status_code,
-                headers=dict(raw_response.headers),
+                headers=dict(raw_response.headers),  # mutable-ok: BaseLLMException.headers requires dict
             )
 
         response: Final = TranscriptionResponse(text=payload.text)
@@ -158,17 +171,25 @@ class XAIAudioTranscriptionConfig(BaseAudioTranscriptionConfig):
             response["duration"] = payload.duration
 
         if payload.words is not None:
-            response["words"] = [
-                {
+            response[
+                "words"
+            ] = [  # mutable-ok: JSON-native response payload, TranscriptionResponse stores plain dict/list
+                {  # mutable-ok: JSON-native response payload, TranscriptionResponse stores plain dict/list
                     "word": word.text,
                     "start": word.start,
                     "end": word.end,
-                    **({"speaker": word.speaker} if word.speaker is not None else {}),
+                    **(
+                        {"speaker": word.speaker}  # mutable-ok: JSON-native response payload
+                        if word.speaker is not None
+                        else {}  # mutable-ok: empty-dict fallback, immediately unpacked above
+                    ),
                 }
                 for word in payload.words
             ]
 
-        hidden_params: Final[dict[str, object]] = dict(payload.model_dump(mode="json"))
+        hidden_params: Final[dict[str, object]] = dict(  # mutable-ok: mutated below (audio_transcription_duration)
+            payload.model_dump(mode="json")
+        )
         if payload.duration is not None:
             hidden_params["audio_transcription_duration"] = payload.duration
         response._hidden_params = hidden_params  # pyright: ignore[reportPrivateUsage]  # TranscriptionResponse exposes no public hidden-params setter
@@ -202,4 +223,4 @@ class XAIAudioTranscriptionConfig(BaseAudioTranscriptionConfig):
         if resolved_key is None:
             raise ValueError("xAI API key is required. Set XAI_API_KEY environment variable.")
 
-        return {**headers, "Authorization": f"Bearer {resolved_key}"}
+        return {**headers, "Authorization": f"Bearer {resolved_key}"}  # mutable-ok: base class signature returns dict

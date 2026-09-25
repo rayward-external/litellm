@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Final, Protocol, cast
 
 from typing_extensions import ReadOnly, Required, TypedDict, assert_never
@@ -68,7 +69,11 @@ class NativeResponseCacheRuntimeFactory(Protocol):
 
 
 def _runtime_factory(value: object) -> NativeResponseCacheRuntimeFactory | None:
-    return cast(NativeResponseCacheRuntimeFactory, value) if callable(getattr(value, "from_cache", None)) else None
+    return (
+        cast(NativeResponseCacheRuntimeFactory, value)  # cast-ok: duck-typed against the native binding, checked above
+        if callable(getattr(value, "from_cache", None))
+        else None
+    )
 
 
 _RUNTIME: Final = NativeBinding("_ResponseCacheRuntime", validate=_runtime_factory)
@@ -84,7 +89,7 @@ class ResponseCacheRuntime:
 
     def request(self, cache: CacheFacade, kwargs: Mapping[str, object]) -> NativeCacheRequest | None:
         key_value: Final = kwargs.get("cache_key")
-        key: Final = key_value if isinstance(key_value, str) else cache.get_cache_key(**dict(kwargs))
+        key: Final = key_value if isinstance(key_value, str) else cache.get_cache_key(**kwargs)
         if not key:
             return None
         control_value: Final = kwargs.get("cache")
@@ -184,8 +189,13 @@ def _duration(value: object) -> float | None:
     return duration if math.isfinite(duration) and duration >= 0 else None
 
 
+_EMPTY_MAPPING: Final[Mapping[str, object]] = MappingProxyType({})
+
+
 def _string_mapping(value: object) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
-        return {}
-    source: Final = cast(Mapping[object, object], value)
-    return {key: item for key, item in source.items() if isinstance(key, str)}
+        return _EMPTY_MAPPING
+    source: Final = cast(  # cast-ok: isinstance above only proves Mapping, not its key/value types
+        Mapping[object, object], value
+    )
+    return MappingProxyType({key: item for key, item in source.items() if isinstance(key, str)})

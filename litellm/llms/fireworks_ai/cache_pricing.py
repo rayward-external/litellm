@@ -1,7 +1,4 @@
-from typing import (
-    Final,
-    cast,  # noqa: TID251  # the derived entry is a dict copy of a ReadOnly TypedDict; no cast-free way to retype it
-)
+from typing import Final
 
 from litellm.constants import FIREWORKS_AI_DEFAULT_CACHE_READ_RATE_RATIO
 from litellm.types.utils import ModelInfo
@@ -23,20 +20,17 @@ def with_default_cache_read_rate(model_info: ModelInfo) -> ModelInfo:
     cache_read_rate: Final = input_rate * FIREWORKS_AI_DEFAULT_CACHE_READ_RATE_RATIO
     off_peak: Final = model_info.get("off_peak_pricing")
     if off_peak is None or "cache_read_input_token_cost" in off_peak:
-        return cast(ModelInfo, {**model_info, "cache_read_input_token_cost": cache_read_rate})
+        with_cache_read: Final[ModelInfo] = {**model_info, "cache_read_input_token_cost": cache_read_rate}
+        return with_cache_read
     off_peak_input_rate: Final = _as_rate(off_peak.get("input_cost_per_token"))
-    return cast(
-        ModelInfo,
-        {
-            **model_info,
-            "cache_read_input_token_cost": cache_read_rate,
-            "off_peak_pricing": {
-                **off_peak,
-                "cache_read_input_token_cost": (
-                    off_peak_input_rate * FIREWORKS_AI_DEFAULT_CACHE_READ_RATE_RATIO
-                    if off_peak_input_rate is not None
-                    else cache_read_rate
-                ),
-            },
-        },
+    off_peak_cache_read_rate: Final = (
+        off_peak_input_rate * FIREWORKS_AI_DEFAULT_CACHE_READ_RATE_RATIO
+        if off_peak_input_rate is not None
+        else cache_read_rate
     )
+    with_off_peak_cache_read: Final[ModelInfo] = {
+        **model_info,
+        "cache_read_input_token_cost": cache_read_rate,
+        "off_peak_pricing": {**off_peak, "cache_read_input_token_cost": off_peak_cache_read_rate},
+    }
+    return with_off_peak_cache_read

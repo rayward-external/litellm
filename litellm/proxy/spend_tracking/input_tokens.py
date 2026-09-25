@@ -54,15 +54,17 @@ async def count_input_tokens(
         (model, rust_tokenizer(model)) for model in models
     )
     groups: Final[tuple[RustTokenizer | None, ...]] = tuple(dict.fromkeys(tokenizer for _, tokenizer in tokenizers))
-    group_counts: Final = [
-        await _count_group(
-            request_body=request_body,
-            raw_body=raw_body,
-            tokenizer=tokenizer,
-            models=tuple(model for model, selected in tokenizers if selected == tokenizer),
-        )
-        for tokenizer in groups
-    ]
+    group_counts: Final = tuple(
+        [
+            await _count_group(
+                request_body=request_body,
+                raw_body=raw_body,
+                tokenizer=tokenizer,
+                models=tuple(model for model, selected in tokenizers if selected == tokenizer),
+            )
+            for tokenizer in groups
+        ]
+    )
     counts: Final = MappingProxyType({model: tokens for group in group_counts for model, tokens in group.items()})
     verbose_proxy_logger.debug("input token counts: %s", dict(counts))
     return counts

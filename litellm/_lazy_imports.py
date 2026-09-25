@@ -18,8 +18,8 @@ until they're actually needed.
 import importlib
 import sys
 from collections.abc import Callable, Mapping
-from types import ModuleType
-from typing import TYPE_CHECKING, Any, Final, cast
+from types import MappingProxyType, ModuleType
+from typing import TYPE_CHECKING, Any, Final
 
 from typing_extensions import ReadOnly, TypedDict
 
@@ -152,10 +152,10 @@ def _get_token_counter_new() -> "Callable[..., int]":
 # This registry maps attribute names (like "ModelResponse") to handler functions
 # It's built once the first time someone accesses a lazy-loaded attribute
 # Example: {"ModelResponse": _lazy_import_utils, "Cache": _lazy_import_caching, ...}
-_LAZY_IMPORT_REGISTRY: dict[str, Callable[[str], object]] | None = None
+_LAZY_IMPORT_REGISTRY: Mapping[str, Callable[[str], object]] | None = None
 
 
-def _get_lazy_import_registry() -> dict[str, Callable[[str], object]]:
+def _get_lazy_import_registry() -> Mapping[str, Callable[[str], object]]:
     """
     Build the registry that maps attribute names to their handler functions.
 
@@ -167,7 +167,9 @@ def _get_lazy_import_registry() -> dict[str, Callable[[str], object]]:
     """
     global _LAZY_IMPORT_REGISTRY
     if _LAZY_IMPORT_REGISTRY is None:
-        _LAZY_IMPORT_REGISTRY = {name: handler for names, handler in _CATEGORY_HANDLERS for name in names}
+        _LAZY_IMPORT_REGISTRY = MappingProxyType(
+            {name: handler for names, handler in _CATEGORY_HANDLERS for name in names}
+        )
 
     return _LAZY_IMPORT_REGISTRY
 
@@ -399,9 +401,8 @@ def _lazy_import_http_handlers(name: str) -> object:
         params: Final = {"timeout": async_timeout, "client_alias": "module level aclient"}
 
         # Create the client instance
-        provider_id: Final = cast(Any, "litellm_module_level_client")
         async_client: Final = get_async_httpx_client(
-            llm_provider=provider_id,
+            llm_provider="litellm_module_level_client",
             params=params,
         )
 
