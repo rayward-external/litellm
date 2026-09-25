@@ -1981,7 +1981,7 @@ async def test_generate_key_end_user_budget_id_must_name_an_existing_budget():
 
 
 @pytest.mark.asyncio
-async def test_generate_key_end_user_budget_id_lands_in_key_metadata():
+async def test_generate_key_end_user_budget_id_lands_in_key_metadata():  # test-quality-ok: proxy_server globals have no injection seam; assertion is on the metadata handed to the db writer
     """The typed end_user_budget_id field is stored in key metadata, which is where auth reads it."""
     budget_row = MagicMock()
     budget_row.model_dump.return_value = {"budget_id": "svc-a-budget", "max_budget": 0.5}
@@ -13068,7 +13068,7 @@ async def test_execute_virtual_key_regeneration_allows_when_custom_key_update_ho
     "data",
     [None, RegenerateKeyRequest(), RegenerateKeyRequest(duration=""), RegenerateKeyRequest(budget_duration="")],
 )
-async def test_execute_virtual_key_regeneration_skips_custom_key_update_hook_without_changes(data):
+async def test_execute_virtual_key_regeneration_skips_custom_key_update_hook_without_changes(data):  # test-quality-ok: the hook asserts by raising if called; update await_count pins the unchanged-request skip path
     mock_prisma_client = _make_regenerate_mock_prisma()
 
     async def hook(data: UpdateKeyRequest) -> dict[str, object]:

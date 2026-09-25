@@ -16188,7 +16188,7 @@ def _existing_team_with_model_caps(caps):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cleared_with", [{}, None], ids=["empty_mapping", "null"])
-async def test_update_team_clearing_model_max_budget_writes_an_empty_mapping(
+async def test_update_team_clearing_model_max_budget_writes_an_empty_mapping(  # test-quality-ok: proxy_server prisma_client is the endpoint's only injection point
     disable_audit_logging_for_mocked_team, cleared_with
 ):
     from fastapi import Request

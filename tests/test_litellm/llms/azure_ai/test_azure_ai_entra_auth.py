@@ -241,8 +241,8 @@ def test_agent_service_principal_token_defaults_to_the_foundry_agents_scope():
     assert token == "sp-token"
 
 
-def test_agent_azure_scope_overrides_the_foundry_agents_default():
-    with patch("litellm.llms.azure.common_utils.get_azure_ad_token_from_entra_id") as mock_entra_id:  # test-quality-ok: stubs the Entra token fetch to assert an explicit azure_scope wins over the agents default; live SP path proven by the PR's Azure Foundry e2e QA
+def test_agent_azure_scope_overrides_the_foundry_agents_default():  # test-quality-ok: stubs the Entra token fetch to assert an explicit azure_scope wins over the agents default; live SP path proven by the PR's Azure Foundry e2e QA
+    with patch("litellm.llms.azure.common_utils.get_azure_ad_token_from_entra_id") as mock_entra_id:
         mock_entra_id.return_value = lambda: "sp-token"
 
         get_azure_ai_agent_entra_token(
