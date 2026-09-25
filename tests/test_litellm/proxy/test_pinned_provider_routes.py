@@ -133,8 +133,15 @@ def _ensure_lazy_passthrough_loaded(app) -> None:
     module_path = "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints"
     loaded = getattr(app.state, "lazy_loaded", None)
     if loaded is None:
+        # app.state.lazy_loaded and app.state.lazy_locks are a paired
+        # invariant: _lazy_features.py's _force_load guards its lazy_locks
+        # access on hasattr(app.state, "lazy_loaded") alone, so setting one
+        # without the other on the real shared app crashes any later request
+        # that needs to force-load a different feature.
         loaded = set()
         app.state.lazy_loaded = loaded
+        if not hasattr(app.state, "lazy_locks"):
+            app.state.lazy_locks = {}
     if module_path in loaded:
         return
     feature = next((f for f in LAZY_FEATURES if f.module_path == module_path), None)

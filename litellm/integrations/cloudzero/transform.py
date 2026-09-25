@@ -152,11 +152,11 @@ class CBFTransformer:
         # Extract CZRN components to populate corresponding CBF columns
         czrn_components: Final = self.czrn_generator.extract_components(resource_id)
         (
-            service_type,
+            _service_type,
             provider,
             region,
-            owner_account_id,
-            resource_type,
+            _owner_account_id,
+            _resource_type,
             cloud_local_id,
         ) = czrn_components
 

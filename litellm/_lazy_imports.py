@@ -18,8 +18,8 @@ until they're actually needed.
 import importlib
 import sys
 from collections.abc import Callable, Mapping
-from types import ModuleType
-from typing import TYPE_CHECKING, Any, Final, cast
+from types import MappingProxyType, ModuleType
+from typing import TYPE_CHECKING, Any, Final
 
 from typing_extensions import ReadOnly, TypedDict
 
@@ -58,7 +58,8 @@ from ._lazy_imports_registry import (
 
 if TYPE_CHECKING:
     import httpx
-    from tiktoken import Encoding
+
+    from litellm.litellm_core_utils.tokenizer import Encoding as Tokenizer
 
 
 def get_litellm_globals() -> dict[str, object]:
@@ -89,26 +90,11 @@ def _get_module_level_client_timeout(litellm_globals: Mapping[str, Any]) -> "flo
 # These are special lazy loaders for things that are used internally
 # They're separate from the main lazy import system because they have specific use cases
 
-# Lazy loader for default encoding - avoids importing heavy tiktoken library at startup
-_default_encoding: "Encoding | None" = None
 
+def _get_default_encoding() -> "Tokenizer":
+    from litellm.rust_bridge.tokenizer import get_encoding
 
-def _get_default_encoding() -> "Encoding":
-    """
-    Lazily load and cache the default OpenAI encoding.
-
-    This avoids importing `litellm.litellm_core_utils.default_encoding` (and thus tiktoken)
-    at `litellm` import time. The encoding is cached after the first import.
-
-    This is used internally by utils.py functions that need the encoding but shouldn't
-    trigger its import during module load.
-    """
-    global _default_encoding
-    if _default_encoding is None:
-        from litellm.litellm_core_utils.default_encoding import encoding
-
-        _default_encoding = encoding
-    return _default_encoding
+    return get_encoding("cl100k_base")
 
 
 # Lazy loader for get_modified_max_tokens to avoid importing token_counter at module import time
@@ -166,10 +152,10 @@ def _get_token_counter_new() -> "Callable[..., int]":
 # This registry maps attribute names (like "ModelResponse") to handler functions
 # It's built once the first time someone accesses a lazy-loaded attribute
 # Example: {"ModelResponse": _lazy_import_utils, "Cache": _lazy_import_caching, ...}
-_LAZY_IMPORT_REGISTRY: dict[str, Callable[[str], object]] | None = None
+_LAZY_IMPORT_REGISTRY: Mapping[str, Callable[[str], object]] | None = None
 
 
-def _get_lazy_import_registry() -> dict[str, Callable[[str], object]]:
+def _get_lazy_import_registry() -> Mapping[str, Callable[[str], object]]:
     """
     Build the registry that maps attribute names to their handler functions.
 
@@ -181,39 +167,9 @@ def _get_lazy_import_registry() -> dict[str, Callable[[str], object]]:
     """
     global _LAZY_IMPORT_REGISTRY
     if _LAZY_IMPORT_REGISTRY is None:
-        # Build the registry by going through each category and mapping
-        # all the names in that category to their handler function
-        _LAZY_IMPORT_REGISTRY = {}
-        # For each category, map all its names to the handler function
-        # Example: All names in UTILS_NAMES get mapped to _lazy_import_utils
-        for name in COST_CALCULATOR_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_cost_calculator
-        for name in LITELLM_LOGGING_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_litellm_logging
-        for name in UTILS_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_utils
-        for name in TOKEN_COUNTER_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_token_counter
-        for name in LLM_CLIENT_CACHE_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_llm_client_cache
-        for name in BEDROCK_TYPES_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_bedrock_types
-        for name in TYPES_UTILS_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_types_utils
-        for name in CACHING_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_caching
-        for name in HTTP_HANDLER_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_http_handlers
-        for name in DOTPROMPT_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_dotprompt
-        for name in LLM_CONFIG_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_llm_configs
-        for name in TYPES_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_types
-        for name in LLM_PROVIDER_LOGIC_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_llm_provider_logic
-        for name in UTILS_MODULE_NAMES:
-            _LAZY_IMPORT_REGISTRY[name] = _lazy_import_utils_module
+        _LAZY_IMPORT_REGISTRY = MappingProxyType(
+            {name: handler for names, handler in _CATEGORY_HANDLERS for name in names}
+        )
 
     return _LAZY_IMPORT_REGISTRY
 
@@ -445,9 +401,8 @@ def _lazy_import_http_handlers(name: str) -> object:
         params: Final = {"timeout": async_timeout, "client_alias": "module level aclient"}
 
         # Create the client instance
-        provider_id: Final = cast(Any, "litellm_module_level_client")
         async_client: Final = get_async_httpx_client(
-            llm_provider=provider_id,
+            llm_provider="litellm_module_level_client",
             params=params,
         )
 
@@ -467,3 +422,21 @@ def _lazy_import_http_handlers(name: str) -> object:
         return sync_client
 
     raise AttributeError(f"HTTP handlers lazy import: unknown attribute {name!r}")
+
+
+_CATEGORY_HANDLERS: Final[tuple[tuple[tuple[str, ...], Callable[[str], object]], ...]] = (
+    (COST_CALCULATOR_NAMES, _lazy_import_cost_calculator),
+    (LITELLM_LOGGING_NAMES, _lazy_import_litellm_logging),
+    (UTILS_NAMES, _lazy_import_utils),
+    (TOKEN_COUNTER_NAMES, _lazy_import_token_counter),
+    (LLM_CLIENT_CACHE_NAMES, _lazy_import_llm_client_cache),
+    (BEDROCK_TYPES_NAMES, _lazy_import_bedrock_types),
+    (TYPES_UTILS_NAMES, _lazy_import_types_utils),
+    (CACHING_NAMES, _lazy_import_caching),
+    (HTTP_HANDLER_NAMES, _lazy_import_http_handlers),
+    (DOTPROMPT_NAMES, _lazy_import_dotprompt),
+    (LLM_CONFIG_NAMES, _lazy_import_llm_configs),
+    (TYPES_NAMES, _lazy_import_types),
+    (LLM_PROVIDER_LOGIC_NAMES, _lazy_import_llm_provider_logic),
+    (UTILS_MODULE_NAMES, _lazy_import_utils_module),
+)

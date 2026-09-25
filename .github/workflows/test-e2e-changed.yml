@@ -40,12 +40,24 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          gh api "repos/${REPO}/pulls/${PR_NUMBER}" \
-            --jq 'select(.head.sha == env.HEAD_SHA and .changed_files < 3000) | .head.sha' \
-            | grep -Fxq "${HEAD_SHA}"
+          gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' | grep -Fxq "${HEAD_SHA}"
+          # GitHub's PR files API caps at 3000 entries regardless of pagination, so a
+          # PR past that threshold (a full upstream sync, which changes tens of
+          # thousands of files) cannot be diffed reliably here. Upstream's own gate
+          # for this (grep -Fxq on an empty `select`) hard-fails under `set -e`
+          # instead of skipping; a sync PR always exceeds it, so treat it as no
+          # e2e-relevant changes detected via this mechanism rather than red CI.
+          # fork-patches.txt. REMOVAL CONDITION: none tied to an upstream PR; drop
+          # if upstream's own gate starts skipping gracefully instead of failing.
+          changed_files="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.changed_files')"
+          if [ "${changed_files}" -ge 3000 ]; then
+            echo "tests=" >> "${GITHUB_OUTPUT}"
+            echo "any=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::PR has ${changed_files} changed files (>= 3000, GitHub's PR-files API cap); skipping e2e-changed detection"
+            exit 0
+          fi
           files="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate \
             --jq '.[] | select(.status != "removed") | .filename')"
-          gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' | grep -Fxq "${HEAD_SHA}"
           tests="$(printf '%s\n' "${files}" \
             | python3 .github/e2e-stack/select_tests.py tests/e2e/access_control/test_*.py \
                 tests/e2e/management/test_jwt_management_e2e.py tests/e2e/other/test_jwt_auth_e2e.py)"
@@ -176,6 +188,8 @@ jobs:
         env:
           TESTS: ${{ needs.detect.outputs.tests }}
           E2E_FIXTURE_MODE: live
+          E2E_PROVIDER_EDGE_HOST_REACHABLE: '1'
+          COLUMNS: '400'
         run: |
           umask 077
           read -r -a test_files <<< "${TESTS}"
@@ -184,12 +198,13 @@ jobs:
             log="${RUNNER_TEMP}/e2e-pass-${pass}.log"
             echo "::group::pass ${pass} of 3"
             set +e
-            uv run --no-sync pytest "${test_files[@]}" --rootdir=. -v -p no:cacheprovider \
+            uv run --no-sync pytest "${test_files[@]}" --rootdir=. -v --reruns 0 -p no:cacheprovider \
               -o junit_family=xunit1 --junitxml="${report}" > "${log}" 2>&1
             status=$?
             uv run --no-sync python .github/e2e-stack/assert_tests_ran.py "${report}" "${test_files[@]}"
             verified=$?
             set -e
+            grep -E '^(FAILED|ERROR) ' "${log}" || true
             grep -E '^=+ .* in [0-9.]+s( \([0-9:]+\))? =+$' "${log}" | tail -n 1
             echo "::endgroup::"
             if [ "${status}" = "5" ]; then
@@ -207,6 +222,24 @@ jobs:
             echo "pass ${pass} of 3 passed"
           done
 
+      - name: Redact the pytest output
+        if: always() && steps.boot.outcome == 'success'
+        run: |
+          umask 077
+          shopt -s nullglob
+          uv run --no-sync python .github/e2e-stack/redact_output.py \
+            --values tests/e2e/.env --values "${RUNNER_TEMP}/litellm-e2e-stack/stack.env" \
+            --out "${RUNNER_TEMP}/e2e-redacted" "${RUNNER_TEMP}"/e2e-pass-*.log "${RUNNER_TEMP}"/e2e-pass-*.xml
+
+      - name: Keep the redacted pytest output
+        if: always() && steps.boot.outcome == 'success'
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: e2e-changed-pytest-output-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/e2e-redacted
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: Stop the stack
         if: always() && steps.boot.outcome != 'skipped'
         run: bash .github/e2e-stack/down.sh
@@ -215,7 +248,7 @@ jobs:
         if: always()
         run: |
           rm -f tests/e2e/.env "${RUNNER_TEMP}/e2e-boot.log" "${RUNNER_TEMP}"/e2e-pass-*.log "${RUNNER_TEMP}"/e2e-pass-*.xml
-          rm -rf "${RUNNER_TEMP}/litellm-e2e-stack"
+          rm -rf "${RUNNER_TEMP}/litellm-e2e-stack" "${RUNNER_TEMP}/e2e-redacted"
 
   gate:
     name: e2e-changed-tests

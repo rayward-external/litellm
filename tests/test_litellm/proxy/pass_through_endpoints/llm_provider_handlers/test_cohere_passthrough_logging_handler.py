@@ -189,7 +189,9 @@ class TestCohereStreamingPassthroughCostTracking:
     """
 
     URL = "https://api.cohere.com/v2/chat"
-    MODEL = "command-r-plus"
+    # Bare "command-r-plus" was deprecated 2025-09-15 and dropped from the
+    # cost map on schedule; "-08-2024" is the same pricing, still current.
+    MODEL = "command-r-plus-08-2024"
     PROMPT_TOKENS = 1000
     COMPLETION_TOKENS = 500
 

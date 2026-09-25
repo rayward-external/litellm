@@ -22,51 +22,50 @@ query-filters:
       id: py/clear-text-logging-sensitive-data  # CWE-312
   - exclude:
       id: py/polynomial-redos                   # CWE-730
-  # py/weak-sensitive-data-hashing: litellm's SHA256 calls derive stable lookup
-  # keys / rate-limit-bucket ids from API keys and tokens (e.g.
-  # mcp_server/server.py builds `key:{sha256(api_key)}` as a cache key); they are
-  # never used to store a password for later verification, which is the threat
-  # this rule targets. SHA256 is the correct, intended choice for keyed lookups.
+  # Taint explosion from pervasive logging, same scaling class as
+  # py/clear-text-logging-sensitive-data above; hangs the python leg without it.
   - exclude:
-      id: py/weak-sensitive-data-hashing        # CWE-327/916
+      id: py/log-injection                      # CWE-117
+  # Import resolution confuses stdlib types with management_endpoints/types.py.
+  # The generic cycle query also reports intentional deferred imports.
   - exclude:
-      id: py/log-injection                      # CWE-117 — taint explosion through litellm's pervasive logging; same scaling class as the excluded py/clear-text-logging-sensitive-data
-  # py/stack-trace-exposure: tracebacks only reach loggers; ProxyException.to_dict() never serializes a traceback field; CodeQL cannot distinguish log sinks from HTTP response sinks
+      id: py/cyclic-import
   - exclude:
-      id: py/stack-trace-exposure               # CWE-209
-  # py/incomplete-url-substring-sanitization: security-critical URL validation uses urlparse() tuple comparison; flagged startswith/endswith are non-security normalization (JWT heuristic, trailing-slash strip)
+      id: py/unsafe-cyclic-import
+  # Known false positives on live settings and Protocol placeholders.
+  - exclude:
+      id: py/unused-global-variable
+  - exclude:
+      id: py/ineffectual-statement
+  # Tracebacks only reach loggers; ProxyException.to_dict() never serializes a
+  # traceback field, so CodeQL cannot distinguish log sinks from HTTP response
+  # sinks here.
+  - exclude:
+      id: py/stack-trace-exposure                # CWE-209
+  # Security-critical URL validation uses urlparse() tuple comparison; the
+  # flagged startswith/endswith calls are non-security normalization (JWT
+  # heuristics, trailing-slash strip), not the sanitization the query targets.
   - exclude:
       id: py/incomplete-url-substring-sanitization  # CWE-184
-  # py/request-without-cert-validation: every httpx client in the codebase resolves
-  # `verify` through get_ssl_verify()/get_ssl_configuration() (litellm/llms/custom_httpx/http_handler.py),
-  # which defaults to True (litellm.ssl_verify's module default) and only turns
-  # False via an explicit operator opt-in (SSL_VERIFY env var, litellm.ssl_verify,
-  # or an explicit ssl_verify=False param) for enterprise self-signed/internal-CA
-  # deployments. CodeQL cannot follow the dynamic default through that resolution
-  # chain, so it flags every call site as if verification were unconditionally
-  # disabled. Same FP class as the py/weak-sensitive-data-hashing exclude above.
-  - exclude:
-      id: py/request-without-cert-validation        # CWE-295
-  # js/incomplete-url-substring-sanitization: same FP class as the Python
-  # equivalent above, but for co-located *.test.tsx files (not caught by the
-  # "tests" paths-ignore entry, which only matches the top-level Python tests/
-  # dir). The flagged regexes assert on rendered DOM text in RTL's getByText,
-  # not a security decision on an untrusted URL.
+  # Same FP class as py/incomplete-url-substring-sanitization above, surfaced
+  # in ui/litellm-dashboard/**/*.test.tsx files that assert on rendered DOM
+  # text via RTL's getByText(/https:\/\/.../) -- not a security decision on an
+  # untrusted URL. Not caught by the "tests" paths-ignore below, which only
+  # matches the top-level Python tests/ dir.
   - exclude:
       id: js/incomplete-url-substring-sanitization  # CWE-184
-  # actions/untrusted-checkout: fires on test-litellm-ui-lint.yml and
-  # test-litellm-ui-unit.yml for checking out PR content and running npm ci in a
-  # `pull_request`-triggered job. Both attack vectors this query documents don't
-  # apply here: runs-on is ubuntu-latest (ephemeral GitHub-hosted, not
-  # self-hosted, so there's no runner to persist a compromise on), and no
-  # workflow_run-triggered privileged job in this repo consumes these jobs'
-  # artifacts or caches. Neither file uses pull_request_target or exposes
-  # secrets (permissions: contents: read only) — this is the query's own
-  # documented "correct usage" pattern (isolated pull_request trigger, no
-  # elevated token). No workflow in this repo uses pull_request_target or
-  # workflow_run (verified via search); revisit this exclude if one is added.
+  # Every httpx client resolves verify via get_ssl_verify()/get_ssl_configuration()
+  # (litellm/llms/custom_httpx/http_handler.py), defaulting to True and only
+  # disabled via explicit operator opt-in for enterprise self-signed/internal-CA
+  # deployments; CodeQL cannot follow the dynamic default so it flags every call site.
   - exclude:
-      id: actions/untrusted-checkout/medium     # CWE-829
+      id: py/request-without-cert-validation      # CWE-295
+  # Fires on test-litellm-ui-lint.yml/test-litellm-ui-unit.yml for checking out
+  # PR content + npm ci under pull_request (non-privileged). Runners are
+  # ephemeral GitHub-hosted and no workflow_run/pull_request_target job in this
+  # repo consumes their artifacts/caches; permissions here are contents: read only.
+  - exclude:
+      id: actions/untrusted-checkout/medium       # CWE-829
 
 paths-ignore:
   - tests

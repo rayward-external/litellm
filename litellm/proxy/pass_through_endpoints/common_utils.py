@@ -209,12 +209,18 @@ def resolve_openai_passthrough_provider(
     `"openai"`. For a Fireworks model that makes `completion_cost` raise "this
     model isn't mapped yet", which the handler swallows — the request is billed
     upstream and recorded at $0. Infer the provider from the unambiguous
-    Fireworks model-id / hostname shapes instead of guessing "openai".
+    Fireworks model-id / hostname shapes instead of guessing "openai". Same for
+    a classic Azure OpenAI deployment URL (`{resource}.openai.azure.com`):
+    the model's own cost-map entries for that surface (e.g. image generation)
+    are keyed `azure/...`, not bare or `openai/...`, so pricing as "openai"
+    finds nothing and records $0.
     """
     if custom_llm_provider:
         return custom_llm_provider
     if is_fireworks_model_id(model) or is_fireworks_url(url_route):
         return FIREWORKS_PROVIDER
+    if url_route and hostname_matches(urlparse(url_route).hostname or "", AZURE_OPENAI_HOSTNAMES):
+        return "azure"
     return "openai"
 
 

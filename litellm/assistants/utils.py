@@ -113,11 +113,7 @@ def get_optional_params_image_gen(
                     )
             return non_default_params
 
-    if (
-        custom_llm_provider == "openai"
-        or custom_llm_provider == "azure"
-        or custom_llm_provider in litellm.openai_compatible_providers
-    ):
+    if custom_llm_provider in {"openai", "azure"} or custom_llm_provider in litellm.openai_compatible_providers:
         optional_params = non_default_params
     elif custom_llm_provider == "bedrock":
         supported_params = ["size"]

@@ -431,7 +431,7 @@ class PydanticAITransformation:
             A2A streaming response events
         """
         # Extract the response text from completed task
-        full_text, message_id, parts = PydanticAITransformation._extract_response_text(response_data)
+        full_text, _message_id, _parts = PydanticAITransformation._extract_response_text(response_data)
 
         # Extract input message from raw response for history
         result: Final = _STR_KEY_DICT_ADAPTER.validate_python(response_data.get("result", {}))
