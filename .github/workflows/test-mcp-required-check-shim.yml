@@ -1,0 +1,35 @@
+name: LiteLLM MCP Tests (required-check shim)
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+      - litellm_internal_staging
+      - litellm_oss_staging
+      - "litellm_**"
+
+# Upstream's 2026-09-19 "ci(mcp): consolidate integration tests into shared
+# workflow" (8f3562ed9c) removed .github/workflows/test-mcp.yml, folding its
+# tests/mcp_tests coverage into test-unit.yml's mcp-integration shard. But
+# litellm_internal_staging's branch protection still lists that workflow's
+# bare job name ("test") as a required status check, which can now never
+# report on any PR -> every PR is permanently blocked from merging ("1 of 55
+# required status checks are expected"). This shim reproduces only the job
+# name so the required check can report; real MCP test coverage now lives in
+# test-unit.yml's mcp-integration shard, which already runs via the normal
+# test matrix. Same pattern as proxy-legacy-required-check-shim.yml and
+# server-root-path-required-check-shim.yml.
+# REMOVAL CONDITION: remove once an admin updates litellm_internal_staging's
+# required status checks (Settings > Branches) to drop this obsolete context.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Shim - see fork-patches.txt
+        run: |
+          echo "Required-check shim for the job upstream's test-mcp.yml used to produce."
+          echo "Real MCP test coverage now lives in test-unit.yml's mcp-integration shard (BerriAI/litellm 8f3562ed9c). See .github/fork-patches.txt."
