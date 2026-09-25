@@ -2003,12 +2003,13 @@ async def test_generate_key_end_user_budget_id_lands_in_key_metadata():  # test-
             "user_id": "admin",
             "team_id": None,
         }
-        await _common_key_generation_helper(
+        result = await _common_key_generation_helper(
             data=GenerateKeyRequest(end_user_budget_id="svc-a-budget"),
             user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN, api_key="sk-1"),
             litellm_changed_by=None,
             team_table=None,
         )
+    assert result.key == "sk-test-key"
     assert mock_generate_key.call_args.kwargs["metadata"] == {"end_user_budget_id": "svc-a-budget"}
 
 
@@ -12934,7 +12935,7 @@ async def test_execute_virtual_key_regeneration_allows_within_limit_duration(mon
             new_callable=AsyncMock,
         ),
     ):
-        await _execute_virtual_key_regeneration(
+        response = await _execute_virtual_key_regeneration(
             prisma_client=mock_prisma_client,
             key_in_db=existing_key,
             hashed_api_key="abc123",
@@ -12946,6 +12947,7 @@ async def test_execute_virtual_key_regeneration_allows_within_limit_duration(mon
             proxy_logging_obj=MagicMock(),
         )
     assert mock_prisma_client.db.litellm_verificationtoken.update.await_count == 1
+    assert response.key == "sk-newtoken1234ab12"
 
 
 @pytest.mark.asyncio
@@ -13094,7 +13096,7 @@ async def test_execute_virtual_key_regeneration_skips_custom_key_update_hook_wit
         ),
         patch("litellm.proxy.proxy_server.user_custom_key_update", hook),  # test-quality-ok: inject policy hook
     ):
-        await _execute_virtual_key_regeneration(
+        response = await _execute_virtual_key_regeneration(
             prisma_client=mock_prisma_client,
             key_in_db=_make_regenerate_existing_key(),
             hashed_api_key="abc123",
@@ -13107,6 +13109,7 @@ async def test_execute_virtual_key_regeneration_skips_custom_key_update_hook_wit
         )
 
     assert mock_prisma_client.db.litellm_verificationtoken.update.await_count == 1
+    assert response.key == "sk-newtoken1234ab12"
 
 
 @pytest.mark.asyncio

@@ -245,10 +245,11 @@ def test_agent_azure_scope_overrides_the_foundry_agents_default():  # test-quali
     with patch("litellm.llms.azure.common_utils.get_azure_ad_token_from_entra_id") as mock_entra_id:
         mock_entra_id.return_value = lambda: "sp-token"
 
-        get_azure_ai_agent_entra_token(
+        token = get_azure_ai_agent_entra_token(
             {"tenant_id": "tenant", "client_id": "client", "client_secret": "secret", "azure_scope": "custom/.default"}
         )
 
+    assert token == "sp-token"
     assert mock_entra_id.call_args.kwargs["scope"] == "custom/.default"
 
 
