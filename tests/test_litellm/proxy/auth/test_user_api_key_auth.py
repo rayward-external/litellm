@@ -232,7 +232,9 @@ async def test_budget_reservation_runs_when_not_disabled():
         ({}, False),
     ],
 )
-async def test_fail_closed_budget_enforcement_reaches_reservation(general_settings, expected_flag):
+async def test_fail_closed_budget_enforcement_reaches_reservation(
+    general_settings, expected_flag
+):  # test-quality-ok: reserve_budget_for_request has no return value; the flag's plumbing is only observable on the mocked call
     """#33923: the strict flag must be threaded into reserve_budget_for_request so a
     failed reservation write can reject instead of failing open."""
     user_api_key_auth_obj = UserAPIKeyAuth(token="test_token")
@@ -267,7 +269,9 @@ async def test_fail_closed_budget_enforcement_reaches_reservation(general_settin
         ({}, False),
     ],
 )
-async def test_apply_user_budget_to_team_keys_reaches_reservation(general_settings, expected_flag):
+async def test_apply_user_budget_to_team_keys_reaches_reservation(
+    general_settings, expected_flag
+):  # test-quality-ok: reserve_budget_for_request has no return value; the flag's plumbing is only observable on the mocked call
     """The opt-in lives in general_settings but is consumed inside
     _get_budget_counters, so it has to be threaded through reserve_budget_for_request
     or the reservation path keeps exempting team keys while the read path enforces."""

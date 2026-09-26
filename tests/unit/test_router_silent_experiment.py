@@ -465,11 +465,7 @@ async def test_router_silent_experiment_acompletion():
 
         # Find the silent call
         silent_call = next(
-            (
-                c
-                for c in call_args_list
-                if c[1].get("metadata", {}).get("is_silent_experiment") is True
-            ),
+            (c for c in call_args_list if c[1].get("metadata", {}).get("is_silent_experiment") is True),
             None,
         )
         assert silent_call is not None
@@ -477,11 +473,7 @@ async def test_router_silent_experiment_acompletion():
 
         # Find the primary call
         primary_call = next(
-            (
-                c
-                for c in call_args_list
-                if not c[1].get("metadata", {}).get("is_silent_experiment")
-            ),
+            (c for c in call_args_list if not c[1].get("metadata", {}).get("is_silent_experiment")),
             None,
         )
         assert primary_call is not None
@@ -550,11 +542,7 @@ def test_router_silent_experiment_completion():
 
         # Find the silent call
         silent_call = next(
-            (
-                c
-                for c in call_args_list
-                if c[1].get("metadata", {}).get("is_silent_experiment") is True
-            ),
+            (c for c in call_args_list if c[1].get("metadata", {}).get("is_silent_experiment") is True),
             None,
         )
         assert silent_call is not None
@@ -591,7 +579,9 @@ def test_silent_experiment_sends_shadow_request_attributed_to_the_silent_model(r
 
 
 @pytest.mark.parametrize("run_silent_experiment", SILENT_EXPERIMENT_RUNNERS)
-def test_silent_experiment_does_not_launch_from_a_shadow_request(run_silent_experiment):
+def test_silent_experiment_does_not_launch_from_a_shadow_request(
+    run_silent_experiment,
+):  # test-quality-ok: proves the re-entrancy guard by asserting router.acompletion is never awaited; no other observable signal exists for a call that must not happen
     router = Router(model_list=_streaming_model_list(["shadow-a"]))
     with patch.object(router, "acompletion", new_callable=AsyncMock, return_value=None) as acompletion:
         run_silent_experiment(

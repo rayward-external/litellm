@@ -3262,7 +3262,7 @@ class Router:
                     initial_kwargs["messages"] = messages
                     self._update_kwargs_before_fallbacks(model=model_group, kwargs=initial_kwargs)
                     fallback_response = await self.async_function_with_fallbacks_common_utils(
-                        e=e,
+                        e=_fallback_dispatch_exception(e),
                         disable_fallbacks=fallbacks_disabled_for_request(initial_kwargs),
                         fallbacks=fallbacks,
                         context_window_fallbacks=context_window_fallbacks,
@@ -3580,6 +3580,7 @@ class Router:
             """
 
             fallback_headers_adopted: bool = False
+            fell_back_from_source: bool = False
 
             def __init__(self, async_generator: AsyncGenerator):
                 import time
@@ -3656,8 +3657,11 @@ class Router:
                     # fall back to whatever the source iterator latched so
                     # the proxy's container-ownership hook still sees a
                     # completed_response instead of logging a spurious
-                    # "no completed_response" warning.
-                    if self.completed_response is None:
+                    # "no completed_response" warning. Never after a refusal
+                    # fallback: the source's own latched terminal is the
+                    # abandoned, never-shown-to-the-client blocked response,
+                    # not what the client actually received.
+                    if self.completed_response is None and not self.fell_back_from_source:
                         self.completed_response = getattr(source_iterator, "completed_response", None)
                     raise
                 # Sniff the terminal stream event off each forwarded chunk
@@ -3680,18 +3684,29 @@ class Router:
 
         async def stream_with_fallbacks():
             held_lifecycle_events: tuple[object, ...] = ()  # rebind-ok: flushed at first output, dropped on fallback
+            refusal_hold = self._refusal_stream_hold_for_call(initial_kwargs, hold_cls=_ResponsesRefusalStreamHold)
             try:
                 async for item in source_iterator:
-                    if _responses_stream_holds_event(item, len(held_lifecycle_events)):
-                        held_lifecycle_events = (*held_lifecycle_events, item)
+                    for released_item in refusal_hold.process(item):
+                        if _responses_stream_holds_event(released_item, len(held_lifecycle_events)):
+                            held_lifecycle_events = (*held_lifecycle_events, released_item)
+                            continue
+                        for held_event in held_lifecycle_events:
+                            yield held_event
+                        held_lifecycle_events = ()
+                        yield released_item
+                for released_item in refusal_hold.flush():
+                    if _responses_stream_holds_event(released_item, len(held_lifecycle_events)):
+                        held_lifecycle_events = (*held_lifecycle_events, released_item)
                         continue
                     for held_event in held_lifecycle_events:
                         yield held_event
                     held_lifecycle_events = ()
-                    yield item
+                    yield released_item
                 for held_event in held_lifecycle_events:
                     yield held_event
             except MidStreamFallbackError as e:
+                wrapper.fell_back_from_source = True
                 async with contextlib.aclosing(
                     self._aresponses_fallback_attempt(
                         e, source_iterator, initial_kwargs, wrapper.adopt_fallback_headers, held_lifecycle_events
@@ -8854,8 +8869,9 @@ class Router:
             patterns = []
         if patterns and isinstance(model_group, str):
             content_policy_fallbacks = initial_kwargs.get("content_policy_fallbacks", self.content_policy_fallbacks)
-            if content_policy_fallbacks and self._get_fallback_model_group_from_fallbacks(
-                fallbacks=content_policy_fallbacks, model_group=model_group
+            if content_policy_fallbacks and self._get_fallback_model_group_for_lookup_groups(
+                fallbacks=content_policy_fallbacks,
+                lookup_groups=fallback_lookup_groups(initial_kwargs, model_group),
             ):
                 hold_chars = _refusal_stream_hold_chars()
         return hold_cls(

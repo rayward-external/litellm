@@ -361,7 +361,7 @@ async def test_batch_health_check_uses_alist_batches_for_supported_providers():
 
 
 @pytest.mark.asyncio
-async def test_batch_health_check_hands_the_resolved_provider_to_alist_batches():
+async def test_batch_health_check_hands_the_resolved_provider_to_alist_batches():  # test-quality-ok: litellm.alist_batches is patched out entirely; the resolved kwargs are only observable on the mocked call
     filtered_model_params: Final = {
         "model": "xai/grok-4.3",
         "api_key": "sk-test",

@@ -18,7 +18,9 @@ from litellm.caching.llm_caching_handler import LLMClientCache
 
 
 @patch("litellm._redis.init_redis_cluster")
-def test_redis_cluster_batch_get(mock_init_redis_cluster):
+def test_redis_cluster_batch_get(
+    mock_init_redis_cluster,
+):  # test-quality-ok: the redis client is fully mocked; only the call target distinguishes mget from mget_nonatomic
     """
     Test that RedisClusterCache uses mget_nonatomic instead of mget for batch operations
     """
@@ -44,7 +46,9 @@ def test_redis_cluster_batch_get(mock_init_redis_cluster):
 
 @pytest.mark.asyncio
 @patch("litellm._redis.init_redis_cluster")
-async def test_redis_cluster_async_batch_get(mock_init_redis_cluster):
+async def test_redis_cluster_async_batch_get(
+    mock_init_redis_cluster,
+):  # test-quality-ok: the redis client is fully mocked; only the call target distinguishes mget from mget_nonatomic
     """
     Test that RedisClusterCache uses mget_nonatomic instead of mget for async batch operations
     """
@@ -73,9 +77,7 @@ async def test_redis_cluster_async_batch_get(mock_init_redis_cluster):
 @patch("litellm._redis.get_redis_connection_pool")
 @patch("litellm._redis.get_redis_client")
 @patch.object(import_module("litellm.caching.redis_cache").RedisCache, "_setup_health_pings")
-def test_cache_init_creates_cluster_cache_from_env_var(
-    mock_health, mock_get_client, mock_get_pool, monkeypatch
-):
+def test_cache_init_creates_cluster_cache_from_env_var(mock_health, mock_get_client, mock_get_pool, monkeypatch):
     """
     Test that Cache() creates RedisClusterCache when REDIS_CLUSTER_NODES env var is set.
 
@@ -153,9 +155,7 @@ def test_cache_init_creates_redis_cache_without_cluster_config(
         ),
     ],
 )
-def test_router_create_redis_cache_cluster_detection(
-    startup_nodes, env_var, expected_cache_type, monkeypatch
-):
+def test_router_create_redis_cache_cluster_detection(startup_nodes, env_var, expected_cache_type, monkeypatch):
     """
     Test that Router._create_redis_cache() creates RedisClusterCache when
     either startup_nodes is in config or REDIS_CLUSTER_NODES env var is set.

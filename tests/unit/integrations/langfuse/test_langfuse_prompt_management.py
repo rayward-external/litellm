@@ -27,7 +27,9 @@ class TestLangfusePromptManagement:
     def teardown_method(self):
         self._langfuse_patcher.stop()
 
-    def test_get_prompt_from_id(self):
+    def test_get_prompt_from_id(
+        self,
+    ):  # test-quality-ok: _get_prompt_from_id is patched out entirely; prompt_version threading is only observable on the mocked call
         langfuse_prompt_management = LangfusePromptManagement()
         with (
             patch.object(
@@ -49,7 +51,9 @@ class TestLangfusePromptManagement:
             mock_get_prompt_from_id.assert_called_once()
             assert mock_get_prompt_from_id.call_args.kwargs["prompt_version"] == 4
 
-    def test_log_failure_event_runs_async_logger(self):
+    def test_log_failure_event_runs_async_logger(
+        self,
+    ):  # test-quality-ok: run_async_function is patched out entirely; the dispatch is only observable on the mocked call
         langfuse_prompt_management = LangfusePromptManagement()
         with patch("litellm.integrations.langfuse.langfuse_prompt_management.run_async_function") as mock_run_async:
             kwargs = {"standard_callback_dynamic_params": {}}
