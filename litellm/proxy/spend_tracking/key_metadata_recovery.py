@@ -219,7 +219,7 @@ async def attach_user_details(
     prisma_client: PrismaClient,
     recovered: Mapping[str, KeyMetadataDict],
 ) -> Mapping[str, KeyMetadataDict]:
-    needing_details: Final = frozenset(
+    needing_details: Final = frozenset(  # comprehension-ok: pulls each recovered key's user_id, skipping keys without one
         user_id
         for api_key, meta in recovered.items()
         for user_id in (meta.get("user_id"),)

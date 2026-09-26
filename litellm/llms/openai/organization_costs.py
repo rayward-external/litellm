@@ -125,7 +125,7 @@ async def fetch_openai_daily_costs(
     days: Final = frozenset(_bucket_day(bucket) for bucket in buckets)
     return MappingProxyType(
         {
-            day: sum(
+            day: sum(  # comprehension-ok: sums each day's results across its matching buckets in one pass
                 result.amount.value for bucket in buckets if _bucket_day(bucket) == day for result in bucket.results
             )
             for day in days

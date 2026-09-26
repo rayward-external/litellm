@@ -6854,13 +6854,15 @@ class MCPServerManager:
         """
         if not tool_permissions:
             return {}
-        expanded: Final = tuple(
+        expanded: Final = tuple(  # comprehension-ok: expands each name/id key to every server_id it resolves to
             (server_id, tuple(tools or ()))
             for key, tools in tool_permissions.items()
             for server_id in self.expand_permission_list([key])
         )
         return {
-            server_id: list(dict.fromkeys(tool for _, tools in group for tool in tools))
+            server_id: list(
+                dict.fromkeys(tool for _, tools in group for tool in tools)  # comprehension-ok: flattens+dedupes one server_id's grouped tool lists
+            )
             for server_id, group in groupby(sorted(expanded, key=itemgetter(0)), key=itemgetter(0))
         }
 

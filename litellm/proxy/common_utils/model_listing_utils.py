@@ -191,7 +191,9 @@ def alias_map(aliases: object) -> Mapping[str, str]:
 
 
 def _alias_names(alias_maps: Sequence[Mapping[str, str]]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(alias for aliases in alias_maps for alias in aliases))
+    return tuple(
+        dict.fromkeys(alias for aliases in alias_maps for alias in aliases)  # comprehension-ok: flattens+dedupes every alias map's names in one pass
+    )
 
 
 def _rewrite(model_id: str, alias_maps: Sequence[Mapping[str, str]]) -> str | None:

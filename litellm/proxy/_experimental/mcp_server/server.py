@@ -2413,18 +2413,15 @@ if MCP_AVAILABLE:
                     is_initialize=scope.get("method") == "GET",
                 ),
                 sse.connect_sse(transport_scope, receive, send) as (read_stream, write_stream),
+                server.lifespan(server) as lifespan_state,
             ):
-                async with (
-                    sse.connect_sse(transport_scope, receive, send) as (read_stream, write_stream),
-                    server.lifespan(server) as lifespan_state,
-                ):
-                    await serve_loop(
-                        server,
-                        read_stream,
-                        write_stream,
-                        lifespan_state=lifespan_state,
-                        init_options=server.create_initialization_options(),
-                    )
+                await serve_loop(
+                    server,
+                    read_stream,
+                    write_stream,
+                    lifespan_state=lifespan_state,
+                    init_options=server.create_initialization_options(),
+                )
         except MCPUpstreamAuthError as e:
             # Upstream delegated auth returned 401; surface it to the client so
             # standards-compliant MCP clients trigger the upstream OAuth flow.

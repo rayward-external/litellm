@@ -1025,7 +1025,7 @@ class LangFuseLogger:
                 _cache_key = _hidden_params.get("cache_key", None)
                 if _cache_key is None and litellm.cache is not None:
                     # fallback to using "preset_cache_key"
-                    _preset_cache_key: Final = litellm.cache._get_preset_cache_key_from_kwargs(**kwargs)  # pyright: ignore[reportPrivateUsage]  # kwargs-ok: no public preset-cache-key accessor
+                    _preset_cache_key: Final = litellm.cache._get_preset_cache_key_from_kwargs(**kwargs)  # pyright: ignore[reportPrivateUsage]  # accesses the cache's own kwargs, not a local **kwargs param
                     _cache_key = _preset_cache_key
                 tags.append(f"cache_key:{_cache_key}")
         return tags
@@ -1186,7 +1186,7 @@ def _add_prompt_to_generation_params(
                 if "labels" in prompt_text_params and "tags" in prompt_text_params:
                     _data["labels"] = user_prompt.get("labels", []) or []
                     _data["tags"] = user_prompt.get("tags", []) or []
-                _prompt_obj = Prompt_Text(**_data)  # pyright: ignore[reportArgumentType]  # kwargs-ok: shape mirrors the pydantic model, values from the user's prompt dict
+                _prompt_obj = Prompt_Text(**_data)  # pyright: ignore[reportArgumentType]  # shape mirrors the pydantic model, values from the user's prompt dict
                 generation_params["prompt"] = TextPromptClient(prompt=_prompt_obj)
 
             elif isinstance(user_prompt["prompt"], list):
@@ -1201,7 +1201,7 @@ def _add_prompt_to_generation_params(
                     _data["labels"] = user_prompt.get("labels", []) or []
                     _data["tags"] = user_prompt.get("tags", []) or []
 
-                _prompt_obj = Prompt_Chat(**_data)  # pyright: ignore[reportArgumentType]  # kwargs-ok: shape mirrors the pydantic model, values from the user's prompt dict
+                _prompt_obj = Prompt_Chat(**_data)  # pyright: ignore[reportArgumentType]  # shape mirrors the pydantic model, values from the user's prompt dict
 
                 generation_params["prompt"] = ChatPromptClient(prompt=_prompt_obj)
             else:

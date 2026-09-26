@@ -684,7 +684,9 @@ class LangfuseSpanExporter(SpanExporter):
     def _round(self, halving: _Halving) -> _Halving:
         sent: Final = tuple((batch, self._send_batch(batch)) for batch in halving.pending)
         return _Halving(
-            pending=tuple(part for batch, outcome in sent if outcome == "too_large" for part in _smaller(batch)),
+            pending=tuple(  # comprehension-ok: flattens (batch, outcome) pairs into their retry-sized parts in one pass
+                part for batch, outcome in sent if outcome == "too_large" for part in _smaller(batch)
+            ),
             settled=halving.settled
             + tuple(
                 SpanExportResult.SUCCESS if outcome == "delivered" else SpanExportResult.FAILURE
@@ -1107,10 +1109,8 @@ class LangfuseApiClient:
     def __init__(self, api: LangfuseAPI, *, prompt_cache_ttl_seconds: float) -> None:
         self.api: Final = api
         self.prompt_cache_ttl_seconds: Final = prompt_cache_ttl_seconds
-        # mutable-ok: per-client prompt cache, guarded by _lock
-        self._prompts: Final[dict[_PromptKey, _CachedPrompt]] = {}
-        # mutable-ok: keys with a refresh in flight, guarded by _lock
-        self._refreshing: Final[set[_PromptKey]] = set()
+        self._prompts: Final[dict[_PromptKey, _CachedPrompt]] = {}  # mutable-ok: per-client prompt cache, guarded by _lock
+        self._refreshing: Final[set[_PromptKey]] = set()  # mutable-ok: keys with a refresh in flight, guarded by _lock
         self._lock: Final = threading.Lock()
 
     def auth_check(self) -> AuthCheckFailure | None:

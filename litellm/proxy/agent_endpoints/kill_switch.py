@@ -233,7 +233,7 @@ async def _read_text_prefix(response: httpx.Response, max_chars: int) -> str:
 async def _take_text(chunks: AsyncIterator[str], max_chars: int) -> str:
     taken = ""  # rebind-ok: running prefix of a stream that is abandoned once the cap is hit
     async for chunk in chunks:
-        taken += chunk  # rebind-ok: see above
+        taken += chunk
         if len(taken) >= max_chars:
             break
     return taken[:max_chars]

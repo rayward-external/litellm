@@ -359,6 +359,8 @@ def owned_wire_names(root: type) -> tuple[str, ...]:
     return tuple(names())
 
 
-OWNED_KWARG_NAMES: Final = tuple(name for root in LITELLM_OWNED_ROOTS for name in owned_wire_names(root))
+OWNED_KWARG_NAMES: Final = tuple(  # comprehension-ok: flattens every owned root's wire names into one tuple
+    name for root in LITELLM_OWNED_ROOTS for name in owned_wire_names(root)
+)
 AGENTIC_LOOP_KWARG_NAMES: Final = (*wire_names(AgenticLoopState), *wire_names(AgenticLoopOptions))
 BEDROCK_BATCH_KWARG_NAMES: Final = wire_names(BedrockBatchConnection)
