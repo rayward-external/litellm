@@ -955,11 +955,11 @@ if MCP_AVAILABLE:
                 ReadResourceRequest(params=params), context
             )
 
-    async def discover(ctx: ServerRequestContext, params: RequestParams) -> DiscoverResult:
+    async def discover(ctx: ServerRequestContext, params: RequestParams) -> DiscoverResult:  # pyright: ignore[reportPossiblyUnboundVariable]  # MCP_AVAILABLE conditional import
         async with _legacy_operation_context(ctx, trace=False) as context:
-            return await operations.GatewayOperations().execute(DiscoverRequest(params=params), context)
+            return await operations.GatewayOperations().execute(DiscoverRequest(params=params), context)  # pyright: ignore[reportPossiblyUnboundVariable]  # MCP_AVAILABLE conditional import
 
-    server.add_request_handler("server/discover", RequestParams, discover)
+    server.add_request_handler("server/discover", RequestParams, discover)  # pyright: ignore[reportPossiblyUnboundVariable]  # MCP_AVAILABLE conditional import
     server.add_request_handler("tools/list", PaginatedRequestParams, handle_list_tools)
     server.add_request_handler("tools/call", CallToolRequestParams, mcp_server_tool_call)
     server.add_request_handler("prompts/list", PaginatedRequestParams, list_prompts)
@@ -2415,7 +2415,7 @@ if MCP_AVAILABLE:
                 sse.connect_sse(transport_scope, receive, send) as (read_stream, write_stream),
                 server.lifespan(server) as lifespan_state,
             ):
-                await serve_loop(
+                await serve_loop(  # pyright: ignore[reportPossiblyUnboundVariable]  # MCP_AVAILABLE conditional import
                     server,
                     read_stream,
                     write_stream,

@@ -672,7 +672,7 @@ class MCPClient:
                 if in_flight_error is not None
                 else asyncio.CancelledError("MCP session cleanup timed out")
             )
-        return result
+        return result  # pyright: ignore[reportPossiblyUnboundVariable]  # the except block above always re-raises, so this line is only reached once result was assigned
 
     async def run_with_session(
         self,

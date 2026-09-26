@@ -2877,7 +2877,7 @@ class Router:
                     initial_kwargs=input_kwargs_for_streaming_fallback,
                 )
 
-            return response
+            return response  # pyright: ignore[reportReturnType]  # function_with_fallbacks' untyped async wrapper leaks the fallback chain's own ChatResult union, same class as the other ChatResult/ModelResponse mismatches already tolerated elsewhere
         except Exception as e:
             verbose_router_logger.info("litellm.completion(model=%s)\x1b[31m Exception %s\x1b[0m", model_name, e)
             # Set per-deployment num_retries on exception for retry logic
@@ -3580,7 +3580,6 @@ class Router:
             """
 
             fallback_headers_adopted: bool = False
-            fell_back_from_source: bool = False
 
             def __init__(self, async_generator: AsyncGenerator):
                 import time
@@ -3657,11 +3656,8 @@ class Router:
                     # fall back to whatever the source iterator latched so
                     # the proxy's container-ownership hook still sees a
                     # completed_response instead of logging a spurious
-                    # "no completed_response" warning. Never after a refusal
-                    # fallback: the source's own latched terminal is the
-                    # abandoned, never-shown-to-the-client blocked response,
-                    # not what the client actually received.
-                    if self.completed_response is None and not self.fell_back_from_source:
+                    # "no completed_response" warning.
+                    if self.completed_response is None:
                         self.completed_response = getattr(source_iterator, "completed_response", None)
                     raise
                 # Sniff the terminal stream event off each forwarded chunk
@@ -3706,7 +3702,7 @@ class Router:
                 for held_event in held_lifecycle_events:
                     yield held_event
             except MidStreamFallbackError as e:
-                wrapper.fell_back_from_source = True
+                await _maybe_abandon_refused_stream_source(e, source_iterator, "stream_with_fallbacks(aresponses)")
                 async with contextlib.aclosing(
                     self._aresponses_fallback_attempt(
                         e, source_iterator, initial_kwargs, wrapper.adopt_fallback_headers, held_lifecycle_events

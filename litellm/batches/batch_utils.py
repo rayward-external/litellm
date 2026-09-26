@@ -551,7 +551,7 @@ def _extract_file_access_credentials(litellm_params: dict | None) -> dict:
     return credentials
 
 
-def _get_file_content_as_dictionary(file_content: bytes) -> list[dict]:
+def _get_file_content_as_dictionary(file_content: bytes) -> list[dict]:  # pyright: ignore[reportUnusedFunction]  # used by enterprise/litellm_enterprise/proxy/common_utils/check_batch_cost.py, outside pyrightconfig.json's include scope
     """
     Get the file content as a list of dictionaries from JSON Lines format,
     skipping malformed lines
