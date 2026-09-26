@@ -9,15 +9,14 @@ from fastapi.responses import StreamingResponse
 
 import litellm
 from litellm.proxy.common_request_processing import create_response
+from litellm.types.utils import ModelResponse
 from litellm.proxy.common_utils.sse_keepalive import (
     ANTHROPIC_PING_SSE_CHUNK,
     SSE_COMMENT_PING,
     SSE_COMMENT_PING_BYTES,
-    UPSTREAM_IDLE_SSE_ERROR_TYPE,
-    UpstreamStreamIdentity,
-    UpstreamStreamMonitor,
-    anthropic_upstream_idle_sse_chunk,
+    advance_sse_tail,
     resolve_ttft_keepalive_interval,
+    seal_open_sse_frame,
     split_complete_sse_frames,
     upstream_stream_monitor_for,
     wrap_passthrough_sse_bytes_with_keepalive_pings,
@@ -54,6 +53,12 @@ def test_split_complete_sse_frames_recognizes_every_sse_frame_delimiter(delimite
 
 def test_split_complete_sse_frames_holds_bytes_with_no_complete_frame():
     assert split_complete_sse_frames(b"data: unterminated") == (b"", b"data: unterminated")
+
+
+@pytest.mark.parametrize("chunk", [{"content": "hi"}, ModelResponse()])
+def test_advance_sse_tail_ignores_a_chunk_that_is_not_sse_text(chunk: object):
+    assert advance_sse_tail(b"\n\n", chunk) == b"\n\n"
+    assert seal_open_sse_frame(advance_sse_tail(b"data: {", chunk)) == "\n" + ANTHROPIC_PING_SSE_CHUNK
 
 
 @pytest.mark.asyncio
