@@ -1109,7 +1109,9 @@ class LangfuseApiClient:
     def __init__(self, api: LangfuseAPI, *, prompt_cache_ttl_seconds: float) -> None:
         self.api: Final = api
         self.prompt_cache_ttl_seconds: Final = prompt_cache_ttl_seconds
-        self._prompts: Final[dict[_PromptKey, _CachedPrompt]] = {}  # mutable-ok: per-client prompt cache, guarded by _lock
+        self._prompts: Final[
+            dict[_PromptKey, _CachedPrompt]
+        ] = {}  # mutable-ok: per-client prompt cache, guarded by _lock
         self._refreshing: Final[set[_PromptKey]] = set()  # mutable-ok: keys with a refresh in flight, guarded by _lock
         self._lock: Final = threading.Lock()
 

@@ -6861,7 +6861,9 @@ class MCPServerManager:
         )
         return {
             server_id: list(
-                dict.fromkeys(tool for _, tools in group for tool in tools)  # comprehension-ok: flattens+dedupes one server_id's grouped tool lists
+                dict.fromkeys(
+                    tool for _, tools in group for tool in tools
+                )  # comprehension-ok: flattens+dedupes one server_id's grouped tool lists
             )
             for server_id, group in groupby(sorted(expanded, key=itemgetter(0)), key=itemgetter(0))
         }
