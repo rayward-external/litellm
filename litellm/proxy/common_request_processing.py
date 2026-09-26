@@ -107,10 +107,13 @@ from litellm.proxy.common_utils.openai_error_payload import (
 from litellm.proxy.common_utils.sse_keepalive import (
     SSE_COMMENT_PING_BYTES,
     SSE_STREAM_START_TAIL,
+    UpstreamStreamIdentity,
+    UpstreamStreamMonitor,
     advance_sse_tail,
     coerce_keepalive_interval,
     resolve_ttft_keepalive_interval,
     seal_open_sse_frame,
+    upstream_stream_monitor_for,
     wrap_sse_stream_with_keepalive_pings,
 )
 from litellm.proxy.dd_span_tagger import DDSpanTagger
@@ -4113,6 +4116,7 @@ class ProxyBaseLLMRequestProcessing:
         request: Request | None = None,
         flush_tail: Callable[[], bytes] | None = None,
         seal_open_frame: Callable[[bytes], str] | None = None,
+        upstream_stream_monitor: UpstreamStreamMonitor | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         Shared streaming data generator: runs proxy iterator hook, per-chunk hook,

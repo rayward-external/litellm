@@ -41,6 +41,7 @@ from litellm.constants import (
     LITELLM_HTTP_STATUS_UPSTREAM_STREAM_IDLE,
     PROVIDER_REQUEST_ID_HEADERS,
     REDACTED_BY_LITELLM,
+    STREAM_ENDED_UPSTREAM_IDLE_METADATA_KEY,
 )
 from litellm.cost_calculator import (
     RealtimeAPITokenUsageProcessor,

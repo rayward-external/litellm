@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Final, List, Literal, Optional, Protocol,
 from litellm._logging import verbose_proxy_logger
 from litellm._uuid import uuid
 from litellm.constants import (
+    ABANDONED_PRICING_CLAIM_RECLAIM_SECONDS,
     CLI_SESSION_KEY_PREFIX,
     MANAGED_OBJECT_STALENESS_CUTOFF_DAYS,
     MAX_OBJECTS_PER_POLL_CYCLE,
