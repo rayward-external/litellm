@@ -3,6 +3,7 @@
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from itertools import chain
 from types import MappingProxyType
 from typing import Final, Literal, TypeAlias
 
@@ -125,8 +126,9 @@ async def fetch_openai_daily_costs(
     days: Final = frozenset(_bucket_day(bucket) for bucket in buckets)
     return MappingProxyType(
         {
-            day: sum(  # comprehension-ok: sums each day's results across its matching buckets in one pass
-                result.amount.value for bucket in buckets if _bucket_day(bucket) == day for result in bucket.results
+            day: sum(
+                result.amount.value
+                for result in chain.from_iterable(bucket.results for bucket in buckets if _bucket_day(bucket) == day)
             )
             for day in days
         }

@@ -841,7 +841,8 @@ class RedisCache(BaseCache):
             self.service_logger_obj.service_success_hook(
                 service=ServiceTypes.REDIS,
                 duration=_duration,
-                call_type=f"set_cache <- {_get_call_stack_info()}",
+                call_type="set_cache",
+                caller=_get_call_stack_info(),
                 start_time=start_time,
                 end_time=end_time,
             )
@@ -862,7 +863,8 @@ class RedisCache(BaseCache):
             self.service_logger_obj.service_success_hook(
                 service=ServiceTypes.REDIS,
                 duration=_duration,
-                call_type=f"increment_cache <- {_get_call_stack_info()}",
+                call_type="increment_cache",
+                caller=_get_call_stack_info(),
                 start_time=start_time,
                 end_time=end_time,
             )
@@ -876,7 +878,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=_duration,
-                    call_type=f"increment_cache_ttl <- {_get_call_stack_info()}",
+                    call_type="increment_cache_ttl",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                 )
@@ -889,7 +892,8 @@ class RedisCache(BaseCache):
                     self.service_logger_obj.service_success_hook(
                         service=ServiceTypes.REDIS,
                         duration=_duration,
-                        call_type=f"increment_cache_expire <- {_get_call_stack_info()}",
+                        call_type="increment_cache_expire",
+                        caller=_get_call_stack_info(),
                         start_time=start_time,
                         end_time=end_time,
                     )
@@ -965,7 +969,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.async_service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=_duration,
-                    call_type=f"async_scan_iter <- {_get_call_stack_info()}",
+                    call_type="async_scan_iter",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                 )
@@ -981,7 +986,8 @@ class RedisCache(BaseCache):
                     service=ServiceTypes.REDIS,
                     duration=_duration,
                     error=e,
-                    call_type=f"async_scan_iter <- {_get_call_stack_info()}",
+                    call_type="async_scan_iter",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                 )
@@ -1102,7 +1108,8 @@ class RedisCache(BaseCache):
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=_get_parent_otel_span_from_kwargs(kwargs),
-                    call_type=f"async_set_cache <- {_get_call_stack_info()}",
+                    call_type="async_set_cache",
+                    caller=_get_call_stack_info(),
                 )
             )
             log_redis_failure(
@@ -1131,7 +1138,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.async_service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=_duration,
-                    call_type=f"async_set_cache <- {_get_call_stack_info()}",
+                    call_type="async_set_cache",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=_get_parent_otel_span_from_kwargs(kwargs),
@@ -1147,7 +1155,8 @@ class RedisCache(BaseCache):
                     service=ServiceTypes.REDIS,
                     duration=_duration,
                     error=e,
-                    call_type=f"async_set_cache <- {_get_call_stack_info()}",
+                    call_type="async_set_cache",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=_get_parent_otel_span_from_kwargs(kwargs),
@@ -1215,7 +1224,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.async_service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=_duration,
-                    call_type=f"async_set_cache_pipeline <- {_get_call_stack_info()}",
+                    call_type="async_set_cache_pipeline",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=_get_parent_otel_span_from_kwargs(kwargs),
@@ -1231,7 +1241,8 @@ class RedisCache(BaseCache):
                     service=ServiceTypes.REDIS,
                     duration=_duration,
                     error=e,
-                    call_type=f"async_set_cache_pipeline <- {_get_call_stack_info()}",
+                    call_type="async_set_cache_pipeline",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=_get_parent_otel_span_from_kwargs(kwargs),
@@ -1265,7 +1276,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.async_service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=time.time() - start_time,
-                    call_type=f"async_set_cache_pipeline_with_ttls <- {_get_call_stack_info()}",
+                    call_type="async_set_cache_pipeline_with_ttls",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=time.time(),
                 )
@@ -1276,7 +1288,8 @@ class RedisCache(BaseCache):
                     service=ServiceTypes.REDIS,
                     duration=time.time() - start_time,
                     error=e,
-                    call_type=f"async_set_cache_pipeline_with_ttls <- {_get_call_stack_info()}",
+                    call_type="async_set_cache_pipeline_with_ttls",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=time.time(),
                 )
@@ -1324,7 +1337,8 @@ class RedisCache(BaseCache):
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=_get_parent_otel_span_from_kwargs(kwargs),
-                    call_type=f"async_set_cache_sadd <- {_get_call_stack_info()}",
+                    call_type="async_set_cache_sadd",
+                    caller=_get_call_stack_info(),
                 )
             )
             # NON blocking - notify users Redis is throwing an exception
@@ -1344,7 +1358,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.async_service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=_duration,
-                    call_type=f"async_set_cache_sadd <- {_get_call_stack_info()}",
+                    call_type="async_set_cache_sadd",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=_get_parent_otel_span_from_kwargs(kwargs),
@@ -1358,7 +1373,8 @@ class RedisCache(BaseCache):
                     service=ServiceTypes.REDIS,
                     duration=_duration,
                     error=e,
-                    call_type=f"async_set_cache_sadd <- {_get_call_stack_info()}",
+                    call_type="async_set_cache_sadd",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=_get_parent_otel_span_from_kwargs(kwargs),
@@ -1429,7 +1445,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.async_service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=_duration,
-                    call_type=f"async_increment <- {_get_call_stack_info()}",
+                    call_type="async_increment",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=parent_otel_span,
@@ -1445,7 +1462,8 @@ class RedisCache(BaseCache):
                     service=ServiceTypes.REDIS,
                     duration=_duration,
                     error=e,
-                    call_type=f"async_increment <- {_get_call_stack_info()}",
+                    call_type="async_increment",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=parent_otel_span,
@@ -1533,7 +1551,8 @@ class RedisCache(BaseCache):
             self.service_logger_obj.service_success_hook(
                 service=ServiceTypes.REDIS,
                 duration=_duration,
-                call_type=f"get_cache <- {_get_call_stack_info()}",
+                call_type="get_cache",
+                caller=_get_call_stack_info(),
                 start_time=start_time,
                 end_time=end_time,
                 parent_otel_span=parent_otel_span,
@@ -1592,7 +1611,8 @@ class RedisCache(BaseCache):
             self.service_logger_obj.service_success_hook(
                 service=ServiceTypes.REDIS,
                 duration=_duration,
-                call_type=f"batch_get_cache <- {_get_call_stack_info()}",
+                call_type="batch_get_cache",
+                caller=_get_call_stack_info(),
                 start_time=start_time,
                 end_time=end_time,
                 parent_otel_span=parent_otel_span,
@@ -1616,7 +1636,8 @@ class RedisCache(BaseCache):
                 service=ServiceTypes.REDIS,
                 duration=failed_at - start_time,
                 error=e,
-                call_type=f"batch_get_cache <- {_get_call_stack_info()}",
+                call_type="batch_get_cache",
+                caller=_get_call_stack_info(),
                 start_time=start_time,
                 end_time=failed_at,
                 parent_otel_span=parent_otel_span,
@@ -1645,7 +1666,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.async_service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=_duration,
-                    call_type=f"async_get_cache <- {_get_call_stack_info()}",
+                    call_type="async_get_cache",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=parent_otel_span,
@@ -1661,7 +1683,8 @@ class RedisCache(BaseCache):
                     service=ServiceTypes.REDIS,
                     duration=_duration,
                     error=e,
-                    call_type=f"async_get_cache <- {_get_call_stack_info()}",
+                    call_type="async_get_cache",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=parent_otel_span,
@@ -1706,7 +1729,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.async_service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=_duration,
-                    call_type=f"async_batch_get_cache <- {_get_call_stack_info()}",
+                    call_type="async_batch_get_cache",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=parent_otel_span,
@@ -1734,7 +1758,8 @@ class RedisCache(BaseCache):
                     service=ServiceTypes.REDIS,
                     duration=_duration,
                     error=e,
-                    call_type=f"async_batch_get_cache <- {_get_call_stack_info()}",
+                    call_type="async_batch_get_cache",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=parent_otel_span,
@@ -1759,7 +1784,8 @@ class RedisCache(BaseCache):
             self.service_logger_obj.service_success_hook(
                 service=ServiceTypes.REDIS,
                 duration=_duration,
-                call_type=f"sync_ping <- {_get_call_stack_info()}",
+                call_type="sync_ping",
+                caller=_get_call_stack_info(),
                 start_time=start_time,
                 end_time=end_time,
             )
@@ -1773,7 +1799,8 @@ class RedisCache(BaseCache):
                 service=ServiceTypes.REDIS,
                 duration=_duration,
                 error=e,
-                call_type=f"sync_ping <- {_get_call_stack_info()}",
+                call_type="sync_ping",
+                caller=_get_call_stack_info(),
             )
             verbose_logger.error("LiteLLM Redis Cache PING: - Got exception from REDIS : %s", e)
             raise e
@@ -1791,7 +1818,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.async_service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=_duration,
-                    call_type=f"async_ping <- {_get_call_stack_info()}",
+                    call_type="async_ping",
+                    caller=_get_call_stack_info(),
                 )
             )
             return response
@@ -1805,7 +1833,8 @@ class RedisCache(BaseCache):
                     service=ServiceTypes.REDIS,
                     duration=_duration,
                     error=e,
-                    call_type=f"async_ping <- {_get_call_stack_info()}",
+                    call_type="async_ping",
+                    caller=_get_call_stack_info(),
                 )
             )
             verbose_logger.error("LiteLLM Redis Cache PING: - Got exception from REDIS : %s", e)
@@ -1957,7 +1986,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.async_service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=_duration,
-                    call_type=f"async_increment_pipeline <- {_get_call_stack_info()}",
+                    call_type="async_increment_pipeline",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=_get_parent_otel_span_from_kwargs(kwargs),
@@ -1973,7 +2003,8 @@ class RedisCache(BaseCache):
                     service=ServiceTypes.REDIS,
                     duration=_duration,
                     error=e,
-                    call_type=f"async_increment_pipeline <- {_get_call_stack_info()}",
+                    call_type="async_increment_pipeline",
+                    caller=_get_call_stack_info(),
                     start_time=start_time,
                     end_time=end_time,
                     parent_otel_span=_get_parent_otel_span_from_kwargs(kwargs),
@@ -2051,7 +2082,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.async_service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=_duration,
-                    call_type=f"async_rpush <- {_get_call_stack_info()}",
+                    call_type="async_rpush",
+                    caller=_get_call_stack_info(),
                 )
             )
             return response
@@ -2065,7 +2097,8 @@ class RedisCache(BaseCache):
                     service=ServiceTypes.REDIS,
                     duration=_duration,
                     error=e,
-                    call_type=f"async_rpush <- {_get_call_stack_info()}",
+                    call_type="async_rpush",
+                    caller=_get_call_stack_info(),
                 )
             )
             log_redis_failure(verbose_logger, logging.ERROR, "LiteLLM Redis Cache RPUSH: - Got exception from REDIS", e)
@@ -2098,7 +2131,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.async_service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=time.time() - start_time,
-                    call_type=f"async_rpush_and_trim <- {_get_call_stack_info()}",
+                    call_type="async_rpush_and_trim",
+                    caller=_get_call_stack_info(),
                 )
             )
             return int(results[0])
@@ -2108,7 +2142,8 @@ class RedisCache(BaseCache):
                     service=ServiceTypes.REDIS,
                     duration=time.time() - start_time,
                     error=e,
-                    call_type=f"async_rpush_and_trim <- {_get_call_stack_info()}",
+                    call_type="async_rpush_and_trim",
+                    caller=_get_call_stack_info(),
                 )
             )
             log_redis_failure(
@@ -2165,7 +2200,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.async_service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=_duration,
-                    call_type=f"async_rpush_pipeline <- {_get_call_stack_info()}",
+                    call_type="async_rpush_pipeline",
+                    caller=_get_call_stack_info(),
                 )
             )
             return results
@@ -2178,7 +2214,8 @@ class RedisCache(BaseCache):
                     service=ServiceTypes.REDIS,
                     duration=_duration,
                     error=e,
-                    call_type=f"async_rpush_pipeline <- {_get_call_stack_info()}",
+                    call_type="async_rpush_pipeline",
+                    caller=_get_call_stack_info(),
                 )
             )
             log_redis_failure(
@@ -2232,7 +2269,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.async_service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=_duration,
-                    call_type=f"async_lpop <- {_get_call_stack_info()}",
+                    call_type="async_lpop",
+                    caller=_get_call_stack_info(),
                 )
             )
 
@@ -2258,7 +2296,8 @@ class RedisCache(BaseCache):
                     service=ServiceTypes.REDIS,
                     duration=_duration,
                     error=e,
-                    call_type=f"async_lpop <- {_get_call_stack_info()}",
+                    call_type="async_lpop",
+                    caller=_get_call_stack_info(),
                 )
             )
             log_redis_failure(verbose_logger, logging.ERROR, "LiteLLM Redis Cache LPOP: - Got exception from REDIS", e)
@@ -2356,7 +2395,8 @@ class RedisCache(BaseCache):
                 self.service_logger_obj.async_service_success_hook(
                     service=ServiceTypes.REDIS,
                     duration=_duration,
-                    call_type=f"async_lpop_pipeline <- {_get_call_stack_info()}",
+                    call_type="async_lpop_pipeline",
+                    caller=_get_call_stack_info(),
                 )
             )
             return results
@@ -2369,7 +2409,8 @@ class RedisCache(BaseCache):
                     service=ServiceTypes.REDIS,
                     duration=_duration,
                     error=e,
-                    call_type=f"async_lpop_pipeline <- {_get_call_stack_info()}",
+                    call_type="async_lpop_pipeline",
+                    caller=_get_call_stack_info(),
                 )
             )
             log_redis_failure(
