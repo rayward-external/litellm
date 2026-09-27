@@ -842,8 +842,14 @@ if MCP_AVAILABLE:
 
         # `mcp_info` is arbitrary metadata; keep only an explicit safe subset.
         sanitized.mcp_info = {  # mutable-ok: upstream's own one-shot build, never mutated after assignment
-            "is_public": (sanitized.mcp_info or {}).get("is_public") is True,  # mutable-ok: upstream's own empty-dict fallback
-            "is_public_explicit": (sanitized.mcp_info or {}).get("is_public_explicit") is True,  # mutable-ok: upstream's own empty-dict fallback
+            "is_public": (sanitized.mcp_info or {}).get(  # mutable-ok: upstream's, empty-dict fallback
+                "is_public"
+            )
+            is True,
+            "is_public_explicit": (sanitized.mcp_info or {}).get(  # mutable-ok: upstream's, empty-dict fallback
+                "is_public_explicit"
+            )
+            is True,
         }
 
         return sanitized

@@ -37,4 +37,4 @@ def pre_call_rejection(message: str, guardrail_name: str | None) -> Exception:
         return GuardrailRaisedException(
             guardrail_name=guardrail_name, message=message, should_wrap_with_default_message=False
         )
-    return HTTPException(status_code=400, detail={"error": message})  # mutable-ok: upstream's own one-shot build, never mutated
+    return HTTPException(status_code=400, detail={"error": message})  # mutable-ok: upstream's own, one-shot build
