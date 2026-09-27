@@ -652,9 +652,9 @@ if MCP_AVAILABLE:
 
         is_public: Final = global_mcp_server_manager.is_mcp_server_public(redacted_server.server_id)
         return redacted_server.model_copy(
-            update={
-                "mcp_info": {
-                    **(redacted_server.mcp_info or {}),
+            update={  # mutable-ok: upstream's own model_copy() kwarg, one-shot build never mutated
+                "mcp_info": {  # mutable-ok: upstream's own nested build, same one-shot use
+                    **(redacted_server.mcp_info or {}),  # mutable-ok: upstream's own empty-dict fallback
                     "is_public": is_public,
                     "is_public_explicit": is_public and redacted_server.server_id in (litellm.public_mcp_servers or ()),
                 }
@@ -841,9 +841,9 @@ if MCP_AVAILABLE:
         sanitized.updated_at = None
 
         # `mcp_info` is arbitrary metadata; keep only an explicit safe subset.
-        sanitized.mcp_info = {
-            "is_public": (sanitized.mcp_info or {}).get("is_public") is True,
-            "is_public_explicit": (sanitized.mcp_info or {}).get("is_public_explicit") is True,
+        sanitized.mcp_info = {  # mutable-ok: upstream's own one-shot build, never mutated after assignment
+            "is_public": (sanitized.mcp_info or {}).get("is_public") is True,  # mutable-ok: upstream's own empty-dict fallback
+            "is_public_explicit": (sanitized.mcp_info or {}).get("is_public_explicit") is True,  # mutable-ok: upstream's own empty-dict fallback
         }
 
         return sanitized

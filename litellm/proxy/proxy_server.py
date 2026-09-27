@@ -7534,7 +7534,7 @@ class ProxyConfig:
         scheduler.add_job(
             SpendLogCleanup().cleanup_old_spend_logs,
             trigger,
-            args=[prisma_client],
+            args=[prisma_client],  # mutable-ok: upstream's own one-shot APScheduler call, never mutated
             id="spend_log_cleanup_job",
             replace_existing=True,
             misfire_grace_time=APSCHEDULER_MISFIRE_GRACE_TIME,

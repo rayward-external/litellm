@@ -4164,7 +4164,9 @@ def _remove_unsupported_params(non_default_params: dict, supported_openai_params
 def filter_out_litellm_params(
     kwargs: Mapping[str, object], excluding: Collection[str] = frozenset()
 ) -> dict[str, object]:
-    return {key: value for key, value in kwargs.items() if key not in excluding and not is_litellm_owned_kwarg(key)}
+    return {  # mutable-ok: upstream's own one-shot build, this is the function's return value
+        key: value for key, value in kwargs.items() if key not in excluding and not is_litellm_owned_kwarg(key)
+    }
 
 
 def _provider_supports_vertex_params(custom_llm_provider: str) -> bool:

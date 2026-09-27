@@ -157,7 +157,7 @@ class CyberArkSecretManager(BaseSecretManager):
     ) -> httpx.Response:
         resp: Final = await async_client.client.post(
             policy_url,
-            headers={
+            headers={  # mutable-ok: upstream's own one-shot build, never mutated
                 **self._get_request_headers(),
                 "Content-Type": "application/x-yaml",
             },
