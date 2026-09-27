@@ -50,6 +50,10 @@ interface ModelHubTableProps {
   userRole: string | null;
 }
 
+function isMCPHubVisibilityDisabled(isLoading: boolean, servers: readonly MCPServerData[] | null): boolean {
+  return isLoading || servers === null;
+}
+
 function HubEmptyState({ title, body }: { title: string; body: string }) {
   return (
     <div className="flex flex-col items-center gap-1 py-6">
@@ -360,10 +364,14 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({ accessToken, publicPage, 
     if (accessToken) {
       const fetchMcpData = async () => {
         try {
+          setMcpLoading(true);
           const response = await fetchMCPServers(accessToken);
           setMcpHubData(response);
         } catch (error) {
+          setMcpHubData(null);
           console.error("Error refreshing MCP server data:", error);
+        } finally {
+          setMcpLoading(false);
         }
       };
       fetchMcpData();
@@ -568,7 +576,12 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({ accessToken, publicPage, 
                   {/* Header with Make Public Button */}
                   {publicPage == false && canModify && (
                     <div className="flex justify-end mb-4">
-                      <Button onClick={() => handleMakeMcpPublicPage()}>Select MCP Servers to Make Public</Button>
+                      <Button
+                        onClick={() => handleMakeMcpPublicPage()}
+                        disabled={isMCPHubVisibilityDisabled(mcpLoading, mcpHubData)}
+                      >
+                        Manage MCP Hub Visibility
+                      </Button>
                     </div>
                   )}
 

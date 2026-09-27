@@ -683,14 +683,20 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "hyper 1.10.1",
+ "hyper-util",
  "itoa",
  "matchit",
  "memchr",
  "mime",
+ "multer",
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
+ "serde_json",
+ "serde_path_to_error",
  "sync_wrapper",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
@@ -1162,7 +1168,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e75b2483e97a5a7da73ac68a05b629f9c53cff58d8ed1c77866079e18b00dba5"
 dependencies = [
  "digest 0.10.7",
- "spin",
+ "spin 0.10.1",
 ]
 
 [[package]]
@@ -1560,6 +1566,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e079f19b08ca6239f47f8ba8509c11cf3ea30095831f7fed61441475edd8c449"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]
@@ -2709,6 +2724,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
+name = "litellm"
+version = "0.0.1"
+
+[[package]]
 name = "litellm-auth"
 version = "0.1.0"
 dependencies = [
@@ -2732,6 +2751,7 @@ dependencies = [
  "litellm-http",
  "moka",
  "reqwest 0.12.28",
+ "rstest",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
@@ -2984,6 +3004,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "litellm-config"
+version = "0.1.0"
+dependencies = [
+ "litellm-auth-types",
+ "rstest",
+ "serde",
+ "serde_yaml_ng",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "litellm-core"
 version = "0.1.0"
 dependencies = [
@@ -2998,6 +3030,7 @@ dependencies = [
  "litellm-http",
  "litellm-llms",
  "litellm-secrets",
+ "litellm-tracing",
  "litellm-types",
  "mime_guess",
  "moka",
@@ -3033,7 +3066,8 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_with",
- "thiserror 2.0.21",
+ "strum",
+ "thiserror 2.0.19",
  "url",
 ]
 
@@ -3067,6 +3101,69 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "litellm-gateway"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "http-body-util",
+ "litellm-config",
+ "litellm-core",
+ "litellm-gateway-auth",
+ "litellm-gateway-inference",
+ "litellm-http",
+ "litellm-llms",
+ "litellm-secrets",
+ "litellm-tracing",
+ "rstest",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "litellm-gateway-auth"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "litellm-auth-types",
+ "litellm-config",
+ "litellm-secrets",
+ "rstest",
+ "sha2 0.10.9",
+ "subtle",
+ "thiserror 2.0.19",
+ "tokio",
+ "tower",
+]
+
+[[package]]
+name = "litellm-gateway-inference"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "futures-util",
+ "litellm-auth",
+ "litellm-core",
+ "litellm-http",
+ "litellm-llms",
+ "litellm-router",
+ "litellm-secrets",
+ "litellm-types",
+ "rstest",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tower",
+ "wiremock",
 ]
 
 [[package]]
@@ -3134,6 +3231,7 @@ dependencies = [
  "litellm-framing",
  "litellm-host",
  "litellm-http",
+ "litellm-python-compat",
  "litellm-secrets",
  "litellm-types",
  "reqwest 0.12.28",
@@ -3155,6 +3253,7 @@ version = "0.1.0"
 dependencies = [
  "indexmap 2.14.2",
  "jsonschema",
+ "litellm-types",
  "rstest",
  "schemars 1.2.2",
  "serde",
@@ -3174,7 +3273,6 @@ dependencies = [
  "futures-util",
  "litellm-auth",
  "litellm-auth-aws",
- "litellm-auth-gcp",
  "litellm-cache",
  "litellm-cache-azure-blob",
  "litellm-cache-disk",
@@ -3231,6 +3329,15 @@ dependencies = [
  "serde-pickle",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "litellm-router"
+version = "0.1.0"
+dependencies = [
+ "litellm-config",
+ "litellm-core",
+ "rstest",
 ]
 
 [[package]]
@@ -3382,7 +3489,8 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
+ "strum",
+ "thiserror 2.0.19",
  "tokio",
  "veil",
 ]
@@ -3465,7 +3573,8 @@ dependencies = [
 name = "litellm-tracing"
 version = "0.1.0"
 dependencies = [
- "fancy-regex",
+ "base64 0.22.1",
+ "fancy-regex 0.19.2",
  "percent-encoding",
  "rstest",
  "serde_json",
@@ -3479,8 +3588,10 @@ name = "litellm-types"
 version = "0.1.0"
 dependencies = [
  "rstest",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
+ "strum",
 ]
 
 [[package]]
@@ -3646,6 +3757,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "multer"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83e87776546dc87511aa5ee218730c92b666d7264ab6ed41f9d215af9cd5224b"
+dependencies = [
+ "bytes",
+ "encoding_rs",
+ "futures-util",
+ "http 1.4.2",
+ "httparse",
+ "memchr",
+ "mime",
+ "spin 0.9.9",
+ "version_check",
 ]
 
 [[package]]
@@ -5183,6 +5311,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_yaml_ng"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f"
+dependencies = [
+ "indexmap 2.14.0",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5300,6 +5441,12 @@ dependencies = [
  "libc",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "spin"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 
 [[package]]
 name = "spin"
@@ -6084,6 +6231,12 @@ name = "unicode_categories"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39ec24b3121d976906ece63c9daad25b85969647682eee313cb5779fdd69e14e"
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

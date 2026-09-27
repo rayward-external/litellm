@@ -14,6 +14,7 @@ import re
 from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass
 from functools import reduce
+from itertools import chain
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, cast
 
@@ -191,11 +192,7 @@ def alias_map(aliases: object) -> Mapping[str, str]:
 
 
 def _alias_names(alias_maps: Sequence[Mapping[str, str]]) -> tuple[str, ...]:
-    return tuple(
-        dict.fromkeys(
-            alias for aliases in alias_maps for alias in aliases
-        )  # comprehension-ok: flattens+dedupes every alias map's names in one pass
-    )
+    return tuple(dict.fromkeys(chain.from_iterable(alias_maps)))
 
 
 def _rewrite(model_id: str, alias_maps: Sequence[Mapping[str, str]]) -> str | None:
