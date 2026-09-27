@@ -11,7 +11,7 @@ async def record_run(queued_on: asyncio.AbstractEventLoop) -> None:
     RUNS.put((queued_on, asyncio.get_running_loop()))
 
 
-async def test_1_leaves_an_event_pending() -> None:
+async def test_1_leaves_an_event_pending() -> None:  # test-quality-ok: seeds state asserted on by test_2
     GLOBAL_LOGGING_WORKER.ensure_initialized_and_enqueue(record_run(asyncio.get_running_loop()))
 
 
