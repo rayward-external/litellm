@@ -1477,7 +1477,7 @@ async def proxy_startup_event(app: FastAPI) -> AsyncGenerator[None, None]:
         max_budget=litellm.max_budget,
         prisma_client=prisma_client,
     )
-    ProxyStartupEvent._warn_fail_closed_rate_limits_without_redis(
+    ProxyStartupEvent._warn_fail_closed_rate_limits_without_redis(  # pyright: ignore[reportPrivateUsage]  # own module
         fail_closed_rate_limit_enforcement=fail_closed_rate_limit_enforcement_enabled(general_settings),
         redis_usage_cache=redis_usage_cache,
     )
