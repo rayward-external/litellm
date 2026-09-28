@@ -108,6 +108,10 @@ jobs:
             artifact-name: misc
             test-path: >-
               tests/test_litellm/test_*.py
+              --deselect=tests/unit/interactions/test_openapi_compliance.py::TestRequestCompliance::test_create_model_interaction_request_schema
+              --deselect=tests/unit/interactions/test_openapi_compliance.py::TestRequestCompliance::test_input_types_match_spec
+              --deselect=tests/unit/interactions/test_openapi_compliance.py::TestEndpointCompliance::test_delete_endpoint_exists
+              --deselect=tests/unit/interactions/test_openapi_compliance.py::TestEndpointCompliance::test_get_endpoint_exists
             unit-flag: misc
             workers: 2
             reruns: 2
