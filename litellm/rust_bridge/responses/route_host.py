@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Final
 
 import litellm
@@ -38,4 +39,4 @@ def decline_reason(request: LiteLLMResponsesRequest) -> str | None:
             return "native Responses could not resolve the provider"
         if provider != "openai":
             return "native HTTP responses provider"
-    return inference_decline_reason(PARAMETERS, {**request.parameters, **request.kwargs})
+    return inference_decline_reason(PARAMETERS, MappingProxyType({**request.parameters, **request.kwargs}))
