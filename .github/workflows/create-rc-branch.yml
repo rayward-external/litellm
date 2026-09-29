@@ -11,10 +11,10 @@ permissions: {}
 jobs:
   create-rc-branch:
     name: Create RC Branch
-    if: github.event_name != 'schedule' || github.repository == 'BerriAI/litellm'
+    if: github.repository == 'BerriAI/litellm'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
