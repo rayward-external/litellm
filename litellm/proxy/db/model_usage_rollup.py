@@ -55,7 +55,7 @@ async def increment_daily_model_usage(prisma_client: PrismaClient, payload: Spen
     task_type: Final = model_usage_task_type(payload["request_tags"])
     successful: Final = 1 if payload["status"] == "success" else 0
     failed: Final = 1 - successful
-    key: Final = {
+    key: Final = {  # mutable-ok: prisma composite-key where clause
         "date": date,
         "model_group": model_group,
         "model": model,
@@ -63,9 +63,9 @@ async def increment_daily_model_usage(prisma_client: PrismaClient, payload: Spen
         "task_type": task_type,
     }
     await DailyModelUsageRepository(prisma_client).table.upsert(
-        where={"date_model_group_model_custom_llm_provider_task_type": key},
-        data={
-            "create": {
+        where={"date_model_group_model_custom_llm_provider_task_type": key},  # mutable-ok: prisma where clause
+        data={  # mutable-ok: prisma upsert data payload
+            "create": {  # mutable-ok: prisma create clause
                 **key,
                 "spend": payload["spend"],
                 "prompt_tokens": payload["prompt_tokens"],
@@ -74,13 +74,13 @@ async def increment_daily_model_usage(prisma_client: PrismaClient, payload: Spen
                 "successful_requests": successful,
                 "failed_requests": failed,
             },
-            "update": {
-                "spend": {"increment": payload["spend"]},
-                "prompt_tokens": {"increment": payload["prompt_tokens"]},
-                "completion_tokens": {"increment": payload["completion_tokens"]},
-                "request_count": {"increment": 1},
-                "successful_requests": {"increment": successful},
-                "failed_requests": {"increment": failed},
+            "update": {  # mutable-ok: prisma update clause
+                "spend": {"increment": payload["spend"]},  # mutable-ok: prisma increment clause
+                "prompt_tokens": {"increment": payload["prompt_tokens"]},  # mutable-ok: prisma increment clause
+                "completion_tokens": {"increment": payload["completion_tokens"]},  # mutable-ok: prisma increment clause
+                "request_count": {"increment": 1},  # mutable-ok: prisma increment clause
+                "successful_requests": {"increment": successful},  # mutable-ok: prisma increment clause
+                "failed_requests": {"increment": failed},  # mutable-ok: prisma increment clause
             },
         },
     )

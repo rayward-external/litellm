@@ -1,5 +1,7 @@
+import itertools
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta, timezone
+from types import MappingProxyType
 from typing import Annotated, Final
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -53,7 +55,7 @@ _TASK_ROWS: Final = TypeAdapter(list[_GroupedTask])
 _UNCATEGORIZED_TASK: Final = ModelInsightTask(
     task_type=MODEL_INSIGHTS_DEFAULT_TASK, label="Uncategorized", category="General"
 )
-_SUM_FIELDS: Final = {
+_SUM_FIELDS: Final = {  # mutable-ok: prisma group_by sum clause
     "spend": True,
     "prompt_tokens": True,
     "completion_tokens": True,
@@ -99,8 +101,12 @@ def _top_model_rows(rows: list[_GroupedModel], metric: ModelInsightsMetric) -> l
 
 
 def _deployment_filter(rows: list[_GroupedModel]) -> list[dict[str, str]]:
-    return [
-        {"model_group": row.model_group, "model": row.model, "custom_llm_provider": row.custom_llm_provider}
+    return [  # mutable-ok: prisma OR clause
+        {  # mutable-ok: prisma OR clause entry
+            "model_group": row.model_group,
+            "model": row.model,
+            "custom_llm_provider": row.custom_llm_provider,
+        }
         for row in rows
     ]
 
@@ -111,18 +117,24 @@ def _daily_metric(row: _GroupedDaily) -> ModelInsightDailyMetric:
 
 def _summarize_tasks(rows: list[_GroupedTask], metric: ModelInsightsMetric) -> list[ModelInsightTaskSummary]:
     catalog: Final = load_model_insight_tasks()
-    totals: Final[dict[str, float]] = {}
-    leaders: Final[dict[str, _GroupedTask]] = {}
-    for row in rows:
-        value = _rank_value(row, metric)
-        totals[row.task_type] = totals.get(row.task_type, 0.0) + value
-        leader = leaders.get(row.task_type)
-        if leader is None or value > _rank_value(leader, metric):
-            leaders[row.task_type] = row
+    grouped: Final = tuple(
+        (task_type, tuple(group))
+        for task_type, group in itertools.groupby(
+            sorted(rows, key=lambda row: row.task_type), key=lambda row: row.task_type
+        )
+    )
+    totals: Final[Mapping[str, float]] = MappingProxyType(
+        {task_type: sum(_rank_value(row, metric) for row in group) for task_type, group in grouped}
+    )
+    leaders: Final[Mapping[str, _GroupedTask]] = MappingProxyType(
+        {task_type: max(group, key=lambda row: _rank_value(row, metric)) for task_type, group in grouped}
+    )
     grand: Final = sum(totals.values())
-    return [
+    return [  # mutable-ok: list of pydantic response models
         ModelInsightTaskSummary(
-            **(catalog.get(task) or _UNCATEGORIZED_TASK).model_copy(update={"task_type": task}).model_dump(),
+            **(catalog.get(task) or _UNCATEGORIZED_TASK)
+            .model_copy(update={"task_type": task})  # mutable-ok: pydantic model_copy update kwarg
+            .model_dump(),
             value=value,
             share=value / grand * 100 if grand else 0.0,
             leader=leaders[task].model_group,
@@ -148,14 +160,16 @@ def _resolve_window(
         raise HTTPException(
             status_code=400, detail=f"Date range must be between 1 and {MODEL_INSIGHTS_MAX_RANGE_DAYS} days"
         )
-    date_window: Final[Mapping[str, object]] = {"date": {"gte": start_day.isoformat(), "lte": end_day.isoformat()}}
+    date_window: Final[Mapping[str, object]] = {  # mutable-ok: prisma where clause
+        "date": {"gte": start_day.isoformat(), "lte": end_day.isoformat()}  # mutable-ok: prisma where clause
+    }
     return start_day, end_day, date_window, DailyModelUsageRepository(prisma_client)
 
 
 @router.get(
     "/model-insights",
-    tags=["model insights"],
-    dependencies=[Depends(user_api_key_auth)],
+    tags=["model insights"],  # mutable-ok: fastapi decorator kwarg
+    dependencies=[Depends(user_api_key_auth)],  # mutable-ok: fastapi decorator kwarg
     response_model=ModelInsightsResponse,
 )
 async def get_model_insights(
@@ -168,35 +182,35 @@ async def get_model_insights(
     table: Final = repository.table
     grouped_model_rows: Final = _MODEL_ROWS.validate_python(
         await table.group_by(
-            by=["model_group", "model", "custom_llm_provider"],
+            by=["model_group", "model", "custom_llm_provider"],  # mutable-ok: prisma group_by columns
             sum=_SUM_FIELDS,
             where=date_window,
         )
     )
     model_rows: Final = _top_model_rows(grouped_model_rows, metric)
-    selected_window: Final = {**date_window, "OR": _deployment_filter(model_rows)}
+    selected_window: Final = {**date_window, "OR": _deployment_filter(model_rows)}  # mutable-ok: prisma where clause
     daily_rows: Final = _DAILY_ROWS.validate_python(
         await table.group_by(
-            by=["date", "model_group", "model", "custom_llm_provider"],
+            by=["date", "model_group", "model", "custom_llm_provider"],  # mutable-ok: prisma group_by columns
             sum=_SUM_FIELDS,
             where=selected_window,
-            order={"date": "asc"},
+            order={"date": "asc"},  # mutable-ok: prisma order clause
         )
         if model_rows
-        else []
+        else ()  # empty tuple validates the same as an empty list against list[_GroupedDaily]
     )
     return ModelInsightsResponse(
         start_date=start_day.isoformat(),
         end_date=end_day.isoformat(),
-        top_models=[_metric(row) for row in model_rows],
-        daily=[_daily_metric(row) for row in daily_rows],
+        top_models=[_metric(row) for row in model_rows],  # mutable-ok: pydantic response field
+        daily=[_daily_metric(row) for row in daily_rows],  # mutable-ok: pydantic response field
     )
 
 
 @router.get(
     "/model-insights/tasks",
-    tags=["model insights"],
-    dependencies=[Depends(user_api_key_auth)],
+    tags=["model insights"],  # mutable-ok: fastapi decorator kwarg
+    dependencies=[Depends(user_api_key_auth)],  # mutable-ok: fastapi decorator kwarg
     response_model=ModelInsightTasksResponse,
 )
 async def get_model_insight_tasks(
@@ -208,7 +222,7 @@ async def get_model_insight_tasks(
     start_day, end_day, date_window, repository = _resolve_window(user_api_key_dict, start_date, end_date)
     task_rows: Final = _TASK_ROWS.validate_python(
         await repository.table.group_by(
-            by=["task_type", "model_group", "model", "custom_llm_provider"],
+            by=["task_type", "model_group", "model", "custom_llm_provider"],  # mutable-ok: prisma group_by columns
             sum=_SUM_FIELDS,
             where=date_window,
         )
