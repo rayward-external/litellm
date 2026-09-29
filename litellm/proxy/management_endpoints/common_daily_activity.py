@@ -1400,7 +1400,7 @@ async def get_daily_activity_aggregated(
             else (await prisma_client.db.query_raw(sql_query, *sql_params), None)
         )
 
-        records: Final = [_GroupingSetsRow(**row) for row in (raw_rows or [])]
+        records: Final = tuple(_GroupingSetsRow(**row) for row in (raw_rows or ()))
 
         # The grouping-sets dispatcher places each row directly in its bucket
         # using the row's GROUPING() bitmask. No Python-side summing needed.

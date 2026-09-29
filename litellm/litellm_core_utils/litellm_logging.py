@@ -642,8 +642,8 @@ class Logging(LiteLLMLoggingBaseClass):
         self._own_session_id: str = session_id_var.get()
 
         self.function_id = function_id
-        self.streaming_chunks: list[object] = []
-        self.sync_streaming_chunks: list[object] = []
+        self.streaming_chunks: list[object] = []  # mutable-ok: appended to per-chunk as the stream arrives
+        self.sync_streaming_chunks: list[object] = []  # mutable-ok: appended to per-chunk as the stream arrives
         self.log_raw_request_response = log_raw_request_response
         self.raw_request_only = raw_request_only
 

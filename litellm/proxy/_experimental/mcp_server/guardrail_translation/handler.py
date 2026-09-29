@@ -19,6 +19,7 @@ payload (name + arguments) so we just build the tool definition.
 """
 
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
 from fastapi import HTTPException
@@ -85,7 +86,9 @@ def _leaf_replacements(
     masked_texts: Sequence[str],
 ) -> Mapping[JSONLeafPath, str]:
     """Only the leaves the guardrail actually rewrote, so a guardrail that detects nothing leaves the payload byte-identical."""
-    return {path: masked for (path, original), masked in zip(leaves, masked_texts) if masked != original}
+    return MappingProxyType(
+        {path: masked for (path, original), masked in zip(leaves, masked_texts) if masked != original}
+    )
 
 
 def _schema_description_leaves(input_schema: object) -> tuple[tuple[JSONLeafPath, str], ...]:
@@ -157,7 +160,7 @@ class MCPGuardrailTranslationHandler(BaseTranslation):
         mcp_tool: Final = MCPTool(
             name=mcp_tool_name,
             description=mcp_tool_description or "",
-            input_schema=dict(mcp_input_schema)
+            input_schema=dict(mcp_input_schema)  # mutable-ok: SDK dict field
             if isinstance(mcp_input_schema, Mapping)
             else {},  # mutable-ok: SDK dict field
         )
@@ -189,7 +192,7 @@ class MCPGuardrailTranslationHandler(BaseTranslation):
         )
         inputs: Final[GenericGuardrailAPIInputs] = GenericGuardrailAPIInputs(
             tools=[tool_def],
-            texts=list(scanned_texts),
+            texts=list(scanned_texts),  # mutable-ok: pydantic model field expects list
         )
 
         guarded: Final = await guardrail_to_apply.apply_guardrail(
