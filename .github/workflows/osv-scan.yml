@@ -39,5 +39,9 @@ jobs:
           "$RUNNER_TEMP/osv-scanner" scan source \
             --config osv-scanner.toml \
             -L uv.lock \
+            -L package-lock.json \
             -L ui/litellm-dashboard/package-lock.json \
-            -L vscode-extension/package-lock.json
+            -L vscode-extension/package-lock.json \
+            -L tests/pass_through_tests/package-lock.json \
+            -L tests/proxy_admin_ui_tests/ui_unit_tests/package-lock.json \
+            -L litellm-rust/Cargo.lock
