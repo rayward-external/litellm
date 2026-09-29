@@ -90,7 +90,7 @@ def finalize(
         from litellm.router_utils.add_retry_fallback_headers import get_hidden_params_dict
 
         hidden: Final = get_hidden_params_dict(response, create=True)
-        hidden.update({"cache_key": cache_key, "cache_hit": True})
+        hidden.update({"cache_key": cache_key, "cache_hit": True})  # mutable-ok: dict.update() argument
 
 
 class LoggingSurface(Protocol):

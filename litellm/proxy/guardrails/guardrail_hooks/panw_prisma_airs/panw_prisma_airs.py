@@ -1683,12 +1683,12 @@ class PanwPrismaAirsHandler(CustomGuardrail):
         if sum(counts) != len(texts):
             return None
         starts: Final = itertools.accumulate(counts, initial=0)
-        return frozenset(
-            text_idx
+        reasoning_ranges: Final = tuple(
+            range(start, start + count)
             for item, count, start in zip(raw_input, counts, starts)
             if item.type == "reasoning"
-            for text_idx in range(start, start + count)
         )
+        return frozenset(itertools.chain.from_iterable(reasoning_ranges))
 
     @classmethod
     def _get_latest_user_text_indices(

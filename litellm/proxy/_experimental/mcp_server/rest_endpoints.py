@@ -748,7 +748,12 @@ if MCP_AVAILABLE:
             request, MCPRequestHandler
         )
         upstream: Final = await _list_server_tools(
-            server.model_copy(update={"pinned_tools": None, "tool_name_to_description": None}),
+            server.model_copy(
+                update={  # mutable-ok: pydantic model_copy update kwarg
+                    "pinned_tools": None,
+                    "tool_name_to_description": None,
+                }
+            ),
             _get_server_auth_header(server, mcp_server_auth_headers, mcp_auth_header),
             raw_headers,
             user_api_key_dict,
@@ -760,7 +765,7 @@ if MCP_AVAILABLE:
             apply_description_overrides(upstream, server), server, proxy_logging_obj, user_api_key_dict, raw_headers
         )
         pinnable: Final = frozenset(tool.name for tool in scan.served)
-        return {
+        return {  # mutable-ok: matches the route handler's dict[str, PinnedMCPTool] return type
             tool.name: PinnedMCPTool(description=tool.description or "", input_schema=tool.input_schema)
             for tool in upstream
             if tool.name in pinnable

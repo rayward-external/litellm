@@ -4514,7 +4514,14 @@ class MCPServerManager:
                 )
                 guarded_openapi: Final = await self._guard_tool_catalog(
                     server=server,
-                    tools=[t.model_copy(update={"name": t.name.removeprefix(registered_prefix)}) for t in registered],
+                    tools=tuple(
+                        t.model_copy(
+                            update={  # mutable-ok: pydantic model_copy update kwarg
+                                "name": t.name.removeprefix(registered_prefix)
+                            }
+                        )
+                        for t in registered
+                    ),
                     proxy_logging_obj=proxy_logging_obj,
                     user_api_key_auth=user_api_key_auth,
                     raw_headers=raw_headers,
@@ -4524,8 +4531,13 @@ class MCPServerManager:
                 # through _create_prefixed_tools — that would add the prefix a second
                 # time producing "test_petstore-test_petstore-getinventory".
                 if not add_prefix:
-                    return list(guarded_openapi)
-                return [t.model_copy(update={"name": registered_names[t.name]}) for t in guarded_openapi]
+                    return list(guarded_openapi)  # mutable-ok: matches this method's list[MCPTool] return type
+                return [  # mutable-ok: matches this method's list[MCPTool] return type
+                    t.model_copy(
+                        update={"name": registered_names[t.name]}  # mutable-ok: pydantic model_copy update kwarg
+                    )
+                    for t in guarded_openapi
+                ]
             else:
                 tools = await self._fetch_tools_with_timeout(client, server.name)
                 self._remember_upstream_initialize_instructions(server, client)
@@ -4538,7 +4550,9 @@ class MCPServerManager:
                 raw_headers=raw_headers,
             )
             prefixed_or_original_tools: Final = self._create_prefixed_tools(
-                list(guarded_tools), server, add_prefix=add_prefix
+                list(guarded_tools),  # mutable-ok: _create_prefixed_tools requires a real list
+                server,
+                add_prefix=add_prefix,
             )
 
             return prefixed_or_original_tools
@@ -5469,7 +5483,7 @@ class MCPServerManager:
                 message=alert.message,
                 level="Medium",
                 alert_type=alert_type,
-                alerting_metadata={},
+                alerting_metadata={},  # mutable-ok: slack alerting kwarg
             )
         except Exception as e:  # noqa: BLE001  # an alerting outage must never fail tools/list
             verbose_logger.warning("Failed to send %s alert for MCP server %s: %s", alert_type.value, server.name, e)
@@ -5773,7 +5787,7 @@ class MCPServerManager:
         if server.pinned_tools and match_known_tool_name(name, server, server.pinned_tools) is None:
             raise HTTPException(
                 status_code=403,
-                detail={
+                detail={  # mutable-ok: fastapi HTTPException detail payload
                     "error": f"Tool {name} is not in the pinned tool list for server {server.name}. "
                     "Contact proxy admin to re-pin this server."
                 },
@@ -6914,7 +6928,7 @@ class MCPServerManager:
         removed in a future release.
         """
         public_ids: Final = frozenset(litellm.public_mcp_servers or ())
-        return [
+        return [  # mutable-ok: matches this method's list[MCPServer] return type
             server
             for server in self.get_registry().values()
             if self.is_mcp_server_public(server.server_id, public_ids=public_ids)

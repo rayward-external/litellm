@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator, Mapping
+from types import MappingProxyType
 from typing import Final
 
 from pydantic import TypeAdapter
@@ -52,5 +53,5 @@ class SyncStream(Iterator[object]):
 
 def _headers(value: object) -> Mapping[str, object]:
     if value is None:
-        return {}
+        return MappingProxyType({})
     return _HEADERS.validate_python(value)

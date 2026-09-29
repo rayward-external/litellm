@@ -75,7 +75,7 @@ def inference_decline_reason(parameters: tuple[str, ...], kwargs: Mapping[str, o
     for name, value in kwargs.items():
         if value is None:
             continue
-        if name in {"cache", "caching"}:
+        if name in frozenset({"cache", "caching"}):
             continue
         if name not in parameters and name not in _INFERENCE_CONTEXT:
             return f"native inference does not implement {name}"
