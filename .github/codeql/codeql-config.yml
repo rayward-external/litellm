@@ -66,6 +66,16 @@ query-filters:
   # repo consumes their artifacts/caches; permissions here are contents: read only.
   - exclude:
       id: actions/untrusted-checkout/medium       # CWE-829
+  # _bounded_s3_file_name (litellm/integrations/s3.py) SHA256-hashes a
+  # constructed S3 object key (a timestamp + response_id) purely to fit it
+  # under the byte budget when the sanitized name is too long -- it is never
+  # used for authentication or credential storage. CodeQL's generic
+  # sensitive-data classifier flags the taint flow through the request
+  # metadata dict built in litellm/proxy/litellm_pre_call_utils.py (which
+  # also carries the UserAPIKeyAuth object) as "password" by name heuristics,
+  # not by actual content. Confirmed FP on audit of alert #1114.
+  - exclude:
+      id: py/weak-sensitive-data-hashing          # CWE-327/328/916
 
 paths-ignore:
   - tests
