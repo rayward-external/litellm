@@ -53,7 +53,9 @@ class NativeBackend(BaseCache):
         await self.native_handle.delete(keys)
 
     async def test_connection(self) -> dict[str, str]:
-        return {"status": "success" if await self.ping() else "failed"}
+        return {  # mutable-ok: matches base class's dict return type
+            "status": "success" if await self.ping() else "failed"
+        }
 
 
 class Cache:

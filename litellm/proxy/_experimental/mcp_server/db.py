@@ -2159,11 +2159,14 @@ async def set_mcp_server_pinned_tools(
 
     if await _db_find_mcp_server_row(prisma_client, server_id) is None:
         return None
-    snapshot: Final = {name: tool.model_dump() for name, tool in (pinned_tools or {}).items()}
+    snapshot: Final = {  # mutable-ok: json-serialized below, never mutated
+        name: tool.model_dump()
+        for name, tool in (pinned_tools or {}).items()  # mutable-ok: empty-dict fallback
+    }
     updated: Final = await _db_update_mcp_server_row(
         prisma_client,
         server_id,
-        {"pinned_tools": safe_dumps(snapshot), "updated_by": touched_by},
+        {"pinned_tools": safe_dumps(snapshot), "updated_by": touched_by},  # mutable-ok: prisma update payload
     )
     table: Final = LiteLLM_MCPServerTable.model_validate(updated.model_dump())
     decrypt_global_env_var_values(table.env_vars)

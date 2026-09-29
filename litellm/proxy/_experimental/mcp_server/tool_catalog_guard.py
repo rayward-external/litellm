@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from itertools import chain
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
@@ -107,7 +108,7 @@ class PinnedCatalogDrift:
 
 
 def apply_description_overrides(tools: Sequence[MCPTool], server: MCPServer) -> tuple[MCPTool, ...]:
-    overrides: Final = server.tool_name_to_description or {}
+    overrides: Final = server.tool_name_to_description or MappingProxyType({})
     if not overrides:
         return tuple(tools)
     return tuple(_described_tool(tool, overrides.get(strip_known_server_prefix(tool.name, server))) for tool in tools)
@@ -116,7 +117,7 @@ def apply_description_overrides(tools: Sequence[MCPTool], server: MCPServer) -> 
 def _described_tool(tool: MCPTool, description: str | None) -> MCPTool:
     if description is None or description == tool.description:
         return tool
-    return tool.model_copy(update={"description": description})
+    return tool.model_copy(update={"description": description})  # mutable-ok: pydantic model_copy update kwarg
 
 
 def pin_tool_catalog(
@@ -167,9 +168,10 @@ async def scan_tool_descriptions(
             for offset in range(0, len(tools), _CATALOG_SCAN_BATCH_SIZE)
         ]
     )
+    outcomes: Final = tuple(chain.from_iterable(batches))
     return ToolDescriptionScan(
-        served=tuple(outcome for batch in batches for outcome in batch if isinstance(outcome, MCPTool)),
-        blocked=tuple(outcome for batch in batches for outcome in batch if isinstance(outcome, BlockedTool)),
+        served=tuple(outcome for outcome in outcomes if isinstance(outcome, MCPTool)),
+        blocked=tuple(outcome for outcome in outcomes if isinstance(outcome, BlockedTool)),
     )
 
 

@@ -118,12 +118,14 @@ def _is_mcp_only_mode(mode: str | list[str] | Mode) -> bool:
 def _presidio_output_mode(mode: str | list[str] | Mode, *, include_mcp: bool) -> str | list[str] | Mode:
     def output_hooks(hooks: str | list[str]) -> list[str]:
         if not hooks or (not include_mcp and _is_mcp_only_mode(hooks)):
-            return []
-        return [GuardrailEventHooks.post_call.value]
+            return []  # mutable-ok: matches Mode's list[str] field type
+        return [GuardrailEventHooks.post_call.value]  # mutable-ok: matches Mode's list[str] field type
 
     if isinstance(mode, Mode):
         return Mode(
-            tags={tag: output_hooks(hooks) for tag, hooks in mode.tags.items()},
+            tags={  # mutable-ok: pydantic Mode.tags field
+                tag: output_hooks(hooks) for tag, hooks in mode.tags.items()
+            },
             default=output_hooks(mode.default) if mode.default is not None else None,
         )
     return output_hooks(mode)

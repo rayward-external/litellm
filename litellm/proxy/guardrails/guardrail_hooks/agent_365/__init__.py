@@ -1,3 +1,4 @@
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
 from litellm._logging import verbose_proxy_logger
@@ -38,7 +39,7 @@ def initialize_guardrail(
     if not guardrail_name:
         raise ValueError("Microsoft Agent 365: guardrail_name is required")
 
-    extras: Final = litellm_params.model_extra or {}
+    extras: Final = litellm_params.model_extra or MappingProxyType({})
     ignored_overrides: Final = tuple(
         key
         for key, value in (
