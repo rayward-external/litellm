@@ -8963,8 +8963,9 @@ class Router:
             patterns = []
         if patterns and isinstance(model_group, str):
             content_policy_fallbacks = initial_kwargs.get("content_policy_fallbacks", self.content_policy_fallbacks)
-            if content_policy_fallbacks and self._get_fallback_model_group_from_fallbacks(
-                fallbacks=content_policy_fallbacks, model_group=model_group
+            if content_policy_fallbacks and self._get_fallback_model_group_for_lookup_groups(
+                fallbacks=content_policy_fallbacks,
+                lookup_groups=fallback_lookup_groups(initial_kwargs, model_group),
             ):
                 hold_chars = _refusal_stream_hold_chars()
         return hold_cls(
