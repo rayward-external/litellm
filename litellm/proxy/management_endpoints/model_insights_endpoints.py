@@ -2,7 +2,6 @@ import functools
 import itertools
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta, timezone
-from types import MappingProxyType
 from typing import Annotated, Final
 
 from fastapi import APIRouter, Depends, HTTPException, Query
