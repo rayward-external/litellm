@@ -74,14 +74,14 @@ class AgentIdentityStore:
             if row is None:
                 return None
             return AgentResponse.model_validate(row.model_dump())
-        except Exception:
+        except Exception:  # noqa: BLE001  # prisma error -> typed AgentIdentityFailure
             return AgentIdentityFailure(code="policy_unavailable", message="Agent policy could not be loaded")
 
     async def unbound_client(self, where: "LiteLLM_AgentIdentityWhereUniqueInput") -> AgentIdentityFailure | None:
         if self.retired is not None:
             try:
                 retired: Final = await self.retired.table.find_unique(where=where)
-            except Exception:
+            except Exception:  # noqa: BLE001  # prisma error -> typed AgentIdentityFailure
                 return AgentIdentityFailure(
                     code="policy_unavailable", message="Retired agent identity could not be checked"
                 )
@@ -103,7 +103,7 @@ class AgentIdentityStore:
         }
         try:
             row: Final = await self.identities.table.find_unique(where=where)
-        except Exception:
+        except Exception:  # noqa: BLE001  # prisma error -> typed AgentIdentityFailure
             return AgentIdentityFailure(code="policy_unavailable", message="Agent identity could not be loaded")
         if row is None:
             return await self.unbound_client(where)
@@ -176,7 +176,7 @@ class AgentIdentityStore:
                 "issuer_tenant_id_oid": {"issuer": issuer, "tenant_id": tenant_id, "oid": oid}
             }
             return await self.humans.table.find_unique(where=where)
-        except Exception:
+        except Exception:  # noqa: BLE001  # prisma error -> typed AgentIdentityFailure
             return AgentIdentityFailure(code="policy_unavailable", message="Subject classification is unavailable")
 
     async def retired_agent(self, agent_id: str) -> bool | AgentIdentityFailure:
@@ -184,7 +184,7 @@ class AgentIdentityStore:
             return AgentIdentityFailure(code="policy_unavailable", message="Agent history is unavailable")
         try:
             return await self.retired_agents.table.find_unique(where={"original_agent_id": agent_id}) is not None
-        except Exception:
+        except Exception:  # noqa: BLE001  # prisma error -> typed AgentIdentityFailure
             return AgentIdentityFailure(code="policy_unavailable", message="Agent history is unavailable")
 
     async def record_authentication(self, context: ManagedAgentContext) -> AgentIdentityFailure | None:
@@ -204,7 +204,7 @@ class AgentIdentityStore:
             if count != 1:
                 return AgentIdentityFailure(message="Agent identity changed during authentication; retry")
             return None
-        except Exception:
+        except Exception:  # noqa: BLE001  # prisma error -> typed AgentIdentityFailure
             return AgentIdentityFailure(code="policy_unavailable", message="Agent authentication could not be recorded")
 
     async def enroll_interactive_human(
@@ -228,7 +228,7 @@ class AgentIdentityStore:
             if row.kind != "human" or row.user_id != user_id or row.verified_via != "sso_interactive":
                 return AgentIdentityFailure(message="Microsoft subject is already bound to another local identity")
             return None
-        except Exception:
+        except Exception:  # noqa: BLE001  # prisma error -> typed AgentIdentityFailure
             return AgentIdentityFailure(
                 code="policy_unavailable", message="Microsoft subject enrollment is unavailable"
             )

@@ -3868,7 +3868,7 @@ async def _read_update_cache_values(
         values: Final = await target.async_batch_get_cache(
             keys=list(keys), parent_otel_span=parent_otel_span, throttle_redis=False
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # a failed cache read must not block budget enforcement
         verbose_proxy_logger.warning(
             "Spend tracking - failed to read cached spend objects. Budget enforcement may use stale spend values. "
             "keys=%s - %s",

@@ -441,7 +441,7 @@ class DualCache(BaseCache):
                 continue
             try:
                 pending = await cache._prepare_batch_get(keys, local_only=False)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # one cache backend's setup failure must not block the others
                 DualCache._log_shared_batch_get_failure(e)
                 continue
             pendings.append((index, cache, pending))
@@ -456,7 +456,7 @@ class DualCache(BaseCache):
             redis_result: Final = await shared_redis.async_batch_get_cache(
                 redis_keys, parent_otel_span=parent_otel_span
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # redis failure must roll back every pending cache's reservations
             for index, cache, pending in pendings:
                 cache._rollback_redis_batch_key_reservations(pending.previous_access_times)
                 if pending.redis_keys and not isinstance(e, RedisCircuitBreakerOpenError):
@@ -471,7 +471,7 @@ class DualCache(BaseCache):
             own_result = {key: redis_result[key] for key in pending.redis_keys if key in redis_result}
             try:
                 results[index] = await cache._apply_batch_get(pending, own_result)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # one cache's post-processing failure must not fail the whole batch
                 results[index] = None
                 DualCache._log_shared_batch_get_failure(e)
         return results

@@ -1518,7 +1518,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 continue
             try:
                 group_values = _as_counter_values(await group_result)
-            except Exception:  # noqa: BLE001  # a group that failed in Redis incremented nothing to refund
+            except Exception:  # noqa: BLE001, S112  # a group that failed in Redis incremented nothing to refund
                 continue
             await self._refund_counter_increments(self._counter_refunds_from_batch_values(group_keys, group_values))
 

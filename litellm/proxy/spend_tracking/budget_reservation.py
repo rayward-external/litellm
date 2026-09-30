@@ -1063,7 +1063,7 @@ async def _reserve_counters(
                 for counter in counters
             )
         )
-    except Exception:
+    except Exception:  # noqa: BLE001  # a failed reservation must not fail the request; logged
         verbose_proxy_logger.warning(
             "Skipping budget reservation for %s because spend counter reservation failed",
             tuple(counter.counter_key for counter in counters),
@@ -1072,7 +1072,7 @@ async def _reserve_counters(
         for counter, entry in zip(counters, entries):
             try:
                 await _invalidate_spend_counter(counter_key=counter.counter_key)
-            except Exception:
+            except Exception:  # noqa: BLE001  # a failed invalidation must not fail the request
                 verbose_proxy_logger.warning(
                     "Failed to invalidate spend counter after budget reservation failure for %s",
                     counter.counter_key,
