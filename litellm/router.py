@@ -87,6 +87,7 @@ from litellm.litellm_core_utils.get_llm_provider_logic import (
     is_registered_custom_provider,
 )
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLogging
+from litellm.litellm_core_utils.llm_cost_calc.utils import SERVICE_TIER_COST_KEY_SUFFIXES
 from litellm.litellm_core_utils.ptu_pricing import (
     PTU_COST_ATTRIBUTION_ENV_VAR,
     declares_ptu,
@@ -2084,7 +2085,6 @@ class Router:
         messages: list[dict[str, str]] | None,
         input: str | list | None,
         request_kwargs: dict | None,
-        prefetched_usage: PrefetchedUsage | None = None,
     ) -> Any | None:
         """
         Asks the strategy selector for a deployment. Caller handles
@@ -2109,14 +2109,6 @@ class Router:
                     healthy_deployments=healthy_deployments,
                     messages=messages,
                     input=input,
-                )
-            case "usage-based-routing-v2" if isinstance(selector, LowestTPMLoggingHandler_v2):
-                return await selector.async_get_available_deployments(
-                    model_group=model,
-                    healthy_deployments=healthy_deployments,
-                    messages=messages,
-                    input=input,
-                    prefetched_usage=prefetched_usage,
                 )
             case "usage-based-routing-v2" | "cost-based-routing":
                 return await selector.async_get_available_deployments(
@@ -9257,6 +9249,41 @@ class Router:
                     model_info[field] = backend_value
 
     @staticmethod
+    def _cost_map_backend_model(deployment: Deployment) -> str:
+        model_info_base_model: Final = deployment.model_info.base_model
+        if isinstance(model_info_base_model, str) and model_info_base_model:
+            return model_info_base_model
+        params_base_model: Final = deployment.litellm_params.get("base_model")
+        if isinstance(params_base_model, str) and params_base_model:
+            return params_base_model
+        return deployment.litellm_params.model
+
+    @staticmethod
+    def _inherit_builtin_service_tier_pricing(
+        model_info: dict,  # mutable-ok: deployment cost-map entry filled in place
+        backend_model: str,
+        custom_llm_provider: str | None,
+    ) -> None:
+        """Inherit missing tier rates so a standalone entry does not fall back to custom standard rates."""
+        if ptu_terms(model_info) is not None and is_ptu_cost_attribution_enabled():
+            return
+        if all(model_info.get(field) is None for field in ("input_cost_per_token", "output_cost_per_token")):
+            return
+        try:
+            backend_info: Final = litellm.get_model_info(model=backend_model, custom_llm_provider=custom_llm_provider)
+        except Exception:  # noqa: BLE001  # get_model_info raises plain Exception for an unmapped backend model
+            return
+        backend_entry: Final = litellm.model_cost.get(backend_info.get("key") or "")
+        if not isinstance(backend_entry, dict):
+            return
+        for field, backend_value in backend_entry.items():
+            if not field.endswith(SERVICE_TIER_COST_KEY_SUFFIXES):
+                continue
+            if model_info.get(field) is not None or backend_value is None:
+                continue
+            model_info[field] = copy.deepcopy(backend_value)
+
+    @staticmethod
     def _inherit_builtin_base_rates_for_off_peak(
         model_info: dict,  # mutable-ok: cost-map entry filled in place
         backend_model: str,
@@ -9404,6 +9431,11 @@ class Router:
                     backend_model=deployment.litellm_params.model,
                     custom_llm_provider=deployment.litellm_params.custom_llm_provider,
                 )
+            Router._inherit_builtin_service_tier_pricing(
+                model_info=_model_info,
+                backend_model=Router._cost_map_backend_model(deployment),
+                custom_llm_provider=deployment.litellm_params.custom_llm_provider,
+            )
             Router._inherit_builtin_tiered_output_rate(
                 model_info=_model_info,
                 backend_model=deployment.litellm_params.model,
@@ -10444,6 +10476,11 @@ class Router:
                 backend_model=deployment.litellm_params.model,
                 custom_llm_provider=deployment.litellm_params.custom_llm_provider,
             )
+        Router._inherit_builtin_service_tier_pricing(
+            model_info=model_info,
+            backend_model=Router._cost_map_backend_model(deployment),
+            custom_llm_provider=deployment.litellm_params.custom_llm_provider,
+        )
         Router._inherit_builtin_tiered_output_rate(
             model_info=model_info,
             backend_model=deployment.litellm_params.model,
@@ -13409,7 +13446,6 @@ class Router:
         specific_deployment: bool | None = False,
         parent_otel_span: Span | None = None,
         health_check_probe: bool = False,
-        routing_read_batch: RoutingReadBatch | None = None,
     ) -> list[dict] | dict:
         """
         Get the healthy deployments for a model.
@@ -13462,6 +13498,7 @@ class Router:
             health_check_probe=health_check_probe,
         )
 
+        routing_read_batch: Final = RoutingReadBatch.active()
         cooldown_deployments: Final = (
             await _async_get_cooldown_deployments(litellm_router_instance=self, parent_otel_span=parent_otel_span)
             if routing_read_batch is None
@@ -13749,15 +13786,15 @@ class Router:
             strategy, strategy_selector = self._get_routing_context(model, request_kwargs)
             routing_read_batch: Final = RoutingReadBatch.for_strategy(strategy, strategy_selector)
 
-            healthy_deployments = await self.async_get_healthy_deployments(
-                model=model,
-                request_kwargs=request_kwargs,
-                messages=messages,
-                input=input,
-                specific_deployment=specific_deployment,
-                parent_otel_span=parent_otel_span,
-                routing_read_batch=routing_read_batch,
-            )
+            with RoutingReadBatch.scoped(routing_read_batch):
+                healthy_deployments: Final = await self.async_get_healthy_deployments(
+                    model=model,
+                    request_kwargs=request_kwargs,
+                    messages=messages,
+                    input=input,
+                    specific_deployment=specific_deployment,
+                    parent_otel_span=parent_otel_span,
+                )
             if isinstance(healthy_deployments, dict):
                 await self._async_override_selector_pre_call_check(
                     strategy, strategy_selector, healthy_deployments, parent_otel_span
@@ -13779,16 +13816,18 @@ class Router:
                     model=model,
                     request_kwargs=request_kwargs,
                 )
-            deployment = await self._select_deployment_async(
-                strategy=strategy,
-                selector=strategy_selector,
-                model=model,
-                healthy_deployments=healthy_deployments,
-                messages=messages,
-                input=input,
-                request_kwargs=request_kwargs,
-                prefetched_usage=routing_read_batch.prefetched_usage if routing_read_batch is not None else None,
-            )
+            with PrefetchedUsage.scoped(
+                routing_read_batch.prefetched_usage if routing_read_batch is not None else None
+            ):
+                deployment: Final = await self._select_deployment_async(
+                    strategy=strategy,
+                    selector=strategy_selector,
+                    model=model,
+                    healthy_deployments=healthy_deployments,
+                    messages=messages,
+                    input=input,
+                    request_kwargs=request_kwargs,
+                )
             if deployment is None:
                 exception = await async_raise_no_deployment_exception(
                     litellm_router_instance=self,
