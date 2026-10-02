@@ -147,7 +147,7 @@ def span_from_row(row: dict[str, Any], trace_start_ns: int, spend_rows: Sequence
 
 
 def _parent_agent_of(span: Span, by_id: Mapping[str, Span]) -> str | None:
-    parent_id = span["parent_span_id"]
+    parent_id = span["parent_span_id"]  # rebind-ok: walks up the parent chain each iteration below
     for _ in by_id:
         if parent_id is None or parent_id not in by_id or parent_id == span["span_id"]:
             return None
@@ -161,7 +161,7 @@ def _parent_agent_of(span: Span, by_id: Mapping[str, Span]) -> str | None:
 def agent_nodes(spans: Sequence[Span]) -> tuple[AgentNode, ...]:
     """One node per distinct agent name (200 `researcher` invocations = 1 node), with who invoked it."""
     by_id: Final = MappingProxyType({s["span_id"]: s for s in spans})
-    agents: dict[str, AgentNode] = {}  # mutable-ok: linear-time aggregation updates counters per agent
+    agents: Final[dict[str, AgentNode]] = {}  # mutable-ok: linear-time aggregation updates counters per agent
     for span in spans:
         if span["type"] != "agent":
             continue
@@ -299,7 +299,7 @@ class ClickHouseTraceStore:
         limit: int = AGENT_TRACING_LIST_PAGE_SIZE,
     ) -> TracePage:
         cursor_ms, cursor_trace_id = decode_cursor(cursor)
-        rows = await self.storage.query(
+        rows: Final = await self.storage.query(
             "list_traces",
             MappingProxyType(
                 {
@@ -318,11 +318,13 @@ class ClickHouseTraceStore:
             min((int(row["start_ms"]) for row in rows), default=start_ms),
             max((int(row["start_ms"]) + int(row["duration_ms"]) for row in rows), default=end_ms),
         )
-        next_cursor = encode_cursor(int(rows[-1]["start_ms"]), rows[-1]["trace_ref"]) if len(rows) == limit else None
+        next_cursor: Final = (
+            encode_cursor(int(rows[-1]["start_ms"]), rows[-1]["trace_ref"]) if len(rows) == limit else None
+        )
         return TracePage(data=tuple(trace_summary_from_row(r, spend_rows) for r in rows), next_cursor=next_cursor)
 
     async def get_trace(self, trace_id: str, scope: TraceScope, trace_ref: str = "") -> Trace | None:
-        rows = await self.storage.query(
+        rows: Final = await self.storage.query(
             "trace_spans", MappingProxyType({**scope, "trace_id": trace_id, "trace_ref": trace_ref})
         )
         spend_rows: Final = await self._spend_rows(
@@ -334,7 +336,7 @@ class ClickHouseTraceStore:
         return trace_from_rows(trace_id, rows, trace_ref, spend_rows)
 
     async def get_span(self, trace_id: str, span_id: str, scope: TraceScope, trace_ref: str = "") -> SpanDetail | None:
-        rows = await self.storage.query(
+        rows: Final = await self.storage.query(
             "span_detail",
             MappingProxyType({**scope, "trace_id": trace_id, "span_id": span_id, "trace_ref": trace_ref}),
         )
