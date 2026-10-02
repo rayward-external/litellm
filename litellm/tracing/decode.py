@@ -56,10 +56,10 @@ class OTLPPayloadTooLargeError(OverflowError):
 
 
 def _truncate(value: str) -> str:
-    size = len(value.encode("utf-8"))
+    size: Final = len(value.encode("utf-8"))
     if size <= OTLP_MAX_ATTRIBUTE_VALUE_BYTES:
         return value
-    kept = value.encode("utf-8")[:OTLP_MAX_ATTRIBUTE_VALUE_BYTES].decode("utf-8", "ignore")
+    kept: Final = value.encode("utf-8")[:OTLP_MAX_ATTRIBUTE_VALUE_BYTES].decode("utf-8", "ignore")
     return f"{kept}…[truncated {size - OTLP_MAX_ATTRIBUTE_VALUE_BYTES} bytes]"
 
 
@@ -86,9 +86,9 @@ def _exception_message(span: DecodedSpan) -> str:
 
 
 def _span_row(span: DecodedSpan) -> SpanRow:
-    attributes = span["attributes"]
-    resource = span["resource_attributes"]
-    row = SpanRow(
+    attributes: Final = span["attributes"]
+    resource: Final = span["resource_attributes"]
+    row: Final = SpanRow(
         Timestamp=span["start_ns"],
         TraceId=span["trace_id"],
         SpanId=span["span_id"],
@@ -135,10 +135,12 @@ def _loads(value: str) -> object:
 
 def _lc_message(message: Mapping[str, Any]) -> dict[str, Any]:
     """LangChain serialized message (or plain {role, content}) -> {role, content, tool_calls?}."""
-    kwargs = message.get("kwargs", message)
-    role = _LC_ROLES.get(kwargs.get("type") or kwargs.get("role"), kwargs.get("role") or kwargs.get("type") or "")
-    content = kwargs.get("content", "")
-    out: dict[str, Any] = {  # mutable-ok: the framework message is built for JSON serialization
+    kwargs: Final = message.get("kwargs", message)
+    role: Final = _LC_ROLES.get(
+        kwargs.get("type") or kwargs.get("role"), kwargs.get("role") or kwargs.get("type") or ""
+    )
+    content: Final = kwargs.get("content", "")
+    out: Final[dict[str, Any]] = {  # mutable-ok: the framework message is built for JSON serialization
         "role": role,
         "content": content if isinstance(content, str) else json.dumps(content),
     }
@@ -153,8 +155,8 @@ def _lc_message(message: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _langsmith_type(row: SpanRow, attributes: Mapping[str, str]) -> SpanType:
-    kind = attributes.get("langsmith.span.kind", "chain")
-    name = row["SpanName"]
+    kind: Final = attributes.get("langsmith.span.kind", "chain")
+    name: Final = row["SpanName"]
     if not row["ParentSpanId"] or name == attributes.get("langsmith.metadata.lc_agent_name"):
         return "agent"
     if kind in ("llm", "tool"):
@@ -165,12 +167,12 @@ def _langsmith_type(row: SpanRow, attributes: Mapping[str, str]) -> SpanType:
 
 
 def _langsmith_io(row: SpanRow, attributes: Mapping[str, str]) -> None:
-    prompt = _loads(attributes.get("gen_ai.prompt", ""))
-    completion = _loads(attributes.get("gen_ai.completion", ""))
-    prompt_payload = prompt if isinstance(prompt, dict) else MappingProxyType({})
+    prompt: Final = _loads(attributes.get("gen_ai.prompt", ""))
+    completion: Final = _loads(attributes.get("gen_ai.completion", ""))
+    prompt_payload: Final = prompt if isinstance(prompt, dict) else MappingProxyType({})
     if row["ObservationType"] == "llm" and isinstance(completion, dict):
-        messages = prompt_payload.get("messages") or ((),)
-        batch = messages[0] if messages and isinstance(messages[0], list) else messages
+        messages: Final = prompt_payload.get("messages") or ((),)
+        batch: Final = messages[0] if messages and isinstance(messages[0], list) else messages
         row["Input"] = (
             json.dumps(tuple(_lc_message(m) for m in batch if isinstance(m, dict)))
             if isinstance(batch, (list, tuple))
@@ -189,19 +191,21 @@ def _langsmith_io(row: SpanRow, attributes: Mapping[str, str]) -> None:
             row["Output"] = attributes.get("gen_ai.completion", "")
         return
     if row["ObservationType"] == "tool":
-        output = completion.get("output", completion) if isinstance(completion, dict) else completion
+        output = (  # rebind-ok: narrows the same candidate output value through the LangGraph Command and dict-content unwrap steps below
+            completion.get("output", completion) if isinstance(completion, dict) else completion
+        )
         if isinstance(output, dict) and "update" in output:  # LangGraph Command, e.g. Deep Agents `task`
             update: Final = output.get("update")
-            update_messages = update.get("messages") or () if isinstance(update, dict) else ()
-            output = update_messages[-1] if update_messages else output
+            update_messages: Final = update.get("messages") or () if isinstance(update, dict) else ()
+            output = update_messages[-1] if update_messages else output  # rebind-ok: see declaration above
         if isinstance(output, dict):
-            output = output.get("content", output)
+            output = output.get("content", output)  # rebind-ok: see declaration above
         row["Input"] = attributes.get("gen_ai.prompt", "")
         row["Output"] = output if isinstance(output, str) else json.dumps(output)
         return
     if row["ObservationType"] == "agent":
-        input_messages = prompt.get("messages") if isinstance(prompt, dict) else None
-        output_messages = completion.get("messages") if isinstance(completion, dict) else None
+        input_messages: Final = prompt.get("messages") if isinstance(prompt, dict) else None
+        output_messages: Final = completion.get("messages") if isinstance(completion, dict) else None
         # agents built with @traceable take arbitrary args, not a message list: keep the raw payload then
         row["Input"] = (
             json.dumps(tuple(_lc_message(m) for m in input_messages if isinstance(m, dict)))
@@ -226,7 +230,7 @@ def normalize_langsmith(row: SpanRow, attributes: Mapping[str, str]) -> None:
 
 
 def normalize_genai(row: SpanRow, attributes: Mapping[str, str]) -> None:
-    operation = attributes.get("gen_ai.operation.name", "")
+    operation: Final = attributes.get("gen_ai.operation.name", "")
     if operation == "invoke_agent" or not row["ParentSpanId"]:
         row["ObservationType"] = "agent"
     elif operation in _LLM_OPERATIONS:
@@ -241,7 +245,7 @@ def normalize_genai(row: SpanRow, attributes: Mapping[str, str]) -> None:
 
 
 def normalize_openinference(row: SpanRow, attributes: Mapping[str, str]) -> None:
-    kind = attributes.get("openinference.span.kind", "").upper()
+    kind: Final = attributes.get("openinference.span.kind", "").upper()
     row["ObservationType"] = _OPENINFERENCE_TYPES.get(kind, "agent" if not row["ParentSpanId"] else "chain")
     row["AgentName"] = attributes.get("agent.name", "")
     row["Model"] = attributes.get("llm.model_name", "")
