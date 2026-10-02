@@ -37,7 +37,7 @@ def parse_traceparent(value: object) -> tuple[str, str]:
     """(trace_id, span_id) from a W3C `traceparent` header, or ("", "") if absent/invalid."""
     if not isinstance(value, str):
         return "", ""
-    match = _TRACEPARENT.match(value.strip().lower())
+    match: Final = _TRACEPARENT.match(value.strip().lower())
     if match is None or match.group(1) == _INVALID_TRACE_ID or match.group(2) == _INVALID_SPAN_ID:
         return "", ""
     return match.group(1), match.group(2)
@@ -62,11 +62,11 @@ def _json_mapping(value: Mapping[str, Any]) -> str:
 
 
 def _find_traceparent(metadata: Mapping[str, Any], kwargs: Mapping[str, Any]) -> tuple[str, str]:
-    custom_headers = metadata.get("requester_custom_headers") or MappingProxyType({})
-    proxy_request = (kwargs.get("litellm_params") or MappingProxyType({})).get(
+    custom_headers: Final = metadata.get("requester_custom_headers") or MappingProxyType({})
+    proxy_request: Final = (kwargs.get("litellm_params") or MappingProxyType({})).get(
         "proxy_server_request"
     ) or MappingProxyType({})
-    request_headers = proxy_request.get("headers") or MappingProxyType({})
+    request_headers: Final = proxy_request.get("headers") or MappingProxyType({})
     for headers in (custom_headers, request_headers):
         for name, value in headers.items():
             if str(name).lower() == "traceparent":
@@ -76,9 +76,9 @@ def _find_traceparent(metadata: Mapping[str, Any], kwargs: Mapping[str, Any]) ->
 
 def _cache_tokens(usage: Mapping[str, Any]) -> tuple[int, int]:
     """(cache_read, cache_write) from a Usage dict: OpenAI prompt_tokens_details first, Anthropic fields as fallback."""
-    details = usage.get("prompt_tokens_details") or MappingProxyType({})
-    cache_read = _int(details.get("cached_tokens")) or _int(usage.get("cache_read_input_tokens"))
-    cache_write = (
+    details: Final = usage.get("prompt_tokens_details") or MappingProxyType({})
+    cache_read: Final = _int(details.get("cached_tokens")) or _int(usage.get("cache_read_input_tokens"))
+    cache_write: Final = (
         _int(details.get("cache_write_tokens"))
         or _int(details.get("cache_creation_tokens"))
         or _int(usage.get("cache_creation_input_tokens"))
@@ -94,7 +94,9 @@ def _request_tags(value: object) -> list[str]:
 
 def _session_id(payload: StandardLoggingPayload, kwargs: Mapping[str, Any]) -> str:
     """Mirrors proxy `_get_session_id_for_spend_log`: explicit session id, else the payload trace id."""
-    request_metadata = (kwargs.get("litellm_params") or MappingProxyType({})).get("metadata") or MappingProxyType({})
+    request_metadata: Final = (kwargs.get("litellm_params") or MappingProxyType({})).get(
+        "metadata"
+    ) or MappingProxyType({})
     return str(payload.get("session_id") or request_metadata.get("session_id") or payload.get("trace_id") or "")
 
 
@@ -104,14 +106,16 @@ def _is_trace_ingest(payload: StandardLoggingPayload) -> bool:
 
 
 def spend_log_row_from_payload(payload: StandardLoggingPayload, kwargs: Mapping[str, Any]) -> SpendLogRecord:
-    metadata: Mapping[str, Any] = payload.get("metadata") or MappingProxyType({})
-    hidden_params: Mapping[str, Any] = payload.get("hidden_params") or MappingProxyType({})
-    usage: Mapping[str, Any] = metadata.get("usage_object") or hidden_params.get("usage_object") or MappingProxyType({})
+    metadata: Final[Mapping[str, Any]] = payload.get("metadata") or MappingProxyType({})
+    hidden_params: Final[Mapping[str, Any]] = payload.get("hidden_params") or MappingProxyType({})
+    usage: Final[Mapping[str, Any]] = (
+        metadata.get("usage_object") or hidden_params.get("usage_object") or MappingProxyType({})
+    )
     cache_read_tokens, cache_write_tokens = _cache_tokens(usage)
     trace_id, span_id = _find_traceparent(metadata, kwargs)
-    request_id = str(payload.get("id") or "")
-    redact = litellm.turn_off_message_logging is True
-    completion_start_ms = _to_ms(payload.get("completionStartTime"))
+    request_id: Final = str(payload.get("id") or "")
+    redact: Final = litellm.turn_off_message_logging is True
+    completion_start_ms: Final = _to_ms(payload.get("completionStartTime"))
     return SpendLogRecord(
         request_id=request_id,
         response_id=strip_cache_hit_suffix(request_id),
@@ -161,7 +165,7 @@ class ClickHouseSpendLogger(ClickHouseBatchLogger):
 
     def _log(self, kwargs: Mapping[str, Any]) -> None:
         try:
-            payload = kwargs.get("standard_logging_object")
+            payload: Final = kwargs.get("standard_logging_object")
             if payload is None or _is_trace_ingest(payload):
                 return
             row: Final = spend_log_row_from_payload(payload, kwargs)
