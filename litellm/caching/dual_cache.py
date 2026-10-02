@@ -15,6 +15,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from threading import Lock
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
 import litellm
@@ -53,10 +54,10 @@ class LimitedSizeOrderedDict(OrderedDict):
 class PendingBatchRead:
     """A batch read that has consulted the in-memory tier and reserved its Redis keys, but not hit Redis yet."""
 
-    keys: list[str]
-    result: list[object | None]
-    redis_keys: list[str]
-    previous_access_times: dict[str, float | None]
+    keys: list[str]  # mutable-ok: list-based batch-read contract
+    result: list[object | None]  # mutable-ok: async_batch_get_cache's public return type
+    redis_keys: list[str]  # mutable-ok: RedisCache.async_batch_get_cache requires list[str]
+    previous_access_times: dict[str, float | None]  # mutable-ok: shares _reserve_redis_batch_keys's dict shape
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,7 +323,11 @@ class DualCache(BaseCache):
 
         return sublist_keys, previous_access_times
 
-    def reserve_redis_batch_reads(self, keys: Sequence[str]) -> tuple[list[str], dict[str, float | None]]:
+    def reserve_redis_batch_reads(
+        self, keys: Sequence[str]
+    ) -> tuple[  # mutable-ok: mirrors _reserve_redis_batch_keys's established return shape
+        list[str], dict[str, float | None]
+    ]:
         """Reserve the memory-missed keys whose throttled Redis reads are due, as a batch read would."""
         if self.redis_cache is None:
             return [], {}  # mutable-ok: API contract returns an empty list and dictionary
@@ -345,33 +350,47 @@ class DualCache(BaseCache):
                     self.last_redis_batch_access_time[key] = previous_time
 
     async def _prepare_batch_get(
-        self, keys: list[str], local_only: bool, throttle_redis: bool = True, **kwargs: object
+        self,
+        keys: list[str],  # mutable-ok: passed straight through to in_memory_cache.async_batch_get_cache
+        local_only: bool,
+        throttle_redis: bool = True,
+        **kwargs: object,
     ) -> PendingBatchRead:
-        result: list[object | None] = [None] * len(keys)
-        if self.in_memory_cache is not None:
-            in_memory_result: Final = await self.in_memory_cache.async_batch_get_cache(keys, **kwargs)
-
-            if in_memory_result is not None:
-                result = in_memory_result
-
-        redis_keys: list[str] = []
-        previous_access_times: dict[str, float | None] = {}
-        if None in result and self.redis_cache is not None and local_only is False:
-            if throttle_redis:
-                redis_keys, previous_access_times = self._reserve_redis_batch_keys(time.time(), keys, result)
-            else:
-                redis_keys = [key for key, value in zip(keys, result) if value is None]
+        in_memory_result: Final = (
+            await self.in_memory_cache.async_batch_get_cache(keys, **kwargs)
+            if self.in_memory_cache is not None
+            else None
+        )
+        result: Final[list[object | None]] = (  # mutable-ok: PendingBatchRead.result must stay list[object | None]
+            in_memory_result if in_memory_result is not None else [None] * len(keys)  # mutable-ok: see above
+        )
+        redis_keys, previous_access_times = self._resolve_batch_redis_keys(keys, result, local_only, throttle_redis)
         return PendingBatchRead(
             keys=keys, result=result, redis_keys=redis_keys, previous_access_times=previous_access_times
         )
 
+    def _resolve_batch_redis_keys(
+        self,
+        keys: list[str],  # mutable-ok: keys flows to _reserve_redis_batch_keys which requires list[str]
+        result: Sequence[object | None],
+        local_only: bool,
+        throttle_redis: bool,
+    ) -> tuple[  # mutable-ok: mirrors _reserve_redis_batch_keys's established return shape
+        list[str], dict[str, float | None]
+    ]:
+        if None not in result or self.redis_cache is None or local_only is True:
+            return [], {}  # mutable-ok: API contract returns an empty list and dictionary
+        if throttle_redis:
+            return self._reserve_redis_batch_keys(time.time(), keys, result)
+        return [key for key, value in zip(keys, result) if value is None], {}  # mutable-ok: filtered key list
+
     async def _apply_batch_get(
         self, pending: PendingBatchRead, redis_result: Mapping[str, object] | None, **kwargs: object
-    ) -> list[object | None]:
+    ) -> list[object | None]:  # mutable-ok: async_batch_get_cache's public return type
         if redis_result is None or all(v is None for v in redis_result.values()):
             return pending.result
 
-        merged: Final[list[object | None]] = [
+        merged: Final[list[object | None]] = [  # mutable-ok: async_batch_get_cache's public return type
             redis_result.get(key, value) for key, value in zip(pending.keys, pending.result)
         ]
         if self.in_memory_cache is not None:
@@ -392,7 +411,9 @@ class DualCache(BaseCache):
             result=batch.mget(pending.redis_keys) if pending.redis_keys else None,
         )
 
-    async def async_resolve_batch_get(self, declared: DeclaredBatchRead) -> list[object | None]:
+    async def async_resolve_batch_get(
+        self, declared: DeclaredBatchRead
+    ) -> list[object | None]:  # mutable-ok: async_batch_get_cache's public return type
         redis_result: Final = None if declared.result is None else await declared.result
         return await self._apply_batch_get(declared.pending, redis_result)
 
@@ -434,9 +455,11 @@ class DualCache(BaseCache):
 
     @staticmethod
     async def async_batch_get_cache_shared(
-        reads: Sequence[tuple["DualCache", list[str]]],
+        reads: Sequence[  # mutable-ok: each cache's own async_batch_get_cache requires list[str] keys
+            tuple["DualCache", list[str]]
+        ],
         parent_otel_span: Span | None = None,
-    ) -> list[list[object | None] | None]:
+    ) -> list[list[object | None] | None]:  # mutable-ok: async_batch_get_cache's public return type
         """
         `async_batch_get_cache` for several caches in one Redis round trip.
 
@@ -446,9 +469,9 @@ class DualCache(BaseCache):
         None when the read raised, the in-memory result when the circuit breaker is open. A cache whose
         Redis client is not the one the first cache uses falls back to its own read.
         """
-        results: Final[list[list[object | None] | None]] = [None] * len(reads)
+        results: Final[list[list[object | None] | None]] = [None] * len(reads)  # mutable-ok: filled below
         shared_redis: Final = reads[0][0].redis_cache if reads else None
-        pendings: Final[list[tuple[int, DualCache, PendingBatchRead]]] = []
+        pendings: Final[list[tuple[int, DualCache, PendingBatchRead]]] = []  # mutable-ok: filled below
         for index, (cache, keys) in enumerate(reads):
             if shared_redis is None or cache.redis_cache is not shared_redis:
                 results[index] = await cache.async_batch_get_cache(keys=keys, parent_otel_span=parent_otel_span)
@@ -461,7 +484,7 @@ class DualCache(BaseCache):
             pendings.append((index, cache, pending))
             results[index] = pending.result
 
-        redis_keys: Final = list(
+        redis_keys: Final = list(  # mutable-ok: RedisCache.async_batch_get_cache requires list[str]
             dict.fromkeys(itertools.chain.from_iterable(pending.redis_keys for _, _, pending in pendings))
         )
         if shared_redis is None or not redis_keys:
@@ -482,7 +505,9 @@ class DualCache(BaseCache):
             return results
 
         for index, cache, pending in pendings:
-            own_result = {key: redis_result[key] for key in pending.redis_keys if key in redis_result}
+            own_result: Final = MappingProxyType(
+                {key: redis_result[key] for key in pending.redis_keys if key in redis_result}
+            )
             try:
                 results[index] = await cache._apply_batch_get(pending, own_result)
             except Exception as e:  # noqa: BLE001  # one cache's post-processing failure must not fail the whole batch
