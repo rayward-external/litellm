@@ -379,7 +379,6 @@ class ContentFilterGuardrail(CustomGuardrail):
             raise ValueError(
                 f"Category file path '{path}' is outside the allowed categories directory ({', '.join(roots)})"
             )
-        return resolved
 
     def _resolve_category_file_path(self, file_path: str, roots: tuple[str, ...] = DATA_ROOTS) -> str:
         """
@@ -465,119 +464,119 @@ class ContentFilterGuardrail(CustomGuardrail):
             roots: Directories a category file may live under, bundled first.
         """
         for cat_config in categories:
-            view = self._category_config_view(cat_config)
-            category_name = view["category"]
-            if not category_name or not isinstance(category_name, str):
-                verbose_proxy_logger.warning("Category name missing or invalid in config, skipping")
-                continue
+            self._load_one_category(cat_config, roots)
 
-            # Prevent path traversal via category_name (e.g. "../../etc/passwd")
-            if not re.match(r"^[a-zA-Z0-9_\-]+$", category_name):
-                verbose_proxy_logger.warning("Category name '%s' contains invalid characters, skipping", category_name)
-                continue
+    def _register_category_keywords(
+        self,
+        category_config_obj: CategoryConfig,
+        category_name: str,
+        category_action: ContentFilterAction,
+        severity_threshold: str,
+    ) -> None:
+        if category_config_obj.always_block_keywords:
+            for keyword_data in category_config_obj.always_block_keywords:
+                keyword = keyword_data["keyword"].lower()
+                severity = keyword_data.get("severity", "high")
+                if self._should_apply_severity(severity, severity_threshold):
+                    self.always_block_category_keywords[keyword] = (category_name, severity, category_action)
 
-            enabled = view["enabled"]
-            action = view["action"]
-            severity_threshold = (
-                cat_config.get("severity_threshold", self.severity_threshold) or self.severity_threshold
-            )
-            custom_file = view["category_file"]
+        for keyword_data in category_config_obj.keywords:
+            keyword = keyword_data["keyword"].lower()
+            severity = keyword_data["severity"]
+            if self._should_apply_severity(severity, severity_threshold):
+                self.category_keywords[keyword] = (category_name, severity, category_action)
 
-            if not enabled:
-                verbose_proxy_logger.debug("Category %s is disabled, skipping", category_name)
-                continue
+    def _load_one_category(self, cat_config: ContentFilterCategoryConfig, roots: tuple[str, ...]) -> None:
+        view: Final = self._category_config_view(cat_config)
+        category_name: Final = view["category"]
+        if not category_name or not isinstance(category_name, str):
+            verbose_proxy_logger.warning("Category name missing or invalid in config, skipping")
+            return
 
-            # Load category file (custom or default)
-            if custom_file:
-                try:
-                    category_file_path = self._resolve_category_file_path(custom_file, roots)
-                except ValueError as e:
-                    verbose_proxy_logger.warning(
-                        "Category %s: invalid category_file path, skipping. %s", category_name, e
-                    )
-                    continue
-            else:
-                category_file_path = find_category_file(category_name, roots) or os.path.join(
-                    CATEGORIES_DIR, f"{category_name}.yaml"
-                )
+        # Prevent path traversal via category_name (e.g. "../../etc/passwd")
+        if not re.match(r"^[a-zA-Z0-9_\-]+$", category_name):
+            verbose_proxy_logger.warning("Category name '%s' contains invalid characters, skipping", category_name)
+            return
 
-            # Defense-in-depth: re-assert the resolved candidate path stays inside
-            # categories_dir before it is ever passed to os.path.exists()/loaded.
-            # category_name is already regex-validated above, but this closes the
-            # gap for any future code path that reaches here without that check.
-            # Written inline (not via a helper call), matching CodeQL's
-            # py/path-injection documented safe idiom so its sanitizer
-            # recognition fires; the "+ os.sep" guards against a sibling
-            # directory sharing categories_dir as a string prefix (e.g.
-            # ".../categories-evil" must not pass a bare startswith(categories_dir)).
-            real_category_file_path = os.path.realpath(category_file_path)
-            real_categories_dir = os.path.realpath(categories_dir)
-            if real_category_file_path != real_categories_dir and not real_category_file_path.startswith(
-                real_categories_dir + os.sep
-            ):
-                verbose_proxy_logger.warning(
-                    "Category '%s': resolved category file path escapes categories_dir, skipping",
-                    category_name,
-                )
-                continue
+        enabled: Final = view["enabled"]
+        action: Final = view["action"]
+        severity_threshold: Final = (
+            cat_config.get("severity_threshold", self.severity_threshold) or self.severity_threshold
+        )
+        custom_file: Final = view["category_file"]
 
-            if not os.path.exists(real_category_file_path):
-                verbose_proxy_logger.warning("Category file not found: %s, skipping", category_file_path)
-                continue
+        if not enabled:
+            verbose_proxy_logger.debug("Category %s is disabled, skipping", category_name)
+            return
 
+        # Load category file (custom or default)
+        if custom_file:
             try:
-                category_config_obj = self._load_category_file(real_category_file_path)
-                self.loaded_categories[category_name] = category_config_obj
-
-                # Use action from config, or default from category file
-                category_action = ContentFilterAction(action if action else category_config_obj.default_action)
-
-                # Handle conditional categories (with identifier_words + block words)
-                if category_config_obj.identifier_words and (
-                    category_config_obj.inherit_from or category_config_obj.additional_block_words
-                ):
-                    self._load_conditional_category(
-                        category_name,
-                        category_config_obj,
-                        category_action,
-                        severity_threshold,
-                        roots,
-                    )
-
-                # Add always_block_keywords if present
-                if category_config_obj.always_block_keywords:
-                    for keyword_data in category_config_obj.always_block_keywords:
-                        keyword = keyword_data["keyword"].lower()
-                        severity = keyword_data.get("severity", "high")
-                        if self._should_apply_severity(severity, severity_threshold):
-                            self.always_block_category_keywords[keyword] = (
-                                category_name,
-                                severity,
-                                category_action,
-                            )
-
-                # Add regular keywords from this category
-                for keyword_data in category_config_obj.keywords:
-                    keyword = keyword_data["keyword"].lower()
-                    severity = keyword_data["severity"]
-
-                    # Check if keyword meets severity threshold
-                    if self._should_apply_severity(severity, severity_threshold):
-                        self.category_keywords[keyword] = (
-                            category_name,
-                            severity,
-                            category_action,
-                        )
-
-                verbose_proxy_logger.info(
-                    "Loaded category %s: %s keywords, %s always-block keywords, conditional: %s",
-                    category_name,
-                    len(category_config_obj.keywords),
-                    len(category_config_obj.always_block_keywords),
-                    bool(category_config_obj.identifier_words),
+                category_file_path = self._resolve_category_file_path(  # rebind-ok: either branch sets this once
+                    custom_file, roots
                 )
-            except Exception as e:
-                verbose_proxy_logger.error("Error loading category %s: %s", category_name, e)
+            except ValueError as e:
+                verbose_proxy_logger.warning("Category %s: invalid category_file path, skipping. %s", category_name, e)
+                return
+        else:
+            category_file_path = find_category_file(  # rebind-ok: see declaration above
+                category_name, roots
+            ) or os.path.join(CATEGORIES_DIR, f"{category_name}.yaml")
+
+        # Defense-in-depth: re-assert the resolved candidate path stays inside
+        # categories_dir before it is ever passed to os.path.exists()/loaded.
+        # category_name is already regex-validated above, but this closes the
+        # gap for any future code path that reaches here without that check.
+        # Written inline (not via a helper call), matching CodeQL's
+        # py/path-injection documented safe idiom so its sanitizer
+        # recognition fires; the "+ os.sep" guards against a sibling
+        # directory sharing categories_dir as a string prefix (e.g.
+        # ".../categories-evil" must not pass a bare startswith(categories_dir)).
+        real_category_file_path: Final = os.path.realpath(category_file_path)
+        real_categories_dir: Final = os.path.realpath(CATEGORIES_DIR)
+        if real_category_file_path != real_categories_dir and not real_category_file_path.startswith(
+            real_categories_dir + os.sep
+        ):
+            verbose_proxy_logger.warning(
+                "Category '%s': resolved category file path escapes categories_dir, skipping",
+                category_name,
+            )
+            return
+
+        if not os.path.exists(real_category_file_path):
+            verbose_proxy_logger.warning("Category file not found: %s, skipping", category_file_path)
+            return
+
+        try:
+            category_config_obj: Final = self._load_category_file(real_category_file_path)
+            self.loaded_categories[category_name] = category_config_obj
+
+            # Use action from config, or default from category file
+            category_action: Final = ContentFilterAction(action if action else category_config_obj.default_action)
+
+            # Handle conditional categories (with identifier_words + block words)
+            if category_config_obj.identifier_words and (
+                category_config_obj.inherit_from or category_config_obj.additional_block_words
+            ):
+                self._load_conditional_category(
+                    category_name,
+                    category_config_obj,
+                    category_action,
+                    severity_threshold,
+                    roots,
+                )
+
+            self._register_category_keywords(category_config_obj, category_name, category_action, severity_threshold)
+
+            verbose_proxy_logger.info(
+                "Loaded category %s: %s keywords, %s always-block keywords, conditional: %s",
+                category_name,
+                len(category_config_obj.keywords),
+                len(category_config_obj.always_block_keywords),
+                bool(category_config_obj.identifier_words),
+            )
+        except Exception as e:
+            verbose_proxy_logger.error("Error loading category %s: %s", category_name, e)
 
     def _load_conditional_category(
         self,
