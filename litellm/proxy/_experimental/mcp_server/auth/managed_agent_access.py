@@ -52,7 +52,7 @@ async def managed_agent_tools(server_id: str, auth: UserAPIKeyAuth) -> list[str]
     from litellm.proxy._experimental.mcp_server.auth.user_api_key_auth_mcp import MCPRequestHandler
 
     if server_id not in await managed_agent_servers(auth):
-        return []
+        return []  # mutable-ok: matches list[str] | None return contract
     try:
         granted: Final = await MCPRequestHandler.get_agent_tool_permissions_for_server(server_id, auth)
         own: Final = await MCPRequestHandler.apply_agent_caller_tool_ceiling(granted, server_id, auth)
@@ -60,7 +60,7 @@ async def managed_agent_tools(server_id: str, auth: UserAPIKeyAuth) -> list[str]
         if context is None or context.mode == "autonomous":
             return None if own is None else sorted(own)
         if context.user_id is None:
-            return []
+            return []  # mutable-ok: matches list[str] | None return contract
         human: Final = await _delegated_resource_subject(context.user_id)
         human_tools: Final = await MCPRequestHandler.resolve_admitted_subject_tools(
             server_id, human, allowed_team_ids=frozenset((auth.team_id,)) if auth.team_id else frozenset()

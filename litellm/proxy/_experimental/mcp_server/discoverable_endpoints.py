@@ -111,11 +111,11 @@ _OAUTH_METADATA_FETCH_LOCKS: Final[dict[tuple[str, str], asyncio.Lock]] = {}
 # Callers inside ``_oauth_metadata_fetch_slot`` per cache key, lock waiters included. ``Lock.locked()``
 # reads False between one holder's release and the next waiter's wake-up, so it cannot tell an
 # idle lock from one being handed off.
-_OAUTH_METADATA_FETCHERS: Final[dict[tuple[str, str], int]] = {}
+_OAUTH_METADATA_FETCHERS: Final[dict[tuple[str, str], int]] = {}  # mutable-ok: in-process cache, mutated below
 # Per-server_id generation, bumped on invalidation so a fetch that started before the server
 # definition changed cannot repopulate the cache with the stale reply. Only servers with a fetch
 # in flight carry an entry; the rest are pruned with the cache.
-_OAUTH_METADATA_GENERATIONS: Final[dict[str, int]] = {}
+_OAUTH_METADATA_GENERATIONS: Final[dict[str, int]] = {}  # mutable-ok: in-process cache, mutated below
 
 router: Final = APIRouter(
     tags=["mcp"],
@@ -146,7 +146,7 @@ def _prune_oauth_metadata_cache(now: float | None = None) -> None:
             continue
         _OAUTH_METADATA_FETCH_LOCKS.pop(cache_key, None)
 
-    for server_id in [sid for sid in _OAUTH_METADATA_GENERATIONS if not _oauth_metadata_fetch_in_flight(sid)]:
+    for server_id in tuple(sid for sid in _OAUTH_METADATA_GENERATIONS if not _oauth_metadata_fetch_in_flight(sid)):
         _OAUTH_METADATA_GENERATIONS.pop(server_id, None)
 
 
@@ -181,9 +181,9 @@ def invalidate_oauth_metadata_cache(server_id: str) -> None:
         _OAUTH_METADATA_GENERATIONS[server_id] = _OAUTH_METADATA_GENERATIONS.get(server_id, 0) + 1
     else:
         _OAUTH_METADATA_GENERATIONS.pop(server_id, None)
-    for cache_key in [key for key in _OAUTH_METADATA_CACHE if key[0] == server_id]:
+    for cache_key in tuple(key for key in _OAUTH_METADATA_CACHE if key[0] == server_id):
         del _OAUTH_METADATA_CACHE[cache_key]
-    for cache_key in [key for key in _OAUTH_METADATA_FETCH_LOCKS if key[0] == server_id]:
+    for cache_key in tuple(key for key in _OAUTH_METADATA_FETCH_LOCKS if key[0] == server_id):
         if not _oauth_metadata_lock_idle(cache_key):
             continue
         _OAUTH_METADATA_FETCH_LOCKS.pop(cache_key, None)
