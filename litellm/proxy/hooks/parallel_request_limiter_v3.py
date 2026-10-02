@@ -481,7 +481,7 @@ CacheCounterValue: TypeAlias = int | float | str | bytes
 CacheCounterValues: TypeAlias = Sequence[CacheCounterValue | None]
 
 
-def _as_counter_values(reply: object) -> list[CacheCounterValue]:
+def _as_counter_values(reply: object) -> Sequence[CacheCounterValue]:
     """A Lua reply read back off the pipeline is the same array the script returns when called directly."""
     if not isinstance(reply, (list, tuple)):
         raise TypeError(f"rate limiter script reply is not a list: {type(reply).__name__}")
@@ -1508,7 +1508,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
 
     async def _refund_later_pipelined_groups(
         self,
-        key_groups: Sequence[tuple[str, list[str]]],
+        key_groups: Sequence[tuple[str, Sequence[str]]],
         pipelined: Sequence[BatchResult[object] | None],
     ) -> None:
         """Groups declared on the request batch ran in the same round trip as the one that failed, so their
@@ -1979,7 +1979,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         return True
 
     async def _mirror_released_parallel_slots(
-        self, counter_keys: list[str], remaining_by_key: Sequence[object], parent_otel_span: Span | None
+        self, counter_keys: Sequence[str], remaining_by_key: Sequence[object], parent_otel_span: Span | None
     ) -> None:
         for counter_key, remaining in zip(counter_keys, remaining_by_key):
             if not isinstance(remaining, (int, float, str, bytes)):
@@ -1993,7 +1993,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             )
 
     async def _release_parallel_request_slots_in_memory(
-        self, counter_keys: list[str], slot_id: str, parent_otel_span: Span | None
+        self, counter_keys: Sequence[str], slot_id: str, parent_otel_span: Span | None
     ) -> None:
         async with self._check_and_increment_lock:
             for counter_key in counter_keys:
@@ -2221,7 +2221,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
 
     async def _settle_pipelined_descriptor_groups(
         self,
-        descriptor_groups: list[DescriptorAtomicGroup],
+        descriptor_groups: Sequence[DescriptorAtomicGroup],
         results: Sequence[BatchResult[object]],
         parent_otel_span: Span | None,
     ) -> RateLimitResponse:
@@ -2280,7 +2280,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         )
 
     def _pipelined_group_response(
-        self, reply: object, per_counter_meta: list[AtomicCounterMeta]
+        self, reply: object, per_counter_meta: Sequence[AtomicCounterMeta]
     ) -> RateLimitResponse | BaseException:
         if isinstance(reply, BaseException):
             return reply
@@ -2351,8 +2351,8 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
 
     def _build_atomic_response(
         self,
-        raw: list[CacheCounterValue],
-        per_counter_meta: list[AtomicCounterMeta],
+        raw: Sequence[CacheCounterValue],
+        per_counter_meta: Sequence[AtomicCounterMeta],
     ) -> RateLimitResponse:
         """Convert Lua script return value to RateLimitResponse.
 
@@ -4368,9 +4368,9 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
 
     def _defer_token_increment_script(
         self,
-        keys: list[str],
-        args: list[int],
-        group_operations: list["RedisPipelineIncrementOperation"],
+        keys: Sequence[str],
+        args: Sequence[int],
+        group_operations: list["RedisPipelineIncrementOperation"],  # mutable-ok: pipeline API requires list
     ) -> bool:
         """Declared into the request's post-call pipeline instead of its own EVALSHA round trip; a failed
         script falls back to the plain increment pipeline for its own group, as the direct path does."""
