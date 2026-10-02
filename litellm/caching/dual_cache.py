@@ -505,7 +505,7 @@ class DualCache(BaseCache):
             return results
 
         for index, cache, pending in pendings:
-            own_result: Final = MappingProxyType(
+            own_result = MappingProxyType(
                 {key: redis_result[key] for key in pending.redis_keys if key in redis_result}
             )
             try:

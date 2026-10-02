@@ -122,7 +122,7 @@ class VigilGuardGuardrail(CustomGuardrail):
         fallback: Final = (unreachable_fallback or "fail_closed").lower()
         self.unreachable_fallback: _FallbackMode = "fail_open" if fallback == "fail_open" else "fail_closed"
 
-        self.async_handler: _AsyncPostHandler = async_handler or get_async_httpx_client(
+        self.async_handler: _AsyncPostHandler = async_handler or get_async_httpx_client(  # pyright: ignore[reportAttributeAccessIssue]  # AsyncHTTPHandler.post's broader signature satisfies _AsyncPostHandler at runtime; basedpyright can't verify the narrower protocol
             llm_provider=httpxSpecialProvider.GuardrailCallback,
         )
 

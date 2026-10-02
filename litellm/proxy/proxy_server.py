@@ -18572,7 +18572,7 @@ async def _declared_general_setting(
     settings: SettingsStore, field_name: str, prisma_client: PrismaClient
 ) -> SettingValue:
     if is_resource_list("general_settings", field_name):
-        row: Final = await ConfigRepository(prisma_client, use_writer=True).table.find_first(
+        row: Final = await ConfigRepository(prisma_client, use_writer=True).table.find_first(  # pyright: ignore[reportAttributeAccessIssue]  # Prisma's generated _ConfigTable client exposes find_first at runtime; its stub doesn't declare it
             where={"param_name": "general_settings"}
         )
         stored: Final = row.param_value if row is not None and isinstance(row.param_value, Mapping) else {}
