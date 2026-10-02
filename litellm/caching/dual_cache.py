@@ -505,9 +505,7 @@ class DualCache(BaseCache):
             return results
 
         for index, cache, pending in pendings:
-            own_result = MappingProxyType(
-                {key: redis_result[key] for key in pending.redis_keys if key in redis_result}
-            )
+            own_result = MappingProxyType({key: redis_result[key] for key in pending.redis_keys if key in redis_result})
             try:
                 results[index] = await cache._apply_batch_get(pending, own_result)
             except Exception as e:  # noqa: BLE001  # one cache's post-processing failure must not fail the whole batch
