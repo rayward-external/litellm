@@ -467,6 +467,7 @@ def _parse_spend_date(raw: str | None) -> datetime | None:
 
 
 _EMPTY_KEY_METADATA: Final[Mapping[str, _KeyMetadataDict]] = MappingProxyType({})
+_EMPTY_METADATA_ENTRY: Final[_KeyMetadataDict] = {}
 
 
 def _metadata_with_recovered_owner(
@@ -476,8 +477,10 @@ def _metadata_with_recovered_owner(
 ) -> _KeyMetadataDict:
     current: Final = metadata.get(key)
     if current is None:
-        return {"user_id": owner}
-    return {**current, "user_id": owner}
+        empty: Final[_KeyMetadataDict] = {"user_id": owner}
+        return empty
+    merged: Final[_KeyMetadataDict] = {**current, "user_id": owner}
+    return merged
 
 
 async def get_api_key_metadata(
@@ -545,15 +548,14 @@ async def get_api_key_metadata(
     ownerless: Final = frozenset(
         key
         for key in api_keys
-        if not combined.get(key, {}).get("user_id") and not combined.get(key, {}).get("key_exists")
+        if not combined.get(key, _EMPTY_METADATA_ENTRY).get("user_id")
+        and not combined.get(key, _EMPTY_METADATA_ENTRY).get("key_exists")
     )
     owners: Final = await recover_key_owner_from_daily_spend(prisma_client, ownerless)
-    metadata_with_owners: Final[Mapping[str, _KeyMetadataDict]] = MappingProxyType(
-        {
-            **combined,
-            **{key: _metadata_with_recovered_owner(combined, key, owner) for key, owner in owners.items()},
-        }
+    overrides: Final[Mapping[str, _KeyMetadataDict]] = MappingProxyType(
+        {key: _metadata_with_recovered_owner(combined, key, owner) for key, owner in owners.items()}
     )
+    metadata_with_owners: Final[Mapping[str, _KeyMetadataDict]] = MappingProxyType({**combined, **overrides})
     return await attach_user_details(prisma_client, metadata_with_owners)
 
 
