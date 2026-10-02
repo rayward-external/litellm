@@ -44,4 +44,5 @@ jobs:
             -L vscode-extension/package-lock.json \
             -L tests/pass_through_tests/package-lock.json \
             -L tests/proxy_admin_ui_tests/ui_unit_tests/package-lock.json \
+            -L tests/e2e/ui/package-lock.json \
             -L litellm-rust/Cargo.lock
