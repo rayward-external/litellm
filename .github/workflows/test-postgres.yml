@@ -145,6 +145,7 @@ jobs:
 
       - name: Upload Lens database coverage
         if: steps.changes.outputs.decision != 'skip' && matrix.shard == 'proxy-behavior' && !cancelled()
+        continue-on-error: true
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           use_oidc: true
