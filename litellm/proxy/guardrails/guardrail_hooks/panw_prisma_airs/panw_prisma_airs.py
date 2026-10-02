@@ -1694,8 +1694,8 @@ class PanwPrismaAirsHandler(CustomGuardrail):
         if offset + sum(counts) != len(texts):
             return None
         starts: Final = itertools.accumulate(counts, initial=offset)
-        return frozenset(
-            text_idx
+        reasoning_ranges: Final = (
+            range(start, start + count)
             for item, count, start in zip(raw_input, counts, starts)
             if item.type == "reasoning"
         )

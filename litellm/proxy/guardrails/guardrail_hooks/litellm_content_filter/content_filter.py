@@ -523,25 +523,28 @@ class ContentFilterGuardrail(CustomGuardrail):
                 category_name, roots
             ) or os.path.join(CATEGORIES_DIR, f"{category_name}.yaml")
 
-        # Defense-in-depth: re-assert the resolved candidate path stays inside
-        # categories_dir before it is ever passed to os.path.exists()/loaded.
-        # category_name is already regex-validated above, but this closes the
-        # gap for any future code path that reaches here without that check.
-        # Written inline (not via a helper call), matching CodeQL's
-        # py/path-injection documented safe idiom so its sanitizer
-        # recognition fires; the "+ os.sep" guards against a sibling
-        # directory sharing categories_dir as a string prefix (e.g.
-        # ".../categories-evil" must not pass a bare startswith(categories_dir)).
-        real_category_file_path: Final = os.path.realpath(category_file_path)
-        real_categories_dir: Final = os.path.realpath(CATEGORIES_DIR)
-        if real_category_file_path != real_categories_dir and not real_category_file_path.startswith(
-            real_categories_dir + os.sep
+        # Defense-in-depth: re-assert the candidate path stays inside one of
+        # the category data roots before it is ever passed to
+        # os.path.exists()/loaded. category_name is already regex-validated
+        # above, but this closes the gap for any future code path that
+        # reaches here without that check. Checked against every root (not
+        # just the primary CATEGORIES_DIR) so a legitimate hit under
+        # LEGACY_DATA_DIR isn't rejected as an escape. Deliberately not
+        # realpath-resolved: a symlink placed inside a root must still pass
+        # here, wherever it points (find_category_file's own join_within
+        # grants the same trust to symlinks stored in the folder).
+        normalized_candidate: Final = os.path.normpath(os.path.abspath(category_file_path))
+        if not any(
+            normalized_candidate == (normalized_root := os.path.normpath(os.path.abspath(root)))
+            or normalized_candidate.startswith(normalized_root + os.sep)
+            for root in roots
         ):
             verbose_proxy_logger.warning(
-                "Category '%s': resolved category file path escapes categories_dir, skipping",
+                "Category '%s': resolved category file path escapes the category data roots, skipping",
                 category_name,
             )
             return
+        real_category_file_path: Final = os.path.realpath(category_file_path)
 
         if not os.path.exists(real_category_file_path):
             verbose_proxy_logger.warning("Category file not found: %s, skipping", category_file_path)
