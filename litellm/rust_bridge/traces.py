@@ -10,7 +10,7 @@ from litellm.rust_bridge.loader import get_native_bridge
 
 class DecodedEvent(TypedDict):
     name: ReadOnly[str]
-    attributes: ReadOnly[dict[str, str]]
+    attributes: ReadOnly[Mapping[str, str]]
 
 
 class DecodedSpan(TypedDict):
@@ -20,15 +20,15 @@ class DecodedSpan(TypedDict):
     trace_state: ReadOnly[str]
     name: ReadOnly[str]
     kind: ReadOnly[str]
-    resource_attributes: ReadOnly[dict[str, str]]
+    resource_attributes: ReadOnly[Mapping[str, str]]
     scope_name: ReadOnly[str]
     scope_version: ReadOnly[str]
-    attributes: ReadOnly[dict[str, str]]
+    attributes: ReadOnly[Mapping[str, str]]
     start_ns: ReadOnly[int]
     end_ns: ReadOnly[int]
     status_code: ReadOnly[str]
     status_message: ReadOnly[str]
-    events: ReadOnly[list[DecodedEvent]]
+    events: ReadOnly[Sequence[DecodedEvent]]
 
 
 ReadQueryName = Literal["list_traces", "trace_spans", "span_detail", "spend_by_response_ids"]
@@ -55,12 +55,12 @@ class NativeTraces(Protocol):
         content_type: str | None,
         content_encoding: str | None,
         max_decompressed_bytes: int,
-    ) -> list[DecodedSpan]: ...
+    ) -> Sequence[DecodedSpan]: ...
 
 
 class QueryResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
-    data: list[dict[str, JsonValue]]
+    data: Sequence[Mapping[str, JsonValue]]
 
 
 INSERT_ROWS: Final = TypeAdapter(list[dict[str, JsonValue]])
@@ -76,7 +76,7 @@ def _native() -> NativeTraces:
 
 def decode_otlp(
     body: bytes, content_type: str | None, content_encoding: str | None, max_decompressed_bytes: int
-) -> list[DecodedSpan]:
+) -> Sequence[DecodedSpan]:
     return _native().trace_decode_otlp(body, content_type, content_encoding, max_decompressed_bytes)
 
 
@@ -92,21 +92,21 @@ class TraceStorage:
 
     async def query(
         self, name: ReadQueryName, parameters: Mapping[str, object] | None = None
-    ) -> list[dict[str, JsonValue]]:
+    ) -> Sequence[Mapping[str, JsonValue]]:
         result: Final = await self._native.query(
             name, QUERY_PARAMETERS.validate_python(parameters or MappingProxyType({}))
         )
         return QueryResponse.model_validate_json(result).data
 
-    async def _lens_query(self, name: str, parameters: Mapping[str, object]) -> list[dict[str, JsonValue]]:
+    async def _lens_query(self, name: str, parameters: Mapping[str, object]) -> Sequence[Mapping[str, JsonValue]]:
         result: Final = await self._native.lens_query(name, QUERY_PARAMETERS.validate_python(parameters))
         return QueryResponse.model_validate_json(result).data
 
-    async def lens_sample(self, parameters: Mapping[str, object]) -> list[dict[str, JsonValue]]:
+    async def lens_sample(self, parameters: Mapping[str, object]) -> Sequence[Mapping[str, JsonValue]]:
         return await self._lens_query("sample", parameters)
 
-    async def lens_content(self, parameters: Mapping[str, object]) -> list[dict[str, JsonValue]]:
+    async def lens_content(self, parameters: Mapping[str, object]) -> Sequence[Mapping[str, JsonValue]]:
         return await self._lens_query("content", parameters)
 
-    async def lens_evidence(self, parameters: Mapping[str, object]) -> list[dict[str, JsonValue]]:
+    async def lens_evidence(self, parameters: Mapping[str, object]) -> Sequence[Mapping[str, JsonValue]]:
         return await self._lens_query("evidence", parameters)
