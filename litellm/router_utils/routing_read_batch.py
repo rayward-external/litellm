@@ -183,7 +183,9 @@ class RoutingReadBatch:
         `healthy_deployments` fetched in the same MGET and kept as `prefetched_usage`.
         """
         model_ids: Final = litellm_router_instance.get_model_ids()
-        cooldown_keys: Final = [CooldownCache.get_cooldown_cache_key(model_id) for model_id in model_ids]
+        cooldown_keys: Final = [  # mutable-ok: reads tuple requires list[str]
+            CooldownCache.get_cooldown_cache_key(model_id) for model_id in model_ids
+        ]
         selector: Final = self.usage_selector
         usage_keys: Final = (
             () if selector is None else tuple(itertools.chain(*selector.usage_counter_keys(healthy_deployments)))
@@ -211,7 +213,7 @@ class RoutingReadBatch:
             model_ids, cooldown_results
         )
         verbose_router_logger.debug("retrieve cooldown models: %s", cooldown_models)
-        return [model_id for model_id, _ in cooldown_models]
+        return [model_id for model_id, _ in cooldown_models]  # mutable-ok: matches this method's list[str] return
 
     @staticmethod
     async def _read_prefetched(
