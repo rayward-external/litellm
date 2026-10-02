@@ -6,6 +6,7 @@ to detect and block/mask sensitive content.
 """
 
 import asyncio
+import itertools
 import json
 import os
 import re
@@ -28,6 +29,13 @@ from litellm.constants import (
 )
 from litellm.integrations.custom_guardrail import CustomGuardrail
 from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy.common_utils.path_utils import is_within, try_safe_join
+from litellm.proxy.guardrails.content_filter_data import (
+    CATEGORIES_DIR,
+    DATA_DIR,
+    DATA_ROOTS,
+    find_category_file,
+)
 from litellm.types.utils import (
     CallTypes,
     Function,
@@ -365,22 +373,14 @@ class ContentFilterGuardrail(CustomGuardrail):
         }
 
     @staticmethod
-    def _assert_within_categories_dir(path: str, categories_dir: str) -> None:
-        """Raise ValueError if path escapes the categories directory."""
-        resolved: Final = os.path.realpath(path)
-        allowed: Final = os.path.realpath(categories_dir)
-        try:
-            common: Final = os.path.commonpath([resolved, allowed])
-        except ValueError:
-            # commonpath() raises ValueError on Windows when paths span different drives
-            raise ValueError(f"Category file path '{path}' is outside the allowed categories directory")
-        if common != allowed:
+    def _assert_within_data_roots(path: str, roots: tuple[str, ...]) -> None:
+        """Raise ValueError unless path sits inside one of the category data roots."""
+        if not any(is_within(path, root) for root in roots):
             raise ValueError(
-                f"Category file path '{path}' is outside the allowed categories directory '{categories_dir}'"
+                f"Category file path '{path}' is outside the allowed categories directory ({', '.join(roots)})"
             )
-        return resolved
 
-    def _resolve_category_file_path(self, file_path: str) -> str:
+    def _resolve_category_file_path(self, file_path: str, roots: tuple[str, ...] = DATA_ROOTS) -> str:
         """
         Resolve a category file path that may be relative.
 
@@ -388,13 +388,16 @@ class ContentFilterGuardrail(CustomGuardrail):
         relative paths like "litellm/proxy/.../policy_templates/file.yaml".
         These only work when the CWD is the project root. In production
         (Docker, installed packages, etc.) the CWD is different, so the
-        file isn't found.
+        file isn't found. Paths recorded before the data moved out of the
+        guardrail package still resolve because only the trailing
+        ``policy_templates/<file>`` or ``categories/<file>`` suffix has to match,
+        and the old package directory stays a search root for files a
+        deployment copied there itself.
 
         Resolution order:
-        1. Return as-is if absolute or already exists (jailed to module dir).
-        2. Try joining the full path relative to this module's directory (jailed).
-        3. Progressively strip leading path components and try each suffix
-           relative to this module's directory (jailed).
+        1. Return as-is if absolute or already exists (jailed to the roots).
+        2. Try the full path, then progressively shorter suffixes, under each
+           root in turn (jailed).
 
         The directory jail can be disabled for deployments that legitimately
         store category files outside the package (e.g. mounted volumes) by
@@ -405,54 +408,49 @@ class ContentFilterGuardrail(CustomGuardrail):
 
         Args:
             file_path: The file path to resolve (absolute or relative).
+            roots: Directories a category file may live under, bundled first.
 
         Returns:
             The resolved absolute-ish path, or the original path if
             resolution fails (caller should check existence).
 
         Raises:
-            ValueError: If the resolved path escapes the module directory
+            ValueError: If the resolved path escapes every root
                 and ``LITELLM_CONTENT_FILTER_ALLOW_EXTERNAL_PATHS`` is not set.
         """
-        module_dir: Final = os.path.dirname(__file__)
         allow_external: Final = os.environ.get("LITELLM_CONTENT_FILTER_ALLOW_EXTERNAL_PATHS", "").lower() == "true"
 
         if os.path.isabs(file_path) or os.path.exists(file_path):
-            if not allow_external:
-                self._assert_within_categories_dir(file_path, module_dir)
-            else:
+            if allow_external:
                 verbose_proxy_logger.warning(
                     "LITELLM_CONTENT_FILTER_ALLOW_EXTERNAL_PATHS is set — "
                     "skipping directory jail for category_file '%s'",
                     file_path,
                 )
+                return file_path
+            self._assert_within_data_roots(file_path, roots)
             return file_path
 
-        # Try the full relative path joined to the module directory
-        candidate = os.path.join(module_dir, file_path)
-        if os.path.exists(candidate):
-            if not allow_external:
-                self._assert_within_categories_dir(candidate, module_dir)
-            return candidate
-
-        # Progressively strip leading components to find a matching suffix
         parts: Final = file_path.split("/")
-        for i in range(1, len(parts)):
-            suffix = os.path.join(*parts[i:])
-            candidate = os.path.join(module_dir, suffix)
-            if os.path.exists(candidate):
-                if not allow_external:
-                    self._assert_within_categories_dir(candidate, module_dir)
-                return candidate
+        suffixes: Final = tuple(os.path.join(*parts[i:]) for i in range(len(parts)))
+        search: Final = tuple(itertools.product(suffixes, roots))
+        if allow_external:
+            unjailed: Final = (os.path.join(root, suffix) for suffix, root in search)
+            return next((c for c in unjailed if os.path.exists(c)), file_path)
 
-        # File not found via any resolution strategy — jail the module-relative
-        # path anyway to reject traversal attempts (e.g. "../../../../etc/passwd")
-        # regardless of CWD or whether the target file exists.
-        if not allow_external:
-            self._assert_within_categories_dir(os.path.join(module_dir, file_path), module_dir)
+        jailed: Final = (try_safe_join(root, suffix) for suffix, root in search)
+        found: Final = next((c for c in jailed if c is not None and os.path.exists(c)), None)
+        if found is not None:
+            return found
+
+        # Nothing matched: jail the data-relative path anyway so "../../etc/passwd" is
+        # rejected regardless of CWD or whether the target exists.
+        self._assert_within_data_roots(os.path.join(DATA_DIR, file_path), roots)
         return file_path
 
-    def _load_categories(self, categories: list[ContentFilterCategoryConfig]) -> None:
+    def _load_categories(
+        self, categories: list[ContentFilterCategoryConfig], roots: tuple[str, ...] = DATA_ROOTS
+    ) -> None:
         """
         Load content categories from configuration.
 
@@ -463,129 +461,125 @@ class ContentFilterGuardrail(CustomGuardrail):
                   action: "BLOCK"
                   severity_threshold: "medium"
                   category_file: "/path/to/custom_file.yaml"  # optional override
+            roots: Directories a category file may live under, bundled first.
         """
-        categories_dir: Final = os.path.join(os.path.dirname(__file__), "categories")
-
         for cat_config in categories:
-            view = self._category_config_view(cat_config)
-            category_name = view["category"]
-            if not category_name or not isinstance(category_name, str):
-                verbose_proxy_logger.warning("Category name missing or invalid in config, skipping")
-                continue
+            self._load_one_category(cat_config, roots)
 
-            # Prevent path traversal via category_name (e.g. "../../etc/passwd")
-            if not re.match(r"^[a-zA-Z0-9_\-]+$", category_name):
-                verbose_proxy_logger.warning("Category name '%s' contains invalid characters, skipping", category_name)
-                continue
+    def _register_category_keywords(
+        self,
+        category_config_obj: CategoryConfig,
+        category_name: str,
+        category_action: ContentFilterAction,
+        severity_threshold: str,
+    ) -> None:
+        if category_config_obj.always_block_keywords:
+            for keyword_data in category_config_obj.always_block_keywords:
+                keyword = keyword_data["keyword"].lower()
+                severity = keyword_data.get("severity", "high")
+                if self._should_apply_severity(severity, severity_threshold):
+                    self.always_block_category_keywords[keyword] = (category_name, severity, category_action)
 
-            enabled = view["enabled"]
-            action = view["action"]
-            severity_threshold = (
-                cat_config.get("severity_threshold", self.severity_threshold) or self.severity_threshold
-            )
-            custom_file = view["category_file"]
+        for keyword_data in category_config_obj.keywords:
+            keyword = keyword_data["keyword"].lower()
+            severity = keyword_data["severity"]
+            if self._should_apply_severity(severity, severity_threshold):
+                self.category_keywords[keyword] = (category_name, severity, category_action)
 
-            if not enabled:
-                verbose_proxy_logger.debug("Category %s is disabled, skipping", category_name)
-                continue
+    def _load_one_category(self, cat_config: ContentFilterCategoryConfig, roots: tuple[str, ...]) -> None:
+        view: Final = self._category_config_view(cat_config)
+        category_name: Final = view["category"]
+        if not category_name or not isinstance(category_name, str):
+            verbose_proxy_logger.warning("Category name missing or invalid in config, skipping")
+            return
 
-            # Load category file (custom or default)
-            if custom_file:
-                try:
-                    category_file_path = self._resolve_category_file_path(custom_file)
-                except ValueError as e:
-                    verbose_proxy_logger.warning(
-                        "Category %s: invalid category_file path, skipping. %s", category_name, e
-                    )
-                    continue
-            else:
-                # Try .yaml first, then .json (e.g. harm_toxic_abuse.json)
-                yaml_path = os.path.join(categories_dir, f"{category_name}.yaml")
-                json_path = os.path.join(categories_dir, f"{category_name}.json")
-                if os.path.exists(yaml_path):
-                    category_file_path = yaml_path
-                elif os.path.exists(json_path):
-                    category_file_path = json_path
-                else:
-                    category_file_path = yaml_path  # will trigger "not found" below
+        # Prevent path traversal via category_name (e.g. "../../etc/passwd")
+        if not re.match(r"^[a-zA-Z0-9_\-]+$", category_name):
+            verbose_proxy_logger.warning("Category name '%s' contains invalid characters, skipping", category_name)
+            return
 
-            # Defense-in-depth: re-assert the resolved candidate path stays inside
-            # categories_dir before it is ever passed to os.path.exists()/loaded.
-            # category_name is already regex-validated above, but this closes the
-            # gap for any future code path that reaches here without that check.
-            # Written inline (not via a helper call), matching CodeQL's
-            # py/path-injection documented safe idiom so its sanitizer
-            # recognition fires; the "+ os.sep" guards against a sibling
-            # directory sharing categories_dir as a string prefix (e.g.
-            # ".../categories-evil" must not pass a bare startswith(categories_dir)).
-            real_category_file_path = os.path.realpath(category_file_path)
-            real_categories_dir = os.path.realpath(categories_dir)
-            if real_category_file_path != real_categories_dir and not real_category_file_path.startswith(
-                real_categories_dir + os.sep
-            ):
-                verbose_proxy_logger.warning(
-                    "Category '%s': resolved category file path escapes categories_dir, skipping",
-                    category_name,
-                )
-                continue
+        enabled: Final = view["enabled"]
+        action: Final = view["action"]
+        severity_threshold: Final = (
+            cat_config.get("severity_threshold", self.severity_threshold) or self.severity_threshold
+        )
+        custom_file: Final = view["category_file"]
 
-            if not os.path.exists(real_category_file_path):
-                verbose_proxy_logger.warning("Category file not found: %s, skipping", category_file_path)
-                continue
+        if not enabled:
+            verbose_proxy_logger.debug("Category %s is disabled, skipping", category_name)
+            return
 
+        # Load category file (custom or default)
+        if custom_file:
             try:
-                category_config_obj = self._load_category_file(real_category_file_path)
-                self.loaded_categories[category_name] = category_config_obj
-
-                # Use action from config, or default from category file
-                category_action = ContentFilterAction(action if action else category_config_obj.default_action)
-
-                # Handle conditional categories (with identifier_words + block words)
-                if category_config_obj.identifier_words and (
-                    category_config_obj.inherit_from or category_config_obj.additional_block_words
-                ):
-                    self._load_conditional_category(
-                        category_name,
-                        category_config_obj,
-                        category_action,
-                        severity_threshold,
-                        categories_dir,
-                    )
-
-                # Add always_block_keywords if present
-                if category_config_obj.always_block_keywords:
-                    for keyword_data in category_config_obj.always_block_keywords:
-                        keyword = keyword_data["keyword"].lower()
-                        severity = keyword_data.get("severity", "high")
-                        if self._should_apply_severity(severity, severity_threshold):
-                            self.always_block_category_keywords[keyword] = (
-                                category_name,
-                                severity,
-                                category_action,
-                            )
-
-                # Add regular keywords from this category
-                for keyword_data in category_config_obj.keywords:
-                    keyword = keyword_data["keyword"].lower()
-                    severity = keyword_data["severity"]
-
-                    # Check if keyword meets severity threshold
-                    if self._should_apply_severity(severity, severity_threshold):
-                        self.category_keywords[keyword] = (
-                            category_name,
-                            severity,
-                            category_action,
-                        )
-
-                verbose_proxy_logger.info(
-                    "Loaded category %s: %s keywords, %s always-block keywords, conditional: %s",
-                    category_name,
-                    len(category_config_obj.keywords),
-                    len(category_config_obj.always_block_keywords),
-                    bool(category_config_obj.identifier_words),
+                category_file_path = self._resolve_category_file_path(  # rebind-ok: either branch sets this once
+                    custom_file, roots
                 )
-            except Exception as e:
-                verbose_proxy_logger.error("Error loading category %s: %s", category_name, e)
+            except ValueError as e:
+                verbose_proxy_logger.warning("Category %s: invalid category_file path, skipping. %s", category_name, e)
+                return
+        else:
+            category_file_path = find_category_file(  # rebind-ok: see declaration above
+                category_name, roots
+            ) or os.path.join(CATEGORIES_DIR, f"{category_name}.yaml")
+
+        # Defense-in-depth: re-assert the candidate path stays inside one of
+        # the category data roots before it is ever passed to
+        # os.path.exists()/loaded. category_name is already regex-validated
+        # above, but this closes the gap for any future code path that
+        # reaches here without that check. Checked against every root (not
+        # just the primary CATEGORIES_DIR) so a legitimate hit under
+        # LEGACY_DATA_DIR isn't rejected as an escape. Deliberately not
+        # realpath-resolved: a symlink placed inside a root must still pass
+        # here, wherever it points (find_category_file's own join_within
+        # grants the same trust to symlinks stored in the folder).
+        normalized_candidate: Final = os.path.normpath(os.path.abspath(category_file_path))
+        if not any(
+            normalized_candidate == (normalized_root := os.path.normpath(os.path.abspath(root)))
+            or normalized_candidate.startswith(normalized_root + os.sep)
+            for root in roots
+        ):
+            verbose_proxy_logger.warning(
+                "Category '%s': resolved category file path escapes the category data roots, skipping",
+                category_name,
+            )
+            return
+        real_category_file_path: Final = os.path.realpath(category_file_path)
+
+        if not os.path.exists(real_category_file_path):
+            verbose_proxy_logger.warning("Category file not found: %s, skipping", category_file_path)
+            return
+
+        try:
+            category_config_obj: Final = self._load_category_file(real_category_file_path)
+            self.loaded_categories[category_name] = category_config_obj
+
+            # Use action from config, or default from category file
+            category_action: Final = ContentFilterAction(action if action else category_config_obj.default_action)
+
+            # Handle conditional categories (with identifier_words + block words)
+            if category_config_obj.identifier_words and (
+                category_config_obj.inherit_from or category_config_obj.additional_block_words
+            ):
+                self._load_conditional_category(
+                    category_name,
+                    category_config_obj,
+                    category_action,
+                    severity_threshold,
+                    roots,
+                )
+
+            self._register_category_keywords(category_config_obj, category_name, category_action, severity_threshold)
+
+            verbose_proxy_logger.info(
+                "Loaded category %s: %s keywords, %s always-block keywords, conditional: %s",
+                category_name,
+                len(category_config_obj.keywords),
+                len(category_config_obj.always_block_keywords),
+                bool(category_config_obj.identifier_words),
+            )
+        except Exception as e:
+            verbose_proxy_logger.error("Error loading category %s: %s", category_name, e)
 
     def _load_conditional_category(
         self,
@@ -593,7 +587,7 @@ class ContentFilterGuardrail(CustomGuardrail):
         category_config_obj: CategoryConfig,
         category_action: ContentFilterAction,
         severity_threshold: str,
-        categories_dir: str,
+        roots: tuple[str, ...],
     ) -> None:
         """
         Load a conditional category that uses identifier_words + block_words.
@@ -604,7 +598,7 @@ class ContentFilterGuardrail(CustomGuardrail):
             category_config_obj: CategoryConfig object with identifier_words
             category_action: Action to take when match is found
             severity_threshold: Minimum severity threshold
-            categories_dir: Directory containing category files
+            roots: Directories the inherited category file may live under
         """
         try:
             block_words: Final[list[str]] = []
@@ -614,38 +608,14 @@ class ContentFilterGuardrail(CustomGuardrail):
             if inherit_from:
                 # Remove .json or .yaml extension if included
                 inherit_base: Final = inherit_from.replace(".json", "").replace(".yaml", "")
-
-                # Find the inherited category file
-                inherit_yaml_path: Final = os.path.join(categories_dir, f"{inherit_base}.yaml")
-                inherit_json_path: Final = os.path.join(categories_dir, f"{inherit_base}.json")
-
-                # inherit_from is config data (reachable from admin-supplied
-                # guardrail_definitions, same surface as category_file above), so a
-                # "../" value must not let os.path.join walk the resolved candidate
-                # outside categories_dir before it is checked/loaded. Written inline
-                # (not via a helper call) to match CodeQL's py/path-injection
-                # documented safe idiom, same as the category_file check above.
-                real_categories_dir = os.path.realpath(categories_dir)
-                inherit_file_path = None
-                if os.path.exists(inherit_yaml_path) or os.path.exists(inherit_json_path):
-                    candidate = inherit_yaml_path if os.path.exists(inherit_yaml_path) else inherit_json_path
-                    real_candidate = os.path.realpath(candidate)
-                    if real_candidate == real_categories_dir or real_candidate.startswith(real_categories_dir + os.sep):
-                        inherit_file_path = real_candidate
-                    else:
-                        verbose_proxy_logger.warning(
-                            "Category %s: resolved inherit_from path escapes categories_dir, skipping",
-                            category_name,
-                        )
-
+                inherit_file_path: Final = find_category_file(inherit_base, roots)
                 if inherit_file_path is None:
                     verbose_proxy_logger.warning(
-                        "Category %s: inherit_from '%s' file not found at %s",
+                        "Category %s: inherit_from '%s' file not found under %s",
                         category_name,
                         inherit_from,
-                        categories_dir,
+                        ", ".join(roots),
                     )
-                    verbose_proxy_logger.debug("Tried paths: %s, %s", inherit_yaml_path, inherit_json_path)
 
                 if inherit_file_path:
                     # Load the inherited category

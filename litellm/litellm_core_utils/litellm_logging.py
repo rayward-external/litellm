@@ -35,6 +35,7 @@ from litellm._uuid import uuid
 from litellm.batches.batch_utils import _handle_completed_batch, batch_cost_is_final
 from litellm.caching.caching import DualCache
 from litellm.caching.caching_handler import LLMCachingHandler
+from litellm.caching.redis_batch import flush_post_call_redis_batches
 from litellm.constants import (
     DEFAULT_MOCK_RESPONSE_COMPLETION_TOKEN_COUNT,
     DEFAULT_MOCK_RESPONSE_PROMPT_TOKEN_COUNT,
@@ -73,6 +74,7 @@ from litellm.litellm_core_utils.classifier_logging import (
 from litellm.litellm_core_utils.core_helpers import (
     get_provider_response_headers_from_hidden_params,
     is_expected_client_error,
+    proxy_stamped_used_client_oauth_token,
     reconstruct_model_name,
     set_response_cost_in_hidden_params,
 )
@@ -181,6 +183,7 @@ from ..integrations.arize.arize_phoenix import ArizePhoenixLogger
 from ..integrations.athina import AthinaLogger
 from ..integrations.azure_sentinel.azure_sentinel import AzureSentinelLogger
 from ..integrations.azure_storage.azure_storage import AzureBlobStorageLogger
+from ..integrations.clickhouse.clickhouse_spend_logger import ClickHouseSpendLogger
 from ..integrations.custom_prompt_management import CustomPromptManagement
 from ..integrations.datadog.datadog import DataDogLogger
 from ..integrations.datadog.datadog_llm_obs import DataDogLLMObsLogger
@@ -284,7 +287,10 @@ else:
     _PAGERDUTY_ALERTING_FACTORY: Final = PagerDutyAlerting
 _in_memory_loggers: Final[list[CustomLogger]] = []
 
-_STANDARD_LOGGING_METADATA_KEYS: Final[frozenset[str]] = frozenset(StandardLoggingMetadata.__annotations__.keys())
+_STANDARD_LOGGING_METADATA_RESOLVED_KEYS: Final[frozenset[str]] = frozenset(("used_client_oauth_token",))
+_STANDARD_LOGGING_METADATA_KEYS: Final[frozenset[str]] = (
+    frozenset(StandardLoggingMetadata.__annotations__.keys()) - _STANDARD_LOGGING_METADATA_RESOLVED_KEYS
+)
 
 
 def _get_provider_request_id(original_exception: Exception) -> str | None:
@@ -1886,7 +1892,6 @@ class Logging(LiteLLMLoggingBaseClass):
                 "standard_built_in_tools_params": self.standard_built_in_tools_params,
                 "router_model_id": router_model_id,
                 "litellm_logging_obj": self,
-                "service_tier": (self.optional_params.get("service_tier") if self.optional_params else None),
                 "data_residency": (
                     self.litellm_params.get("data_residency")
                     if hasattr(self, "litellm_params") and self.litellm_params
@@ -2434,7 +2439,7 @@ class Logging(LiteLLMLoggingBaseClass):
         await invalidate_baseline_cache(self, reason, completed=completed)
 
     def _build_standard_logging_payload(
-        self, init_response_obj: object, start_time: Any, end_time: Any
+        self, init_response_obj: object, start_time: dt_object, end_time: dt_object
     ) -> StandardLoggingPayload | None:
         """Build StandardLoggingPayload and accumulate its construction time."""
         _start: Final = time.time()
@@ -2734,7 +2739,7 @@ class Logging(LiteLLMLoggingBaseClass):
 
     def success_handler(
         self,
-        result: Any = None,  # heterogeneous response object; varies by call type (ANN401 ignored, see ruff-strict.toml)
+        result: object = None,  # heterogeneous response object; varies by call type (ANN401 ignored, see ruff-strict.toml)
         start_time: datetime.datetime | None = None,
         end_time: datetime.datetime | None = None,
         cache_hit: bool | None = None,
@@ -3173,7 +3178,7 @@ class Logging(LiteLLMLoggingBaseClass):
 
     async def async_success_handler(
         self,
-        result: Any = None,  # heterogeneous response object; varies by call type (ANN401 ignored, see ruff-strict.toml)
+        result: object = None,  # heterogeneous response object; varies by call type (ANN401 ignored, see ruff-strict.toml)
         start_time: datetime.datetime | None = None,
         end_time: datetime.datetime | None = None,
         cache_hit: bool | None = None,
@@ -3191,7 +3196,7 @@ class Logging(LiteLLMLoggingBaseClass):
 
     async def _async_success_handler_body(
         self,
-        result: Any = None,  # heterogeneous response object; varies by call type (ANN401 ignored, see ruff-strict.toml)
+        result: object = None,  # heterogeneous response object; varies by call type (ANN401 ignored, see ruff-strict.toml)
         start_time: datetime.datetime | None = None,
         end_time: datetime.datetime | None = None,
         cache_hit: bool | None = None,
@@ -3555,6 +3560,7 @@ class Logging(LiteLLMLoggingBaseClass):
                     traceback.format_exc(),
                 )
                 self._handle_callback_failure(callback=callback)
+        await flush_post_call_redis_batches()
 
     def _handle_callback_failure(self, callback: object):
         """
@@ -3940,6 +3946,7 @@ class Logging(LiteLLMLoggingBaseClass):
                 )
                 # Track callback logging failures in Prometheus
                 self._handle_callback_failure(callback=callback)
+        await flush_post_call_redis_batches()
 
     def _get_trace_id(self, service_name: Literal["langfuse"]) -> str | None:
         """
@@ -4298,7 +4305,7 @@ class Logging(LiteLLMLoggingBaseClass):
         )
         return result
 
-    def _handle_a2a_response_logging(self, result: Any) -> Any:
+    def _handle_a2a_response_logging(self, result: Any) -> object:
         """
         Handles logging for A2A (Agent-to-Agent) responses.
 
@@ -4638,6 +4645,14 @@ def _init_custom_logger_compatible_class(
             _s3_v2_logger: Final = S3V2Logger()
             _in_memory_loggers.append(_s3_v2_logger)
             return _s3_v2_logger
+        elif logging_integration == "clickhouse":
+            for callback in _in_memory_loggers:
+                if isinstance(callback, ClickHouseSpendLogger):
+                    return callback
+
+            _clickhouse_spend_logger: Final = ClickHouseSpendLogger()
+            _in_memory_loggers.append(_clickhouse_spend_logger)
+            return _clickhouse_spend_logger
         elif logging_integration == "pointfive":
             for callback in _in_memory_loggers:
                 if isinstance(callback, PointFiveLogger):
@@ -5374,6 +5389,10 @@ def get_custom_logger_compatible_class(
             for callback in _in_memory_loggers:
                 if isinstance(callback, S3V2Logger):
                     return callback
+        elif logging_integration == "clickhouse":
+            for callback in _in_memory_loggers:
+                if isinstance(callback, ClickHouseSpendLogger):
+                    return callback
         elif logging_integration == "pointfive":
             for callback in _in_memory_loggers:
                 if isinstance(callback, PointFiveLogger):
@@ -5707,7 +5726,7 @@ class StandardLoggingPayloadSetup:
 
     @staticmethod
     def get_standard_logging_metadata(
-        metadata: dict[str, Any] | None,
+        metadata: Mapping[str, object] | None,
         litellm_params: dict | None = None,
         prompt_integration: str | None = None,
         applied_guardrails: list[str] | None = None,
@@ -5717,6 +5736,7 @@ class StandardLoggingPayloadSetup:
         proxy_server_request: dict | None = None,
         start_time: dt_object | None = None,
         response_id: str | None = None,
+        custom_llm_provider: str | None = None,
     ) -> StandardLoggingMetadata:
         """
         Clean and filter the metadata dictionary to include only the specified keys in StandardLoggingMetadata.
@@ -5731,6 +5751,9 @@ class StandardLoggingPayloadSetup:
             - If the input metadata is None or not a dictionary, an empty StandardLoggingMetadata object is returned.
             - If 'user_api_key' is present in metadata and is a valid SHA256 hash, it's stored as 'user_api_key_hash'.
         """
+        from litellm.llms.anthropic.common_utils import (  # noqa: PLC0415  # that module imports this one transitively
+            resolve_used_client_oauth_token,
+        )
 
         prompt_management_metadata: StandardLoggingPromptManagementMetadata | None = None
         if litellm_params is not None:
@@ -5780,6 +5803,10 @@ class StandardLoggingPayloadSetup:
             user_api_key_auth_metadata=None,
             team_alias=None,
             team_id=None,
+            used_client_oauth_token=resolve_used_client_oauth_token(
+                proxy_stamped_used_client_oauth_token(metadata, litellm_params),
+                custom_llm_provider,
+            ),
         )
         if isinstance(metadata, dict):
             for key in metadata.keys() & _STANDARD_LOGGING_METADATA_KEYS:
@@ -6520,6 +6547,7 @@ def get_standard_logging_object_payload(
             stream=kwargs.get("stream", False),
         )
         # clean up litellm metadata
+        selected_provider: Final = kwargs.get("custom_llm_provider")
         clean_metadata: Final = StandardLoggingPayloadSetup.get_standard_logging_metadata(
             metadata=metadata,
             litellm_params=litellm_params,
@@ -6531,6 +6559,7 @@ def get_standard_logging_object_payload(
             proxy_server_request=proxy_server_request,
             start_time=start_time,
             response_id=id,
+            custom_llm_provider=selected_provider if isinstance(selected_provider, str) else None,
         )
         _request_body: Final = proxy_server_request.get("body", {})
         end_user_id: Final = clean_metadata["user_api_key_end_user_id"] or _request_body.get(
@@ -6805,6 +6834,7 @@ def get_standard_logging_metadata(
         user_api_key_auth_metadata=None,
         team_alias=None,
         team_id=None,
+        used_client_oauth_token=None,
     )
     if isinstance(metadata, dict):
         # Update the clean_metadata with values from input metadata that match StandardLoggingMetadata fields
