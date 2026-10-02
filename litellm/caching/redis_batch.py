@@ -20,7 +20,7 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import timedelta
 from types import MappingProxyType, TracebackType
-from typing import Final, Generic, Protocol, TypeVar
+from typing import Final, Generic, Protocol, TypeAlias, TypeVar
 
 from litellm._logging import verbose_logger
 from litellm.caching.redis_cache import (
@@ -31,8 +31,8 @@ from litellm.caching.redis_cache import (
 from litellm.caching.redis_cluster_cache import RedisClusterCache
 from litellm.types.services import ServiceTypes
 
-_T = TypeVar("_T")
-_ScriptArg = str | bytes | int | float
+_T: Final = TypeVar("_T")
+_ScriptArg: TypeAlias = str | bytes | int | float
 SettledHook = Callable[[asyncio.Future[_T]], Awaitable[None] | None]  # mutable-ok: Callable params
 POST_CALL_FLUSH_DEADLINE_SECONDS: Final = 1.0
 
@@ -48,7 +48,9 @@ class _RedisPipeline(Protocol):
     def expire(self, name: str, time: timedelta) -> object: ...
     def set(self, name: str, value: str, ex: timedelta | None = None) -> object: ...
     def delete(self, *names: str) -> object: ...
-    async def execute(self, raise_on_error: bool = True) -> list[object]: ...
+    async def execute(
+        self, raise_on_error: bool = True
+    ) -> list[object]: ...  # mutable-ok: matches the real redis-py pipeline API
 
 
 class _Op(Generic[_T]):
@@ -139,7 +141,7 @@ class _MGet(_Op[Mapping[str, object]]):
         )
 
     async def run_alone(self) -> Mapping[str, object]:
-        found: Mapping[str, object] = await self._redis_cache.async_batch_get_cache(key_list=list(self._keys))  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # untyped cache API  # mutable-ok: the cache API takes a list
+        found: Final[Mapping[str, object]] = await self._redis_cache.async_batch_get_cache(key_list=list(self._keys))  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # untyped cache API  # mutable-ok: the cache API takes a list
         if any(key not in found for key in self._keys):
             raise ConnectionError("batch get did not return every key")
         return found
@@ -200,7 +202,7 @@ class _Increment(_Op[float]):
         return float(reply)
 
     async def run_alone(self) -> float:
-        value: object = await self._redis_cache.async_increment(key=self._key, value=self._value, ttl=self._ttl)  # pyright: ignore[reportUnknownMemberType]  # untyped cache API
+        value: Final[object] = await self._redis_cache.async_increment(key=self._key, value=self._value, ttl=self._ttl)  # pyright: ignore[reportUnknownMemberType]  # untyped cache API
         if not isinstance(value, (int, float)):
             raise TypeError(f"increment did not return a number: {type(value).__name__}")
         return float(value)
@@ -359,9 +361,9 @@ class RedisBatch:
 
     async def _flush_pipeline(self, ops: Sequence[_Op[object]]) -> None:
         start_time: Final = time.time()
-        widths: list[int] = []  # mutable-ok: filled while enqueuing
+        widths: Final[list[int]] = []  # mutable-ok: filled while enqueuing
 
-        async def run() -> list[object]:
+        async def run() -> list[object]:  # mutable-ok: matches _RedisPipeline.execute's return type
             client: Final = self.redis_cache.init_async_client()
             async with client.pipeline(transaction=False) as pipe:
                 widths.extend(op.enqueue(pipe) for op in ops)
@@ -393,8 +395,8 @@ class RedisBatch:
                 end_time=time.time(),
             )
         )
-        retries: list[Awaitable[None]] = []  # mutable-ok: collected while slicing replies
-        offset = 0
+        retries: Final[list[Awaitable[None]]] = []  # mutable-ok: collected while slicing replies
+        offset = 0  # rebind-ok: running cursor advanced each loop iteration below
         for op, width in zip(ops, widths):
             retry = op.settle(replies[offset : offset + width])
             offset += width
@@ -449,9 +451,9 @@ class RequestRedisBatches:
 
     def batch(self, redis_cache: RedisCache) -> RedisBatch:
         key: Final = _backend_key(redis_cache)
-        batch = self._batches.get(key)
+        batch = self._batches.get(key)  # rebind-ok: get-or-create below
         if batch is None:
-            batch = RedisBatch(redis_cache, name="request_redis_batch")
+            batch = RedisBatch(redis_cache, name="request_redis_batch")  # rebind-ok: see declaration above
             self._batches[key] = batch
         return batch
 
