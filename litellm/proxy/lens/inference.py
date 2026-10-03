@@ -143,7 +143,13 @@ async def analyze(
         ).model_copy(update=MappingProxyType({"spent": current.spent + estimate}))
 
     async def reserve_budget() -> None:
-        if await repo.update(lens.id, reserve) is None:
+        # RAYWARD FORK PATCH: LensRepository.update's CAS loop defaults to 8 attempts against
+        # one shared row, but a job can run job.settings.concurrency (unbounded, default 8)
+        # concurrent reservations against that same row, so exhaustion is routine at the
+        # default setting, not a rare race. Scale the retry budget with concurrency (bounded,
+        # so a pathologically high setting can't spin forever).
+        attempts: Final = min(64, max(8, job.settings.concurrency * 4))
+        if await repo.update(lens.id, reserve, attempts=attempts) is None:
             raise HTTPException(409, "Could not reserve analysis budget")
 
     data: Final[dict[str, object]] = {  # mutable-ok: proxy processing enriches request data

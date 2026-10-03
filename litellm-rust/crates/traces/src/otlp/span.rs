@@ -70,13 +70,14 @@ fn append_scope(
                 + size_of::<DecodedSpan>()
                 + 128,
         )?;
-        spans.push(decoded_span(
-            span,
-            resource,
-            &scope_name,
-            &scope_version,
-            budget,
-        )?);
+        // RAYWARD FORK PATCH: a single span with an out-of-range gen_ai usage-token attribute
+        // must not drop the rest of an otherwise-valid export batch. Every other decode error
+        // (payload/budget limits) still aborts the batch.
+        match decoded_span(span, resource, &scope_name, &scope_version, budget) {
+            Ok(decoded) => spans.push(decoded),
+            Err(Error::TokenCountOutOfRange) => continue,
+            Err(error) => return Err(error),
+        }
     }
     Ok(())
 }

@@ -61,6 +61,40 @@ fn rejects_invalid_payload() {
 }
 
 #[rstest]
+fn one_span_with_an_out_of_range_token_count_does_not_drop_the_rest_of_the_batch(
+    span: opentelemetry_proto::tonic::trace::v1::Span,
+) {
+    use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+    use prost::Message;
+
+    fn with_attribute(
+        mut span: opentelemetry_proto::tonic::trace::v1::Span,
+        key: &str,
+        value: &str,
+    ) -> opentelemetry_proto::tonic::trace::v1::Span {
+        span.attributes.push(KeyValue {
+            key: key.into(),
+            value: Some(AnyValue {
+                value: Some(Value::StringValue(value.into())),
+            }),
+            ..Default::default()
+        });
+        span
+    }
+
+    let malformed = with_attribute(span.clone(), "gen_ai.usage.input_tokens", "-1");
+    let valid = with_attribute(span, "gen_ai.usage.input_tokens", "7");
+    let mut request = request_with(malformed);
+    request.resource_spans[0].scope_spans[0].spans.push(valid);
+    let body = request.encode_to_vec();
+
+    let decoded = decode_otlp(&body, None).expect("a malformed span is skipped, not fatal");
+
+    assert_eq!(decoded.len(), 1);
+    assert_eq!(decoded[0].normalized.input_tokens, 7);
+}
+
+#[rstest]
 fn decoder_does_not_enforce_the_http_body_limit() {
     let body = format!("{{\"ignored\":\"{}\"}}", "x".repeat(16 * 1024 * 1024 + 1));
     assert!(
