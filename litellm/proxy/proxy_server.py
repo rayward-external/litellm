@@ -731,6 +731,9 @@ from litellm.proxy.middleware.admission_control_middleware import (
     admission_control_state,
     get_admission_control_settings,
 )
+from litellm.proxy.middleware.external_audience_middleware import (
+    ExternalAudienceHeaderMiddleware,
+)
 from litellm.proxy.middleware.gzip_middleware import GZipBufferedResponseMiddleware
 from litellm.proxy.middleware.in_flight_requests_middleware import (
     InFlightRequestsMiddleware,

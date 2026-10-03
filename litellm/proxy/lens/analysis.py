@@ -572,6 +572,7 @@ async def investigate_stored(
     observation_page = 0  # rebind-ok: model controls navigation through observations
     catalog_page = 0  # rebind-ok: model controls navigation through the run catalog
     feedback_page = 0  # rebind-ok: navigate bounded prior finding pages
+    feedback: Final = feedback_pages(claim, candidate.check_id)
     stalled = False  # rebind-ok: a repeated request requires a decision rather than a loop
 
     async def decide(

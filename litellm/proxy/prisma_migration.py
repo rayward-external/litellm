@@ -18,6 +18,7 @@ from litellm_proxy_extras.prisma_toolchain import resolve_prisma_argv
 
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy.proxy_cli import run_server
+from litellm.secret_managers.main import str_to_bool
 
 
 def main() -> int:
