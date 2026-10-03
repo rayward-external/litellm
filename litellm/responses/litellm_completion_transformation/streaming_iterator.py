@@ -490,14 +490,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         added: Final = OutputItemAddedEvent(
             type=ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED,
             output_index=output_index,
-            item=BaseLiteLLMOpenAIResponseObject(
-                **{
-                    "id": item.id,
-                    "type": item.type,
-                    "status": "in_progress",
-                    "action": None,
-                }
-            ),
+            item=BaseLiteLLMOpenAIResponseObject(**added_item_kwargs),
         )
         added.__dict__["sequence_number"] = self._sequence_number  # pyright: ignore[reportIndexIssue]  # extra field
         self._pending_tool_events.append(added)
