@@ -17,3 +17,8 @@ reason = "paste (transitive dep of the new litellm-rust OCR/token-counter crates
 id = "RUSTSEC-2023-0071"
 ignoreUntil = 2026-11-01
 reason = "rsa 0.9.10 (transitive dep of jsonwebtoken 11.1.0, the litellm-gateway-ui crate's JWT handling) has no fixed release for the Marvin Attack timing sidechannel (only an unreleased 0.10.0-rc); remove this entry once a stable patched release exists"
+
+[[IgnoredVulns]]
+id = "GHSA-vfj7-8cjw-p6xm"
+ignoreUntil = 2026-11-01
+reason = "braces stack-exhaustion DoS, reachable in ui/litellm-dashboard/package-lock.json via eslint-config-next -> @next/eslint-plugin-next, which pins fast-glob 3.3.1 (-> micromatch -> braces) on every 16.x release up to the current latest (16.3.8); braces itself has no release past 3.0.3, the vulnerable one. Fixed everywhere else in the repo (root, tests/pass_through_tests, tests/proxy_admin_ui_tests/ui_unit_tests via jest 29->30.5.2; ui/litellm-dashboard's own knip 5.83.1->6.38.0) by dropping the vulnerable chain entirely. Remove this entry once Next.js ships an eslint-config-next release with a patched fast-glob/braces, or @next/eslint-plugin-next drops fast-glob."
