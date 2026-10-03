@@ -18,8 +18,15 @@ use crate::{
 pub(super) fn flatten(request: ExportTraceServiceRequest) -> Result<Vec<DecodedSpan>, Error> {
     let mut budget = Budget::new(MAX_DECODED_SPAN_BYTES);
     let mut spans = Vec::new();
+    let mut skipped = false;
     for resource in request.resource_spans {
-        append_resource(resource, &mut budget, &mut spans)?;
+        skipped |= append_resource(resource, &mut budget, &mut spans)?;
+    }
+    // RAYWARD FORK PATCH: a bad span is only skipped (see append_scope) when it leaves other
+    // valid spans behind. If every span in the batch was skipped, surface the original error
+    // instead of a silent empty success, preserving the existing single-span reject contract.
+    if spans.is_empty() && skipped {
+        return Err(Error::TokenCountOutOfRange);
     }
     Ok(spans)
 }
@@ -28,7 +35,7 @@ fn append_resource(
     resource: ResourceSpans,
     budget: &mut Budget,
     spans: &mut Vec<DecodedSpan>,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let attributes = Shared::new(attributes(
         resource
             .resource
@@ -36,10 +43,11 @@ fn append_resource(
             .unwrap_or_default(),
         budget,
     )?);
+    let mut skipped = false;
     for scope in resource.scope_spans {
-        append_scope(scope, &attributes, budget, spans)?;
+        skipped |= append_scope(scope, &attributes, budget, spans)?;
     }
-    Ok(())
+    Ok(skipped)
 }
 
 fn append_scope(
@@ -47,7 +55,7 @@ fn append_scope(
     resource: &Shared<BTreeMap<String, String>>,
     budget: &mut Budget,
     spans: &mut Vec<DecodedSpan>,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let scope = scope_spans.scope.unwrap_or_default();
     if scope.attributes.len() > MAX_ATTRIBUTES {
         return Err(Error::TooLarge);
@@ -55,6 +63,7 @@ fn append_scope(
     budget.consume(scope.name.len() + scope.version.len())?;
     let scope_name: Shared<String> = scope.name.into();
     let scope_version: Shared<String> = scope.version.into();
+    let mut skipped = false;
     for span in scope_spans.spans {
         if spans.len() >= MAX_SPANS {
             return Err(Error::TooLarge);
@@ -75,11 +84,11 @@ fn append_scope(
         // (payload/budget limits) still aborts the batch.
         match decoded_span(span, resource, &scope_name, &scope_version, budget) {
             Ok(decoded) => spans.push(decoded),
-            Err(Error::TokenCountOutOfRange) => continue,
+            Err(Error::TokenCountOutOfRange) => skipped = true,
             Err(error) => return Err(error),
         }
     }
-    Ok(())
+    Ok(skipped)
 }
 
 fn valid_id(value: &[u8], length: usize) -> bool {
