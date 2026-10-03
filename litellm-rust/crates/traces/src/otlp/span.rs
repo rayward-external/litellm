@@ -65,8 +65,12 @@ fn append_scope(
     let scope_version: Shared<String> = scope.version.into();
     let mut skipped = false;
     for span in scope_spans.spans {
+        // RAYWARD FORK PATCH: keep the first MAX_SPANS already-decoded spans instead of
+        // rejecting the whole export once the cap is hit -- OTel Collector's default
+        // send_batch_size (8192) exceeds this cap, so base's uncapped decoder would have
+        // accepted the export in full.
         if spans.len() >= MAX_SPANS {
-            return Err(Error::TooLarge);
+            break;
         }
         validate_span(&span)?;
         budget.consume(

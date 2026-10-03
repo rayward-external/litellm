@@ -95,6 +95,22 @@ fn one_span_with_an_out_of_range_token_count_does_not_drop_the_rest_of_the_batch
 }
 
 #[rstest]
+fn a_batch_over_the_span_cap_keeps_the_first_max_spans_instead_of_rejecting_everything(
+    span: opentelemetry_proto::tonic::trace::v1::Span,
+) {
+    use prost::Message;
+
+    let mut request = request_with(span.clone());
+    request.resource_spans[0].scope_spans[0].spans = vec![span; 5000];
+    let body = request.encode_to_vec();
+
+    let decoded =
+        decode_otlp(&body, None).expect("exceeding MAX_SPANS keeps the first batch, not an error");
+
+    assert_eq!(decoded.len(), 4096);
+}
+
+#[rstest]
 fn decoder_does_not_enforce_the_http_body_limit() {
     let body = format!("{{\"ignored\":\"{}\"}}", "x".repeat(16 * 1024 * 1024 + 1));
     assert!(
