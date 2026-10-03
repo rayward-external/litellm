@@ -157,9 +157,6 @@ describe("EditAutoRouterModal keyword matching", () => {
     const threshold = screen.getByRole("textbox", { name: "Success threshold" });
     expect(threshold).toHaveValue("0.91");
     fireEvent.change(threshold, { target: { value: raw } });
-    // Same margin issue as the classifier-vision test above: the first save-button wait after
-    // mount sometimes still needs a second debounced availability refetch to settle, which can
-    // land past the default 1000ms waitFor window on this runner.
     await waitFor(() => expect(screen.getByRole("button", { name: "Save Changes" })).toBeEnabled(), {
       timeout: 5000,
     });
