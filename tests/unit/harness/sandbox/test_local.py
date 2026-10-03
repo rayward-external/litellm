@@ -121,12 +121,18 @@ async def test_env_filters_provider_secrets(sbx, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://x")
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_fake")
+    monkeypatch.setenv("DATABASE_URL", "postgres://u:p@host/db")
+    monkeypatch.setenv("REDIS_PASSWORD", "hunter2")
+    monkeypatch.setenv("SSH_PRIVATE_KEY", "-----BEGIN KEY-----")
     monkeypatch.setenv("HARNESS_TEST_PLAIN", "visible")
     script = (
         "import os;"
         "print(os.environ.get('ANTHROPIC_API_KEY','<none>'));"
         "print(os.environ.get('OPENAI_BASE_URL','<none>'));"
         "print(os.environ.get('GITHUB_TOKEN','<none>'));"
+        "print(os.environ.get('DATABASE_URL','<none>'));"
+        "print(os.environ.get('REDIS_PASSWORD','<none>'));"
+        "print(os.environ.get('SSH_PRIVATE_KEY','<none>'));"
         "print(os.environ.get('HARNESS_TEST_PLAIN','<none>'));"
         "print(os.environ.get('ANTHROPIC_BASE_URL','<none>'))"
     )
@@ -134,6 +140,9 @@ async def test_env_filters_provider_secrets(sbx, monkeypatch):
         [PY, "-c", script], env={"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
     )
     assert result.stdout.split() == [
+        "<none>",
+        "<none>",
+        "<none>",
         "<none>",
         "<none>",
         "<none>",
@@ -152,6 +161,15 @@ async def test_env_filters_provider_secrets(sbx, monkeypatch):
         ("MY_API_KEY", True),
         ("SLACK_BOT_TOKEN", True),
         ("CLIENT_SECRET", True),
+        ("DATABASE_URL", True),
+        ("REDIS_URL", True),
+        ("REDIS_PASSWORD", True),
+        ("SMTP_PASSWORD", True),
+        ("DB_PASSWD", True),
+        ("SSH_PRIVATE_KEY", True),
+        ("TLS_CERT", True),
+        ("AWS_RDS_DSN", True),
+        ("CLIENT_CREDENTIALS", True),
         ("PATH", False),
         ("HOME", False),
     ],

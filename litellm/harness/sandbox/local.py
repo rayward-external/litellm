@@ -33,8 +33,23 @@ _SECRET_PREFIXES: Final = (
     "CLAUDE_PID",
     "CLAUDECODE",
 )
-_SECRET_NAMES: Final = frozenset({"GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"})
-_SECRET_SUBSTRINGS: Final = ("API_KEY", "TOKEN", "SECRET")
+_SECRET_NAMES: Final = frozenset(
+    {"GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "DATABASE_URL", "REDIS_URL"}
+)
+# RAYWARD FORK PATCH: the upstream substring list (API_KEY, TOKEN, SECRET) let host secrets
+# like DATABASE_URL, REDIS_PASSWORD, SMTP_PASSWORD and SSH private keys reach the sandboxed
+# agent's environment verbatim, where its own shell tool can read and exfiltrate them.
+_SECRET_SUBSTRINGS: Final = (
+    "API_KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "PRIVATE_KEY",
+    "CERT",
+    "_DSN",
+)
 _TEMPDIR_PREFIX: Final = "litellm-harness-"
 
 
