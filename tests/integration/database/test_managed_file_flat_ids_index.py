@@ -81,7 +81,7 @@ def _deploy_schema_before(database_url: str, directory: Path, migration: str) ->
 
 def _run_migration_entrypoint(database_url: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-m", "litellm.proxy.prisma_migration"],
+        [sys.executable, "-P", "-m", "litellm.proxy.prisma_migration"],
         capture_output=True,
         text=True,
         timeout=600,

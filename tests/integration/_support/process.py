@@ -244,7 +244,7 @@ class UpstreamSlot:
         output: Final = Path(os.environ.get("INTEGRATION_RESULTS_DIR") or self.directory)
         log_path: Final = output / f"owned-upstream-{self.port}-{uuid.uuid4().hex}.log"
         with log_path.open("w") as log:
-            process: Final = subprocess.Popen(
+            process: Final = subprocess.Popen(  # test-quality-ok: -I/-P would drop cwd from sys.path, which this relies on to resolve integration._support.upstream
                 [sys.executable, "-m", "integration._support.upstream", "--port", str(self.port)],
                 cwd=self.root,
                 env=dict(os.environ),
