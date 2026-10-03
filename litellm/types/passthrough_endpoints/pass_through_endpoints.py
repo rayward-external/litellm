@@ -34,6 +34,7 @@ class EndpointType(str, Enum):
     COHERE = "cohere"
     TINYFISH = "tinyfish"
     GENERIC = "generic"
+    DECISIONS = "decisions"
 
 
 class PassthroughStandardLoggingPayload(TypedDict, total=False):
