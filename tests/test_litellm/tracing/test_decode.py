@@ -9,6 +9,7 @@ import base64
 import gzip
 import json
 from pathlib import Path
+from typing import Final
 from unittest.mock import patch
 
 import pytest
@@ -579,6 +580,25 @@ def test_token_counts_outside_storage_range_are_rejected(count):
     exported = _span("root", b"\x01" * 8, gen_ai__usage__input_tokens=count)
     with pytest.raises(decode.InvalidOTLPPayloadError, match="storage range"):
         decode_otlp(_export(exported))
+
+
+def test_exceeding_the_span_cap_logs_a_warning_instead_of_failing_silently():
+    one_span: Final = decode.native_decode_otlp(_export(_span("root", b"\x01" * 8)), None)
+    with (
+        patch.object(decode, "native_decode_otlp", return_value=one_span * decode.OTLP_MAX_SPANS),
+        patch.object(decode, "verbose_proxy_logger") as mock_logger,
+    ):
+        rows = decode_otlp(b"ignored")
+    assert len(rows) == decode.OTLP_MAX_SPANS
+    mock_logger.warning.assert_called_once()
+
+
+def test_a_batch_under_the_span_cap_logs_nothing():
+    exported = _export(*([_span("root", b"\x01" * 8)] * 3))
+    with patch.object(decode, "verbose_proxy_logger") as mock_logger:
+        rows = decode_otlp(exported)
+    assert len(rows) == 3
+    mock_logger.warning.assert_not_called()
 
 
 def test_claude_agent_sdk_rows_carry_framework_tool_names_and_arguments():

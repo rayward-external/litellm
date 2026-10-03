@@ -10,7 +10,8 @@ from typing import Final
 from pydantic import JsonValue, TypeAdapter, ValidationError
 from typing_extensions import ReadOnly, TypedDict
 
-from litellm.constants import OTLP_MAX_ATTRIBUTE_VALUE_BYTES, OTLP_MAX_BODY_BYTES
+from litellm._logging import verbose_proxy_logger
+from litellm.constants import OTLP_MAX_ATTRIBUTE_VALUE_BYTES, OTLP_MAX_BODY_BYTES, OTLP_MAX_SPANS
 from litellm.rust_bridge.traces import DecodedSpan
 from litellm.rust_bridge.traces import decode_otlp as native_decode_otlp
 from litellm.rust_bridge.traces import encode_error as native_encode_error
@@ -127,6 +128,10 @@ def decode_otlp(
         raise OTLPPayloadTooLargeError(str(error)) from error
     except ValueError as error:
         raise InvalidOTLPPayloadError(str(error)) from error
+    if len(spans) >= OTLP_MAX_SPANS:
+        verbose_proxy_logger.warning(
+            "OTLP export hit the %d-span cap; spans beyond it were dropped silently", OTLP_MAX_SPANS
+        )
     return tuple(_span_row(span) for span in spans)
 
 
