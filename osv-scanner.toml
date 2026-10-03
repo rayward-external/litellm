@@ -7,3 +7,13 @@ reason = "diskcache 5.6.3 (latest as of 2026-09-30) still has no fixed release p
 id = "GHSA-h7x2-h6g9-p789"
 ignoreUntil = 2026-10-14
 reason = "mlflow has no fixed release published (3.16.0, 2026-09-04, and master still store gateway secret api_base unvalidated); remove this entry once one exists"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+ignoreUntil = 2026-10-11
+reason = "paste (transitive dep of the new litellm-rust OCR/token-counter crates pulled in by the 2026-09-11 upstream sync) is unmaintained with no fixed release; remove this entry once one exists"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+ignoreUntil = 2026-11-01
+reason = "rsa 0.9.10 (transitive dep of jsonwebtoken 11.1.0, the litellm-gateway-ui crate's JWT handling) has no fixed release for the Marvin Attack timing sidechannel (only an unreleased 0.10.0-rc); remove this entry once a stable patched release exists"

@@ -10980,6 +10980,7 @@ async def test_rejected_realtime_session_releases_the_reservation_when_the_clien
     assert reservation["finalized"] is True
 
 
+@_REALTIME_WS_DISABLED
 @pytest.mark.asyncio
 async def test_successful_realtime_session_leaves_the_reservation_for_the_cost_callback():
     """A billable realtime session settles its reservation through the enqueued
