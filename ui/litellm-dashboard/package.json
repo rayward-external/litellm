@@ -19,7 +19,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "knip": "knip",
-    "knip:ci": "knip --exclude exports,nsExports,types,nsTypes,enumMembers,classMembers,duplicates",
+    "knip:ci": "knip --exclude exports,nsExports,types,nsTypes,enumMembers,namespaceMembers,duplicates",
     "knip:fix": "knip --fix",
     "gen:api": "node scripts/gen-api-types.mjs"
   },
@@ -84,7 +84,7 @@
     "eslint-plugin-testing-library": "7.16.2",
     "eslint-plugin-unused-imports": "4.3.0",
     "jsdom": "27.4.0",
-    "knip": "5.83.1",
+    "knip": "6.38.0",
     "openapi-typescript": "7.13.0",
     "postcss": "8.5.23",
     "prettier": "3.2.5",
