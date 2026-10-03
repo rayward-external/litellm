@@ -498,6 +498,44 @@ class TestMetadataExtraction:
             assert req_headers.get("Cookie") == _HEADER_PRESENT_PLACEHOLDER
             assert req_headers.get("X-Request-Id") == _HEADER_PRESENT_PLACEHOLDER
 
+    @pytest.mark.asyncio
+    async def test_litellm_credential_header_never_forwarded_despite_glob(
+        self, generic_guardrail, mock_request_data_input
+    ):
+        """
+        The "x-litellm-*" allowlist glob exists to forward non-credential litellm
+        headers, but must never match x-litellm-api-key: forwarding it would leak
+        the caller's real litellm virtual key to the configured 3rd-party endpoint.
+        """
+        request_data = dict(mock_request_data_input)
+        request_data["proxy_server_request"] = {
+            "headers": {
+                "X-Litellm-Api-Key": "sk-should-not-forward",
+                "X-Litellm-Trace-Id": "trace_123",
+            }
+        }
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"action": "NONE", "texts": ["test"]}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(
+            generic_guardrail.async_handler, "post", return_value=mock_response
+        ) as mock_post:
+            await generic_guardrail.apply_guardrail(
+                inputs={"texts": ["test"]},
+                request_data=request_data,
+                input_type="request",
+            )
+
+            req_headers = mock_post.call_args.kwargs["json"]["request_headers"]
+
+            # Credential header: masked despite matching the "x-litellm-*" glob
+            assert req_headers.get("X-Litellm-Api-Key") == _HEADER_PRESENT_PLACEHOLDER
+
+            # Other litellm headers still forward via the glob
+            assert req_headers.get("X-Litellm-Trace-Id") == "trace_123"
+
 
 class TestGuardrailActions:
     """Test different guardrail action responses"""

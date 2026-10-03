@@ -23,6 +23,7 @@ from litellm.llms.custom_httpx.http_handler import (
     get_async_httpx_client,
     httpxSpecialProvider,
 )
+from litellm.proxy._types import SpecialHeaders
 from litellm.types.guardrails import GuardrailEventHooks
 from litellm.types.llms.openai import AllMessageValues, ChatCompletionToolParam
 from litellm.types.proxy.guardrails.guardrail_hooks.generic_guardrail_api import (
@@ -62,8 +63,16 @@ def _header_value_allowed(
     header_name: str,
     extra_allowlist: set[str] | None = None,
 ) -> bool:
-    """Return True if this header's value may be forwarded (allowlist, including globs and extra_headers)."""
+    """Return True if this header's value may be forwarded (allowlist, including globs and extra_headers).
+
+    # RAYWARD FORK PATCH: litellm_credential_header_names() always wins over the allowlist, glob
+    # match included -- the "x-litellm-*" glob above also matches the credential header
+    # x-litellm-api-key, which would otherwise forward a caller's real litellm virtual key to the
+    # operator-configured third-party guardrail endpoint.
+    """
     lower: Final = header_name.lower()
+    if lower in SpecialHeaders.litellm_credential_header_names():
+        return False
     if lower in _HEADER_VALUE_ALLOWLIST:
         return True
     for pattern in _HEADER_VALUE_ALLOWLIST:
