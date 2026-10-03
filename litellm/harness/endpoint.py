@@ -376,6 +376,7 @@ class ModelEndpoint:
         metadata: Mapping[str, Any] | None = None,
         *,
         client: httpx.AsyncClient | None = None,
+        bind_host: str = HARNESS_ENDPOINT_HOST,
     ) -> None:
         self.harness = harness
         self.model = model
@@ -386,6 +387,7 @@ class ModelEndpoint:
         self.token = secrets.token_urlsafe(HARNESS_SESSION_TOKEN_BYTES)
         self.usage = UsageTracker()
         self.port = 0
+        self._bind_host = bind_host
         self._injected_client = client
         self._deps: _ServerDeps | None = None
         self._client: httpx.AsyncClient | None = None
@@ -448,7 +450,7 @@ class ModelEndpoint:
     def _build_server(self, deps: _ServerDeps) -> Server:
         config = deps.uvicorn.Config(
             self._build_app(deps),
-            host=HARNESS_ENDPOINT_HOST,
+            host=self._bind_host,
             port=0,
             log_config=None,
             log_level="warning",

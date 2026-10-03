@@ -24,7 +24,11 @@ from typing import (
 from pydantic import BaseModel, ValidationError
 
 import litellm
-from litellm.constants import HARNESS_EVENT_QUEUE_MAX_SIZE
+from litellm.constants import (
+    HARNESS_ENDPOINT_CONTAINER_BIND_HOST,
+    HARNESS_ENDPOINT_HOST,
+    HARNESS_EVENT_QUEUE_MAX_SIZE,
+)
 from litellm.harness.context import ApprovalHandler, GatewayTarget, SessionContext
 from litellm.harness.endpoint import ModelEndpoint
 from litellm.harness.errors import (
@@ -627,6 +631,11 @@ class AsyncSession:
             api_key=self.config.api_key,
             api_base=self.config.api_base,
             metadata=self.config.metadata,
+            bind_host=(
+                HARNESS_ENDPOINT_CONTAINER_BIND_HOST
+                if getattr(self.config.sandbox, "is_container", False)
+                else HARNESS_ENDPOINT_HOST
+            ),
         )
         await endpoint.__aenter__()
         self.ctx.endpoint = endpoint

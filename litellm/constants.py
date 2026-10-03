@@ -2233,6 +2233,11 @@ HIBP_RANGE_API_BASE: Final = "https://api.pwnedpasswords.com/range"
 
 # litellm.harness defaults
 HARNESS_ENDPOINT_HOST: Final = "127.0.0.1"
+# A containerized sandbox reaches the host endpoint over a bridge interface (e.g.
+# Docker's host-gateway alias), not loopback, so the endpoint must bind every
+# interface rather than just 127.0.0.1. Safe because every request still requires
+# ModelEndpoint's per-session bearer token.
+HARNESS_ENDPOINT_CONTAINER_BIND_HOST: Final = "0.0.0.0"
 HARNESS_ENDPOINT_STARTUP_TIMEOUT_SECONDS: Final = 10.0
 HARNESS_ENDPOINT_REQUEST_TIMEOUT_SECONDS: Final = 600.0
 HARNESS_SESSION_TOKEN_BYTES: Final = 32
