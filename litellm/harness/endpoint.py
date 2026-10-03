@@ -18,7 +18,11 @@ import secrets
 from collections.abc import AsyncIterable, AsyncIterator, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType, ModuleType
-from typing import TYPE_CHECKING, Any, Final
+from typing import (
+    TYPE_CHECKING,
+    Any,  # noqa: TID251  # upstream code: genuinely dynamic JSON/SDK payloads throughout this file
+    Final,
+)
 
 import httpx
 import openai
