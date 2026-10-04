@@ -175,6 +175,11 @@ def test_synthetic_tree_is_clean_before_mutation(tmp_path):
         ("Dockerfile", "builder", "LITELLM_BUILD_IMAGE"),
         ("Dockerfile", "ui-builder", "UI_BUILD_IMAGE"),
         ("backend/Dockerfile", "uvbin", "UV_IMAGE"),
+        ("Dockerfile", "liteadmin-builder", "LITELLM_BUILD_IMAGE"),
+        ("deploy/lens/Dockerfile", "uvbin", "UV_IMAGE"),
+        ("deploy/lens/Dockerfile", "builder", "LITELLM_BUILD_IMAGE"),
+        ("deploy/lens/Dockerfile", "runtime", "LITELLM_RUNTIME_IMAGE"),
+        ("docker/Dockerfile.non_root", "builder", "LITELLM_BUILD_IMAGE"),
     ],
 )
 def test_per_stage_revert_to_vanilla_is_detected(tmp_path, dockerfile, stage, arg_name):

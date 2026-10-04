@@ -157,6 +157,7 @@ REQUIRED_PINNED_DOCKERFILES = (
 # fine and died at run time on the glibc mismatch.
 STAGE_TO_ARG = {
     "builder": "LITELLM_BUILD_IMAGE",
+    "liteadmin-builder": "LITELLM_BUILD_IMAGE",
     "runtime": "LITELLM_RUNTIME_IMAGE",
     "ui-builder": "UI_BUILD_IMAGE",
     "uvbin": "UV_IMAGE",
@@ -181,14 +182,14 @@ STAGE_TO_ARG = {
 # drift and revert exactly the same way -- the node ui-builder pins are the
 # ones that were actually found stale.
 EXPECTED_LITERAL_PIN_STAGES = {
-    "Dockerfile": ("uvbin", "ui-builder", "builder", "runtime"),
+    "Dockerfile": ("uvbin", "ui-builder", "builder", "runtime", "liteadmin-builder"),
     "backend/Dockerfile": ("uvbin", "builder", "runtime"),
     "gateway/Dockerfile": ("uvbin", "builder", "runtime"),
     "migrations/Dockerfile": ("uvbin", "builder", "runtime"),
     # builder is still vanilla `FROM $LITELLM_BUILD_IMAGE` here.
     "docker/Dockerfile.database": ("uvbin", "ui-builder", "runtime"),
-    # builder and runtime are still vanilla `FROM $VAR` here.
-    "docker/Dockerfile.non_root": ("uvbin", "ui-builder"),
+    "docker/Dockerfile.non_root": ("uvbin", "ui-builder", "builder", "runtime"),
+    "deploy/lens/Dockerfile": ("uvbin", "builder", "runtime"),
 }
 
 _ARG_PIN_RE = re.compile(
