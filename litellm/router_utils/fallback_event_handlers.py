@@ -35,6 +35,7 @@ from litellm.types.router import (
     RouterErrors,
     RouterRateLimitError,
     RouterRateLimitErrorBasic,
+    reject_server_owned_wif_params,
 )
 from litellm.utils import _get_deployment_order
 
@@ -360,7 +361,7 @@ def mid_stream_fallback_hop_kwargs(
     copied_buckets: Final = MappingProxyType(
         {name: safe_deep_copy(kwargs[name]) for name in _ROUTER_METADATA_BUCKETS if isinstance(kwargs.get(name), dict)}
     )
-    return {  # mutable-ok: handed to the streaming iterator as its initial_kwargs, which it rewrites on re-entry
+    return {
         **kwargs,
         **copied_buckets,
         **hop_controls.overrides,
@@ -647,6 +648,14 @@ async def run_async_fallback(
     )
     failed_model_group: Final = get_pre_routing_selection(kwargs) or original_model_group
     attempted.record(failed_model_group)
+
+    # A dict target is merged straight into kwargs below, and kwargs win over the deployment's own
+    # params, so a stored key/team/global fallback could otherwise set a federation field that the
+    # request itself is forbidden to carry. Checked here rather than at the merge: inside the loop
+    # the refusal would be caught as a per-target failure and quietly skipped to the next one.
+    for target in fallback_model_group:
+        if isinstance(target, dict):
+            reject_server_owned_wif_params(target)
 
     for mg in fallback_model_group:
         if mg == failed_model_group:
