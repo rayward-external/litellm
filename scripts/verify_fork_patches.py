@@ -134,8 +134,9 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # phase cannot go vacuous if a manifest row is dropped, a file is renamed, or
 # the FROM/ARG regexes stop matching. These are the five that carried the
 # 2026-08-30 drift (rayward-internal/llm-gateway-infra#694);
-# docker/Dockerfile.non_root is checked too when the manifest names it, but is
-# not required (its builder/runtime stages are still vanilla `FROM $VAR`).
+# docker/Dockerfile.non_root is checked too when the manifest names it (all
+# four of its stages are now literal-pinned), but it is not required here
+# since it is a non-root variant of Dockerfile, not one of the five originals.
 # Rows currently marked `pattern = N/A` (never checked). Pinned so that
 # silencing a LIVE row by flipping its pattern to N/A -- the cheapest possible
 # way to make this script green without fixing anything -- shows up as a diff
