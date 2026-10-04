@@ -134,13 +134,14 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # phase cannot go vacuous if a manifest row is dropped, a file is renamed, or
 # the FROM/ARG regexes stop matching. These are the five that carried the
 # 2026-08-30 drift (rayward-internal/llm-gateway-infra#694);
-# docker/Dockerfile.non_root is checked too when the manifest names it, but is
-# not required (its builder/runtime stages are still vanilla `FROM $VAR`).
+# docker/Dockerfile.non_root is checked too when the manifest names it (all
+# four of its stages are now literal-pinned), but it is not required here
+# since it is a non-root variant of Dockerfile, not one of the five originals.
 # Rows currently marked `pattern = N/A` (never checked). Pinned so that
 # silencing a LIVE row by flipping its pattern to N/A -- the cheapest possible
 # way to make this script green without fixing anything -- shows up as a diff
 # to this number and has to be argued for in review.
-EXPECTED_NA_ROWS = 24
+EXPECTED_NA_ROWS = 23
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
@@ -157,6 +158,7 @@ REQUIRED_PINNED_DOCKERFILES = (
 # fine and died at run time on the glibc mismatch.
 STAGE_TO_ARG = {
     "builder": "LITELLM_BUILD_IMAGE",
+    "liteadmin-builder": "LITELLM_BUILD_IMAGE",
     "runtime": "LITELLM_RUNTIME_IMAGE",
     "ui-builder": "UI_BUILD_IMAGE",
     "uvbin": "UV_IMAGE",
@@ -173,22 +175,24 @@ STAGE_TO_ARG = {
 # stage -- exactly the stage rayward-internal/llm-gateway-infra#694 calls out,
 # the one that would have built clean and died at run time -- exited 0.
 #
-# 18 pins across 6 files. Note this is a SUPERSET of the "all 9 literal
-# digests" the manifest's 2026-09-02 quarantine row counts: that 9 is the
-# wolfi-base subset #239 re-synced for the glibc break (builder+runtime in the
-# four wolfi files, plus Dockerfile.database's runtime). The other 9 are the
-# six `uvbin` (ghcr.io/astral-sh/uv) and three `ui-builder` (node) pins, which
-# drift and revert exactly the same way -- the node ui-builder pins are the
-# ones that were actually found stale.
+# 24 pins across 7 files (grown from the original 18/6 by the 2026-10-04
+# sync's liteadmin-builder, docker/Dockerfile.non_root's builder+runtime, and
+# deploy/lens/Dockerfile's 3-stage entry). The original 18 is a SUPERSET of
+# the "all 9 literal digests" the manifest's 2026-09-02 quarantine row counts:
+# that 9 is the wolfi-base subset #239 re-synced for the glibc break
+# (builder+runtime in the four wolfi files, plus Dockerfile.database's
+# runtime). The other 9 are the six `uvbin` (ghcr.io/astral-sh/uv) and three
+# `ui-builder` (node) pins, which drift and revert exactly the same way -- the
+# node ui-builder pins are the ones that were actually found stale.
 EXPECTED_LITERAL_PIN_STAGES = {
-    "Dockerfile": ("uvbin", "ui-builder", "builder", "runtime"),
+    "Dockerfile": ("uvbin", "ui-builder", "builder", "runtime", "liteadmin-builder"),
     "backend/Dockerfile": ("uvbin", "builder", "runtime"),
     "gateway/Dockerfile": ("uvbin", "builder", "runtime"),
     "migrations/Dockerfile": ("uvbin", "builder", "runtime"),
     # builder is still vanilla `FROM $LITELLM_BUILD_IMAGE` here.
     "docker/Dockerfile.database": ("uvbin", "ui-builder", "runtime"),
-    # builder and runtime are still vanilla `FROM $VAR` here.
-    "docker/Dockerfile.non_root": ("uvbin", "ui-builder"),
+    "docker/Dockerfile.non_root": ("uvbin", "ui-builder", "builder", "runtime"),
+    "deploy/lens/Dockerfile": ("uvbin", "builder", "runtime"),
 }
 
 _ARG_PIN_RE = re.compile(
