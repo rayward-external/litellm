@@ -175,13 +175,15 @@ STAGE_TO_ARG = {
 # stage -- exactly the stage rayward-internal/llm-gateway-infra#694 calls out,
 # the one that would have built clean and died at run time -- exited 0.
 #
-# 18 pins across 6 files. Note this is a SUPERSET of the "all 9 literal
-# digests" the manifest's 2026-09-02 quarantine row counts: that 9 is the
-# wolfi-base subset #239 re-synced for the glibc break (builder+runtime in the
-# four wolfi files, plus Dockerfile.database's runtime). The other 9 are the
-# six `uvbin` (ghcr.io/astral-sh/uv) and three `ui-builder` (node) pins, which
-# drift and revert exactly the same way -- the node ui-builder pins are the
-# ones that were actually found stale.
+# 24 pins across 7 files (grown from the original 18/6 by the 2026-10-04
+# sync's liteadmin-builder, docker/Dockerfile.non_root's builder+runtime, and
+# deploy/lens/Dockerfile's 3-stage entry). The original 18 is a SUPERSET of
+# the "all 9 literal digests" the manifest's 2026-09-02 quarantine row counts:
+# that 9 is the wolfi-base subset #239 re-synced for the glibc break
+# (builder+runtime in the four wolfi files, plus Dockerfile.database's
+# runtime). The other 9 are the six `uvbin` (ghcr.io/astral-sh/uv) and three
+# `ui-builder` (node) pins, which drift and revert exactly the same way -- the
+# node ui-builder pins are the ones that were actually found stale.
 EXPECTED_LITERAL_PIN_STAGES = {
     "Dockerfile": ("uvbin", "ui-builder", "builder", "runtime", "liteadmin-builder"),
     "backend/Dockerfile": ("uvbin", "builder", "runtime"),
