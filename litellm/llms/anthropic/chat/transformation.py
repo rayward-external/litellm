@@ -3,7 +3,7 @@ import re
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final, NoReturn, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Final, NoReturn, cast
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -306,6 +306,8 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
 
     to pass metadata to anthropic, it's {"user_id": "any-relevant-information"}
     """
+
+    _workload_identity_eligible: ClassVar[bool] = True
 
     max_tokens: int | None = None
     stop_sequences: list | None = None

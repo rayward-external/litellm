@@ -56,10 +56,6 @@ OTLP_MAX_BODY_BYTES: Final = get_env_int("OTLP_MAX_BODY_BYTES", 16 * 1024 * 1024
 OTLP_MAX_ATTRIBUTE_VALUE_BYTES: Final = get_env_int("OTLP_MAX_ATTRIBUTE_VALUE_BYTES", 64 * 1024)
 OTLP_RETRY_AFTER_SECONDS: Final = get_env_int("OTLP_RETRY_AFTER_SECONDS", 2)
 OTLP_MAX_CONCURRENT_INGESTS: Final = get_env_int("OTLP_MAX_CONCURRENT_INGESTS", 2)
-# Must match litellm-rust/crates/traces/src/otlp/limits.rs's own hardcoded MAX_SPANS: the Rust
-# decoder truncates to this count without raising, so this is for detecting that truncation on
-# the Python side, not a configurable limit.
-OTLP_MAX_SPANS: Final = 4_096
 AGENT_TRACING_INPUT_PREVIEW_CHARS: Final = get_env_int("AGENT_TRACING_INPUT_PREVIEW_CHARS", 240)
 AGENT_TRACING_LIST_PAGE_SIZE: Final = get_env_int("AGENT_TRACING_LIST_PAGE_SIZE", 50)
 DEFAULT_S3_FLUSH_INTERVAL_SECONDS: Final = int(os.getenv("DEFAULT_S3_FLUSH_INTERVAL_SECONDS", 10))
@@ -2262,3 +2258,5 @@ HARNESS_SNAPSHOT_SKIP_DIRS: Final = frozenset(
         ".ruff_cache",
     }
 )
+
+DEFAULT_TOOL_LOOP_MAX_ROUNDS: Final = 20
