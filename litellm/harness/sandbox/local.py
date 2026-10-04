@@ -33,9 +33,7 @@ _SECRET_PREFIXES: Final = (
     "CLAUDE_PID",
     "CLAUDECODE",
 )
-_SECRET_NAMES: Final = frozenset(
-    {"GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "DATABASE_URL", "REDIS_URL"}
-)
+_SECRET_NAMES: Final = frozenset({"GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "DATABASE_URL", "REDIS_URL"})
 # RAYWARD FORK PATCH: the upstream substring list (API_KEY, TOKEN, SECRET) let host secrets
 # like DATABASE_URL, REDIS_PASSWORD, SMTP_PASSWORD and SSH private keys reach the sandboxed
 # agent's environment verbatim, where its own shell tool can read and exfiltrate them.
