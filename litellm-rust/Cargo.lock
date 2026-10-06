@@ -3614,7 +3614,7 @@ dependencies = [
  "litellm-cache-memory",
  "litellm-cache-response",
  "litellm-core-utils",
- "litellm-framing",
+ "litellm-framer",
  "litellm-host",
  "litellm-host-native",
  "litellm-http",
@@ -3699,7 +3699,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "litellm-framing"
+name = "litellm-framer"
 version = "0.1.0"
 dependencies = [
  "aws-smithy-eventstream",
@@ -3956,7 +3956,7 @@ dependencies = [
  "litellm-auth-azure",
  "litellm-auth-gcp",
  "litellm-core-utils",
- "litellm-framing",
+ "litellm-framer",
  "litellm-host",
  "litellm-http",
  "litellm-llms-types",
@@ -3989,26 +3989,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "litellm-migrate"
-version = "0.1.0"
-dependencies = [
- "litellm-migrate-macros",
- "rstest",
-]
-
-[[package]]
-name = "litellm-migrate-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "rstest",
- "syn 2.0.119",
- "tempfile",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "litellm-model-catalog"
 version = "0.1.0"
 dependencies = [
@@ -4035,16 +4015,9 @@ dependencies = [
  "litellm-auth",
  "litellm-auth-aws",
  "litellm-cache",
- "litellm-cache-azure-blob",
- "litellm-cache-disk",
- "litellm-cache-gcs",
  "litellm-cache-memory",
- "litellm-cache-qdrant-semantic",
  "litellm-cache-redis",
- "litellm-cache-redis-semantic",
  "litellm-cache-response",
- "litellm-cache-s3",
- "litellm-cache-valkey-semantic",
  "litellm-callbacks-legacy-python",
  "litellm-core",
  "litellm-core-utils",
@@ -4059,25 +4032,24 @@ dependencies = [
  "litellm-storage-clickhouse",
  "litellm-token-counter",
  "litellm-traces",
+ "litellm-traces-cache",
  "litellm-traces-clickhouse",
  "litellm-tracing",
  "prost",
  "pyo3",
  "pyo3-async-runtimes",
- "qdrant-client",
  "redis",
  "reqwest 0.12.28",
  "rstest",
  "serde",
  "serde_json",
  "serde_with",
- "sha2 0.10.9",
+ "sqlx",
  "strum",
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite",
  "tracing",
- "url",
  "veil",
  "wiremock",
 ]
@@ -4270,7 +4242,10 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
+ "serde_with",
+ "sqlx",
+ "testcontainers-modules",
+ "thiserror 2.0.19",
  "tokio",
  "url",
  "wiremock",
@@ -4368,6 +4343,8 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "serde_with",
+ "sha2 0.10.9",
  "strum",
  "thiserror 2.0.21",
  "time",
@@ -4377,13 +4354,17 @@ dependencies = [
 name = "litellm-traces-cache"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "litellm-traces",
  "moka",
  "rstest",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
- "thiserror 2.0.21",
+ "thiserror 2.0.19",
+ "time",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4391,14 +4372,11 @@ name = "litellm-traces-clickhouse"
 version = "0.1.0"
 dependencies = [
  "askama",
- "base64 0.22.1",
  "flate2",
  "futures-util",
  "hmac 0.12.1",
- "itertools 0.14.0",
  "jsonschema",
  "litellm-http",
- "litellm-migrate",
  "litellm-storage-clickhouse",
  "litellm-traces",
  "litellm-traces-cache",
@@ -4409,12 +4387,12 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "sqlx",
  "strum",
  "testcontainers-modules",
  "thiserror 2.0.21",
  "time",
  "tokio",
- "tracing",
  "url",
  "wiremock",
 ]

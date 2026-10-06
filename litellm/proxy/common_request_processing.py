@@ -316,46 +316,16 @@ def _withheld_provider_output(response: object) -> bool:
     return getattr(response, "has_buffered_provider_output", False) is True
 
 
-class _UpstreamActivityStamper:
-    """Relay the raw provider stream, stamping every chunk on an ``UpstreamStreamMonitor``.
-
-    Sits between the provider iterator and the post-call hook chain, which is the
-    only place the provider's own liveness is still visible. Above it the chain
-    can legitimately be silent while the provider talks: a guardrail configured
-    with ``streaming_buffer_until_moderated`` consumes the whole response and
-    yields nothing until its end-of-stream scan passes. The upstream-idle cap
-    reads the stamp rather than what reaches it, so buffering is never mistaken
-    for a dead model.
-
-    Attribute access falls through to the wrapped stream, so a hook that reads
-    ``has_buffered_provider_output`` or calls ``aclose()`` reaches the real one.
-    Installed only when the cap is armed, so the default path allocates nothing.
-    """
-
-    __slots__ = ("_iterator", "_monitor", "_stream")
-
-    def __init__(self, stream: AsyncIterable[object], monitor: UpstreamStreamMonitor) -> None:
-        self._stream = stream
-        self._monitor = monitor
-        # Resolved through `__aiter__` rather than assuming the wrapped object is
-        # its own iterator, and up front so a consumer reaching straight for
-        # `__anext__` gets a stream rather than a crash.
-        self._iterator: AsyncIterator[object] = stream.__aiter__()
-
-    def __aiter__(self) -> "_UpstreamActivityStamper":
-        return self
-
-    async def __anext__(self) -> object:
-        chunk: Final = await self._iterator.__anext__()
-        self._monitor.record_upstream_activity()
-        return chunk
-
-    def __getattr__(self, name: str) -> object:
-        # `getattr` on an arbitrary provider stream is untyped by construction;
-        # all this promises is that a hook reading or closing the stream reaches
-        # the real object rather than this relay.
-        delegated: Final[object] = getattr(self._stream, name)  # pyright: ignore[reportAny]  # untyped by construction
-        return delegated
+async def close_guarded_stream(stream: object) -> None:
+    if not isinstance(stream, AsyncGenerator):
+        return
+    with anyio.CancelScope(shield=True):
+        try:
+            await stream.aclose()
+        except Exception as e:  # noqa: BLE001  # a failing callback cleanup must not skip the refund and finalizer
+            verbose_proxy_logger.warning(
+                "Closing the guarded stream after a client disconnect raised %s", type(e).__name__
+            )
 
 
 def resolve_litellm_call_id(client_call_id: str | None) -> str:
@@ -4168,17 +4138,14 @@ class ProxyBaseLLMRequestProcessing:
         ended_by_upstream_idle = False  # rebind-ok: decided in the cancellation path below
         delivered_chunk = False
         recent_tail = SSE_STREAM_START_TAIL  # rebind-ok: rolling window over the yielded bytes
+        guarded_stream: Final[AsyncGenerator[object, None]] = proxy_logging_obj.async_post_call_streaming_iterator_hook(
+            user_api_key_dict=user_api_key_dict,
+            response=response,
+            request_data=request_data,
+        )
         try:
             str_so_far = ""
-            async for chunk in proxy_logging_obj.async_post_call_streaming_iterator_hook(
-                user_api_key_dict=user_api_key_dict,
-                response=(
-                    response
-                    if upstream_stream_monitor is None
-                    else _UpstreamActivityStamper(response, upstream_stream_monitor)
-                ),
-                request_data=request_data,
-            ):
+            async for chunk in guarded_stream:
                 # ``.format(chunk)`` was previously evaluated for every chunk
                 # regardless of log level; gate it behind the level check.
                 if debug_enabled:
@@ -4233,20 +4200,8 @@ class ProxyBaseLLMRequestProcessing:
             # billing and release exactly once. This is the outermost generator
             # Starlette closes on disconnect, so the nested iterator hook (which
             # only sees GeneratorExit on GC) cannot own the refund.
-            # The upstream-idle cap ends the stream from the wrapper ABOVE this
-            # generator, and it does so by closing it - which arrives here as the
-            # very same GeneratorExit a client disconnect does. Recording that as
-            # a client disconnect would put the proxy's own timeout in the logs,
-            # the status and the callbacks under the one cause it is not, which
-            # is the blind spot the cap was built to remove. The monitor the
-            # wrapper shares carries the real reason across; the refund and
-            # partial-billing bookkeeping below is identical either way.
-            ended_by_upstream_idle = (  # rebind-ok: the cancellation path is where the cause is known
-                not stream_completed
-                and upstream_stream_monitor is not None
-                and upstream_stream_monitor.ended_by_upstream_idle
-            )
-            client_disconnected = not stream_completed and not ended_by_upstream_idle
+            client_disconnected = not stream_completed
+            await close_guarded_stream(guarded_stream)
             if not delivered_chunk and not _withheld_provider_output(response):
                 from litellm.proxy.spend_tracking.budget_reservation import (
                     release_budget_reservation_on_cancel,

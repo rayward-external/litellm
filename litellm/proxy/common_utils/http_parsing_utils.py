@@ -183,16 +183,7 @@ def _mark_body_received(byte_count: int | None) -> None:
 
 
 def is_otlp_trace_request(request: Request) -> bool:
-    # RAYWARD FORK PATCH: a WebSocket connection shares Request's HTTPConnection base
-    # (and therefore .scope) but has no .method -- an HTTPException raised while
-    # authenticating a WebSocket route reaches this exact helper, through the
-    # otlp_http_exception_handler StarletteHTTPException handler FastAPI dispatches
-    # to for every connection type. Guard on scope type before touching .method.
-    return (
-        request.scope.get("type") == "http"
-        and request.method == "POST"
-        and get_route_path(request.scope) == "/v1/traces"
-    )
+    return request.method == "POST" and get_route_path(request.scope) in {"/v1/traces", "/v1/logs"}
 
 
 async def _read_request_body(request: Request | None) -> dict:
