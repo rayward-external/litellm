@@ -2,7 +2,6 @@ import json
 from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
-from types import MappingProxyType
 from typing import Final
 
 from pydantic import ConfigDict, TypeAdapter

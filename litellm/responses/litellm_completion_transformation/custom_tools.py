@@ -177,6 +177,76 @@ def build_tool_call_item_kwargs(
     return kwargs
 
 
+def is_server_executed_web_search_call(call_id: str, tool_name: str) -> bool:
+    """Was this tool call a web search the provider already ran itself?
+
+    Such a call is not actionable by the client: the provider ran the search and
+    returned the results in the same response. Surfacing it as a ``function_call``
+    makes the client answer it (codex answers ``unsupported call: web_search``),
+    and on the next turn that answer replays as a ``tool_result`` whose paired
+    ``tool_use`` does not exist, which Anthropic rejects with
+    "unexpected `tool_use_id` found in `tool_result` blocks".
+    """
+    return (
+        call_id.startswith(SERVER_EXECUTED_TOOL_CALL_ID_PREFIX) and tool_name in SERVER_EXECUTED_WEB_SEARCH_TOOL_NAMES
+    )
+
+
+def extract_string_tool_argument(arguments: str, key: str) -> str | None:
+    """Read one non-empty string field out of a tool call's JSON arguments."""
+    if not arguments:
+        return None
+    try:
+        parsed: Final = json.loads(arguments)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if isinstance(parsed, dict):
+        value: Final = parsed.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def build_web_search_call_action(tool_name: str, arguments: str) -> OutputWebSearchCallAction | None:
+    """Describe what a provider-executed web tool actually did.
+
+    The two Anthropic server tools read from different keys -- ``web_search``
+    takes ``{"query": ...}`` and ``web_fetch`` takes ``{"url": ...}`` (both
+    measured against api.anthropic.com on 2026-09-02) -- and OpenAI keeps them
+    distinct too: a fetch is a ``web_search_call`` whose action is
+    ``open_page`` (``openai.types.responses.response_function_web_search``).
+    Reading a fetch with the search key would drop the URL and report a query
+    the model never ran, so the branch is on the tool name, not the arguments.
+
+    Returns None only when the arguments carry neither key, leaving the item
+    without an action rather than describing work that did not happen.
+    """
+    if tool_name == SERVER_EXECUTED_WEB_FETCH_TOOL_NAME:
+        url: Final = extract_string_tool_argument(arguments, "url")
+        return OutputWebSearchCallOpenPageAction(type="open_page", url=url) if url is not None else None
+    query: Final = extract_string_tool_argument(arguments, "query")
+    return OutputWebSearchCallSearchAction(type="search", query=query) if query is not None else None
+
+
+def build_web_search_call_item(
+    call_id: str,
+    tool_name: str,
+    arguments: str,
+    status: WebSearchCallStatus,
+) -> OutputWebSearchCall:
+    """Build the ``web_search_call`` output item for a provider-executed call.
+
+    Shared by the streaming iterator and the non-streaming transformation so
+    both surfaces describe the same call the same way.
+    """
+    return OutputWebSearchCall(
+        type="web_search_call",
+        id=openai_shaped_tool_call_item_id("web_search_call", call_id),
+        status=status,
+        action=build_web_search_call_action(tool_name, arguments),
+    )
+
+
 class _CustomToolFormat(LiteLLMBaseModel):
     syntax: str = ""
     definition: str = ""
