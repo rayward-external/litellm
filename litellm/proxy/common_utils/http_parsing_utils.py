@@ -183,7 +183,14 @@ def _mark_body_received(byte_count: int | None) -> None:
 
 
 def is_otlp_trace_request(request: Request) -> bool:
-    return request.method == "POST" and get_route_path(request.scope) in {"/v1/traces", "/v1/logs"}
+    # WebSocket connections share Request's HTTPConnection base (and so .scope)
+    # but have no .method; guard before touching it so a WebSocket auth failure
+    # routed through the same exception handler doesn't crash with AttributeError.
+    return (
+        request.scope.get("type") == "http"
+        and request.method == "POST"
+        and get_route_path(request.scope) in {"/v1/traces", "/v1/logs"}
+    )
 
 
 async def _read_request_body(request: Request | None) -> dict:

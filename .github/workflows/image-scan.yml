@@ -166,7 +166,7 @@ jobs:
           LITELLM_IMAGE: litellm-image-scan:${{ github.sha }}
           LITELLM_ADMIN_MCP_SCHEMA_IMAGE: litellm-admin-mcp-schema:${{ github.sha }}
         run: |
-          python -m pip install "pytest==9.0.3"
+          python -m pip install --no-cache-dir --require-hashes -r .github/scripts/migration-test-requirements.txt
           python -m pytest tests/proxy_migration_tests/test_offline_image_migration.py tests/proxy_migration_tests/test_image_bedrock_realtime_extra.py tests/proxy_migration_tests/test_image_admin_mcp.py -v
 
       # Scans the whole shipped artifact: OS/apk plus every language package
@@ -226,7 +226,7 @@ jobs:
           LITELLM_IMAGE: litellm-runtime-scan:${{ github.sha }}
           LITELLM_ADMIN_MCP_SCHEMA_IMAGE: litellm-admin-mcp-schema:${{ github.sha }}
         run: |
-          python -m pip install "pytest==9.0.3"
+          python -m pip install --no-cache-dir --require-hashes -r .github/scripts/migration-test-requirements.txt
           python -m pytest tests/proxy_migration_tests/test_offline_image_migration.py tests/proxy_migration_tests/test_image_bedrock_realtime_extra.py tests/proxy_migration_tests/test_image_admin_mcp.py -v
 
       - name: Verify the bundled Lens Compose installation and restart
@@ -294,7 +294,7 @@ jobs:
           LITELLM_COMPONENT_PORT: "4000"
           LITELLM_IMAGE_COMPONENT: gateway
         run: |
-          python -m pip install "pytest==9.0.3"
+          python -m pip install --no-cache-dir --require-hashes -r .github/scripts/migration-test-requirements.txt
           python -m pytest tests/proxy_migration_tests/test_component_image_serves_offline.py tests/proxy_migration_tests/test_image_bedrock_realtime_extra.py tests/proxy_migration_tests/test_image_admin_mcp.py -v
 
   ui-image:
@@ -358,5 +358,5 @@ jobs:
           LITELLM_COMPONENT_PORT: "4001"
           LITELLM_IMAGE_COMPONENT: backend
         run: |
-          python -m pip install "pytest==9.0.3"
+          python -m pip install --no-cache-dir --require-hashes -r .github/scripts/migration-test-requirements.txt
           python -m pytest tests/proxy_migration_tests/test_component_image_serves_offline.py tests/proxy_migration_tests/test_image_admin_mcp.py -v

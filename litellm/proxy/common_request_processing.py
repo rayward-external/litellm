@@ -328,6 +328,48 @@ async def close_guarded_stream(stream: object) -> None:
             )
 
 
+class _UpstreamActivityStamper:
+    """Relay the raw provider stream, stamping every chunk on an ``UpstreamStreamMonitor``.
+
+    Sits between the provider iterator and the post-call hook chain, which is the
+    only place the provider's own liveness is still visible. Above it the chain
+    can legitimately be silent while the provider talks: a guardrail configured
+    with ``streaming_buffer_until_moderated`` consumes the whole response and
+    yields nothing until its end-of-stream scan passes. The upstream-idle cap
+    reads the stamp rather than what reaches it, so buffering is never mistaken
+    for a dead model.
+
+    Attribute access falls through to the wrapped stream, so a hook that reads
+    ``has_buffered_provider_output`` or calls ``aclose()`` reaches the real one.
+    Installed only when the cap is armed, so the default path allocates nothing.
+    """
+
+    __slots__ = ("_iterator", "_monitor", "_stream")
+
+    def __init__(self, stream: AsyncIterable[object], monitor: UpstreamStreamMonitor) -> None:
+        self._stream = stream
+        self._monitor = monitor
+        # Resolved through `__aiter__` rather than assuming the wrapped object is
+        # its own iterator, and up front so a consumer reaching straight for
+        # `__anext__` gets a stream rather than a crash.
+        self._iterator: AsyncIterator[object] = stream.__aiter__()
+
+    def __aiter__(self) -> "_UpstreamActivityStamper":
+        return self
+
+    async def __anext__(self) -> object:
+        chunk: Final = await self._iterator.__anext__()
+        self._monitor.record_upstream_activity()
+        return chunk
+
+    def __getattr__(self, name: str) -> object:
+        # `getattr` on an arbitrary provider stream is untyped by construction;
+        # all this promises is that a hook reading or closing the stream reaches
+        # the real object rather than this relay.
+        delegated: Final[object] = getattr(self._stream, name)  # pyright: ignore[reportAny]  # untyped by construction
+        return delegated
+
+
 def resolve_litellm_call_id(client_call_id: str | None) -> str:
     if client_call_id is not None and 0 < len(client_call_id) <= MAX_LITELLM_CALL_ID_LENGTH:
         return client_call_id
@@ -4140,7 +4182,11 @@ class ProxyBaseLLMRequestProcessing:
         recent_tail = SSE_STREAM_START_TAIL  # rebind-ok: rolling window over the yielded bytes
         guarded_stream: Final[AsyncGenerator[object, None]] = proxy_logging_obj.async_post_call_streaming_iterator_hook(
             user_api_key_dict=user_api_key_dict,
-            response=response,
+            response=(
+                response
+                if upstream_stream_monitor is None
+                else _UpstreamActivityStamper(response, upstream_stream_monitor)
+            ),
             request_data=request_data,
         )
         try:

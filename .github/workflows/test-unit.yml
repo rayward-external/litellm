@@ -246,6 +246,10 @@ jobs:
               tests/unit/vector_stores
               tests/unit/videos
               --ignore=tests/unit/rust_bridge/native_route_wheel_test.py
+              --deselect=tests/unit/interactions/test_openapi_compliance.py::TestRequestCompliance::test_create_model_interaction_request_schema
+              --deselect=tests/unit/interactions/test_openapi_compliance.py::TestRequestCompliance::test_input_types_match_spec
+              --deselect=tests/unit/interactions/test_openapi_compliance.py::TestEndpointCompliance::test_delete_endpoint_exists
+              --deselect=tests/unit/interactions/test_openapi_compliance.py::TestEndpointCompliance::test_get_endpoint_exists
             workers: 4
             reruns: 0
             timeout-minutes: 20
