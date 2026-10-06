@@ -1,279 +1,272 @@
 "use client";
 
-import { Fragment, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
-  ChevronRight,
-  Circle,
-  CircleCheck,
-  CircleDashed,
-  CircleDot,
-  CircleSlash,
-  CircleX,
-  Pencil,
-  Play,
-  Search,
-} from "lucide-react";
+  getCoreRowModel,
+  useReactTable,
+  type CellContext,
+  type ColumnDef,
+  type TableOptions,
+} from "@tanstack/react-table";
+import { createContext, useContext, type ReactNode } from "react";
+import { ChevronRight, Pencil, Play } from "lucide-react";
 
+import { useMediaQuery } from "usehooks-ts";
 import { useNow } from "@/hooks/useNow";
-import { Input } from "@/components/ui/input";
+import { Inspector } from "@/components/shared/Inspector";
+import { InspectorTable } from "@/components/shared/InspectorTable";
 import { formatActivityTimestamp } from "@/utils/activityTimestamp";
 import { cn } from "@/lib/cva.config";
-import { agoLabel } from "@/components/view_logs/TraceView/lensField";
+import { agoLabel, scopeLabel } from "../model/format";
 
-import { findingAgents, openFindings, scheduleLabel } from "../model/inbox";
+import { findingKey, openFindings, scheduleLabel } from "../model/inbox";
 import { lensStatus } from "../model/status";
-import { scopeLabel } from "../model/format";
+import { SearchBox } from "@/components/shared/search/SearchBox";
+import { itemValues } from "@/components/shared/search/valueSource";
 import { type Finding, type Lens } from "../model/types";
-import { useListSearchRoute } from "../route";
+import { useLensRoute, useListSearchRoute } from "../route";
+import { FINDING_PANEL_WIDTH_KEY } from "../storage";
+import { filterInvestigations, INVESTIGATION_INDEX, INVESTIGATION_QUERY } from "./investigationQuery";
 
-const PRIORITY_COLOR = { high: "text-destructive", medium: "text-amber-500", low: "text-muted-foreground" } as const;
-const ROW =
-  "border-b border-border/60 transition-colors duration-150 hover:bg-trace-row-hover motion-reduce:transition-none";
-const META = "truncate text-xs text-muted-foreground";
+const ACTION =
+  "inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50";
+const INVESTIGATION_HEIGHT = 36;
 
-function openOnRowKeyDown(event: KeyboardEvent<HTMLTableRowElement>, open: () => void) {
-  if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
-  event.preventDefault();
-  open();
+/** One row of the list: an investigation, or an open finding shown under the investigation that owns it. */
+export type InvestigationRow =
+  | { readonly kind: "investigation"; readonly lens: Lens }
+  | { readonly kind: "finding"; readonly lens: Lens; readonly finding: Finding };
+
+export const investigationRowKey = (row: InvestigationRow): string =>
+  row.kind === "investigation" ? `investigation:${row.lens.id}` : `finding:${findingKey(row.lens, row.finding)}`;
+
+interface ListContextValue {
+  readonly now: number;
+  readonly connected: boolean;
+  readonly readOnly: boolean;
+  readonly demo: boolean;
+  readonly onEdit: (id: string) => void;
+  readonly onRunNow: (id: string) => void;
 }
 
-function JobIcon({ lens }: { lens: Lens }) {
-  const status = lens.jobs[0]?.status;
-  const className = "size-4 shrink-0";
-  if (status === "queued" || status === "running")
-    return <CircleDashed aria-hidden="true" className={cn(className, "text-info")} />;
-  if (status === "failed") return <CircleX aria-hidden="true" className={cn(className, "text-destructive")} />;
-  if (status === "cancelled")
-    return <CircleSlash aria-hidden="true" className={cn(className, "text-muted-foreground")} />;
-  if (status === "completed") return <CircleCheck aria-hidden="true" className={cn(className, "text-emerald-600")} />;
-  return <Circle aria-hidden="true" className={cn(className, "text-muted-foreground")} />;
+const ListContext = createContext<ListContextValue | null>(null);
+
+function useList(): ListContextValue {
+  const value = useContext(ListContext);
+  if (value === null) throw new Error("Investigation cells must be rendered inside InvestigationList");
+  return value;
 }
 
-function TwoLine({ meta, title, className }: { meta: ReactNode; title: ReactNode; className?: string }) {
+type Cell = CellContext<InvestigationRow, unknown>;
+
+const ROW_LABEL = { investigation: "Investigation details", finding: "Finding details" } as const;
+
+function NameCell({ row: { original: item } }: Cell) {
   return (
-    <span className="flex min-w-0 flex-col gap-0.5">
-      <span className={META}>{meta}</span>
-      <span className={cn("truncate text-sm text-foreground", className)}>{title}</span>
+    <span className="flex min-w-0 flex-col">
+      <span className="truncate font-medium text-foreground">{item.lens.settings.name}</span>
+      <span className="truncate text-xs text-muted-foreground md:hidden">{scopeLabel(item.lens.settings)}</span>
     </span>
   );
+}
+
+function AgentCell({ row: { original: item } }: Cell) {
+  return <span className="block truncate text-muted-foreground">{scopeLabel(item.lens.settings)}</span>;
+}
+
+function ScheduleCell({ row: { original: item } }: Cell) {
+  const { now } = useList();
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-muted-foreground">
+      <span
+        aria-hidden="true"
+        className={cn("size-1.5 rounded-full", item.lens.settings.enabled ? "bg-info" : "bg-muted-foreground/40")}
+      />
+      {scheduleLabel(item.lens, now)}
+    </span>
+  );
+}
+
+function StatusCell({ row: { original: item } }: Cell) {
+  const { connected, now } = useList();
+  const latest = item.lens.jobs[0];
+  return (
+    <span
+      className="flex items-center gap-1.5 truncate"
+      title={latest ? formatActivityTimestamp(latest.created_at) : undefined}
+    >
+      <span className={cn(latest?.status === "failed" ? "text-destructive" : "text-muted-foreground")}>
+        {lensStatus(item.lens, connected)}
+      </span>
+      {latest && <span className="text-muted-foreground">· {agoLabel(Date.parse(latest.created_at), now)}</span>}
+    </span>
+  );
+}
+
+function FindingCount({ row: { original: item } }: Cell) {
+  if (item.kind === "finding") return null;
+  const count = openFindings(item.lens).length;
+  if (count === 0) return null;
+  return (
+    <span
+      title={`${count} open ${count === 1 ? "finding" : "findings"}`}
+      className="inline-flex min-w-5 justify-center rounded-full bg-muted px-1.5 font-mono text-xs tabular-nums text-foreground"
+    >
+      {count}
+    </span>
+  );
+}
+
+function ActionsCell({ row: { original: item } }: Cell) {
+  const { readOnly, demo, onEdit, onRunNow } = useList();
+  if (item.kind === "finding")
+    return <ChevronRight aria-hidden="true" className="mr-2 ml-auto size-3.5 text-muted-foreground/60" />;
+  if (readOnly && !demo) return null;
+  const { id, settings } = item.lens;
+  return (
+    <span className="flex items-center justify-end gap-0.5">
+      <button
+        type="button"
+        aria-label={`Run ${settings.name} now`}
+        title={demo ? "Turn off Demo data to run an investigation" : "Run now"}
+        disabled={readOnly}
+        onClick={(event) => {
+          event.stopPropagation();
+          onRunNow(id);
+        }}
+        className={ACTION}
+      >
+        <Play className="size-3.5" />
+      </button>
+      <button
+        type="button"
+        aria-label={`Edit ${settings.name}`}
+        title={demo ? "Turn off Demo data to edit an investigation" : "Edit"}
+        disabled={readOnly}
+        onClick={(event) => {
+          event.stopPropagation();
+          onEdit(id);
+        }}
+        className={cn(ACTION, "text-muted-foreground/60 group-hover:text-muted-foreground")}
+      >
+        <Pencil className="size-3.5" />
+      </button>
+    </span>
+  );
+}
+
+const COLUMNS: ColumnDef<InvestigationRow>[] = [
+  { id: "name", header: "Investigation", cell: NameCell },
+  { id: "agent", size: 160, header: "Agent", cell: AgentCell },
+  { id: "schedule", size: 180, header: "Schedule", cell: ScheduleCell },
+  { id: "status", size: 200, header: "Last run", cell: StatusCell },
+  { id: "findings", size: 64, header: "Open", cell: FindingCount, meta: { numeric: true } },
+  {
+    id: "actions",
+    size: 76,
+    header: "Actions",
+    cell: ActionsCell,
+    meta: { headerClassName: "sr-only", className: "pl-0 pr-3" },
+  },
+];
+
+export interface InvestigationListProps {
+  readonly lenses: readonly Lens[];
+  readonly connected: boolean;
+  readonly readOnly?: boolean;
+  readonly selected: InvestigationRow | null;
+  readonly onSelect: (row: InvestigationRow | null) => void;
+  readonly onEdit: (id: string) => void;
+  readonly onRunNow: (id: string) => void;
+  readonly actions?: ReactNode;
+  /** Body of the side panel for the selected row. */
+  readonly children: (row: InvestigationRow) => ReactNode;
 }
 
 export function InvestigationList({
   lenses,
   connected,
   readOnly = false,
-  onOpen,
+  selected,
+  onSelect,
   onEdit,
   onRunNow,
-  onOpenFinding,
-}: {
-  lenses: Lens[];
-  connected: boolean;
-  readOnly?: boolean;
-  onOpen: (id: string) => void;
-  onEdit: (id: string) => void;
-  onRunNow: (id: string) => void;
-  onOpenFinding: (lens: Lens, finding: Finding) => void;
-}) {
+  actions,
+  children,
+}: InvestigationListProps) {
   const [search, setSearch] = useListSearchRoute();
+  const { demo } = useLensRoute();
   const now = useNow(15000);
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
-  const toggle = (id: string) =>
-    setCollapsed((current) => {
-      const next = new Set(current);
-      if (!next.delete(id)) next.add(id);
-      return next;
-    });
-  const shown = lenses.filter((lens) =>
-    `${lens.settings.name} ${scopeLabel(lens.settings)}`.toLowerCase().includes(search.toLowerCase()),
-  );
+  const desktop = useMediaQuery("(min-width: 768px)");
+  const shown = filterInvestigations([...lenses], search);
+  const tableOptions: TableOptions<InvestigationRow> = {
+    data: shown.map((lens): InvestigationRow => ({ kind: "investigation", lens })),
+    columns: COLUMNS,
+    defaultColumn: { size: undefined },
+    state: { columnVisibility: { agent: desktop, schedule: desktop, status: desktop } },
+    getRowId: investigationRowKey,
+    autoResetAll: false,
+    getCoreRowModel: getCoreRowModel(),
+  };
+  const table = useReactTable(tableOptions);
+  const rows = table.getRowModel().rows.map((row) => row.original);
+  const noun = selected?.kind ?? "investigation";
   return (
-    <div className="flex min-h-[420px] flex-1 flex-col overflow-hidden rounded-lg border border-border bg-card">
-      <div className="flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-3 py-2">
-        <div className="relative w-full max-w-[380px]">
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            aria-label="Search investigations"
-            placeholder="Search investigations"
-            className="h-7 bg-background pl-8 text-xs"
+    <Inspector.Root
+      items={rows}
+      itemKey={investigationRowKey}
+      selected={selected}
+      onSelectedChange={onSelect}
+      noun={noun}
+      storageKey={FINDING_PANEL_WIDTH_KEY}
+    >
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-card">
+        <div className="flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-b border-border bg-card p-2">
+          <SearchBox.Root
+            className="sm:max-w-96"
+            language={INVESTIGATION_QUERY}
+            values={itemValues(INVESTIGATION_INDEX, lenses)}
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+            onValueChange={setSearch}
+            label="Search investigations"
+          >
+            <SearchBox.Input className="rounded-md" placeholder="Search investigations" />
+            <SearchBox.Suggestions />
+          </SearchBox.Root>
+          {actions && <div className="ml-auto flex items-center gap-2">{actions}</div>}
         </div>
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto">
-        <table aria-label="Investigations" className="w-full min-w-[720px] table-fixed border-collapse text-left">
-          <thead className="sr-only">
-            <tr>
-              <th>Investigation</th>
-              <th>Status</th>
-              <th>Open findings</th>
-              <th>Last activity</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((lens) => {
-              const latest = lens.jobs[0];
-              const findings = openFindings(lens);
-              const expanded = findings.length > 0 && !collapsed.has(lens.id);
-              return (
-                <Fragment key={lens.id}>
-                  <tr
-                    onClick={() => onOpen(lens.id)}
-                    onKeyDown={(event) => openOnRowKeyDown(event, () => onOpen(lens.id))}
+        <ListContext.Provider value={{ now, connected, readOnly, demo, onEdit, onRunNow }}>
+          <InspectorTable.Root table={table}>
+            <InspectorTable.Grid aria-label="Investigations" className="text-xs md:min-w-[860px]">
+              <InspectorTable.Header />
+              <InspectorTable.Body<InvestigationRow> rowHeight={() => (desktop ? INVESTIGATION_HEIGHT : 48)}>
+                {(row) => (
+                  <InspectorTable.Row
+                    row={row}
+                    item={row.original}
                     tabIndex={0}
-                    aria-label={lens.settings.name}
-                    className={cn(ROW, "group h-14 cursor-pointer focus-visible:outline-2 focus-visible:outline-ring")}
-                  >
-                    <td className="pl-2">
-                      <span className="flex min-w-0 items-center gap-2">
-                        {findings.length > 0 ? (
-                          <button
-                            type="button"
-                            aria-expanded={expanded}
-                            aria-label={`${expanded ? "Hide" : "Show"} findings for ${lens.settings.name}`}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              toggle(lens.id);
-                            }}
-                            className="inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-                          >
-                            <ChevronRight
-                              className={cn(
-                                "size-3.5 transition-transform duration-150 motion-reduce:transition-none",
-                                expanded && "rotate-90",
-                              )}
-                            />
-                          </button>
-                        ) : (
-                          <span aria-hidden="true" className="size-6 shrink-0" />
-                        )}
-                        <JobIcon lens={lens} />
-                        <TwoLine
-                          meta={`${scopeLabel(lens.settings)} · ${scheduleLabel(lens, now)}`}
-                          title={lens.settings.name}
-                          className="font-semibold"
-                        />
-                      </span>
-                    </td>
-                    <td
-                      className={cn(
-                        "w-[180px] truncate px-3 text-right text-xs",
-                        latest?.status === "failed" ? "text-destructive" : "text-muted-foreground",
-                      )}
-                    >
-                      {lensStatus(lens, connected)}
-                    </td>
-                    <td className="w-[72px] px-3 text-right">
-                      {findings.length > 0 && (
-                        <span
-                          title={`${findings.length} open ${findings.length === 1 ? "finding" : "findings"}`}
-                          className="inline-flex min-w-5 justify-center rounded-full bg-muted px-1.5 font-mono text-xs tabular-nums text-foreground"
-                        >
-                          {findings.length}
-                        </span>
-                      )}
-                    </td>
-                    <td
-                      className="w-[120px] px-3 text-right text-xs text-muted-foreground"
-                      title={latest ? formatActivityTimestamp(latest.created_at) : undefined}
-                    >
-                      {latest ? agoLabel(Date.parse(latest.created_at), now) : "never run"}
-                    </td>
-                    <td className="w-[76px] pr-3">
-                      {!readOnly && (
-                        <span className="flex items-center justify-end gap-0.5">
-                          <button
-                            type="button"
-                            aria-label={`Run ${lens.settings.name} now`}
-                            title="Run now"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onRunNow(lens.id);
-                            }}
-                            className="inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-                          >
-                            <Play className="size-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            aria-label={`Edit ${lens.settings.name}`}
-                            title="Edit"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onEdit(lens.id);
-                            }}
-                            className="inline-flex size-7 items-center justify-center rounded text-muted-foreground/60 hover:bg-muted hover:text-foreground group-hover:text-muted-foreground"
-                          >
-                            <Pencil className="size-3.5" />
-                          </button>
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                  {expanded &&
-                    findings.map((finding, index) => {
-                      const priority = finding.priority ?? "medium";
-                      const last = index === findings.length - 1;
-                      const runs = finding.occurrences.length;
-                      return (
-                        <tr
-                          key={finding.id}
-                          onClick={() => onOpenFinding(lens, finding)}
-                          onKeyDown={(event) => openOnRowKeyDown(event, () => onOpenFinding(lens, finding))}
-                          tabIndex={0}
-                          aria-label={finding.title}
-                          className={cn(ROW, "h-12 cursor-pointer focus-visible:outline-2 focus-visible:outline-ring")}
-                        >
-                          <td className="pl-2" title={finding.suggestion ? `Fix: ${finding.suggestion}` : undefined}>
-                            <span className="flex min-w-0 items-center gap-2">
-                              <span aria-hidden="true" className="relative h-12 w-6 shrink-0">
-                                <span
-                                  className={cn("absolute left-3 top-0 w-px bg-border", last ? "h-1/2" : "h-full")}
-                                />
-                                <span className="absolute top-1/2 left-3 h-px w-3 bg-border" />
-                              </span>
-                              <span aria-hidden="true" className="w-4 shrink-0" />
-                              <CircleDot
-                                aria-hidden="true"
-                                className={cn("size-4 shrink-0", PRIORITY_COLOR[priority])}
-                              />
-                              <TwoLine
-                                meta={`${priority} priority · ${findingAgents(lens, finding).join(", ")}`}
-                                title={finding.title}
-                              />
-                            </span>
-                          </td>
-                          <td className="px-3 text-right text-xs text-muted-foreground">
-                            {runs} {runs === 1 ? "run" : "runs"}
-                          </td>
-                          <td />
-                          <td
-                            className="px-3 text-right text-xs text-muted-foreground"
-                            title={formatActivityTimestamp(finding.last_seen)}
-                          >
-                            {agoLabel(Date.parse(finding.last_seen), now)}
-                          </td>
-                          <td className="pr-5">
-                            <ChevronRight aria-hidden="true" className="ml-auto size-3.5 text-muted-foreground/60" />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-        {!shown.length && (
-          <div className="py-16 text-center text-xs text-muted-foreground">No investigations match your search.</div>
-        )}
+                    aria-label={
+                      row.original.kind === "finding" ? row.original.finding.title : row.original.lens.settings.name
+                    }
+                    className="group h-12 md:h-9"
+                  />
+                )}
+              </InspectorTable.Body>
+            </InspectorTable.Grid>
+            {!shown.length && (
+              <div className="py-16 text-center text-xs text-muted-foreground">
+                No investigations match your search.
+              </div>
+            )}
+          </InspectorTable.Root>
+        </ListContext.Provider>
+        <footer className="flex h-8 shrink-0 items-center border-t bg-muted/30 px-3 text-xs text-muted-foreground">
+          {shown.length} {shown.length === 1 ? "investigation" : "investigations"} ·{" "}
+          {shown.filter((lens) => lens.settings.enabled).length} watching
+        </footer>
       </div>
-      <footer className="flex h-8 shrink-0 items-center border-t border-border bg-muted/40 px-3 font-mono text-xs text-muted-foreground">
-        {shown.length} {shown.length === 1 ? "investigation" : "investigations"} ·{" "}
-        {lenses.filter((l) => l.settings.enabled).length} watching
-      </footer>
-    </div>
+      <Inspector.Panel label={ROW_LABEL[noun]} testId="investigation-panel">
+        {children}
+      </Inspector.Panel>
+    </Inspector.Root>
   );
 }
