@@ -16,9 +16,4 @@ reason = "rsa 0.9.10 (transitive dep of jsonwebtoken 11.1.0, the litellm-gateway
 [[IgnoredVulns]]
 id = "GHSA-vfj7-8cjw-p6xm"
 ignoreUntil = 2026-11-03
-reason = "braces has no fixed release published (3.0.3, 2024-05-21, is latest and last_affected); dev-only via knip > fast-glob > micromatch; remove this entry once one exists"
-
-[[IgnoredVulns]]
-id = "GHSA-hp3w-g68c-fv3c"
-ignoreUntil = 2026-11-06
-reason = "sprintf-js has no fixed release published (1.1.3 is latest and last_affected); dev-only, pulled in by jest's istanbul coverage tooling (@istanbuljs/load-nyc-config > js-yaml > argparse > sprintf-js); remove this entry once one exists"
+reason = "braces has no fixed release published (3.0.3, 2024-05-21, is latest and last_affected); dev-only via eslint-config-next > @next/eslint-plugin-next > fast-glob > micromatch (the knip > fast-glob path this reason used to describe was fixed by the 2026-10-03 knip 6 bump); remove this entry once one exists"
