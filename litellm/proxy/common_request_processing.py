@@ -4246,7 +4246,20 @@ class ProxyBaseLLMRequestProcessing:
             # billing and release exactly once. This is the outermost generator
             # Starlette closes on disconnect, so the nested iterator hook (which
             # only sees GeneratorExit on GC) cannot own the refund.
-            client_disconnected = not stream_completed
+            # The upstream-idle cap ends the stream from the wrapper ABOVE this
+            # generator, and it does so by closing it - which arrives here as the
+            # very same GeneratorExit a client disconnect does. Recording that as
+            # a client disconnect would put the proxy's own timeout in the logs,
+            # the status and the callbacks under the one cause it is not, which
+            # is the blind spot the cap was built to remove. The monitor the
+            # wrapper shares carries the real reason across; the refund and
+            # partial-billing bookkeeping below is identical either way.
+            ended_by_upstream_idle = (  # rebind-ok: the cancellation path is where the cause is known
+                not stream_completed
+                and upstream_stream_monitor is not None
+                and upstream_stream_monitor.ended_by_upstream_idle
+            )
+            client_disconnected = not stream_completed and not ended_by_upstream_idle
             await close_guarded_stream(guarded_stream)
             if not delivered_chunk and not _withheld_provider_output(response):
                 from litellm.proxy.spend_tracking.budget_reservation import (
