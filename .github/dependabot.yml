@@ -69,6 +69,13 @@ updates:
       default-days: 7
 
   - package-ecosystem: "npm"
+    directory: "/vscode-extension"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: "npm"
     directory: "/ui/litellm-dashboard"
     schedule:
       interval: "weekly"
