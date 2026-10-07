@@ -3405,7 +3405,7 @@ def _wrapped_reasoning_item():
     return {
         "type": "reasoning",
         "id": ResponsesAPIRequestUtils._build_encrypted_item_id("dep-1", "rs_orig"),
-        "encrypted_content": ResponsesAPIRequestUtils._wrap_encrypted_content_with_model_id("gAAAA-blob", "dep-1"),
+        "encrypted_content": ResponsesAPIRequestUtils.wrap_encrypted_content_with_model_id("gAAAA-blob", "dep-1"),
         "summary": [],
     }
 
@@ -3495,7 +3495,7 @@ class TestNativeWebSocketEncryptedContentAffinity:
 
         await handler.backend_to_client()
 
-        wrapped_content = ResponsesAPIRequestUtils._wrap_encrypted_content_with_model_id("gAAAA-blob", "dep-1")
+        wrapped_content = ResponsesAPIRequestUtils.wrap_encrypted_content_with_model_id("gAAAA-blob", "dep-1")
         item_done = json.loads(websocket.send_text.await_args_list[0][0][0])
         assert item_done["item"]["encrypted_content"] == wrapped_content
         completed = json.loads(websocket.send_text.await_args_list[1][0][0])
@@ -3594,7 +3594,7 @@ class TestNativeWebSocketEncryptedContentAffinity:
         logging_obj = MagicMock()
         logging_obj.dispatch_success_handlers = AsyncMock()
         logging_obj.dispatch_failure_handlers = AsyncMock()
-        logging_obj._response_cost_calculator = MagicMock(return_value=0.0)
+        logging_obj.response_cost_calculator = MagicMock(return_value=0.0)
         handler = _make_streaming(
             websocket=websocket,
             backend_ws=backend_ws,
@@ -3642,7 +3642,7 @@ class TestNativeWebSocketEncryptedContentAffinity:
         logging_obj = MagicMock()
         logging_obj.dispatch_success_handlers = AsyncMock()
         logging_obj.dispatch_failure_handlers = AsyncMock()
-        logging_obj._response_cost_calculator = MagicMock(return_value=0.01)
+        logging_obj.response_cost_calculator = MagicMock(return_value=0.01)
         handler = _make_streaming(websocket=websocket, backend_ws=backend_ws, logging_obj=logging_obj, request_data={})
 
         await handler.backend_to_client()
@@ -3697,7 +3697,7 @@ class TestNativeWebSocketEncryptedContentAffinity:
         logging_obj = MagicMock()
         logging_obj.dispatch_success_handlers = AsyncMock()
         logging_obj.dispatch_failure_handlers = AsyncMock()
-        logging_obj._response_cost_calculator = MagicMock(return_value=0.0)
+        logging_obj.response_cost_calculator = MagicMock(return_value=0.0)
         handler = _make_streaming(
             websocket=websocket,
             backend_ws=backend_ws,

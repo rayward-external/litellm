@@ -1,3 +1,4 @@
+import os
 import pytest
 import asyncio
 import aiohttp
@@ -17,7 +18,7 @@ async def generate_key(
 ):
     """Helper function to generate a key with specific model access controls"""
     url = "http://0.0.0.0:4000/key/generate"
-    headers = {"Authorization": "Bearer sk-1234", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {os.environ['LITELLM_MASTER_KEY']}", "Content-Type": "application/json"}
     data: dict = {"metadata": dict(_ALLOW_CLIENT_MOCK_METADATA)}
     if models is not None:
         data["models"] = models
@@ -30,7 +31,7 @@ async def generate_key(
 async def generate_team(session, models: Optional[List[str]] = None):
     """Helper function to generate a team with specific model access"""
     url = "http://0.0.0.0:4000/team/new"
-    headers = {"Authorization": "Bearer sk-1234", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {os.environ['LITELLM_MASTER_KEY']}", "Content-Type": "application/json"}
     data: dict = {"metadata": dict(_ALLOW_CLIENT_MOCK_METADATA)}
     if models is not None:
         data["models"] = models
@@ -113,7 +114,7 @@ async def test_model_access_update():
     4. Verify new access patterns
     """
     client = AsyncClient(base_url="http://0.0.0.0:4000")
-    headers = {"Authorization": "Bearer sk-1234"}
+    headers = {"Authorization": f"Bearer {os.environ['LITELLM_MASTER_KEY']}"}
 
     # Create initial key with restricted access
     response = await client.post(
@@ -180,7 +181,7 @@ async def test_team_model_access_patterns(team_models, test_model, expect_succes
     4. Verify access is granted/denied as expected
     """
     client = AsyncClient(base_url="http://0.0.0.0:4000")
-    headers = {"Authorization": "Bearer sk-1234"}
+    headers = {"Authorization": f"Bearer {os.environ['LITELLM_MASTER_KEY']}"}
 
     async with aiohttp.ClientSession() as session:
         try:
@@ -218,7 +219,7 @@ async def test_team_model_access_update():
     4. Verify new access patterns
     """
     client = AsyncClient(base_url="http://0.0.0.0:4000")
-    headers = {"Authorization": "Bearer sk-1234"}
+    headers = {"Authorization": f"Bearer {os.environ['LITELLM_MASTER_KEY']}"}
 
     # Create initial team with restricted access
     response = await client.post(

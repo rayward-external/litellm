@@ -59,7 +59,7 @@ from litellm.types.proxy.guardrails.guardrail_hooks.presidio import (
     PresidioAnalyzeRequest,
     PresidioAnalyzeResponseItem,
 )
-from litellm.types.utils import GuardrailStatus, StreamingChoices
+from litellm.types.utils import GuardrailStatus, Message, StreamingChoices
 from litellm.utils import (
     EmbeddingResponse,
     ImageResponse,
@@ -272,11 +272,13 @@ class _OPTIONAL_PresidioPIIMasking(CustomGuardrail):
         presidio_analyzer_api_base: str | None = None,
         presidio_anonymizer_api_base: str | None = None,
     ):
-        self.presidio_analyzer_api_base: str | None = presidio_analyzer_api_base or get_secret(
-            "PRESIDIO_ANALYZER_API_BASE", None
-        )
-        self.presidio_anonymizer_api_base: str | None = presidio_anonymizer_api_base or litellm.get_secret(
+        _analyzer_secret: Final = presidio_analyzer_api_base or get_secret("PRESIDIO_ANALYZER_API_BASE", None)
+        self.presidio_analyzer_api_base: str | None = _analyzer_secret if isinstance(_analyzer_secret, str) else None
+        _anonymizer_secret: Final = presidio_anonymizer_api_base or litellm.get_secret(
             "PRESIDIO_ANONYMIZER_API_BASE", None
+        )
+        self.presidio_anonymizer_api_base: str | None = (
+            _anonymizer_secret if isinstance(_anonymizer_secret, str) else None
         )
 
         if self.presidio_analyzer_api_base is None:
@@ -1331,7 +1333,7 @@ class _OPTIONAL_PresidioPIIMasking(CustomGuardrail):
         presidio_config: Final = self.get_presidio_settings_from_request_data(request_data or {})
 
         for choice in response.choices:
-            message = getattr(choice, "message", None)
+            message: Message | None = getattr(choice, "message", None)
             if message is None:
                 continue
 

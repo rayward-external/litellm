@@ -16,6 +16,7 @@ from httpx import Response
 import litellm
 from litellm.proxy.proxy_server import app
 from litellm.types.llms.openai import ResponsesAPIResponse
+from tests._master_key import MASTER_KEY
 
 
 @pytest.mark.asyncio
@@ -290,7 +291,7 @@ class TestResponsesAPIEndpoints(unittest.TestCase):
         response = client.post(
             "/openai/v1/responses",
             json=test_data,
-            headers={"Authorization": "Bearer sk-1234"},
+            headers={"Authorization": "Bearer sk-9876"},
         )
 
         assert response.status_code in [200, 401, 500]
@@ -342,7 +343,7 @@ class TestResponsesAPIEndpoints(unittest.TestCase):
         response = client.post(
             "/cursor/chat/completions",
             json=test_data,
-            headers={"Authorization": "Bearer sk-1234"},
+            headers={"Authorization": "Bearer sk-9876"},
         )
 
         # Should return 200 (or 401/500 if auth fails)
@@ -1540,7 +1541,7 @@ class TestCursorMessagesArmToolNormalization:
             seen["body"] = await _read_request_body(request=request)
             return {"id": "chatcmpl-fake", "object": "chat.completion", "choices": []}
 
-        app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(api_key="sk-1234")
+        app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(api_key=MASTER_KEY)
         try:
             with patch("litellm.proxy.proxy_server.chat_completion", new=fake_chat_completion):
                 client = TestClient(app)
@@ -1567,7 +1568,7 @@ class TestCursorMessagesArmToolNormalization:
                         ],
                         "tool_choice": {"type": "custom", "name": "ApplyPatch"},
                     },
-                    headers={"Authorization": "Bearer sk-1234"},
+                    headers={"Authorization": "Bearer sk-9876"},
                 )
         finally:
             app.dependency_overrides.pop(user_api_key_auth, None)
@@ -1608,14 +1609,14 @@ class TestCursorMessagesArmToolNormalization:
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [{"type": "function", "function": {"name": "f", "parameters": {}}}],
         }
-        app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(api_key="sk-1234")
+        app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(api_key=MASTER_KEY)
         try:
             with patch("litellm.proxy.proxy_server.chat_completion", new=fake_chat_completion):
                 client = TestClient(app)
                 response = client.post(
                     "/cursor/chat/completions",
                     json=body,
-                    headers={"Authorization": "Bearer sk-1234"},
+                    headers={"Authorization": "Bearer sk-9876"},
                 )
         finally:
             app.dependency_overrides.pop(user_api_key_auth, None)
@@ -1815,7 +1816,7 @@ class TestCursorInputArmFlattening:
             ],
         )
 
-        app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(api_key="sk-1234")
+        app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(api_key=MASTER_KEY)
         try:
             with patch("litellm.proxy.proxy_server.llm_router") as mock_router:
                 mock_router.aresponses = AsyncMock(return_value=mock_response)
@@ -1840,7 +1841,7 @@ class TestCursorInputArmFlattening:
                         ],
                         "tool_choice": {"type": "custom", "custom": {"name": "ApplyPatch"}},
                     },
-                    headers={"Authorization": "Bearer sk-1234"},
+                    headers={"Authorization": "Bearer sk-9876"},
                 )
         finally:
             app.dependency_overrides.pop(user_api_key_auth, None)
@@ -1895,7 +1896,7 @@ class TestChatCompletionsBodyDetection:
             ],
         )
 
-        app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(api_key="sk-1234")
+        app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(api_key=MASTER_KEY)
         try:
             with patch("litellm.proxy.proxy_server.llm_router") as mock_router:
                 mock_router.aresponses = AsyncMock(return_value=mock_response)
@@ -1907,7 +1908,7 @@ class TestChatCompletionsBodyDetection:
                         "messages": None,
                         "input": [{"role": "user", "content": "hello"}],
                     },
-                    headers={"Authorization": "Bearer sk-1234"},
+                    headers={"Authorization": "Bearer sk-9876"},
                 )
         finally:
             app.dependency_overrides.pop(user_api_key_auth, None)
@@ -2082,7 +2083,7 @@ class TestCursorModelSuffixResolutionEndToEnd:
             seen["body"] = await _read_request_body(request=request)
             return {"id": "chatcmpl-fake", "object": "chat.completion", "choices": []}
 
-        app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(api_key="sk-1234")
+        app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(api_key=MASTER_KEY)
         try:
             with (
                 patch("litellm.proxy.proxy_server.llm_router", new=_router_serving_only("claude-opus-5")),
@@ -2095,7 +2096,7 @@ class TestCursorModelSuffixResolutionEndToEnd:
                         "model": "claude-opus-5-thinking-xhigh-fast",
                         "messages": [{"role": "user", "content": "hi"}],
                     },
-                    headers={"Authorization": "Bearer sk-1234"},
+                    headers={"Authorization": "Bearer sk-9876"},
                 )
         finally:
             app.dependency_overrides.pop(user_api_key_auth, None)
@@ -2132,7 +2133,7 @@ class TestCursorModelSuffixResolutionEndToEnd:
         mock_router = _router_serving_only("claude-opus-5")
         mock_router.aresponses = AsyncMock(return_value=mock_response)
 
-        app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(api_key="sk-1234")
+        app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(api_key=MASTER_KEY)
         try:
             with patch("litellm.proxy.proxy_server.llm_router", new=mock_router):
                 client = TestClient(app)
@@ -2142,7 +2143,7 @@ class TestCursorModelSuffixResolutionEndToEnd:
                         "model": "claude-opus-5-thinking-high",
                         "input": [{"role": "user", "content": "hello"}],
                     },
-                    headers={"Authorization": "Bearer sk-1234"},
+                    headers={"Authorization": "Bearer sk-9876"},
                 )
         finally:
             app.dependency_overrides.pop(user_api_key_auth, None)
@@ -2359,7 +2360,7 @@ def _post_blocked_responses(
             patch("litellm.proxy.proxy_server.proxy_logging_obj", mock_proxy_logging),
         ):
             client = TestClient(app)
-            return client.post("/v1/responses", json=body, headers={"Authorization": "Bearer sk-1234"})
+            return client.post("/v1/responses", json=body, headers={"Authorization": "Bearer sk-9876"})
     finally:
         app.dependency_overrides.pop(user_api_key_auth, None)
 
@@ -2466,7 +2467,7 @@ class TestResponsesInputTokens:
         app.dependency_overrides[_proxy_token_counter] = lambda: token_counter_mock
         try:
             client = TestClient(app)
-            response = client.post(path, json=body, headers={"Authorization": "Bearer sk-1234"})
+            response = client.post(path, json=body, headers={"Authorization": "Bearer sk-9876"})
             return response, token_counter_mock
         finally:
             app.dependency_overrides.pop(user_api_key_auth, None)
