@@ -19,6 +19,7 @@ from litellm.router_utils.add_retry_fallback_headers import (
     get_fallback_error_info,
 )
 from litellm.router_utils.batch_utils import get_router_metadata_variable_name
+from litellm.router_utils.common_utils import filter_team_based_models
 from litellm.router_utils.cooldown_handlers import (
     _first_present,  # pyright: ignore[reportPrivateUsage] - shared internal helper, used across router_utils
     cast_exception_status_to_int,

@@ -143,6 +143,11 @@ from litellm.router_strategy.lowest_tpm_rpm import LowestTPMLoggingHandler
 from litellm.router_strategy.lowest_tpm_rpm_v2 import LowestTPMLoggingHandler_v2, PrefetchedUsage
 from litellm.router_strategy.simple_shuffle import simple_shuffle
 from litellm.router_strategy.tag_based_routing import (
+    ORIGINAL_REQUEST_TAGS_KEY,
+    ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY,
+    PIN_TAG_PREFIX,
+    _pinned_provider_from_kwargs,
+    _raise_no_deployments_for_tags,
     get_deployments_for_tag,
     get_tags_from_request_kwargs,
     is_valid_deployment_tag,
@@ -3835,12 +3840,17 @@ class Router:
                     if _responses_stream_holds_event(item, len(held_lifecycle_events)):
                         held_lifecycle_events = (*held_lifecycle_events, item)
                         continue
-                    for held_event in held_lifecycle_events:
-                        yield held_event
-                    held_lifecycle_events = ()
-                    yield released_item
+                    released = refusal_hold.process(item)
+                    if released:
+                        for held_event in held_lifecycle_events:
+                            yield held_event
+                        held_lifecycle_events = ()
+                        for released_item in released:
+                            yield released_item
                 for held_event in held_lifecycle_events:
                     yield held_event
+                for released_item in refusal_hold.flush():
+                    yield released_item
             except MidStreamFallbackError as e:
                 await _maybe_abandon_refused_stream_source(e, source_iterator, "stream_with_fallbacks(aresponses)")
                 async with contextlib.aclosing(
