@@ -793,7 +793,7 @@ def _iter_openai_jsonl_lines(openai_file_content: FileTypes) -> Iterator[str]:
 
 def _iter_openai_jsonl_entries(
     openai_file_content: FileTypes,
-) -> Iterator[dict[str, Any]]:
+) -> Iterator[dict[str, object]]:
     for line in _iter_openai_jsonl_lines(openai_file_content):
         yield json.loads(line)
 

@@ -1,3 +1,4 @@
+import os
 # What this tests ?
 ## Tests /chat/completions by generating a key and then making a chat completions request
 import pytest
@@ -7,7 +8,7 @@ from openai import OpenAI, AsyncOpenAI
 from typing import Optional, List, Union
 
 BASE_URL = "http://localhost:4000"  # Replace with your actual base URL
-API_KEY = "sk-1234"  # Replace with your actual API key
+API_KEY = os.environ["LITELLM_MASTER_KEY"]  # Replace with your actual API key
 
 
 @pytest.mark.asyncio
