@@ -603,7 +603,7 @@ class PaymentRequiredError(BadRequestError):
             response=response_for_parent,
             litellm_debug_info=litellm_debug_info,
         )
-        self.status_code = 402
+        self.status_code: int = 402
         self.message = f"litellm.PaymentRequiredError: {message}"
 
     def __str__(self) -> str:

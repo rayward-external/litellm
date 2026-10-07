@@ -1104,7 +1104,9 @@ class _SingleUseGuard:
         redis_cache: Final = redis_usage_cache or getattr(self._cache, "redis_cache", None)
         if redis_cache is not None:
             try:
-                value = await redis_cache.init_async_client().get(redis_cache.check_and_fix_namespace(key=key))
+                value = await redis_cache.init_async_client().get(  # pyright: ignore[reportAttributeAccessIssue] - redis generics, redis-py's stubs omit get() on RedisCluster
+                    redis_cache.check_and_fix_namespace(key=key)
+                )
             except Exception as e:  # noqa: BLE001  # ANY Redis fault fails the read closed
                 verbose_logger.warning("mcp gateway single-use peek: shared cache backend unavailable: %s", e)
                 return "unavailable"

@@ -11108,7 +11108,7 @@ class Router:
         A team-scoped deployment (``model_info.team_id`` set) is only usable by
         callers from that same team; deployments without a team owner are shared.
         """
-        model_info: Final = model.get("model_info") if isinstance(model, dict) else model.model_info
+        model_info: Final = model.model_info if isinstance(model, Deployment) else model.get("model_info")
         owner_team_id: Final = cast(Mapping[str, object], model_info).get("team_id") if model_info is not None else None
         return owner_team_id is None or owner_team_id == team_id
 

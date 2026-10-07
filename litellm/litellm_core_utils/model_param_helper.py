@@ -190,4 +190,4 @@ class ModelParamHelper:
 
 
 ModelParamHelper.relevant_logging_args = frozenset(ModelParamHelper.get_relevant_args_to_use_for_logging())
-ModelParamHelper._relevant_logging_args = ModelParamHelper.relevant_logging_args
+ModelParamHelper._relevant_logging_args = ModelParamHelper.relevant_logging_args  # pyright: ignore[reportAttributeAccessIssue] - back-compat alias, not declared in the class body like the method aliases above

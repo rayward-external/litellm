@@ -4463,7 +4463,7 @@ class PrismaClient:
     spend_log_write_lock = asyncio.Lock()
     tool_usage_transactions: list["ToolUsageTransaction"] = []
     _tool_usage_transactions_lock = asyncio.Lock()
-    model_usage_transactions: ClassVar[list["ModelUsageTransaction"]] = []
+    model_usage_transactions: list["ModelUsageTransaction"] = []
     _model_usage_transactions_lock = asyncio.Lock()
     autorouter_turn_transactions: ClassVar[list["AutoRouterTurnTransaction"]] = []
     _autorouter_turn_transactions_lock = asyncio.Lock()
