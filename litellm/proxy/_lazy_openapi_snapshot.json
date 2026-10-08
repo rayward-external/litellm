@@ -9728,7 +9728,9 @@
             "200": {
               "content": {
                 "application/json": {
-                  "schema": {}
+                  "schema": {
+                    "title": "Response Decisions Decisions Post"
+                  }
                 }
               },
               "description": "Successful Response"
@@ -9752,7 +9754,9 @@
             "200": {
               "content": {
                 "application/json": {
-                  "schema": {}
+                  "schema": {
+                    "title": "Response Systemone Systemone Post"
+                  }
                 }
               },
               "description": "Successful Response"
@@ -9776,7 +9780,9 @@
             "200": {
               "content": {
                 "application/json": {
-                  "schema": {}
+                  "schema": {
+                    "title": "Response Decisions V1 Decisions Post"
+                  }
                 }
               },
               "description": "Successful Response"
@@ -9800,7 +9806,9 @@
             "200": {
               "content": {
                 "application/json": {
-                  "schema": {}
+                  "schema": {
+                    "title": "Response Systemone V1 Systemone Post"
+                  }
                 }
               },
               "description": "Successful Response"
