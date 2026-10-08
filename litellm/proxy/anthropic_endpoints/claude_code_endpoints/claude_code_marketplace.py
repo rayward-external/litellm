@@ -72,7 +72,7 @@ class _MarketplaceEntry(TypedDict, total=False):
     category: object
 
 
-async def _get_prisma_client() -> object:
+async def get_prisma_client() -> object:
     """Get the prisma client from proxy_server."""
     from litellm.proxy.proxy_server import prisma_client
 
@@ -82,6 +82,9 @@ async def _get_prisma_client() -> object:
             detail={"error": CommonProxyErrors.db_not_connected_error.value},
         )
     return prisma_client
+
+
+_get_prisma_client: Final = get_prisma_client
 
 
 @router.get(
@@ -111,7 +114,7 @@ async def get_marketplace(request: Request, key: str | None = None):
         ```
     """
     try:
-        prisma_client: Final = await _get_prisma_client()
+        prisma_client: Final = await get_prisma_client()
 
         caller: Final[UserAPIKeyAuth | None] = (
             await user_api_key_auth(request=request, api_key=f"Bearer {key}") if key else None
@@ -332,7 +335,7 @@ async def register_plugin(
     try:
         _require_proxy_admin(user_api_key_dict)
 
-        prisma_client: Final = await _get_prisma_client()
+        prisma_client: Final = await get_prisma_client()
 
         if not re.match(r"^[a-z0-9-]+$", request.name):
             raise HTTPException(
@@ -412,7 +415,7 @@ async def list_plugins(
         List of plugins with their metadata.
     """
     try:
-        prisma_client: Final = await _get_prisma_client()
+        prisma_client: Final = await get_prisma_client()
 
         visibility: Final[SkillVisibility] = skill_visibility(user_api_key_dict)
         plugins: Final[Sequence[_PluginRecord]] = await ClaudeCodePluginRepository(
@@ -486,7 +489,7 @@ async def get_plugin(
         Plugin details including source and metadata.
     """
     try:
-        prisma_client: Final = await _get_prisma_client()
+        prisma_client: Final = await get_prisma_client()
 
         plugin: Final[_PluginRecord | None] = await ClaudeCodePluginRepository(prisma_client).table.find_unique(
             where={"name": plugin_name}
@@ -589,7 +592,7 @@ async def update_plugin(
     try:
         _require_proxy_admin(user_api_key_dict)
 
-        prisma_client: Final = await _get_prisma_client()
+        prisma_client: Final = await get_prisma_client()
 
         _validate_plugin_source(request.source)
 
@@ -656,7 +659,7 @@ async def enable_plugin(
     try:
         _require_proxy_admin(user_api_key_dict)
 
-        prisma_client: Final = await _get_prisma_client()
+        prisma_client: Final = await get_prisma_client()
 
         plugin: Final[_PluginRecord | None] = await ClaudeCodePluginRepository(prisma_client).table.find_unique(
             where={"name": plugin_name}
@@ -705,7 +708,7 @@ async def disable_plugin(
     try:
         _require_proxy_admin(user_api_key_dict)
 
-        prisma_client: Final = await _get_prisma_client()
+        prisma_client: Final = await get_prisma_client()
 
         plugin: Final[_PluginRecord | None] = await ClaudeCodePluginRepository(prisma_client).table.find_unique(
             where={"name": plugin_name}
@@ -754,7 +757,7 @@ async def delete_plugin(
     try:
         _require_proxy_admin(user_api_key_dict)
 
-        prisma_client: Final = await _get_prisma_client()
+        prisma_client: Final = await get_prisma_client()
 
         plugin: Final[_PluginRecord | None] = await ClaudeCodePluginRepository(prisma_client).table.find_unique(
             where={"name": plugin_name}

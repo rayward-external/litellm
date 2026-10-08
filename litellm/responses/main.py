@@ -747,7 +747,7 @@ async def aresponses(
             )
             # Stamp custom_llm_provider so callbacks can identify the provider
             # (mirrors litellm/main.py:1371 for chat completions)
-            response._hidden_params["custom_llm_provider"] = custom_llm_provider
+            response.hidden_params["custom_llm_provider"] = custom_llm_provider
 
         if response is None:
             raise ValueError(f"Got an unexpected None response from the Responses API: {response}")
@@ -1452,7 +1452,7 @@ def responses(
             )
             # Stamp custom_llm_provider so callbacks can identify the provider
             # (mirrors litellm/main.py:1371 for chat completions)
-            response._hidden_params["custom_llm_provider"] = custom_llm_provider
+            response.hidden_params["custom_llm_provider"] = custom_llm_provider
 
         return response
     except Exception as e:

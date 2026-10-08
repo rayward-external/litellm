@@ -22,6 +22,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check Lens Compose configuration
+        run: |
+          python3 -m unittest discover -s deploy/lens -p 'test_*.py'
+          python3 deploy/lens/configure.py --version 1.2.3 --env-file "$RUNNER_TEMP/lens.env"
+          docker compose --env-file "$RUNNER_TEMP/lens.env" -f deploy/lens/stack.yaml config --quiet
+
       - name: Set up Helm 3.11.1
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:

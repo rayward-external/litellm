@@ -18,7 +18,7 @@ FROM cgr.dev/chainguard/wolfi-base@sha256:1d95114038f76513a9ace6fca107d5582b08c6
 ARG PGBOUNCER_VERSION
 ARG PGBOUNCER_SHA256
 USER root
-RUN apk add --no-cache build-base pkgconf libevent-dev openssl-3.6-dev curl
+RUN apk add --no-cache build-base pkgconf libevent-dev openssl-dev curl
 WORKDIR /build
 RUN curl -fsSL -o pgbouncer.tar.gz "https://www.pgbouncer.org/downloads/files/${PGBOUNCER_VERSION}/pgbouncer-${PGBOUNCER_VERSION}.tar.gz" && \
     echo "${PGBOUNCER_SHA256}  pgbouncer.tar.gz" | sha256sum -c - && \
