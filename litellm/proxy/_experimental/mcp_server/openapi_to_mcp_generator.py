@@ -117,7 +117,7 @@ _request_auth_header: Final = request_auth_header
 # Per-request extra headers forwarded from the client request.
 # Populated from MCPServer.extra_headers names matched against raw request
 # headers in server.py before dispatching to a local/OpenAPI tool handler.
-request_extra_headers: Final[contextvars.ContextVar[dict[str, str] | None]] = contextvars.ContextVar(  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+request_extra_headers: Final[contextvars.ContextVar[dict[str, str] | None]] = contextvars.ContextVar(
     "_request_extra_headers", default=None
 )
 
@@ -127,7 +127,7 @@ _request_extra_headers: Final = request_extra_headers
 # (stored per-user OAuth token, minted M2M token, exchanged OBO token).
 # Set from MCPServerManager.resolve_openapi_upstream_auth; authoritative
 # over every other Authorization source in _merge_openapi_tool_request_headers.
-request_resolved_auth_headers: Final[contextvars.ContextVar[dict[str, str] | None]] = contextvars.ContextVar(  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+request_resolved_auth_headers: Final[contextvars.ContextVar[dict[str, str] | None]] = contextvars.ContextVar(
     "_request_resolved_auth_headers", default=None
 )
 

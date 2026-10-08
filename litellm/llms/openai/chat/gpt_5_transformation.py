@@ -48,7 +48,7 @@ def _normalize_reasoning_effort_for_chat_completion(
     return None
 
 
-def get_effort_level(value: str | dict | None) -> str | None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def get_effort_level(value: str | dict | None) -> str | None:  # mutable-ok: sync
     """Extract the effective effort level from reasoning_effort (string or dict).
 
     Use this for guards that compare effort level (e.g. xhigh validation, "none" checks).

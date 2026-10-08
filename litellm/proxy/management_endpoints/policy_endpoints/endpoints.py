@@ -963,7 +963,7 @@ async def _generate_competitor_variations(competitors: list, model: str = DEFAUL
         return {}
 
 
-def parse_variations_response(raw: str, competitors: list) -> dict[str, list[str]]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def parse_variations_response(raw: str, competitors: list) -> dict[str, list[str]]:  # mutable-ok: sync
     """Parse the LLM response for competitor variations into a name -> variations map."""
     # Build a lowercase lookup for case-insensitive matching
     lower_to_canonical: Final = {comp.lower(): comp for comp in competitors}
@@ -1059,7 +1059,7 @@ def build_competitor_guardrail_definitions(
 _build_competitor_guardrail_definitions: Final = build_competitor_guardrail_definitions
 
 
-def build_name_blocked_words(competitors: list[str], all_names: dict[str, list[str]]) -> list[dict]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def build_name_blocked_words(competitors: list[str], all_names: dict[str, list[str]]) -> list[dict]:  # mutable-ok: sync
     """Build blocked word entries for direct competitor name mentions."""
     result: Final = []
     for comp in competitors:
@@ -1072,7 +1072,9 @@ def build_name_blocked_words(competitors: list[str], all_names: dict[str, list[s
 _build_name_blocked_words: Final = build_name_blocked_words
 
 
-def build_recommendation_blocked_words(competitors: list[str], all_names: dict[str, list[str]]) -> list[dict]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def build_recommendation_blocked_words(
+    competitors: list[str], all_names: dict[str, list[str]]
+) -> list[dict]:  # mutable-ok: sync
     """Build blocked word entries for competitor recommendations."""
     result: Final = []
     for comp in competitors:

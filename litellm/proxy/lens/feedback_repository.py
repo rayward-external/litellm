@@ -165,9 +165,7 @@ class ClickHouseFeedbackStore:
                 **access_parameters(scope).model_dump(), trace_ids=sorted({t.trace_id for t in traces})
             ),
         )
-        return tuple(
-            summary for trace in traces for summary in _summaries(trace, rows)
-        )  # comprehension-ok: flattens one summary list per trace; splitting into a helper would not read any clearer
+        return tuple(summary for trace in traces for summary in _summaries(trace, rows))  # comprehension-ok: sync
 
 
 def _summaries(trace: TraceIdentity, rows: tuple[FeedbackSummaryRow, ...]) -> tuple[TraceFeedbackSummary, ...]:

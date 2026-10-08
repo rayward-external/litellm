@@ -324,7 +324,9 @@ class BaseDecisionsConfig(ABC):
     def request_model(self, model: str) -> str:
         return model
 
-    def validate_environment(self, headers: Mapping[str, str], model: str, api_key: str | None) -> dict[str, str]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    def validate_environment(
+        self, headers: Mapping[str, str], model: str, api_key: str | None
+    ) -> dict[str, str]:  # mutable-ok: sync
         return {
             **{name: value for name, value in headers.items() if name.lower() not in _RESERVED_HEADERS},
             **({"Authorization": f"Bearer {api_key}"} if api_key is not None else {}),
@@ -368,6 +370,6 @@ class BaseDecisionsConfig(ABC):
         self,
         error_message: str,
         status_code: int,
-        headers: dict[str, str] | httpx.Headers,  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+        headers: dict[str, str] | httpx.Headers,  # mutable-ok: sync
     ) -> BaseLLMException:
         return BaseLLMException(status_code=status_code, message=error_message, headers=headers)

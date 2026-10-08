@@ -1568,7 +1568,7 @@ class ProxyLogging:
         self,
         request_obj: MCPPreCallRequestObject,
         kwargs: Mapping[str, object],
-    ) -> dict[str, object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    ) -> dict[str, object]:  # mutable-ok: sync
         return self._convert_mcp_to_llm_format(request_obj, kwargs)
 
     def _convert_llm_result_to_mcp_response(self, llm_result, request_obj) -> MCPPreCallResponseObject | None:
@@ -1759,7 +1759,7 @@ class ProxyLogging:
         }
         return result
 
-    def create_mcp_request_object_from_kwargs(self, kwargs: dict) -> "MCPPreCallRequestObject":  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    def create_mcp_request_object_from_kwargs(self, kwargs: dict) -> "MCPPreCallRequestObject":  # mutable-ok: sync
         """
         Helper function to create MCPPreCallRequestObject from kwargs for standard pre_call_hook.
         """
@@ -1780,7 +1780,9 @@ class ProxyLogging:
 
     _create_mcp_request_object_from_kwargs = create_mcp_request_object_from_kwargs
 
-    def convert_mcp_hook_response_to_kwargs(self, response_data: dict | None, original_kwargs: dict) -> dict:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    def convert_mcp_hook_response_to_kwargs(
+        self, response_data: dict | None, original_kwargs: dict
+    ) -> dict:  # mutable-ok: sync
         """
         Helper function to convert pre_call_hook response back to kwargs for MCP usage.
 
@@ -4172,7 +4174,7 @@ class ProxyLogging:
         record_served_output_texts(logging_obj.model_call_details, served_stream_output_texts(served_chunks))
 
     @staticmethod
-    def fire_deferred_stream_logging(request_data: dict) -> None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    def fire_deferred_stream_logging(request_data: dict) -> None:  # mutable-ok: sync
         """
         Fire the deferred streaming logging callback after the full streaming
         pipeline (including guardrail end-of-stream blocks) has completed.

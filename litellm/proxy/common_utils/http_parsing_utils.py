@@ -189,7 +189,7 @@ def is_otlp_trace_request(request: HTTPConnection) -> bool:
     return request.scope.get("method") == "POST" and get_route_path(request.scope) in {"/v1/traces", "/v1/logs"}
 
 
-async def read_request_body(request: Request | None) -> dict:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+async def read_request_body(request: Request | None) -> dict:  # mutable-ok: sync
     """
     Safely read the request body and parse it as JSON.
 
@@ -211,7 +211,7 @@ async def read_request_body(request: Request | None) -> dict:  # mutable-ok: ups
         if _cached_request_body is not None:
             return _cached_request_body
 
-        _request_headers: Final[dict] = safe_get_request_headers(request=request)  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+        _request_headers: Final[dict] = safe_get_request_headers(request=request)  # mutable-ok: sync
         content_type: Final = _request_headers.get("content-type", "")
 
         if _normalize_media_type(content_type) in _BINARY_CONTENT_TYPES:
@@ -340,7 +340,7 @@ def get_client_requested_model(request: Request | None) -> str | None:
     return model if isinstance(model, str) else None
 
 
-def safe_get_request_query_params(request: Request | None) -> dict:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def safe_get_request_query_params(request: Request | None) -> dict:  # mutable-ok: sync
     if request is None:
         return {}
     try:
@@ -388,7 +388,7 @@ def rewrite_request_model(
     request._body = orjson.dumps(body)  # pyright: ignore[reportPrivateUsage]  # Starlette body cache
 
 
-def safe_get_request_headers(request: Request | None) -> dict:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def safe_get_request_headers(request: Request | None) -> dict:  # mutable-ok: sync
     """
     [Non-Blocking] Safely get the request headers.
     Caches the result on request.state to avoid re-creating dict(request.headers) per call.

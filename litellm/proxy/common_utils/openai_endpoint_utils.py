@@ -58,7 +58,7 @@ async def get_custom_llm_provider_from_request_body(request: Request) -> str | N
 
     Safely reads the request body
     """
-    request_body: Final[dict] = await read_request_body(request=request) or {}  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    request_body: Final[dict] = await read_request_body(request=request) or {}  # mutable-ok: sync
     if "custom_llm_provider" in request_body:
         return request_body["custom_llm_provider"]
     return None

@@ -267,7 +267,7 @@ class CustomStreamWrapper:
             optional_params=self.logging_obj.model_call_details.get("litellm_params", {}),
         )
 
-        self._hidden_params: dict[str, object] = {  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+        self._hidden_params: dict[str, object] = {  # mutable-ok: sync
             "model_id": (_model_info.get("id", None)),
             "api_base": _api_base,
         }  # returned as x-litellm-model-id response header in proxy
@@ -289,7 +289,7 @@ class CustomStreamWrapper:
         self._repeated_messages_count = 1
         self.is_function_call = self.check_is_function_call(logging_obj=logging_obj)
         self.created: int | None = None
-        self._last_returned_hidden_params: dict[str, object] | None = None  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+        self._last_returned_hidden_params: dict[str, object] | None = None  # mutable-ok: sync
 
         _cached_logging_provider: Final = self.logging_obj.model_call_details.get("custom_llm_provider", None)
         self._cached_logging_llm_provider: str | None = _cached_logging_provider

@@ -492,9 +492,9 @@ CacheCounterValues: TypeAlias = Sequence[CacheCounterValue | None]
 
 def _values_in_caller_order(
     keys: Sequence[str],
-    key_groups: Sequence[tuple[str, list[str]]],  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    key_groups: Sequence[tuple[str, list[str]]],  # mutable-ok: sync
     grouped_values: CacheCounterValues,
-) -> list[CacheCounterValue | None]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+) -> list[CacheCounterValue | None]:  # mutable-ok: sync
     tag_by_key: Final = dict(
         itertools.chain.from_iterable(((key, tag) for key in group_keys) for tag, group_keys in key_groups)
     )
@@ -506,7 +506,7 @@ def _values_in_caller_order(
     return [value_by_position.get(position) for position in range(len(keys))]
 
 
-def _as_counter_values(reply: object) -> list[CacheCounterValue]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def _as_counter_values(reply: object) -> list[CacheCounterValue]:  # mutable-ok: sync
     """A Lua reply read back off the pipeline is the same array the script returns when called directly."""
     if not isinstance(reply, (list, tuple)):
         raise TypeError(f"rate limiter script reply is not a list: {type(reply).__name__}")
@@ -4033,7 +4033,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         data: dict,
         call_type: str,
         endpoint_type: EndpointType = EndpointType.GENERIC,
-    ) -> Exception | str | dict[str, object] | None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    ) -> Exception | str | dict[str, object] | None:  # mutable-ok: sync
         """
         Pre-call hook to check rate limits before making the API call.
         Supports dynamic rate limiting based on deployment health.
@@ -5297,7 +5297,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         await self._release_stashed_parallel_slot(get_request_stash(), None)
 
     @with_service_target("rate_limits")
-    async def async_post_call_success_hook(self, data: dict, user_api_key_dict: UserAPIKeyAuth, response) -> None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    async def async_post_call_success_hook(self, data: dict, user_api_key_dict: UserAPIKeyAuth, response) -> None:
         """
         Release completed-request slots and update rate limit headers in the response.
         """

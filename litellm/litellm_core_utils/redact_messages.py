@@ -263,7 +263,7 @@ def _redacted_baseline_metadata(metadata: Mapping[str, object]) -> Mapping[str, 
     return {**metadata, "_autorouter_baseline_route": replace(route, request_parameters=None)}
 
 
-def redacted_litellm_params(params: Mapping[str, object]) -> dict[str, object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def redacted_litellm_params(params: Mapping[str, object]) -> dict[str, object]:  # mutable-ok: sync
     request: Final = params.get("proxy_server_request")
     return {
         **params,

@@ -1032,7 +1032,7 @@ class _OPTIONAL_PresidioPIIMasking(CustomGuardrail):
         cache: DualCache,
         data: dict,
         call_type: str,
-    ) -> dict[str, object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    ) -> dict[str, object]:  # mutable-ok: sync
         """
         - Check if request turned off pii
             - Check if user allowed to turn off pii (key permissions -> 'allow_pii_controls')
@@ -1222,10 +1222,10 @@ class _OPTIONAL_PresidioPIIMasking(CustomGuardrail):
 
     async def async_post_call_success_hook(
         self,
-        data: dict[str, object],  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+        data: dict[str, object],  # mutable-ok: sync
         user_api_key_dict: UserAPIKeyAuth,
         response: ModelResponse | EmbeddingResponse | ImageResponse,
-    ) -> dict[str, JsonValue] | ModelResponse | EmbeddingResponse | ImageResponse:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    ) -> dict[str, JsonValue] | ModelResponse | EmbeddingResponse | ImageResponse:  # mutable-ok: sync
         """
         Output parse the response object to replace the masked tokens with user sent values
         """

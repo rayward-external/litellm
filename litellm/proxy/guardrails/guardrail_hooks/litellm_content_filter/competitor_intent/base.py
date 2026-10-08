@@ -39,7 +39,7 @@ def word_boundary_match(text: str, token: str) -> bool:
 _word_boundary_match: Final = word_boundary_match
 
 
-def count_signals(text: str, patterns: list[str]) -> int:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def count_signals(text: str, patterns: list[str]) -> int:  # mutable-ok: sync
     """Count how many of the patterns appear in text."""
     return sum(1 for p in patterns if re.search(p, text, re.IGNORECASE))
 

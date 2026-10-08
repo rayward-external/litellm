@@ -242,7 +242,7 @@ class _MCPServerRateLimitAdmission:
     rejected_servers: tuple[tuple[MCPServer, ProxyRateLimitError], ...]
 
 
-_mcp_server_admission_memo: Final[ContextVar[dict[str, asyncio.Task[ProxyRateLimitError | None]] | None]] = ContextVar(  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+_mcp_server_admission_memo: Final[ContextVar[dict[str, asyncio.Task[ProxyRateLimitError | None]] | None]] = ContextVar(
     "mcp_server_admission_memo", default=None
 )
 

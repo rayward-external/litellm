@@ -684,7 +684,7 @@ class TeamMemberBudgetHandler:
         return updated_kv
 
     @staticmethod
-    def clean_team_member_fields(data_dict: dict) -> None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    def clean_team_member_fields(data_dict: dict) -> None:  # mutable-ok: sync
         """Remove team member fields from data dictionary"""
         data_dict.pop("team_member_budget", None)
         data_dict.pop("team_member_budget_duration", None)

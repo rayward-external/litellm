@@ -5033,7 +5033,7 @@ async def delete_verification_tokens(
     failed_tokens: list = []
     try:
         if prisma_client:
-            hashed_tokens: Final[list[str]] = [hash_token_if_needed(token=key) for key in tokens]  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+            hashed_tokens: Final[list[str]] = [hash_token_if_needed(token=key) for key in tokens]  # mutable-ok: sync
             tokens = hashed_tokens
             _keys_being_deleted: Final[list[LiteLLM_VerificationToken]] = cast(  # cast-ok: find_many returns a list
                 "list[LiteLLM_VerificationToken]",

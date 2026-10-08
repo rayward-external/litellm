@@ -111,7 +111,7 @@ def _strip_prompt_cache_breakpoints_from_item(value: object) -> object:
     }
 
 
-def _strip_prompt_cache_breakpoints(input_items: list[object]) -> list[object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def _strip_prompt_cache_breakpoints(input_items: list[object]) -> list[object]:  # mutable-ok: sync
     return [_strip_prompt_cache_breakpoints_from_item(item) for item in input_items]
 
 
@@ -171,7 +171,7 @@ def _without_audio_input_parts_in_item(value: object) -> object:
     }
 
 
-def _without_audio_input_parts(input_items: list[object]) -> list[object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def _without_audio_input_parts(input_items: list[object]) -> list[object]:  # mutable-ok: sync
     return [_without_audio_input_parts_in_item(item) for item in input_items]
 
 
@@ -490,11 +490,11 @@ class LiteLLMResponsesTransformationHandler(CompletionTransformationBridge):
 
     def convert_chat_completion_messages_to_responses_api(
         self,
-        messages: list["AllMessageValues"],  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+        messages: list["AllMessageValues"],  # mutable-ok: sync
         *,
         drop_params: bool = False,
         keep_prompt_cache_breakpoints: bool = False,
-    ) -> tuple[list[object], str | None]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    ) -> tuple[list[object], str | None]:  # mutable-ok: sync
         converted_input_items, instructions = self._convert_chat_completion_messages_to_responses_input(
             messages, drop_params=drop_params
         )
@@ -506,7 +506,10 @@ class LiteLLMResponsesTransformationHandler(CompletionTransformationBridge):
         )
 
     def _convert_chat_completion_messages_to_responses_input(
-        self, messages: list["AllMessageValues"], *, drop_params: bool = False  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+        self,
+        messages: list["AllMessageValues"],
+        *,
+        drop_params: bool = False,
     ) -> tuple[list[object], str | None]:
         input_items: Final[list[object]] = []
         instructions: str | None = None
@@ -631,7 +634,9 @@ class LiteLLMResponsesTransformationHandler(CompletionTransformationBridge):
                         "type": "message",
                         "role": role,
                         "content": self._convert_content_to_responses_format(
-                            content, cast(str, role), drop_params=drop_params  # cast-ok: narrows a validated message role string
+                            content,
+                            cast(str, role),
+                            drop_params=drop_params,
                         ),
                     }
                 )

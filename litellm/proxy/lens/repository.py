@@ -44,7 +44,7 @@ class Row(LiteLLMBaseModel):
     due_at: datetime | None = None
 
 
-class DueRow(LiteLLMBaseModel):  # frozen-ok: lens row model; read-only after the query that produces it
+class DueRow(LiteLLMBaseModel):  # frozen-ok: sync
     data: JsonValue
     due_at: datetime
 

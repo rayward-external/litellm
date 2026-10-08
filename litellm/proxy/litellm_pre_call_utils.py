@@ -1022,7 +1022,7 @@ def convert_key_logging_metadata_to_callback(
     return team_callback_settings_obj
 
 
-def get_validated_callback_metadata(item: dict, *, source: str) -> AddTeamCallback | None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def get_validated_callback_metadata(item: dict, *, source: str) -> AddTeamCallback | None:  # mutable-ok: sync
     try:
         return AddTeamCallback(**item)
     except (PydanticValidationError, ValueError) as e:
@@ -1932,7 +1932,7 @@ class LiteLLMProxyRequestSetup:
         return {**(team_values or {}), **(request_values or {})}
 
     @staticmethod
-    def merge_tags(request_tags: list | None, tags_to_add: list | None) -> list:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    def merge_tags(request_tags: list | None, tags_to_add: list | None) -> list:  # mutable-ok: sync
         """
         Helper function to merge two lists of tags, ensuring no duplicates.
 
@@ -2196,7 +2196,7 @@ async def add_litellm_data_to_request(
             if _mk.startswith("user_api_key_"):
                 del _user_metadata[_mk]
 
-    _raw_headers: Final[dict[str, str]] = RedactedDict(safe_get_request_headers(request))  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    _raw_headers: Final[dict[str, str]] = RedactedDict(safe_get_request_headers(request))  # mutable-ok: sync
 
     forward_llm_auth = False
     if general_settings:

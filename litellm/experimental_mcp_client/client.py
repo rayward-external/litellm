@@ -1048,7 +1048,7 @@ class MCPClient:
         self,
         fetch_page: Callable[[PaginatedRequestParams | None], Awaitable[_ListPage]],
         items_of: Callable[[_ListPage], Sequence[_ListItem]],
-    ) -> tuple[list[_ListItem], CacheableResult]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    ) -> tuple[list[_ListItem], CacheableResult]:  # mutable-ok: sync
         items: Final[list[_ListItem]] = []  # mutable-ok: bounded iterative page accumulation
         pages: Final[list[tuple[CacheableResult, float]]] = []  # mutable-ok: bounded pagination evidence
         cursors: Final[set[str]] = set()  # mutable-ok: constant-time detection of cursor cycles

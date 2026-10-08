@@ -606,7 +606,7 @@ def get_gemini_url(
 _get_gemini_url = get_gemini_url
 
 
-def check_text_in_content(parts: list[PartType]) -> bool:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def check_text_in_content(parts: list[PartType]) -> bool:  # mutable-ok: sync
     """
     check that user_content has 'text' parameter.
         - Known Vertex Error: Unable to submit request because it must have a text parameter.
@@ -692,7 +692,7 @@ def _fix_enum_types(schema, depth=0):
                 _fix_enum_types(item, depth=depth + 1)
 
 
-def build_vertex_schema(parameters: dict, add_property_ordering: bool = False) -> dict:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def build_vertex_schema(parameters: dict, add_property_ordering: bool = False) -> dict:  # mutable-ok: sync
     """
     This is a modified version of https://github.com/google-gemini/generative-ai-python/blob/8f77cc6ac99937cd3a81299ecf79608b91b06bbb/google/generativeai/types/content_types.py#L419
 
@@ -746,7 +746,7 @@ def build_vertex_schema(parameters: dict, add_property_ordering: bool = False) -
 _build_vertex_schema = build_vertex_schema
 
 
-def build_json_schema(parameters: dict) -> dict:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def build_json_schema(parameters: dict) -> dict:  # mutable-ok: sync
     """
     Build a JSON Schema for use with Gemini's responseJsonSchema parameter.
 

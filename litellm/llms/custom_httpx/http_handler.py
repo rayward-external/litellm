@@ -1789,7 +1789,7 @@ def get_async_httpx_client(
     return _new_client
 
 
-def get_httpx_client(params: dict | None = None) -> HTTPHandler:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def get_httpx_client(params: dict | None = None) -> HTTPHandler:  # mutable-ok: sync
     """
     Retrieves the HTTP client from the cache
     If not present, creates a new client

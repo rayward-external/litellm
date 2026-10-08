@@ -129,16 +129,16 @@ def anthropic_system_to_openai_message(system: object) -> ChatCompletionSystemMe
 
 
 def prepare_native_messages(
-    messages: list[dict[str, JsonValue]],  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
-    system: str | list[dict[str, JsonValue]] | None,  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
-    kwargs: dict[str, object],  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    messages: list[dict[str, JsonValue]],  # mutable-ok: sync
+    system: str | list[dict[str, JsonValue]] | None,  # mutable-ok: sync
+    kwargs: dict[str, object],  # mutable-ok: sync
     *,
     model: str,
     custom_llm_provider: str | None = None,
-    tools: list[dict[str, JsonValue]] | None = None,  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    tools: list[dict[str, JsonValue]] | None = None,  # mutable-ok: sync
     api_base: str | None = None,
     presanitized: bool = False,
-) -> tuple[list[dict[str, JsonValue]], str | list[dict[str, JsonValue]] | None]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+) -> tuple[list[dict[str, JsonValue]], str | list[dict[str, JsonValue]] | None]:  # mutable-ok: sync
     normalized: Final = (
         messages
         if presanitized
@@ -218,7 +218,7 @@ class AnthropicMessagesRequestUtils:
         if is_reasoning_auto_summary_enabled():
             thinking_param: Final = filtered_params.get("thinking")
             if isinstance(thinking_param, dict) and thinking_param.get("type") != "disabled":
-                return cast(  # cast-ok: narrows a validated response shape
+                return cast(  # cast-ok: sync
                     AnthropicMessagesRequestOptionalParams,
                     {**filtered_params, "thinking": {**thinking_param, "display": "summarized"}},
                 )

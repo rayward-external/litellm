@@ -76,7 +76,7 @@ class AzureAICohereConfig:
         return self._transform_request(input, optional_params, model)
 
     def _transform_response(self, response: EmbeddingResponse) -> EmbeddingResponse:
-        additional_headers: Final[dict | None] = response.hidden_params.get("additional_headers")  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+        additional_headers: Final[dict | None] = response.hidden_params.get("additional_headers")  # mutable-ok: sync
         if additional_headers:
             # CALCULATE USAGE
             input_tokens: Final[str | None] = additional_headers.get("llm_provider-num_tokens")

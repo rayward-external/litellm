@@ -325,7 +325,7 @@ class ResponsesAPIRequestUtils:
         responses_api_response: dict[str, object],
         custom_llm_provider: str | None,
         litellm_metadata: dict[str, object] | None = None,
-    ) -> dict[str, object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    ) -> dict[str, object]:  # mutable-ok: sync
         ...
 
     # fmt: on

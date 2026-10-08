@@ -38,7 +38,7 @@ async def _invalid_request(
     )
 
 
-async def _request_data(request: Request, user_api_key_dict: UserAPIKeyAuth) -> dict[str, object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+async def _request_data(request: Request, user_api_key_dict: UserAPIKeyAuth) -> dict[str, object]:  # mutable-ok: sync
     body: Final = await request.body()
     try:
         return _REQUEST_DATA_ADAPTER.validate_json(body)

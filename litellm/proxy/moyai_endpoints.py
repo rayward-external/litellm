@@ -43,21 +43,21 @@ _MOYAI_NONCE_CONFIG_PREFIX: Final = "moyai_connect_nonce:"
 _MOYAI_CONNECT_EXCHANGE_ROUTE: Final = "/moyai/connect/exchange"
 
 
-class MoyaiConnectStartRequest(BaseModel):  # frozen-ok: upstream Moyai OAuth connect request/response model; read-only after validation
+class MoyaiConnectStartRequest(BaseModel):  # frozen-ok: sync
     moyai_url: str
     return_to: str
 
 
-class MoyaiConnectStartResponse(BaseModel):  # frozen-ok: upstream Moyai OAuth connect request/response model; read-only after validation
+class MoyaiConnectStartResponse(BaseModel):  # frozen-ok: sync
     connect_url: str
 
 
-class MoyaiConnectExchangeRequest(BaseModel):  # frozen-ok: upstream Moyai OAuth connect request/response model; read-only after validation
+class MoyaiConnectExchangeRequest(BaseModel):  # frozen-ok: sync
     code: str
     moyai_url: str
 
 
-class MoyaiConnectExchangeResponse(BaseModel):  # frozen-ok: upstream Moyai OAuth connect request/response model; read-only after validation
+class MoyaiConnectExchangeResponse(BaseModel):  # frozen-ok: sync
     api_key: str
     key_alias: str
     api_base: str
@@ -104,7 +104,7 @@ def _sign_connect_code(master_key: str, moyai_url: str, user_id: str | None) -> 
     return f"{_b64url(payload)}.{_b64url(signature)}"
 
 
-def _decode_connect_code(master_key: str, code: str) -> dict:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def _decode_connect_code(master_key: str, code: str) -> dict:  # mutable-ok: sync
     try:
         payload_b64, signature_b64 = code.split(".", 1)
         payload_raw: Final = _b64url_decode(payload_b64)
@@ -195,7 +195,7 @@ async def _moyai_key_alias(prisma_client, moyai_url: str) -> str:
 async def _persist_moyai_url(prisma_client, moyai_url: str) -> None:
     from litellm.proxy.proxy_server import user_api_key_cache
 
-    existing: dict = {}  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    existing: dict = {}  # mutable-ok: sync
     db_existing: Final = await _ui_settings_db(UISettingsRepository(prisma_client)).find_unique(
         where={"id": "ui_settings"}
     )

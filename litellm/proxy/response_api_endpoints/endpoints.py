@@ -1653,7 +1653,7 @@ async def responses_websocket_endpoint(
     requested_protocols: Final = [
         p.strip() for p in (websocket.headers.get("sec-websocket-protocol") or "").split(",") if p.strip()
     ]
-    accept_kwargs: Final[dict] = {}  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    accept_kwargs: Final[dict] = {}  # mutable-ok: sync
     if requested_protocols:
         accept_kwargs["subprotocol"] = requested_protocols[0]
     await websocket.accept(**accept_kwargs)

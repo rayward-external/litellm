@@ -1333,7 +1333,7 @@ async def _call_current_lens_signal_router(
     current_router: Final = llm_router
     if current_router is None:
         raise RuntimeError("The proxy router is not initialized")
-    decisions: Final[DecisionsCall] = cast(DecisionsCall, current_router.adecisions)  # cast-ok: narrows the router's decisions entry point to its known callable type
+    decisions: Final[DecisionsCall] = cast(DecisionsCall, current_router.adecisions)  # cast-ok: sync
     return await decisions(
         model=model,
         state=state,
@@ -7841,7 +7841,9 @@ class ProxyConfig:
             displaced=previous.displaced + _entries_missing_from(before, after),
         )
 
-    def encrypt_env_variables(self, environment_variables: dict, new_encryption_key: str | None = None) -> dict:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    def encrypt_env_variables(
+        self, environment_variables: dict, new_encryption_key: str | None = None
+    ) -> dict:  # mutable-ok: sync
         """
         Encrypts a dictionary of environment variables and returns them.
         """
@@ -7884,7 +7886,7 @@ class ProxyConfig:
 
     _decrypt_and_set_db_env_variables = decrypt_and_set_db_env_variables
 
-    def decrypt_db_variables(self, variables_dict: dict) -> dict:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    def decrypt_db_variables(self, variables_dict: dict) -> dict:  # mutable-ok: sync
         """
         Decrypts a dictionary of variables and returns them.
         """
@@ -7896,7 +7898,9 @@ class ProxyConfig:
 
     _decrypt_db_variables = decrypt_db_variables
 
-    def encrypt_env_variables_for_db(self, environment_variables: dict, new_encryption_key: str | None = None) -> dict:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    def encrypt_env_variables_for_db(
+        self, environment_variables: dict, new_encryption_key: str | None = None
+    ) -> dict:  # mutable-ok: sync
         """
         Idempotently encrypt environment variables for a DB write.
 
@@ -10503,7 +10507,7 @@ class ProxyStartupEvent:
     _initialize_startup_logging = initialize_startup_logging
 
     @staticmethod
-    def warn_if_mock_testing_params_enabled(general_settings: dict) -> None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    def warn_if_mock_testing_params_enabled(general_settings: dict) -> None:  # mutable-ok: sync
         """Announce, loudly, that any caller may inject synthetic failures."""
         from litellm.proxy.route_llm_request import (
             GATED_MOCK_PARAM_NAMES,

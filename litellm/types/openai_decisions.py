@@ -152,7 +152,7 @@ class DecisionsResponse(DecisionsObjectBase):
     answers: Sequence[DecisionAnswer]
     usage: DecisionUsage
 
-    _hidden_params: dict[str, object] = PrivateAttr(default_factory=dict)  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+    _hidden_params: dict[str, object] = PrivateAttr(default_factory=dict)  # mutable-ok: sync
 
     @property
     def hidden_params(self) -> dict[str, object]:  # mutable-ok: API requires mutation

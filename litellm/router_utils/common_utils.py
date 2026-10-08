@@ -21,7 +21,7 @@ _V = TypeVar("_V")
 ROUTER_ONLY_CALL_KWARGS: Final = frozenset({"silent_model", "include_fallback_errors"})
 
 
-def without_router_only_kwargs(kwargs: Mapping[str, _V]) -> dict[str, _V]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def without_router_only_kwargs(kwargs: Mapping[str, _V]) -> dict[str, _V]:  # mutable-ok: sync
     return {key: value for key, value in kwargs.items() if key not in ROUTER_ONLY_CALL_KWARGS}
 
 

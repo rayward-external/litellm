@@ -166,7 +166,9 @@ def _get_random_llm_message():
     return [{"role": "user", "content": random.choice(messages)}]
 
 
-def clean_endpoint_data(endpoint_data: Mapping[str, object], details: bool | None = True) -> dict[str, object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def clean_endpoint_data(
+    endpoint_data: Mapping[str, object], details: bool | None = True
+) -> dict[str, object]:  # mutable-ok: sync
     """
     Keep only the explicitly approved, JSON-safe diagnostic fields for display to users.
     """
@@ -777,7 +779,7 @@ def _resolve_health_check_max_tokens(model_info: dict, litellm_params: dict) -> 
     return None
 
 
-def update_litellm_params_for_health_check(model_info: dict, litellm_params: dict) -> dict:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def update_litellm_params_for_health_check(model_info: dict, litellm_params: dict) -> dict:  # mutable-ok: sync
     """
     Update the litellm params for health check.
 

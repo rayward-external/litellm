@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from .base import GuardrailConfigModel
 
 
-class AktoGuardrailConfigModelOptionalParams(BaseModel):  # frozen-ok: upstream guardrail config model; read-only after validation
+class AktoGuardrailConfigModelOptionalParams(BaseModel):  # frozen-ok: sync
     streaming_sampling_rate: int | None = Field(
         default=None,
         description=(

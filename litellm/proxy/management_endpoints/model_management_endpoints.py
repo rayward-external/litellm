@@ -3207,7 +3207,7 @@ async def get_auto_router_classifier_default_prompt(
     )
 
 
-def deduplicate_litellm_router_models(models: list[dict]) -> list[dict]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
+def deduplicate_litellm_router_models(models: list[dict]) -> list[dict]:  # mutable-ok: sync
     """
     Deduplicate models based on their model_info.id field.
     Returns a list of unique models keeping only the first occurrence of each model ID.
