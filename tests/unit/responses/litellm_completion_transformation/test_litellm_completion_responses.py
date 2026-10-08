@@ -3963,6 +3963,7 @@ class TestEnsureOutputItemContentPartAdded:
         iterator._request_declares_hosted_web_search = False
         iterator.responses_api_request = {}
         iterator._namespace_tool_names = LiteLLMCompletionResponsesConfig.namespace_tool_name_map(None)
+        iterator._server_executed_web_search_call_ids = set()
         iterator._web_search_calls = {}
         iterator._queued_web_search_call_ids = set()
         return iterator
