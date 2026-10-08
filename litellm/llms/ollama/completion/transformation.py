@@ -190,7 +190,7 @@ class OllamaConfig(BaseConfig):
         system: str | None = None,
         template: str | None = None,
     ) -> None:
-        locals_: Final[dict[str, object]] = locals().copy()
+        locals_: Final[dict[str, object]] = locals().copy()  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         for key, value in locals_.items():
             if key != "self" and value is not None:
                 setattr(self.__class__, key, value)

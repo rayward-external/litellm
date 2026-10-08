@@ -431,7 +431,7 @@ class ProxyInitializationHelpers:
         return True
 
     @staticmethod
-    def configure_dev_reload(uvicorn_args: dict, config_path: str | None) -> None:
+    def configure_dev_reload(uvicorn_args: dict, config_path: str | None) -> None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         """Wire up --reload (dev only): watch *.py, the --config YAML, and .env,
         and signal reloaded workers to re-read .env with override so edits to
         existing keys actually take effect rather than staying masked by the

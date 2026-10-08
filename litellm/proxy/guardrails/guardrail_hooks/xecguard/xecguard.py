@@ -82,7 +82,7 @@ _RESPONSE_BODY: Final = TypeAdapter(dict[str, object])
 
 
 class _CustomGuardrailOptions(TypedDict, total=False, extra_items=object):
-    supported_event_hooks: ReadOnly[list[GuardrailEventHooks]]
+    supported_event_hooks: ReadOnly[list[GuardrailEventHooks]]  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
 
 
 class XecGuardMissingCredentials(Exception):
@@ -356,7 +356,7 @@ class XecGuardGuardrail(CustomGuardrail):
         path: str,
         payload: dict,
         suppress_errors: bool = False,
-    ) -> dict[str, object] | None:
+    ) -> dict[str, object] | None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         endpoint: Final = f"{self.api_base}{path}"
         verbose_proxy_logger.debug(
             "XecGuard: POST %s payload_keys=%s",

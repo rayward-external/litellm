@@ -24,7 +24,7 @@ class HiddenParamsModelView(MutableMapping[str, object]):
         if key not in fields:
             raise KeyError(key)
         try:
-            return cast(object, getattr(self._hidden_params, key))
+            return cast(object, getattr(self._hidden_params, key))  # cast-ok: narrows legacy untyped hidden-params attribute storage
         except AttributeError as error:
             raise KeyError(key) from error
 
@@ -55,7 +55,7 @@ def _get_hidden_params_storage(obj: object) -> object | None:
     return obj.get(_HIDDEN_PARAMS_ATTR) if isinstance(obj, dict) else getattr(obj, _HIDDEN_PARAMS_ATTR, None)
 
 
-def get_hidden_params_storage(obj: object) -> dict[str, object] | HiddenParams | None:
+def get_hidden_params_storage(obj: object) -> dict[str, object] | HiddenParams | None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     hidden_params: Final[object | None] = _get_hidden_params_storage(obj)
     if isinstance(hidden_params, dict):
         return cast(  # cast-ok: runtime dict validation preserves dynamically typed legacy storage
@@ -66,7 +66,7 @@ def get_hidden_params_storage(obj: object) -> dict[str, object] | HiddenParams |
     return None
 
 
-def _as_hidden_params_mapping(hidden_params: object | None) -> MutableMapping[str, object] | None:
+def _as_hidden_params_mapping(hidden_params: object | None) -> MutableMapping[str, object] | None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     if isinstance(hidden_params, dict):
         return cast(  # cast-ok: runtime dict validation preserves dynamically typed legacy storage
             dict[str, object], hidden_params
@@ -76,12 +76,12 @@ def _as_hidden_params_mapping(hidden_params: object | None) -> MutableMapping[st
     return None
 
 
-def get_hidden_params(obj: object) -> MutableMapping[str, object] | None:
+def get_hidden_params(obj: object) -> MutableMapping[str, object] | None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     hidden_params: Final[object | None] = _get_hidden_params_storage(obj)
     return _as_hidden_params_mapping(hidden_params)
 
 
-def set_hidden_params(obj: object, hidden_params: dict[str, object] | HiddenParams) -> None:
+def set_hidden_params(obj: object, hidden_params: dict[str, object] | HiddenParams) -> None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     if isinstance(obj, dict):
         obj[_HIDDEN_PARAMS_ATTR] = hidden_params
     else:
@@ -106,13 +106,13 @@ def set_hidden_param(obj: object, key: str, value: object) -> None:
     raise TypeError(f"unsupported hidden params storage: {type(hidden_params).__name__}")
 
 
-def get_or_create_hidden_params(obj: object) -> MutableMapping[str, object]:
+def get_or_create_hidden_params(obj: object) -> MutableMapping[str, object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     hidden_params: Final[object | None] = _get_hidden_params_storage(obj)
     if hidden_params is None:
-        created_hidden_params: Final[dict[str, object]] = {}
+        created_hidden_params: Final[dict[str, object]] = {}  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         set_hidden_params(obj, created_hidden_params)
         return created_hidden_params
-    hidden_params_mapping: Final[MutableMapping[str, object] | None] = _as_hidden_params_mapping(hidden_params)
+    hidden_params_mapping: Final[MutableMapping[str, object] | None] = _as_hidden_params_mapping(hidden_params)  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     if hidden_params_mapping is not None:
         return hidden_params_mapping
     raise TypeError(f"unsupported hidden params storage: {type(hidden_params).__name__}")

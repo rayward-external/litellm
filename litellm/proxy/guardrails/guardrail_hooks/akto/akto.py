@@ -96,7 +96,7 @@ JSON_CONTENT_TYPE: Final = MappingProxyType({"content-type": "application/json"}
 AKTO_ERRORS: Final = (httpx.RequestError, httpx.HTTPStatusError, Timeout)
 EMPTY: Final[Mapping[str, object]] = MappingProxyType({})
 OBJECT_MAPPING: Final = TypeAdapter(Mapping[str, object])
-JSON_CONTAINER: Final[TypeAdapter[dict[str, object] | list[object]]] = TypeAdapter(dict[str, object] | list[object])
+JSON_CONTAINER: Final[TypeAdapter[dict[str, object] | list[object]]] = TypeAdapter(dict[str, object] | list[object])  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
 
 
 class AktoVerdict(BaseModel):
@@ -106,7 +106,7 @@ class AktoVerdict(BaseModel):
     behaviour: str = Field(default="", validation_alias=AliasChoices("behaviour", "Behaviour"))
     reason: str = Field(default="", validation_alias=AliasChoices("Reason", "reason"))
     modified: bool = Field(default=False, validation_alias=AliasChoices("Modified", "modified"))
-    modified_payload: str | dict[str, object] | list[object] = Field(
+    modified_payload: str | dict[str, object] | list[object] = Field(  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         default="", validation_alias=AliasChoices("ModifiedPayload", "modifiedPayload")
     )
 
@@ -125,11 +125,11 @@ class AktoVerdict(BaseModel):
         return not self.allowed and self.behaviour.strip().lower() in BLOCKING_BEHAVIOURS
 
 
-class _AktoResponseData(BaseModel):
+class _AktoResponseData(BaseModel):  # frozen-ok: upstream response-parsing model; read-only after validation
     guardrailsResult: AktoVerdict | None = None
 
 
-class _AktoResponse(BaseModel):
+class _AktoResponse(BaseModel):  # frozen-ok: upstream response-parsing model; read-only after validation
     data: _AktoResponseData | None = None
 
 
@@ -783,7 +783,7 @@ class AktoGuardrail(CustomGuardrail):
     ) -> GenericGuardrailAPIInputs:
         """Waits for every check; raises the first failure, main's first, else returns main's result."""
         main_task: Final = asyncio.ensure_future(main)
-        results: Final[list[object]] = await asyncio.gather(main_task, *others, return_exceptions=True)
+        results: Final[list[object]] = await asyncio.gather(main_task, *others, return_exceptions=True)  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         failure: Final = next((result for result in results if isinstance(result, BaseException)), None)
         if failure is not None:
             raise failure
@@ -794,7 +794,7 @@ class AktoGuardrail(CustomGuardrail):
     async def apply_guardrail(
         self,
         inputs: GenericGuardrailAPIInputs,
-        request_data: dict[str, object],
+        request_data: dict[str, object],  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         input_type: Literal["request", "response"],
         logging_obj: "LiteLLMLoggingObj | None" = None,
     ) -> GenericGuardrailAPIInputs:

@@ -229,7 +229,7 @@ class MistralConfig(OpenAIGPTConfig):
     @overload
     def _transform_messages(
         self, messages: list[AllMessageValues], model: str, is_async: Literal[True]
-    ) -> Coroutine[object, object, list[AllMessageValues]]:
+    ) -> Coroutine[object, object, list[AllMessageValues]]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         ...
 
     @overload

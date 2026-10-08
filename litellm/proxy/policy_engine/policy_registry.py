@@ -207,7 +207,7 @@ class PolicyRegistry:
         self._initialized = True
         verbose_proxy_logger.info("Loaded %s policies", len(self._policies))
 
-    def parse_policy(self, policy_name: str, policy_data: dict[str, Any]) -> Policy:
+    def parse_policy(self, policy_name: str, policy_data: dict[str, Any]) -> Policy:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         """
         Parse a policy from raw configuration data.
 

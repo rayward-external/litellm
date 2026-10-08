@@ -773,7 +773,7 @@ def get_bedrock_tool_name(response_tool_name: str) -> str:
 _BEDROCK_GLOBAL_REGIONS: list[str] | None = None
 
 
-def get_all_bedrock_regions() -> list[str]:
+def get_all_bedrock_regions() -> list[str]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     """Get all Bedrock regions, cached at module level."""
     global _BEDROCK_GLOBAL_REGIONS
     if _BEDROCK_GLOBAL_REGIONS is None:

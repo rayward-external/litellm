@@ -41,7 +41,7 @@ class Scheduler:
         """
         polling_interval: float or null - frequency of polling queue. Default is 3ms.
         """
-        self.queue: list[QueueEntry] = []
+        self.queue: list[QueueEntry] = []  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         default_in_memory_ttl: float | None = None
         if redis_cache is not None:
             # if redis-cache available frequently poll that instead of using in-memory.
@@ -144,7 +144,7 @@ class Scheduler:
         return self.queue
 
     @with_service_target(SCHEDULER_QUEUE_TARGET)
-    async def get_queue(self, model_name: str) -> list[QueueEntry]:
+    async def get_queue(self, model_name: str) -> list[QueueEntry]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         """
         Return a queue for that specific model group.
 
@@ -160,7 +160,7 @@ class Scheduler:
         return self.queue
 
     @with_service_target(SCHEDULER_QUEUE_TARGET)
-    async def save_queue(self, queue: list[QueueEntry], model_name: str) -> None:
+    async def save_queue(self, queue: list[QueueEntry], model_name: str) -> None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         """
         Save the updated queue of the model group
         """

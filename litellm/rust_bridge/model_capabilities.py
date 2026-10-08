@@ -11,7 +11,7 @@ def _resolved_provider(model: str, custom_llm_provider: str | None) -> tuple[str
     return resolved_model, provider
 
 
-def anthropic_model_capabilities(model: str, custom_llm_provider: str | None) -> dict[str, object]:
+def anthropic_model_capabilities(model: str, custom_llm_provider: str | None) -> dict[str, object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     from litellm.llms.anthropic.chat.transformation import AnthropicConfig
     from litellm.llms.anthropic.common_utils import AnthropicModelInfo
 

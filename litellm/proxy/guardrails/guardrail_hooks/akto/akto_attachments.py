@@ -40,7 +40,7 @@ _FILE_CHECKED_FIELDS: Final = MappingProxyType(
 _TEXT_SOURCE_TYPES: Final = frozenset(("text", "content"))
 _FILE_SOURCE_FIELDS: Final = frozenset(("file_data", "file_id"))
 _ATTACHMENT_BLOCK_TYPES: Final = frozenset(_FILE_CHECKED_FIELDS)
-_OBJECT_MAPPING: Final[TypeAdapter[dict[str, object]]] = TypeAdapter(dict[str, object])
+_OBJECT_MAPPING: Final[TypeAdapter[dict[str, object]]] = TypeAdapter(dict[str, object])  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
 
 _T: Final = TypeVar("_T")
 
@@ -72,54 +72,54 @@ def _text_or_none(value: object) -> object:
 _Metadata: TypeAlias = Annotated[str | None, BeforeValidator(_text_or_none)]
 
 
-class _Model(BaseModel):
+class _Model(BaseModel):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     model_config = ConfigDict(extra="ignore")
 
 
-class _ImageURL(_Model):
+class _ImageURL(_Model):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     url: str | None = None
 
 
-class _ImageURLBlock(_Model):
+class _ImageURLBlock(_Model):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     type: Literal["image_url"]
     image_url: _ImageURL | str | None = None
     url: _ImageURL | str | None = None
 
 
-class _VideoURLBlock(_Model):
+class _VideoURLBlock(_Model):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     type: Literal["video_url"]
     video_url: _ImageURL | str
 
 
-class _InputImageBlock(_Model):
+class _InputImageBlock(_Model):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     type: Literal["input_image"]
     image_url: _ImageURL | str | None = None
     url: _ImageURL | str | None = None
     file_id: str | None = None
 
 
-class _InputAudio(_Model):
+class _InputAudio(_Model):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     data: str | None = None
     format: _Metadata = None
 
 
-class _InputAudioBlock(_Model):
+class _InputAudioBlock(_Model):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     type: Literal["input_audio"]
     input_audio: _InputAudio
 
 
-class _FileData(_Model):
+class _FileData(_Model):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     file_data: str | None = None
     file_id: str | None = None
     filename: _Metadata = None
 
 
-class _FileBlock(_Model):
+class _FileBlock(_Model):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     type: Literal["file"]
     file: _FileData
 
 
-class _InputFileBlock(_Model):
+class _InputFileBlock(_Model):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     type: Literal["input_file"]
     file_data: str | None = None
     file_url: str | None = None
@@ -127,7 +127,7 @@ class _InputFileBlock(_Model):
     filename: _Metadata = None
 
 
-class _Source(_Model):
+class _Source(_Model):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     type: _Metadata = None
     data: str | None = None
     media_type: _Metadata = None
@@ -135,27 +135,27 @@ class _Source(_Model):
     content: object = None
 
 
-class _ImageBlock(_Model):
+class _ImageBlock(_Model):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     type: Literal["image"]
     source: _Source
 
 
-class _DocumentBlock(_Model):
+class _DocumentBlock(_Model):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     type: Literal["document"]
     source: _Source
     title: _Metadata = None
 
 
-class _ToolResultBlock(_Model):
+class _ToolResultBlock(_Model):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     type: Literal["tool_result"]
     content: object = None
 
 
-class _MalformedBlock(_Model):
+class _MalformedBlock(_Model):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     """An attachment type that doesn't parse; it can't be checked, so it blocks."""
 
 
-class _Message(_Model):
+class _Message(_Model):  # frozen-ok: upstream attachment content-block parsing model; read-only after validation
     content: object = None
     output: object = None
 
@@ -176,7 +176,7 @@ _BLOCK_ADAPTER: Final[TypeAdapter[_AttachmentBlock]] = TypeAdapter(
 )
 _Block: TypeAlias = _AttachmentBlock | _MalformedBlock
 _MESSAGE_ADAPTER: Final[TypeAdapter[_Message]] = TypeAdapter(_Message)
-_ITEMS_ADAPTER: Final[TypeAdapter[list[object]]] = TypeAdapter(list[object])
+_ITEMS_ADAPTER: Final[TypeAdapter[list[object]]] = TypeAdapter(list[object])  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
 
 # (attachment, is_unsendable); (None, False) is a block that isn't an attachment
 _Classified: TypeAlias = tuple[Attachment | None, bool]

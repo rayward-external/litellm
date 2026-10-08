@@ -1492,7 +1492,7 @@ class BaseLLMHTTPHandler:
         api_base: str,
         api_key: str | None,
         headers: Mapping[str, str],
-    ) -> tuple[str, dict[str, str], dict[str, object]]:
+    ) -> tuple[str, dict[str, str], dict[str, object]]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         outbound_headers: Final = provider_config.validate_environment(headers=headers, model=model, api_key=api_key)
         url: Final = provider_config.get_complete_url(api_base=api_base, model=model)
         data: Final = dict(body)

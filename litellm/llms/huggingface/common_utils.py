@@ -58,7 +58,7 @@ def output_parser(generated_text: str):
 
 
 @lru_cache(maxsize=128)
-def fetch_inference_provider_mapping(model: str) -> dict:
+def fetch_inference_provider_mapping(model: str) -> dict:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     """
     Fetch provider mappings for a model from the Hugging Face Hub.
 

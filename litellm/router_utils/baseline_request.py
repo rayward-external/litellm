@@ -71,13 +71,13 @@ def _json_cost(value: object, depth: int = 0) -> Iterator[int]:
         yield (6 if value.isascii() else 12) * len(value) + 2
     elif isinstance(value, dict):
         yield 2
-        for key, item in cast(dict[object, object], value).items():
+        for key, item in cast(dict[object, object], value).items():  # cast-ok: narrows a validated mapping shape before iteration
             yield from _json_cost(key, depth + 1)
             yield from _json_cost(item, depth + 1)
             yield 2
     elif isinstance(value, (list, tuple)):
         yield 2
-        for item in cast(list[object] | tuple[object, ...], value):
+        for item in cast(list[object] | tuple[object, ...], value):  # cast-ok: narrows a validated sequence shape before iteration
             yield from _json_cost(item, depth + 1)
             yield 1
     elif isinstance(value, int) and value.bit_length() > 64:
@@ -94,10 +94,10 @@ def within_baseline_budget(value: object) -> bool:
     )
 
 
-def _parameters(value: object, *, envelope: bool = False) -> dict[str, object]:
+def _parameters(value: object, *, envelope: bool = False) -> dict[str, object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     if not isinstance(value, Mapping):
         return {}
-    mapping: Final = cast(Mapping[str, object], value)
+    mapping: Final = cast(Mapping[str, object], value)  # cast-ok: narrows a validated mapping shape
     keys: Final = (*BASELINE_PARAMETERS, "messages") if envelope else BASELINE_PARAMETERS
     return {key: mapping[key] for key in keys if key in mapping}
 

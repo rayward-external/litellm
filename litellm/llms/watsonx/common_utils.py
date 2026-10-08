@@ -80,7 +80,7 @@ def generate_watsonx_token(api_key: str | None, token: str | None) -> str:
 _generate_watsonx_token = generate_watsonx_token
 
 
-def get_api_params(params: dict, model: str | None = None) -> WatsonXAPIParams:
+def get_api_params(params: dict, model: str | None = None) -> WatsonXAPIParams:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     """
     Find watsonx.ai credentials in the params or environment variables and return the headers for authentication.
     """

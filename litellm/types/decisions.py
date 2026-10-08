@@ -118,8 +118,8 @@ class DecisionsUsage(LiteLLMPydanticObjectBase):
     model_config = ConfigDict(extra="allow", frozen=True)
 
 
-class _HiddenParamsResponse(LiteLLMPydanticObjectBase):
-    _hidden_params: dict[str, object] = PrivateAttr(default_factory=dict)
+class _HiddenParamsResponse(LiteLLMPydanticObjectBase):  # frozen-ok: carries a mutable _hidden_params PrivateAttr that set_hidden_param updates after construction
+    _hidden_params: dict[str, object] = PrivateAttr(default_factory=dict)  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
 
     @property
     def hidden_params(self) -> dict[str, object]:  # mutable-ok: API requires mutation

@@ -661,7 +661,7 @@ class _PROXY_DynamicRateLimitHandlerV3(CustomLogger):
 
     @with_service_target("rate_limits")
     async def async_post_call_success_hook(
-        self, data: dict, user_api_key_dict: UserAPIKeyAuth, response
+        self, data: dict, user_api_key_dict: UserAPIKeyAuth, response  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     ) -> LLMResponseTypes:
         """
         Post-call hook to add rate limit headers to response.

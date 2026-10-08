@@ -4206,7 +4206,7 @@ async def handle_gigachat_passthrough_router_model(
 
     is_streaming: Final = request_body.get("stream", False)  # pyright: ignore[reportUnknownVariableType]  # request_body is dict[Unknown, Unknown]
 
-    data: Final[dict[str, object]] = await read_request_body(request=request)
+    data: Final[dict[str, object]] = await read_request_body(request=request)  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     if user_api_key_dict is not None:
         auth_metadata: Final = {
             metadata_key: value

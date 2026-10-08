@@ -1315,7 +1315,7 @@ class _DiscoveryCache(Generic[_DiscoveryPage]):
         self._clock = clock
         self._adapter = adapter
         self._entries = InMemoryCache(max_size_in_memory=_DISCOVERY_CACHE_LIMIT, max_size_per_item=64, clock=clock)
-        self._pending: dict[_DiscoveryKey, asyncio.Task[_DiscoveryPage]] = {}
+        self._pending: dict[_DiscoveryKey, asyncio.Task[_DiscoveryPage]] = {}  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         self._waiters: dict[asyncio.Task[_DiscoveryPage], int] = {}  # mutable-ok: constant-time waiter accounting
 
     def invalidate(self, server_id: str) -> None:

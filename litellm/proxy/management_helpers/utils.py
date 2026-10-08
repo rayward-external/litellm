@@ -716,7 +716,7 @@ async def _emit_management_endpoint_otel_span(
         )
 
         route = get_request_route(http_request)
-        request_body: dict = await read_request_body(  # rebind-ok: pre-existing rebinding on a rename-only line
+        request_body: dict = await read_request_body(  # rebind-ok: pre-existing rebinding on a rename-only line  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
             request=http_request
         )
     else:

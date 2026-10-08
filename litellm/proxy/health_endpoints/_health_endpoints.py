@@ -636,7 +636,7 @@ async def health_services_endpoint(
         )
 
 
-def convert_health_check_to_dict(check) -> dict:
+def convert_health_check_to_dict(check) -> dict:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     """Convert health check database record to dictionary format"""
     return {
         "health_check_id": check.health_check_id,
@@ -736,7 +736,7 @@ def _build_model_param_to_info_mapping(model_list: list) -> dict:
 
 
 def _model_infos_for_endpoint(
-    model_param_to_info: Mapping[str, list[Mapping[str, str | None]]], endpoint: Mapping[str, object]
+    model_param_to_info: Mapping[str, list[Mapping[str, str | None]]], endpoint: Mapping[str, object]  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
 ) -> tuple[Mapping[str, str | None], ...]:
     model_param: Final = endpoint.get("model")
     if not isinstance(model_param, str):

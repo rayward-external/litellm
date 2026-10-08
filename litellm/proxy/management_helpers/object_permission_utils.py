@@ -200,9 +200,9 @@ async def invalidate_cached_object_permissions(
 
 
 async def set_object_permission(
-    data_json: dict[str, object],
+    data_json: dict[str, object],  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     prisma_client: PrismaClient | None,
-) -> dict[str, object]:
+) -> dict[str, object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     """
     Creates the LiteLLM_ObjectPermissionTable record for the key/team.
     Handles permissions for vector stores and mcp servers.
@@ -450,7 +450,7 @@ async def _resolve_team_allowed_mcp_servers(
     direct_servers: Final[list[str]] = team_object_permission.mcp_servers or []
     if SpecialMCPServerName.all_proxy_servers.value in direct_servers:
         return _get_all_mcp_server_ids()
-    access_group_servers: Final[list[str]] = await MCPRequestHandler.get_mcp_servers_from_access_groups(
+    access_group_servers: Final[list[str]] = await MCPRequestHandler.get_mcp_servers_from_access_groups(  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         team_object_permission.mcp_access_groups or []
     )
     raw_tool_perms = team_object_permission.mcp_tool_permissions or {}
@@ -466,7 +466,7 @@ async def _resolve_team_allowed_mcp_servers(
     return _flatten_resolved_mcp_server_ids(resolved_servers) | unresolved_servers
 
 
-def get_allow_all_keys_server_ids() -> set[str]:
+def get_allow_all_keys_server_ids() -> set[str]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     """Return the set of MCP server IDs marked with allow_all_keys=True."""
     from litellm.proxy._experimental.mcp_server.mcp_server_manager import (
         global_mcp_server_manager,

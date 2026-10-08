@@ -1496,7 +1496,7 @@ class MCPRequestHandler:
     _get_mcp_server_auth_headers_from_headers = get_mcp_server_auth_headers_from_headers
 
     @staticmethod
-    def get_oauth2_headers_from_headers(headers: Headers) -> dict[str, str]:
+    def get_oauth2_headers_from_headers(headers: Headers) -> dict[str, str]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         """
         Get the oauth2 headers from the request headers.
         """

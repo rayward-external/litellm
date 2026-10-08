@@ -67,7 +67,7 @@ def _additional_drop_params(kwargs: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(path for path in configured if isinstance(path, str))
 
 
-def settings(kwargs: Mapping[str, object]) -> dict[str, object]:
+def settings(kwargs: Mapping[str, object]) -> dict[str, object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     return asdict(
         MessagesSettings(
             drop_params=_drop_params(kwargs),

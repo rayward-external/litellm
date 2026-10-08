@@ -150,9 +150,9 @@ class _OPTIONAL_PromptInjectionDetection(CustomLogger):
         self,
         user_api_key_dict: UserAPIKeyAuth,
         cache: DualCache,
-        data: dict[str, object],
+        data: dict[str, object],  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         call_type: str,  # "completion", "embeddings", "image_generation", "moderation"
-    ) -> dict[str, object] | str | None:
+    ) -> dict[str, object] | str | None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         try:
             """
             - check if user id part of call

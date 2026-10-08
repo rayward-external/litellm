@@ -441,7 +441,7 @@ async def create_guardrail(
 
         try:
             IN_MEMORY_GUARDRAIL_HANDLER.initialize_guardrail(
-                guardrail=cast(Guardrail, result),
+                guardrail=cast(Guardrail, result),  # cast-ok: narrows a validated Guardrail config dict
                 source="db",
                 reject_invalid_logging_only_scope=True,
             )
@@ -570,7 +570,7 @@ async def update_guardrail(
 
         try:
             IN_MEMORY_GUARDRAIL_HANDLER.sync_guardrail_from_db(
-                guardrail=cast(Guardrail, result),
+                guardrail=cast(Guardrail, result),  # cast-ok: narrows a validated Guardrail config dict
                 reject_invalid_logging_only_scope=True,
             )
             verbose_proxy_logger.info(

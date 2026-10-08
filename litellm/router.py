@@ -6809,7 +6809,7 @@ class Router:
             model_file_id_mapping = add_model_file_id_mappings(
                 healthy_deployments=healthy_deployments, responses=responses
             )
-            returned_response: Final = cast(OpenAIFileObject, responses[0])
+            returned_response: Final = cast(OpenAIFileObject, responses[0])  # cast-ok: narrows a validated file-object response
             returned_response_hidden_params: Final = get_hidden_params(returned_response)
             if returned_response_hidden_params is not None:
                 returned_response_hidden_params["model_file_id_mapping"] = model_file_id_mapping

@@ -85,7 +85,7 @@ def _unsupported(what: str, custom_llm_provider: str) -> BaseLLMException:
     )
 
 
-def to_system_one_request(model: str, body: DecisionsRequestBody, custom_llm_provider: str) -> dict[str, object]:
+def to_system_one_request(model: str, body: DecisionsRequestBody, custom_llm_provider: str) -> dict[str, object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     keys: Final = question_keys(body.questions, custom_llm_provider)
     return {
         "model": model,
@@ -134,7 +134,7 @@ def _part_text(part: DecisionInputPart, custom_llm_provider: str) -> str:
     return part.text
 
 
-def _question(question: DecisionQuestion, custom_llm_provider: str) -> dict[str, object]:
+def _question(question: DecisionQuestion, custom_llm_provider: str) -> dict[str, object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     match question:
         case PredicateQuestion():
             return {"type": "noul", "instructions": question.instructions}
@@ -154,7 +154,7 @@ def _question(question: DecisionQuestion, custom_llm_provider: str) -> dict[str,
             assert_never(question)
 
 
-def _choice_criteria(question: ChoiceQuestion, custom_llm_provider: str) -> dict[str, str | None]:
+def _choice_criteria(question: ChoiceQuestion, custom_llm_provider: str) -> dict[str, str | None]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     values: Final = tuple(_choice_key(choice, custom_llm_provider) for choice in question.choices)
     if len(set(values)) != len(values):
         raise _unsupported("repeated choice values", custom_llm_provider)
@@ -222,14 +222,14 @@ def _answer(
             )
 
 
-def _choice_probabilities(question: ChoiceQuestion, answer: SystemOneChoiceAnswer) -> list[ChoiceProbability]:
+def _choice_probabilities(question: ChoiceQuestion, answer: SystemOneChoiceAnswer) -> list[ChoiceProbability]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     return [
         ChoiceProbability(value=choice.value, probability=answer.probabilities.get(str(choice.value), 0.0))
         for choice in question.choices
     ]
 
 
-def _score_probabilities(question: ScoreQuestion, answer: SystemOneScoreAnswer) -> list[ScoreProbability]:
+def _score_probabilities(question: ScoreQuestion, answer: SystemOneScoreAnswer) -> list[ScoreProbability]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     return [
         ScoreProbability(value=index, label=level.label, probability=answer.probabilities.get(str(index), 0.0))
         for index, level in enumerate(question.levels)

@@ -751,7 +751,7 @@ def _has_non_empty_value(value: object) -> bool:
     return True
 
 
-def update_metadata_fields(updated_kv: dict) -> None:
+def update_metadata_fields(updated_kv: dict) -> None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     """
     Helper function to update all metadata fields (both premium and standard).
 

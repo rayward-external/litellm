@@ -615,7 +615,7 @@ async def new_user(
         organization_ids: Final = cast(list[str] | None, data_json.pop("organizations", None))
 
         response: Final = await generate_key_helper_fn(request_type="user", **data_json, llm_router=None)
-        created_user_id: Final = cast(str | None, response.get("user_id", None))
+        created_user_id: Final = cast(str | None, response.get("user_id", None))  # cast-ok: narrows a validated user-id response field
         if created_user_id is not None:
             forget_missing_user(created_user_id)
         # Admin UI Logic

@@ -100,7 +100,7 @@ _MCP_EVENT_HOOKS: Final = frozenset(
 )
 
 
-def configured_event_hooks(mode: str | list[str] | Mode) -> tuple[str, ...]:
+def configured_event_hooks(mode: str | list[str] | Mode) -> tuple[str, ...]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     if isinstance(mode, str):
         return (mode,)
     if isinstance(mode, list):

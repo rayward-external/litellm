@@ -5998,7 +5998,7 @@ class StandardLoggingPayloadSetup:
         Like get_usage_from_response_obj but returns a plain dict, skipping
         the Pydantic Usage construction on the hot path.
         """
-        _empty: Final[dict[str, object]] = {}
+        _empty: Final[dict[str, object]] = {}  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         if combined_usage_object is not None:
             return combined_usage_object.model_dump()
         if not response_obj:

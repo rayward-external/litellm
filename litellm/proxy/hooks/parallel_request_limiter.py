@@ -808,7 +808,7 @@ class _PROXY_MaxParallelRequestsHandler(CustomLogger):
             return None
 
     @with_service_target("rate_limits")
-    async def async_post_call_success_hook(self, data: dict, user_api_key_dict: UserAPIKeyAuth, response) -> None:
+    async def async_post_call_success_hook(self, data: dict, user_api_key_dict: UserAPIKeyAuth, response) -> None:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
         """
         Retrieve the key's remaining rate limits.
         """

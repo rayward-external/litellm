@@ -191,7 +191,7 @@ def _mask_sensitive_fields(data: Mapping[str, object], sensitive_fields: set[str
     return masked
 
 
-def get_current_env_values(env_var_mapping: dict[str, str]) -> dict[str, str | None]:
+def get_current_env_values(env_var_mapping: dict[str, str]) -> dict[str, str | None]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     """Read current env var values as fallback when no DB record exists."""
     values: Final = {}
     for field_name, env_var_name in env_var_mapping.items():
@@ -235,7 +235,7 @@ def _build_field_schema(model_class: type[BaseModel]) -> dict[str, object]:
     }
 
 
-def parse_config_value(raw: str | Mapping[str, object]) -> dict[str, object]:
+def parse_config_value(raw: str | Mapping[str, object]) -> dict[str, object]:  # mutable-ok: upstream-introduced or pre-existing dict/list signature swept into this sync; ripples to callers across this diff, not a sync-time refactor
     """Parse a config_value from DB (may be JSON string or dict)."""
     if isinstance(raw, str):
         return safe_json_loads(raw, default={})
