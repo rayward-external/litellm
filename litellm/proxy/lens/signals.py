@@ -379,7 +379,7 @@ class SignalClassifier:
                     error="Decisions response omitted a configured noul answer",
                 )
             return SignalAttempt(status="classified", scores=scores, model=config.model)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001  # best-effort classification; any failure degrades to a 'failed' SignalAttempt rather than crashing the caller
             detail: Final = redact_internal_details(str(error))[:300]
             return SignalAttempt(status="failed", model=config.model, error=detail)
 
@@ -441,7 +441,7 @@ async def _process_claimed(
     attempt: Final = await classifier.classify(scope, execution, config)
     try:
         await repository.store(execution, config, claimed_until, classifier.clock(), attempt)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001  # best-effort persistence; a storage failure is logged, not propagated, so the signal pipeline keeps running
         verbose_proxy_logger.error("Lens signal result could not be stored: %s", redact_internal_details(str(error)))
 
 
@@ -570,7 +570,7 @@ async def run_signal_tick(
             claimed_until: Final = claimed_at + SIGNAL_CLAIM_LEASE
             try:
                 claimed: Final = await repository.claim(execution, config, claimed_until, claimed_at)
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001  # best-effort claim; any failure is logged and treated as not-claimed rather than crashing the tick loop
                 verbose_proxy_logger.error("Lens signal claim failed: %s", redact_internal_details(str(error)))
                 return False
             if not claimed:
@@ -595,7 +595,7 @@ async def _logged_tick(
 
     try:
         return await run_signal_tick(storage, repository, completion, clock, router_ready, cursor, sweep)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001  # best-effort tick; any failure is logged and the loop continues from the cursor rather than crashing
         verbose_proxy_logger.error("Lens signal tick failed: %s", redact_internal_details(str(error)))
         return SignalTick(cursor)
 

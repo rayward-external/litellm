@@ -1630,7 +1630,7 @@ async def responses_websocket_endpoint(
     websocket: WebSocket,
     model: str | None = fastapi.Query(None, description="The model to use for the responses WebSocket session."),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth_websocket),
-):
+) -> None:
     """
     Responses API WebSocket mode endpoint.
 

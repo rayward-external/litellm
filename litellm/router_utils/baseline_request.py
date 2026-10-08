@@ -3,7 +3,10 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from itertools import accumulate
 from types import MappingProxyType
-from typing import Final, cast
+from typing import (
+    Final,
+    cast,  # noqa: TID251  # upstream's own file; cast narrows validated mapping/sequence shapes before iteration
+)
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 

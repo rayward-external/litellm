@@ -14,7 +14,12 @@ from __future__ import annotations
 
 import base64
 import os
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Final,
+    cast,  # noqa: TID251  # upstream provider transform; narrows a validated response payload
+)
 
 import httpx
 

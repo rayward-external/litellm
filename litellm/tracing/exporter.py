@@ -9,7 +9,9 @@ from typing import Final
 
 import httpx
 from pydantic import TypeAdapter, ValidationError
-from typing_extensions import TypeIs
+from typing_extensions import (
+    TypeIs,  # noqa: TID251  # upstream's own file; guards bound arbitrary callback shapes, see guard-ok call sites
+)
 
 from litellm._logging import verbose_proxy_logger
 from litellm.integrations.clickhouse.clickhouse_spend_logger import spend_log_row_from_payload

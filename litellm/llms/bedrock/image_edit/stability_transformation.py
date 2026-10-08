@@ -22,7 +22,12 @@ API Reference: https://docs.aws.amazon.com/bedrock/latest/userguide/model-parame
 """
 
 import base64
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Final,
+    cast,  # noqa: TID251  # upstream provider transform; narrows a validated response payload
+)
 
 import httpx
 from httpx._types import RequestFiles

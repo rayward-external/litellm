@@ -15,7 +15,15 @@ from dataclasses import dataclass, replace
 from functools import partial, wraps
 from itertools import chain
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, Generic, ParamSpec, TypeAlias, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Final,
+    Generic,
+    ParamSpec,
+    TypeAlias,
+    TypeVar,
+    cast,  # noqa: TID251  # narrows a private cache's JSON string keys, see cast-ok call site
+)
 
 from mcp.types import CacheableResult
 from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter

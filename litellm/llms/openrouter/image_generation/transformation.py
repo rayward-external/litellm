@@ -28,7 +28,12 @@ Response format:
 """
 
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Final,
+    cast,  # noqa: TID251  # upstream provider transform; narrows a validated response payload
+)
 
 import httpx
 from pydantic import ConfigDict, TypeAdapter

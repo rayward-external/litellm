@@ -1,5 +1,9 @@
 from collections.abc import Iterator, MutableMapping
-from typing import Final, Protocol, cast
+from typing import (
+    Final,
+    Protocol,
+    cast,  # noqa: TID251  # upstream's own file; cast narrows legacy untyped dict storage, see cast-ok call sites
+)
 
 from litellm.types.llms.base import HiddenParams
 

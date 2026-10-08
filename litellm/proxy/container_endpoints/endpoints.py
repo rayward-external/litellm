@@ -247,7 +247,7 @@ async def list_containers(
                 user_api_base=user_api_base,
                 version=version,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # re-raised via handle_llm_api_exception, which maps every failure shape to the right HTTP response
             raise await processor.handle_llm_api_exception(
                 e=e,
                 user_api_key_dict=user_api_key_dict,

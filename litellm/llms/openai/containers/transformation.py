@@ -1,5 +1,11 @@
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Final, Literal, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Final,
+    Literal,
+    cast,  # noqa: TID251  # upstream provider transform; narrows a validated response payload
+)
 
 import httpx
 from typing_extensions import ReadOnly, TypedDict

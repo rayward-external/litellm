@@ -1,7 +1,7 @@
 import itertools
 import re
 from collections.abc import Collection, Iterable, Mapping
-from typing import Final, cast
+from typing import Final, cast  # noqa: TID251  # narrows a validated route-metadata list, see cast-ok call site
 
 from fastapi import HTTPException, Request, status
 

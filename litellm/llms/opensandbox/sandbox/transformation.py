@@ -1,7 +1,7 @@
 import asyncio
 import json
 import time
-from typing import Final, cast
+from typing import Final, cast  # noqa: TID251  # upstream provider transform; narrows a validated response payload
 
 import httpx
 

@@ -692,7 +692,7 @@ def _fix_enum_types(schema, depth=0):
                 _fix_enum_types(item, depth=depth + 1)
 
 
-def build_vertex_schema(parameters: dict, add_property_ordering: bool = False):
+def build_vertex_schema(parameters: dict, add_property_ordering: bool = False) -> dict:
     """
     This is a modified version of https://github.com/google-gemini/generative-ai-python/blob/8f77cc6ac99937cd3a81299ecf79608b91b06bbb/google/generativeai/types/content_types.py#L419
 

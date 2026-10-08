@@ -7,7 +7,16 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from datetime import datetime, timezone
 from itertools import chain, count
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, Literal, Optional, Protocol, TypeAlias, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Final,
+    Literal,
+    Optional,
+    Protocol,
+    TypeAlias,
+    TypeVar,
+    cast,  # noqa: TID251  # narrows a dict literal built from a known Guardrail shape
+)
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 

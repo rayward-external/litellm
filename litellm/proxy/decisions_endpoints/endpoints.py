@@ -127,7 +127,7 @@ async def systemone(
     request: Request,
     fastapi_response: Response,
     user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
-):
+) -> object:
     return await _process_decisions(
         request=request,
         fastapi_response=fastapi_response,
@@ -152,7 +152,7 @@ async def decisions(
     request: Request,
     fastapi_response: Response,
     user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
-):
+) -> object:
     return await _process_decisions(
         request=request,
         fastapi_response=fastapi_response,

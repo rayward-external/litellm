@@ -1082,7 +1082,7 @@ async def _reserve_counters(
         for counter, entry in zip(counters, entries):
             try:
                 await invalidate_spend_counter(counter_key=counter.counter_key)
-            except Exception:
+            except Exception:  # noqa: BLE001  # best-effort cleanup after an already-failed reservation; logged, never allowed to mask the original failure
                 verbose_proxy_logger.warning(
                     "Failed to invalidate spend counter after budget reservation failure for %s",
                     counter.counter_key,

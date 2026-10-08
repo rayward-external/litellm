@@ -6,7 +6,12 @@ Handles transformation between OpenAI-compatible format and Stability AI API for
 API Reference: https://platform.stability.ai/docs/api-reference
 """
 
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Final,
+    cast,  # noqa: TID251  # upstream provider transform; narrows a validated response payload
+)
 
 import httpx
 from httpx._types import RequestFiles

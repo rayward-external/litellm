@@ -29,7 +29,15 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from itertools import chain, groupby
 from types import EllipsisType, MappingProxyType
-from typing import TYPE_CHECKING, Any, Final, Literal, TypeAlias, TypedDict, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Final,
+    Literal,
+    TypeAlias,
+    TypedDict,
+    cast,  # noqa: TID251  # narrows a validated OAuth2 grant-type literal and scope sequence, see cast-ok call sites
+)
 from urllib.parse import ParseResult, urlparse
 
 import anyio

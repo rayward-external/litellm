@@ -238,7 +238,7 @@ def normalize_moyai_url(value: object) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise ValueError("moyai_url must be a string")
+        raise TypeError("moyai_url must be a string")
     stripped: Final = value.strip()
     if not stripped:
         return None
