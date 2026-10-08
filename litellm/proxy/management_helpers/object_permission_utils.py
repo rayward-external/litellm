@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, Optional
+from typing import TYPE_CHECKING, Any, Final, Optional
 
 from fastapi import HTTPException, status
 from pydantic import TypeAdapter
@@ -200,9 +200,9 @@ async def invalidate_cached_object_permissions(
 
 
 async def set_object_permission(
-    data_json: dict[str, object],  # mutable-ok: sync
+    data_json: dict[str, Any],  # mutable-ok: unpacked as **kwargs into generate_key_helper_fn's concrete params downstream
     prisma_client: PrismaClient | None,
-) -> dict[str, object]:  # mutable-ok: sync
+) -> dict[str, Any]:  # mutable-ok: unpacked as **kwargs into generate_key_helper_fn's concrete params downstream
     """
     Creates the LiteLLM_ObjectPermissionTable record for the key/team.
     Handles permissions for vector stores and mcp servers.
@@ -216,7 +216,7 @@ async def set_object_permission(
         return data_json
 
     # Clean data: exclude None values and object_permission_id
-    clean_data: Final[dict[str, object]] = {
+    clean_data: Final[dict[str, Any]] = {
         k: v for k, v in permission_data.items() if v is not None and k != "object_permission_id"
     }
 
