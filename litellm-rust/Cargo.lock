@@ -4083,7 +4083,7 @@ dependencies = [
  "chrono",
  "flate2",
  "futures-util",
- "http 1.4.2",
+ "http",
  "jsonschema",
  "libc",
  "litellm-http",
@@ -4102,7 +4102,7 @@ dependencies = [
  "subtle",
  "syn 2.0.119",
  "tempfile",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "tokio",
  "tower-http",
  "tracing",
@@ -7876,7 +7876,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syn 2.0.119",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "unicode-ident",
 ]
 
