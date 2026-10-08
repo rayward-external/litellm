@@ -391,7 +391,10 @@ def should_return_raw_model_name(request_data: dict[str, object]) -> bool:
 _should_return_raw_model_name: Final = should_return_raw_model_name
 
 
-def _apply_client_disconnect_metadata(target_metadata: dict[str, object] | None) -> None:
+def _apply_stream_termination_metadata(
+    target_metadata: dict[str, object] | None,
+    termination: _StreamTermination = CLIENT_DISCONNECTED_TERMINATION,
+) -> None:
     if target_metadata is None:
         return
     target_metadata[termination.metadata_key] = True
