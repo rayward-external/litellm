@@ -160,6 +160,7 @@ STAGE_TO_ARG = {
     "builder": "LITELLM_BUILD_IMAGE",
     "liteadmin-builder": "LITELLM_BUILD_IMAGE",
     "runtime": "LITELLM_RUNTIME_IMAGE",
+    "service": "LITELLM_RUNTIME_IMAGE",
     "ui-builder": "UI_BUILD_IMAGE",
     "uvbin": "UV_IMAGE",
 }
@@ -192,7 +193,11 @@ EXPECTED_LITERAL_PIN_STAGES = {
     # builder is still vanilla `FROM $LITELLM_BUILD_IMAGE` here.
     "docker/Dockerfile.database": ("uvbin", "ui-builder", "runtime"),
     "docker/Dockerfile.non_root": ("uvbin", "ui-builder", "builder", "runtime"),
-    "deploy/lens/Dockerfile": ("uvbin", "builder", "runtime"),
+    # 2026-10-08 sync: upstream rewrote the lens service from Python/uv to Rust
+    # (#45148), dropping the uvbin stage entirely and renaming the runtime
+    # stage (now a local `FROM service` alias with no ARG of its own) to
+    # `service`, which is the stage that actually pins LITELLM_RUNTIME_IMAGE.
+    "deploy/lens/Dockerfile": ("builder", "service"),
 }
 
 _ARG_PIN_RE = re.compile(

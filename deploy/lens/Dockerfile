@@ -1,7 +1,7 @@
 ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d
 ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d
 
-FROM $LITELLM_BUILD_IMAGE AS builder
+FROM cgr.dev/chainguard/wolfi-base@sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d AS builder
 RUN apk add --no-cache rust build-base cmake perl pkgconf openssl-dev libseccomp-dev python-3.13
 WORKDIR /src
 COPY .cargo/ .cargo/
@@ -19,7 +19,7 @@ RUN cargo test --locked --release -p litellm-lens --test sandbox --no-run --mess
     python3.13 -c 'import json, pathlib, shutil; rows = [json.loads(line) for line in pathlib.Path("/tmp/test-artifacts.json").read_text().splitlines()]; artifact, = [r["executable"] for r in rows if r.get("executable") and r["target"]["name"] == "sandbox"]; shutil.copyfile(artifact, "/tmp/lens-sandbox-tests")' && \
     chmod 755 /tmp/lens-sandbox-tests
 
-FROM $LITELLM_RUNTIME_IMAGE AS service
+FROM cgr.dev/chainguard/wolfi-base@sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d AS service
 ARG LITELLM_RELEASE_TAG=""
 RUN : "${LITELLM_RELEASE_TAG:?Pass --build-arg LITELLM_RELEASE_TAG matching the gateway}"
 RUN apk add --no-cache python-3.13 setpriv libgcc libstdc++ openssl ca-certificates
