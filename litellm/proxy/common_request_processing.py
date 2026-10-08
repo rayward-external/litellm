@@ -36,7 +36,7 @@ import orjson
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, TypeAdapter, ValidationError
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 from typing_extensions import Never
 
 import litellm

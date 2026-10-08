@@ -1373,6 +1373,30 @@ async def bedrock_llm_proxy_route(
 
     request_body: Final = await read_request_body(request=request)
 
+    # Admission control (before any upstream call). The generic guard inside
+    # pass_through_request never sees this route: Bedrock inference dispatches
+    # through base_passthrough_process_llm_request, and count_tokens returns
+    # even earlier. Without this call, a registered `bedrock` capability is
+    # dead config and the fail-closed setting silently exempts Bedrock.
+    #
+    # Running BEFORE the count_tokens branch is deliberate: when enforcement is
+    # on, even free routes must be registered (`require_priced_model: false`) —
+    # deny-by-default means unlisted routes 403, billable or not. Multi-segment
+    # model ids (router aliases with "/", inference profiles) need a greedy
+    # `{model_id*}` placeholder in the capability path; plain `{model_id}`
+    # matches a single segment only. ARN-form ids stay unpriceable and are
+    # denied — a fail-closed limitation, not an oversight.
+    try:
+        enforce_passthrough_admission(
+            general_settings=general_settings,
+            provider="bedrock",
+            method=request.method,
+            path=endpoint if endpoint.startswith("/") else "/" + endpoint,
+            request_body=request_body,
+        )
+    except PassthroughAdmissionError as e:
+        raise HTTPException(status_code=e.status_code, detail={"error": e.message})
+
     if is_bedrock_count_tokens_endpoint(endpoint):
         return await handle_bedrock_count_tokens(
             endpoint=endpoint,

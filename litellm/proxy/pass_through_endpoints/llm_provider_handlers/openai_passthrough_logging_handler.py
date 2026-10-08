@@ -13,7 +13,6 @@ import httpx
 
 import litellm
 from litellm._logging import verbose_proxy_logger
-from litellm.litellm_core_utils.hidden_params import set_hidden_param
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.litellm_logging import (
     get_standard_logging_object_payload,
@@ -199,8 +198,8 @@ def _is_openai_compatible_host(hostname: str | None) -> bool:
     return _hostname_matches(hostname, _OPENAI_HOSTNAMES) or _hostname_matches(hostname, _AZURE_OPENAI_HOSTNAMES)
 
 
-def is_openai_compatible_url(url_route: str | None) -> bool:
-    """True if the URL targets an OpenAI-compatible API surface.
+def _in_openai_scope(url_route: str, custom_llm_provider: str | None = None) -> bool:
+    """Scope gate shared by every `is_openai_*_route` helper.
 
     Each helper used to gate on `_is_openai_compatible_host`, a hardcoded tuple
     of OpenAI/Azure hostnames. Any other OpenAI-compatible upstream — Fireworks
@@ -344,9 +343,6 @@ def _build_response_and_cost_for_surface(
         litellm_model_response._hidden_params["response_cost"] = response_cost
 
     return litellm_model_response, response_cost
-
-
-_is_openai_compatible_url: Final = is_openai_compatible_url
 
 
 def _is_remote_high_detail_image(part: object) -> bool:
@@ -755,97 +751,21 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             ) = None
             handler_instance = OpenAIPassthroughLoggingHandler()
 
-            custom_llm_provider: Final = kwargs.get("custom_llm_provider", "openai")
-
-            if is_chat_completions:
-                # Handle chat completions with existing logic
-                provider_config: Final = handler_instance.get_provider_config(model=model)
-                # Preserve existing litellm_params to maintain metadata tags
-                existing_litellm_params: Final = kwargs.get("litellm_params", {}) or {}
-                litellm_model_response = provider_config.transform_response(
-                    raw_response=httpx_response,
-                    model_response=litellm.ModelResponse(),
-                    model=model,
-                    messages=request_body.get("messages", []),
-                    logging_obj=logging_obj,
-                    optional_params=request_body.get("optional_params", {}),
-                    api_key="",
-                    request_data=request_body,
-                    encoding=getattr(litellm, "encoding", None),
-                    json_mode=request_body.get("response_format", {}).get("type") == "json_object",
-                    litellm_params=existing_litellm_params,
-                )
-
-                # Calculate cost using LiteLLM's cost calculator
-                response_cost = litellm.completion_cost(
-                    completion_response=litellm_model_response,
-                    model=model,
-                    custom_llm_provider=custom_llm_provider,
-                )
-            elif is_embeddings:
-                litellm_model_response = convert_to_model_response_object(
-                    response_object=response_body,
-                    model_response_object=EmbeddingResponse(),
-                    response_type="embedding",
-                )
-                response_cost = OpenAIPassthroughLoggingHandler._calculate_embeddings_cost(
-                    litellm_model_response=litellm_model_response,
-                    model=model,
-                    custom_llm_provider=custom_llm_provider,
-                )
-                set_hidden_param(litellm_model_response, "response_cost", response_cost)
-            elif is_image_generation:
-                # Handle image generation cost calculation
-                response_cost = OpenAIPassthroughLoggingHandler._calculate_image_generation_cost(
-                    model=model,
-                    response_body=response_body,
-                    request_body=request_body,
-                )
-                # Mark call type for downstream image-aware logic/metrics
-                try:
-                    logging_obj.call_type = PassthroughCallTypes.passthrough_image_generation.value
-                except Exception:
-                    pass
-                # Create a simple response object for logging
-                litellm_model_response = ImageResponse(
-                    data=response_body.get("data", []),
-                    model=model,
-                )
-                # Set the calculated cost in _hidden_params to prevent recalculation
-                set_hidden_param(litellm_model_response, "response_cost", response_cost)
-            elif is_image_editing:
-                # Handle image editing cost calculation
-                response_cost = OpenAIPassthroughLoggingHandler._calculate_image_editing_cost(
-                    model=model,
-                    response_body=response_body,
-                    request_body=request_body,
-                )
-                # Mark call type for downstream image-aware logic/metrics
-                try:
-                    logging_obj.call_type = PassthroughCallTypes.passthrough_image_generation.value
-                except Exception:
-                    pass
-                # Create a simple response object for logging
-                litellm_model_response = ImageResponse(
-                    data=response_body.get("data", []),
-                    model=model,
-                )
-                # Set the calculated cost in _hidden_params to prevent recalculation
-                set_hidden_param(litellm_model_response, "response_cost", response_cost)
-            elif is_responses:
-                # Responses-API cost tracking — see
-                # `_build_responses_api_response_and_cost` for why this needs
-                # a dedicated transformer (the chat-completions transform
-                # crashes on the Responses payload shape).
-                (
-                    litellm_model_response,
-                    response_cost,
-                ) = OpenAIPassthroughLoggingHandler._build_responses_api_response_and_cost(
-                    model=model,
-                    httpx_response=httpx_response,
-                    logging_obj=logging_obj,
-                    custom_llm_provider=custom_llm_provider,
-                )
+            # Resolve the pricing provider. A generic pass-through
+            # (`general_settings.pass_through_endpoints`) carries no
+            # `custom_llm_provider` field at all, and defaulting to "openai"
+            # made every non-OpenAI upstream raise "model isn't mapped yet" in
+            # `completion_cost` — swallowed by the except below, so the call was
+            # billed upstream and recorded at $0.
+            custom_llm_provider = resolve_openai_passthrough_provider(
+                model=model,
+                custom_llm_provider=configured_provider,
+                url_route=url_route,
+            )
+            # Fireworks ids arrive bare (`accounts/.../models/...`) while the
+            # price map is keyed `fireworks_ai/accounts/...`; normalize so the
+            # Fireworks cost calculator's lookup hits.
+            cost_model = normalize_fireworks_model_id(model) or model
 
             (
                 litellm_model_response,
@@ -975,7 +895,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                     )
 
                     # Convert string chunk to dict
-                    stripped_json_chunk = BaseModelResponseIterator.string_to_dict_parser(str_line=chunk_str)
+                    stripped_json_chunk = BaseModelResponseIterator._string_to_dict_parser(str_line=chunk_str)
 
                     if stripped_json_chunk:
                         # Parse the chunk using OpenAI's chunk parser
@@ -1005,7 +925,55 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             return None
 
     @staticmethod
-    def handle_logging_openai_collected_chunks(
+    def _extract_responses_api_completed_response(
+        all_chunks: list[str],
+    ) -> dict | None:
+        """Return the final `response` object of a Responses-API event stream.
+
+        A streamed Responses call does not emit chat-completion chunks — it
+        emits typed events (`response.created`, `response.output_text.delta`,
+        ..., a terminal `response.completed` / `response.incomplete` /
+        `response.failed`). `OpenAIChatCompletionResponseIterator` understands
+        only the chat shape, so these streams reassemble to nothing and the
+        request is billed at $0. Any of the three terminal events carries the
+        finished `response` object with `usage.input_tokens` /
+        `usage.output_tokens`, so that is the one we cost from — an
+        incomplete or failed generation still consumed tokens and must still
+        be billed.
+
+        Detection is on the JSON payload's own `type` field, not the SSE
+        `event:` line: `_convert_raw_bytes_to_str_lines` splits the stream on
+        newlines, so `event: response.completed` and its `data: {...}` arrive
+        as separate entries. Scanned in reverse because the terminal event is
+        the last one on the wire.
+
+        Returns None when these chunks are not a Responses event stream, which
+        keeps the chat-completions path unchanged.
+        """
+        from litellm.llms.base_llm.base_model_iterator import (
+            BaseModelResponseIterator,
+        )
+
+        for chunk_str in reversed(all_chunks):
+            try:
+                parsed_chunk = BaseModelResponseIterator._string_to_dict_parser(str_line=chunk_str)
+            except Exception as e:  # noqa: BLE001  # cost tracking is best-effort; never break the response path
+                verbose_proxy_logger.debug("Error parsing streaming chunk as Responses event: %s", e)
+                continue
+            if not isinstance(parsed_chunk, dict):
+                continue
+            if parsed_chunk.get("type") in (
+                "response.completed",
+                "response.incomplete",
+                "response.failed",
+            ):
+                completed_response = parsed_chunk.get("response")
+                if isinstance(completed_response, dict):
+                    return completed_response
+        return None
+
+    @staticmethod
+    def _handle_logging_openai_collected_chunks(
         litellm_logging_obj: LiteLLMLoggingObj,
         passthrough_success_handler_obj: PassThroughEndpointLogging,
         url_route: str,
@@ -1154,5 +1122,3 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 "result": None,
                 "kwargs": {},
             }
-
-    _handle_logging_openai_collected_chunks = handle_logging_openai_collected_chunks

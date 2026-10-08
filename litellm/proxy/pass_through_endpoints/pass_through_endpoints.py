@@ -1207,6 +1207,26 @@ async def pass_through_request(
             _parsed_body = {}
         else:
             _parsed_body = await read_request_body(request)  # rebind-ok: pre-existing rebinding on a rename-only line
+
+        #########################################################
+        # Admission control (before the upstream call)
+        #
+        # Cost tracking on pass-through is an allow-list: an unrecognised
+        # route bills the upstream account and records $0 against the caller's
+        # key. Checking after the response would be too late — the money is
+        # already spent — so refuse here, while refusing is still free.
+        # No-op unless general_settings.passthrough_require_cost_tracking.
+        #########################################################
+        from litellm.proxy.proxy_server import general_settings as _admission_general_settings
+
+        enforce_passthrough_admission(
+            general_settings=_admission_general_settings,
+            provider=custom_llm_provider,
+            method=request.method,
+            path=url.path,
+            request_body=_parsed_body,
+        )
+
         verbose_proxy_logger.debug(
             "Pass through endpoint sending request to \nURL %s\nheaders: %s\nbody: %s\n",
             url,

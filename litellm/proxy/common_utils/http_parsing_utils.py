@@ -6,8 +6,8 @@ from typing import Annotated, Any, Final, Literal, Union, get_args, get_origin
 
 import orjson
 from fastapi import Request, UploadFile, status
-from starlette.routing import get_route_path
 from starlette.requests import HTTPConnection
+from starlette.routing import get_route_path
 from typing_extensions import NotRequired, ReadOnly, Required, assert_never
 
 from litellm._logging import verbose_proxy_logger
