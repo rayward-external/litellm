@@ -256,6 +256,7 @@ from litellm.secret_managers.main import str_to_bool
 from litellm.types.integrations.slack_alerting import DEFAULT_ALERT_TYPES
 from litellm.types.llms.openai import ResponsesAPIResponse
 from litellm.types.mcp import (
+    MCPDuringCallRequestObject,
     MCPDuringCallResponseObject,
     MCPPreCallRequestObject,
     MCPPreCallResponseObject,
@@ -1566,7 +1567,9 @@ class ProxyLogging:
 
     def convert_mcp_to_llm_format(
         self,
-        request_obj: MCPPreCallRequestObject,
+        # Not MCPPreCallRequestObject alone: the during_call_hook caller passes
+        # MCPDuringCallRequestObject, and this only reads the fields both share.
+        request_obj: MCPPreCallRequestObject | MCPDuringCallRequestObject,
         kwargs: Mapping[str, object],
     ) -> dict[str, object]:  # mutable-ok: sync
         return self._convert_mcp_to_llm_format(request_obj, kwargs)
