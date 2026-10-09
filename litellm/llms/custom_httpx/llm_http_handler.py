@@ -4760,7 +4760,8 @@ class BaseLLMHTTPHandler:
         except Exception as e:
             raise self._handle_error(e=e, provider_config=provider_config)
 
-        self._raise_for_provider_error_status(response=response, provider_config=provider_config)
+        if not provider_config.is_retrieve_file_response_successful(response):
+            self._raise_for_provider_error_status(response=response, provider_config=provider_config)
         return provider_config.transform_retrieve_file_response(
             raw_response=response,
             logging_obj=logging_obj,
@@ -4818,7 +4819,8 @@ class BaseLLMHTTPHandler:
         except Exception as e:
             raise self._handle_error(e=e, provider_config=provider_config)
 
-        self._raise_for_provider_error_status(response=response, provider_config=provider_config)
+        if not provider_config.is_retrieve_file_response_successful(response):
+            self._raise_for_provider_error_status(response=response, provider_config=provider_config)
         return provider_config.transform_retrieve_file_response(
             raw_response=response,
             logging_obj=logging_obj,

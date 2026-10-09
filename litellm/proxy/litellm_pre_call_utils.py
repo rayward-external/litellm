@@ -33,6 +33,7 @@ from litellm.constants import (
     STREAM_ENDED_UPSTREAM_IDLE_METADATA_KEY,
     X_LITELLM_DISABLE_CALLBACKS,
 )
+from litellm.integrations.custom_guardrail import without_server_streaming_classification
 from litellm.litellm_core_utils.core_helpers import is_codex_user_agent
 from litellm.litellm_core_utils.credential_accessor import CredentialAccessor
 from litellm.litellm_core_utils.initialize_dynamic_callback_params import (
@@ -209,6 +210,10 @@ def _sanitize_for_log(value: object) -> str:
     return text.replace("\r", "").replace("\n", "")
 
 
+def sanitize_for_log(value: object) -> str:
+    return _sanitize_for_log(value)
+
+
 from litellm.router import Router
 from litellm.router_strategy.tag_based_routing import (
     ORIGINAL_REQUEST_TAGS_KEY,
@@ -292,6 +297,9 @@ LITELLM_TRACE_CONTROL_METADATA_FIELDS: Final = frozenset(
 _UNTRUSTED_ROOT_CONTROL_FIELDS: Final = (
     "weights",
     "_router_weights",
+    "fallback_depth",
+    "_target_order",
+    "attempted_targets",
     "proxy_server_request",
     "standard_logging_object",
     "secret_fields",
@@ -2137,7 +2145,9 @@ def refresh_proxy_server_request_body_snapshot(
         | _TRANSPORT_ONLY_CREDENTIAL_KEYS
         | _CALLBACK_CREDENTIAL_KEYS
     )
-    body: Final = {k: v for k, v in data.items() if k not in _body_snapshot_exclude}
+    body: Final = {
+        k: v for k, v in without_server_streaming_classification(data).items() if k not in _body_snapshot_exclude
+    }
     proxy_server_request["body"] = body
     if guardrails_applied and isinstance(logging_obj, Logging):
         metadata: Final = data.get(get_metadata_variable_name_from_kwargs(data))
