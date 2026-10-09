@@ -1,4 +1,4 @@
-from collections.abc import Awaitable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Final, Protocol, TypeVar, runtime_checkable
 
@@ -59,8 +59,6 @@ _EMPTY_TENANT: Final = Tenant("", "")
 
 
 class NativeStore(Protocol):
-    def __init__(self, config: "NativeConfig") -> None: ...
-
     def ensure_schema(self) -> Awaitable[None]: ...
 
     def insert_rows(self, table: str, rows: Sequence[Mapping[str, object]]) -> Awaitable[None]: ...
@@ -95,7 +93,10 @@ class NativeStore(Protocol):
 @runtime_checkable
 class NativeTraces(Protocol):
     NativeTraceConfig: type["NativeConfig"]
-    NativeTraceStorage: type[NativeStore]
+    # Not type[NativeStore]: that would make NativeStore's own structural
+    # conformance checks (elsewhere, for already-constructed instances like
+    # RemoteTraceStore) require a matching __init__ too, which they don't have.
+    NativeTraceStorage: Callable[["NativeConfig"], NativeStore]
 
     def trace_encode_error(self, message: str) -> bytes: ...
 
