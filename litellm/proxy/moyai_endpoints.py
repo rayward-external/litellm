@@ -16,7 +16,12 @@ import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Final
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Final,
+    cast,  # noqa: TID251  # generate_key_helper_fn's return type is not yet narrowed to str
+)
 from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
