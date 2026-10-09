@@ -448,7 +448,10 @@ class SonioxAudioTranscriptionHandler:
             self._raise_for_response(transcript_resp, provider_config, "fetch transcript")
             fetched: Final[_SonioxJsonView] = {"transcript": transcript_resp.json()}
 
-            payload: Final = {"transcription": transcription_meta, "transcript": fetched["transcript"]}
+            payload: Final[dict[str, object]] = {
+                "transcription": transcription_meta,
+                "transcript": fetched["transcript"],
+            }
             response: Final = provider_config.build_response_from_payload(
                 payload,
                 model_response=model_response,
@@ -682,7 +685,10 @@ class SonioxAudioTranscriptionHandler:
             self._raise_for_response(transcript_resp, provider_config, "fetch transcript")
             fetched: Final[_SonioxJsonView] = {"transcript": transcript_resp.json()}
 
-            payload: Final = {"transcription": transcription_meta, "transcript": fetched["transcript"]}
+            payload: Final[dict[str, object]] = {
+                "transcription": transcription_meta,
+                "transcript": fetched["transcript"],
+            }
             response: Final = provider_config.build_response_from_payload(
                 payload,
                 model_response=model_response,
