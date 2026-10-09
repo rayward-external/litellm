@@ -6336,7 +6336,7 @@ class BaseLLMHTTPHandler:
             BaseRealtimeHTTPConfig,
         ],
     ) -> NoReturn:
-        self._handle_error(e, provider_config)
+        return self._handle_error(e, provider_config)
 
     @staticmethod
     def _append_query_params(url: str, query_params: RealtimeQueryParams | None) -> str:
