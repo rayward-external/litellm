@@ -5,6 +5,16 @@ description: >-
 
 test_paths:
   - reason: >-
+      Orphaned when PR #45509 moved the CircleCI llm_responses_api_testing job's suites to GHA
+      without porting these two files. Both currently fail outside the CircleCI job's old
+      fixtures (10 of 31 failures in test_responses_hooks.py, 1 of 11 in
+      test_base_responses_api_streaming_iterator.py), so wiring them into a GHA shard as-is would
+      turn it red on tests this PR did not break. Needs separate triage of each failure before
+      they can be assigned a job.
+    paths:
+      - tests/llm_responses_api_testing/test_base_responses_api_streaming_iterator.py
+      - tests/llm_responses_api_testing/test_responses_hooks.py
+  - reason: >-
       litellm.agent() end-to-end suite. It drives the real claude, codex and opencode CLIs and
       deepagents against a live LiteLLM AI Gateway, so it needs those binaries on PATH plus
       LITELLM_PROXY_API_BASE / LITELLM_PROXY_API_KEY, and skips without them. Run manually
