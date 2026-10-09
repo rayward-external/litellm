@@ -162,7 +162,7 @@ class BaseConfig(ABC):
         """
         return False
 
-    def _add_tools_to_optional_params(self, optional_params: dict, tools: list) -> dict:
+    def _add_tools_to_optional_params(self, optional_params: dict, tools: Sequence[Mapping[str, object]]) -> dict:
         """
         Helper util to add tools to optional_params.
         """
