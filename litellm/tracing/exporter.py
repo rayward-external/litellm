@@ -178,7 +178,7 @@ class LensExporter(CustomLogger):
         size = 2  # rebind-ok: count bytes in a bounded batch without copying records
         records: Final[deque[bytes]] = deque()  # mutable-ok: finite batch drained from the queue
         while self.queue and size + len(self.queue[0]) + 1 <= MAX_BATCH_BYTES:
-            record: Final = self.queue.popleft()
+            record: Final = self.queue.popleft()  # pyright: ignore[reportGeneralTypeIssues]  # fresh per-iteration binding, not a reassignment
             size += len(record) + 1
             records.append(record)
         return tuple(records)

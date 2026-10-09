@@ -44,7 +44,10 @@ class GroqChatCompletion(OpenAILikeChatHandler):
         streaming_decoder: CustomStreamingDecoder | None = None,
         fake_stream: bool = False,
     ):
-        messages = GroqChatConfig().transform_messages(messages=cast(list[AllMessageValues], messages), model=model)
+        messages = cast(  # cast-ok: is_async defaults False, so this call always returns the sync list branch
+            list[AllMessageValues],
+            GroqChatConfig().transform_messages(messages=cast(list[AllMessageValues], messages), model=model),
+        )
 
         if optional_params.get("stream") is True:
             fake_stream = GroqChatConfig()._should_fake_stream(optional_params)

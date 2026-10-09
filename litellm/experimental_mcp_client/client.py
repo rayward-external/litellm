@@ -1064,7 +1064,7 @@ class MCPClient:
                 pages.append((page, time.monotonic()))
                 items.extend(items_of(page))
                 if not page.next_cursor:
-                    now: Final = time.monotonic()
+                    now: Final = time.monotonic()  # pyright: ignore[reportGeneralTypeIssues]  # fresh per-iteration binding, not a reassignment; the loop always returns on this path
                     return items, aggregate_freshness(
                         tuple(age_freshness(value, now - received) for value, received in pages)
                     )

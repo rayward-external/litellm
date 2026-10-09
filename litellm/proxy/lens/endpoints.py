@@ -788,7 +788,9 @@ async def sample(lens_id: str, job_id: str, worker: WorkerAuth, storage: Storage
     pages: list[tuple[Sample, tuple[int, ...]]] = []  # mutable-ok: freeze selection after stable cursor traversal
     cursor = ""  # rebind-ok: advance by immutable identity, never by shifting row positions
     while True:
-        sizes: Final = pages[-1][1] if pages else SAMPLE_PAGE_SIZES
+        sizes: Final = (  # pyright: ignore[reportGeneralTypeIssues]  # fresh per-iteration binding, not a reassignment
+            pages[-1][1] if pages else SAMPLE_PAGE_SIZES
+        )
         page, usable_sizes = await read_page(cursor, sizes)
         pages.append((page, usable_sizes))
         if not page.next_cursor or sum(len(p.executions) for p, _ in pages) >= pages[0][0].selected:

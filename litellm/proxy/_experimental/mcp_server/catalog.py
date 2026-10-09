@@ -1173,18 +1173,20 @@ async def list_gateway_catalog(
                         }
                     }
                 )
-            except Exception as error:
+            except Exception as fetch_error:
                 if cursor is not None:
                     raise MCPError(
                         code=INVALID_PARAMS, message="Upstream continuation failed; start a fresh listing"
-                    ) from error
+                    ) from fetch_error
                 return combine_optional_catalog(
                     request,
                     (),
                     None,
                     {
                         "litellm.ai/server_outcomes": {
-                            _aggregate_server_key(server): classify_list_exception(error).model_dump(mode="json")
+                            _aggregate_server_key(server): classify_list_exception(fetch_error).model_dump(
+                                mode="json"
+                            )
                         }
                     },
                 )

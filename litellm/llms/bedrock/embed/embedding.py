@@ -6,7 +6,7 @@ import copy
 import json
 import urllib.parse
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Final, get_args, overload
+from typing import TYPE_CHECKING, Final, cast, get_args, overload
 
 import httpx
 
@@ -674,4 +674,7 @@ class BedrockEmbedding(BaseAWSLLM):
         logging_obj: "LiteLLMLoggingObj | None" = None,
         **kwargs: object,  # kwargs-ok: mirrors private method extension kwargs
     ) -> TwelveLabsAsyncInvokeStatusResponse:
-        return await self._get_async_invoke_status(invocation_arn, aws_region_name, logging_obj, **kwargs)
+        return cast(  # cast-ok: the GetAsyncInvoke response JSON matches this TypedDict's shape by construction
+            TwelveLabsAsyncInvokeStatusResponse,
+            await self._get_async_invoke_status(invocation_arn, aws_region_name, logging_obj, **kwargs),
+        )
