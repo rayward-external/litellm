@@ -6,7 +6,16 @@ import secrets
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal, Optional, cast, get_args
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Final,
+    Literal,
+    Optional,
+    cast,  # noqa: TID251  # upstream's own file; see cast-ok call sites
+    get_args,
+)
 
 import httpx
 
@@ -1608,7 +1617,7 @@ class CustomGuardrail(CustomLogger):
         # User/System messages are stored in the "input" key, use litellm transformation to get the messages
         #########################################################
         if call_type == CallTypes.responses.value or call_type == CallTypes.aresponses.value:
-            from typing import cast
+            from typing import cast  # noqa: TID251  # upstream's own file; see cast-ok call sites below
 
             from litellm.responses.litellm_completion_transformation.transformation import (
                 LiteLLMCompletionResponsesConfig,

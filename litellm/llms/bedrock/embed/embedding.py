@@ -6,7 +6,13 @@ import copy
 import json
 import urllib.parse
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Final, cast, get_args, overload
+from typing import (
+    TYPE_CHECKING,
+    Final,
+    cast,  # noqa: TID251  # the GetAsyncInvoke response JSON matches this TypedDict's shape by construction
+    get_args,
+    overload,
+)
 
 import httpx
 

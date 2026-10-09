@@ -5,7 +5,12 @@ Why separate file? Make it easy to see how transformation works
 """
 
 from collections.abc import Iterator, Mapping, Sequence
-from typing import Annotated, Final, Literal, cast
+from typing import (
+    Annotated,
+    Final,
+    Literal,
+    cast,  # noqa: TID251  # upstream's own file; see cast-ok call sites
+)
 
 from pydantic import ConfigDict, Field, TypeAdapter, ValidationError
 
@@ -50,7 +55,7 @@ _GEMINI_API_V1BETA: Final = GEMINI_FILES_API_URI_PREFIX.removesuffix("files/")
 
 def is_file_reference(s: str) -> bool:
     """A `files/...` name or the Files API URI that `/v1/files` returns as the file id."""
-    return isinstance(s, str) and (s.startswith("files/") or s.startswith(GEMINI_FILES_API_URI_PREFIX))
+    return isinstance(s, str) and s.startswith(("files/", GEMINI_FILES_API_URI_PREFIX))
 
 
 def file_reference_name(reference: str) -> str:

@@ -9,7 +9,13 @@ import copy
 import time
 from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, Literal, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Final,
+    Literal,
+    TypeVar,
+    cast,  # noqa: TID251  # upstream's own file; see cast-ok call sites
+)
 
 from pydantic import BaseModel
 

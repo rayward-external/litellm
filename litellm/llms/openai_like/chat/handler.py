@@ -6,7 +6,11 @@ For handling OpenAI-like chat completions, like IBM WatsonX, etc.
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from typing import Final, TypedDict, cast
+from typing import (
+    Final,
+    TypedDict,
+    cast,  # noqa: TID251  # is_async defaults False, so this call always returns the sync list branch
+)
 
 import httpx
 from typing_extensions import ReadOnly
