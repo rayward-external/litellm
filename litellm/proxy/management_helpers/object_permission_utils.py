@@ -200,7 +200,9 @@ async def invalidate_cached_object_permissions(
 
 
 async def set_object_permission(
-    data_json: dict[str, Any],  # mutable-ok: unpacked as **kwargs into generate_key_helper_fn's concrete params downstream
+    data_json: dict[
+        str, Any
+    ],  # mutable-ok: unpacked as **kwargs into generate_key_helper_fn's concrete params downstream
     prisma_client: PrismaClient | None,
 ) -> dict[str, Any]:  # mutable-ok: unpacked as **kwargs into generate_key_helper_fn's concrete params downstream
     """
