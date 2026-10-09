@@ -2096,7 +2096,12 @@ class CustomStreamWrapper:
                     if isinstance(self.completion_stream, str) or isinstance(self.completion_stream, bytes):
                         chunk = self.completion_stream
                     else:
-                        chunk = await asyncio.to_thread(_next_sync_or_exhausted, self.completion_stream)
+                        chunk = await asyncio.to_thread(
+                            _next_sync_or_exhausted,
+                            cast(  # cast-ok: this branch is reached only when completion_stream is a plain sync iterator
+                                Iterator[object], self.completion_stream
+                            ),
+                        )
                         if chunk is _SYNC_ITER_EXHAUSTED:
                             raise StopAsyncIteration
                     if chunk is not None and chunk != b"":

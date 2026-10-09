@@ -14,7 +14,7 @@ import os
 from collections.abc import Iterator, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Final
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -103,11 +103,62 @@ _DT = datetime(2026, 4, 28, 12, 0, 0, tzinfo=timezone.utc)
         (1730000000, 1730000000),
         (1730000000.5, 1730000000),
         (_DT, int(_DT.timestamp())),
-        ("2026-04-28T12:00:00Z", None),  # strings aren't supported -> None
+        ("2026-04-28T12:00:00Z", int(_DT.timestamp())),  # GetAsyncInvoke returns ISO-8601 strings over JSON
+        ("not-a-timestamp", None),
     ],
 )
 def test_to_epoch_handles_supported_types(value, expected):
     assert _to_epoch(value) == expected
+
+
+ASYNC_INVOKE_ARN = "arn:aws:bedrock:us-west-2:123456789012:async-invoke/xyz9876543"
+
+
+def _fake_async_invoke_response(status: str = "Completed"):
+    return {
+        "invocationArn": ASYNC_INVOKE_ARN,
+        "modelArn": "arn:aws:bedrock:us-west-2::foundation-model/twelvelabs.marengo-embed-2-7-v1:0",
+        "status": status,
+        "submitTime": "2026-04-28T12:00:00Z",
+        "lastModifiedTime": "2026-04-28T12:30:00Z",
+        "endTime": "2026-04-28T12:30:00Z",
+        "outputDataConfig": {"s3OutputDataConfig": {"s3Uri": OUTPUT_PREFIX}},
+        "clientRequestToken": None,
+        "failureMessage": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("aws_status", "expected_status"),
+    [("Completed", "completed"), ("Failed", "failed"), ("InProgress", "in_progress")],
+)
+def test_handle_async_invoke_status_maps_status_timestamps_and_counts(aws_status, expected_status):
+    """Regression test: the status comparisons here used to check the mapped
+    OpenAI-style status against the raw PascalCase AWS status, so `completed`/
+    `failed` counts and `completed_at`/`failed_at` never actually populated."""
+    with patch(
+        "litellm.llms.bedrock.embed.embedding.BedrockEmbedding.get_async_invoke_status",
+        new=AsyncMock(return_value=_fake_async_invoke_response(status=aws_status)),
+    ):
+        batch = BedrockBatchesHandler.handle_async_invoke_status(
+            batch_id=ASYNC_INVOKE_ARN, aws_region_name="us-west-2"
+        )
+
+    assert batch.status == expected_status
+    assert batch.created_at == _to_epoch("2026-04-28T12:00:00Z")
+    assert batch.in_progress_at == _to_epoch("2026-04-28T12:30:00Z")
+    assert batch.request_counts is not None
+    assert batch.request_counts.completed == (1 if expected_status == "completed" else 0)
+    assert batch.request_counts.failed == (1 if expected_status == "failed" else 0)
+    if expected_status == "completed":
+        assert batch.completed_at == _to_epoch("2026-04-28T12:30:00Z")
+        assert batch.failed_at is None
+    elif expected_status == "failed":
+        assert batch.failed_at == _to_epoch("2026-04-28T12:30:00Z")
+        assert batch.completed_at is None
+    else:
+        assert batch.completed_at is None
+        assert batch.failed_at is None
 
 
 def test_extract_job_id_from_arn():

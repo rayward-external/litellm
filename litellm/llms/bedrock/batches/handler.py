@@ -104,6 +104,11 @@ def _to_epoch(value: object) -> int | None:
         return int(value)
     if isinstance(value, datetime):
         return int(value.timestamp())
+    if isinstance(value, str):
+        try:
+            return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            return None
     return None
 
 
@@ -226,18 +231,20 @@ class BedrockBatchesHandler:
                 "model_arn": status_response["modelArn"],
             }
 
+            openai_status: Final = _BEDROCK_MIJ_STATUS_TO_OPENAI.get(status_response["status"], "failed")
+            completed_at: Final = _to_epoch(status_response.get("endTime"))
             result: Final = LiteLLMBatch(
                 id=status_response["invocationArn"],
                 object="batch",
-                status=status_response["status"],
-                created_at=status_response["submitTime"],
-                in_progress_at=status_response["lastModifiedTime"],
-                completed_at=status_response.get("endTime"),
-                failed_at=(status_response.get("endTime") if status_response["status"] == "failed" else None),
+                status=openai_status,
+                created_at=_to_epoch(status_response["submitTime"]) or 0,
+                in_progress_at=_to_epoch(status_response["lastModifiedTime"]),
+                completed_at=completed_at if openai_status == "completed" else None,
+                failed_at=completed_at if openai_status == "failed" else None,
                 request_counts=BatchRequestCounts(
                     total=1,
-                    completed=1 if status_response["status"] == "completed" else 0,
-                    failed=1 if status_response["status"] == "failed" else 0,
+                    completed=1 if openai_status == "completed" else 0,
+                    failed=1 if openai_status == "failed" else 0,
                 ),
                 metadata=openai_batch_metadata,
                 completion_window="24h",
