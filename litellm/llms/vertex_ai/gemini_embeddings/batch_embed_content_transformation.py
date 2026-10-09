@@ -146,7 +146,7 @@ def _is_data_url(s: str) -> bool:
     return s.startswith("data:") and ";base64," in s
 
 
-class _EmbeddingVideoMetadata(LiteLLMBaseModel):
+class _EmbeddingVideoMetadata(LiteLLMBaseModel):  # frozen-ok: sync
     model_config = ConfigDict(extra="forbid", strict=True)
 
     fps: float | None = None
@@ -154,7 +154,7 @@ class _EmbeddingVideoMetadata(LiteLLMBaseModel):
     end_offset: str | None = None
 
 
-class _EmbeddingFile(LiteLLMBaseModel):
+class _EmbeddingFile(LiteLLMBaseModel):  # frozen-ok: sync
     model_config = ConfigDict(extra="forbid")
 
     file_id: str | None = None
@@ -164,7 +164,7 @@ class _EmbeddingFile(LiteLLMBaseModel):
     video_metadata: _EmbeddingVideoMetadata | None = None
 
 
-class _EmbeddingFileBlock(LiteLLMBaseModel):
+class _EmbeddingFileBlock(LiteLLMBaseModel):  # frozen-ok: sync
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["file"]

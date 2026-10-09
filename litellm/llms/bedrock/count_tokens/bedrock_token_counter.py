@@ -22,7 +22,7 @@ RUNTIME_TOKENIZER_TYPE: Final = "bedrock_api"
 MANTLE_TOKENIZER_TYPE: Final = "bedrock_mantle_api"
 
 
-class _CountTokensReply(LiteLLMPydanticObjectBase):
+class _CountTokensReply(LiteLLMPydanticObjectBase):  # frozen-ok: sync
     input_tokens: int
 
 
