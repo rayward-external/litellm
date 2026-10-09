@@ -14,7 +14,12 @@ import json
 import os
 import secrets
 import time
-from typing import TYPE_CHECKING, Annotated, Final
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Final,
+    cast,  # noqa: TID251  # generate_key_helper_fn always returns a string token; see cast-ok call site
+)
 from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -257,7 +262,7 @@ async def moyai_connect_exchange(request: Request, body: MoyaiConnectExchangeReq
     await _persist_moyai_url(prisma_client, moyai_url)
 
     return MoyaiConnectExchangeResponse(
-        api_key=key_response["token"],
+        api_key=cast(str, key_response["token"]),  # cast-ok: generate_key_helper_fn always returns a string token
         key_alias=alias,
         api_base=_gateway_url(request),
     )

@@ -4,7 +4,7 @@ Common base config for all LLM providers
 
 import types
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final, Union
 
 import httpx
@@ -178,9 +178,11 @@ class BaseConfig(ABC):
     def add_tools_to_optional_params(
         self,
         optional_params: dict[str, object],  # mutable-ok: mirrors override contract
-        tools: list[ChatCompletionToolParam],  # mutable-ok: mirrors override contract
+        # Not list[ChatCompletionToolParam]: some provider configs (e.g. Gemini) map
+        # tools into their own native TypedDict shape before calling this.
+        tools: Sequence[Mapping[str, object]],  # mutable-ok: mirrors override contract
     ) -> dict[str, object]:  # mutable-ok: mirrors override contract
-        return self._add_tools_to_optional_params(optional_params, tools)
+        return self._add_tools_to_optional_params(optional_params, list(tools))
 
     def translate_developer_role_to_system_role(
         self,

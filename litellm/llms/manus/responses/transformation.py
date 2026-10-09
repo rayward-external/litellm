@@ -224,7 +224,7 @@ class ManusResponsesAPIConfig(OpenAIResponsesAPIConfig):
             verbose_logger.debug(
                 "Error constructing ResponsesAPIResponse: %s, using model_construct", raw_response_json
             )
-            response = ResponsesAPIResponse.model_construct(**raw_response_json)
+            response = ResponsesAPIResponse.model_construct(_fields_set=None, **raw_response_json)
 
         # Store processed headers in additional_headers so they get returned to the client
         response.hidden_params["additional_headers"] = processed_headers
@@ -314,7 +314,7 @@ class ManusResponsesAPIConfig(OpenAIResponsesAPIConfig):
             verbose_logger.debug(
                 "Error constructing ResponsesAPIResponse: %s, using model_construct", raw_response_json
             )
-            response = ResponsesAPIResponse.model_construct(**raw_response_json)
+            response = ResponsesAPIResponse.model_construct(_fields_set=None, **raw_response_json)
 
         # Store processed headers in additional_headers so they get returned to the client
         response.hidden_params["additional_headers"] = processed_headers

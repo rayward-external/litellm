@@ -8,7 +8,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final, Optional
+from typing import (
+    TYPE_CHECKING,
+    Any,  # noqa: TID251  # set_object_permission's payload is unpacked as **kwargs into generate_key_helper_fn downstream
+    Final,
+    Optional,
+)
 
 from fastapi import HTTPException, status
 from pydantic import TypeAdapter
