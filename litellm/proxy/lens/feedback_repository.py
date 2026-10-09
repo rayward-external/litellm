@@ -162,7 +162,7 @@ class ClickHouseFeedbackStore:
         rows: Final = await self.storage.query(
             LENS_FEEDBACK_SUMMARY,
             LensFeedbackSummaryParams(
-                **access_parameters(scope).model_dump(), trace_ids=sorted({t.trace_id for t in traces})
+                **access_parameters(scope).model_dump(), trace_ids=tuple(sorted({t.trace_id for t in traces}))
             ),
         )
         return tuple(summary for trace in traces for summary in _summaries(trace, rows))  # comprehension-ok: sync

@@ -298,8 +298,8 @@ class CohereChatConfig(BaseConfig):
         ## CALCULATING USAGE - use cohere `billed_units` for returning usage
         billed_units: Final = raw_response_json.get("meta", {}).get("billed_units", {})
 
-        prompt_tokens: Final = billed_units.get("input_tokens", 0)
-        completion_tokens: Final = billed_units.get("output_tokens", 0)
+        prompt_tokens: Final = int(billed_units.get("input_tokens", 0))
+        completion_tokens: Final = int(billed_units.get("output_tokens", 0))
 
         model_response.created = int(time.time())
         model_response.model = model
