@@ -52,15 +52,16 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final
+from typing import Final, NamedTuple
 
 from lint_base_counts import (
     Checker,
@@ -93,6 +94,14 @@ NODE_HEAP_OPTION = "--max-old-space-size=8192"
 # Bucket for a basedpyright diagnostic with no `rule`. Counted so it's gated.
 UNCODED = "<uncoded>"
 
+_HUNK: Final = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+class Violation(NamedTuple):
+    file: str
+    line: int
+    rule: str
+
 ANY_CAPS: Final[Mapping[str, int]] = MappingProxyType({"reportAny": 6150, "reportExplicitAny": 1440})
 
 
@@ -105,9 +114,9 @@ def _to_relative(raw: str, root: Path) -> str | None:
         return None
 
 
-def count_basedpyright(payload: str, root: Path = REPO_ROOT) -> dict[str, int]:
-    """Count in-tree basedpyright errors per rule from `--outputjson`. Warnings
-    and information are ignored; only `severity == "error"` is gated. Files
+def parse_basedpyright_violations(payload: str, root: Path = REPO_ROOT) -> list[Violation]:
+    """In-tree basedpyright errors from `--outputjson`. Warnings and
+    information are ignored; only `severity == "error"` is gated. Files
     outside `root` (the venv's site-packages, say) are dropped."""
     try:
         data = json.loads(payload or "{}")
@@ -118,14 +127,37 @@ def count_basedpyright(payload: str, root: Path = REPO_ROOT) -> dict[str, int]:
             f"{payload[:500]}\n"
         )
         raise SystemExit(1) from exc
-    counts: Counter[str] = Counter()
+    violations: list[Violation] = []
     for diag in data.get("generalDiagnostics", []):
         if diag.get("severity") != "error":
             continue
-        if _to_relative(diag.get("file", ""), root) is None:
+        rel = _to_relative(diag.get("file", ""), root)
+        if rel is None:
             continue
-        counts[diag.get("rule") or UNCODED] += 1
-    return dict(counts)
+        violations.append(Violation(rel, diag.get("range", {}).get("start", {}).get("line", 0) + 1, diag.get("rule") or UNCODED))
+    return violations
+
+
+def count_basedpyright(payload: str, root: Path = REPO_ROOT) -> dict[str, int]:
+    """Count in-tree basedpyright errors per rule from `--outputjson`."""
+    return dict(Counter(v.rule for v in parse_basedpyright_violations(payload, root)))
+
+
+def parse_changed_lines(diff_text: str) -> dict[str, set[int]]:
+    changed: dict[str, set[int]] = {}
+    path = None
+    for line in diff_text.splitlines():
+        if line.startswith("+++ b/"):
+            path = line[6:]
+        elif path and (match := _HUNK.match(line)):
+            start = int(match.group(1))
+            count = int(match.group(2)) if match.group(2) is not None else 1
+            changed.setdefault(path, set()).update(range(start, start + count))
+    return changed
+
+
+def introduced(violations: Sequence[Violation], changed: Mapping[str, set[int]]) -> list[Violation]:
+    return [v for v in violations if v.line in changed.get(v.file, set())]
 
 
 def _run(cmd: list[str], cwd: Path = REPO_ROOT) -> str:
@@ -271,8 +303,9 @@ def checker_identity(dep_groups: tuple[str, ...] = TYPECHECK_DEP_GROUPS) -> Chec
     return Checker("basedpyright", environment_fingerprints(dep_groups))
 
 
-def cmd_check(head: Mapping[str, int], base_ref: str) -> None:
-    if not head:
+def cmd_check(head: Sequence[Violation], base_ref: str) -> None:
+    head_counts: Final = dict(Counter(v.rule for v in head))
+    if not head_counts:
         print(
             "FAIL: basedpyright produced no errors. The type checker almost certainly "
             "crashed or emitted nothing; refusing to certify a vacuous run."
@@ -287,20 +320,24 @@ def cmd_check(head: Mapping[str, int], base_ref: str) -> None:
             "crashed; refusing to blame this change for it."
         )
         raise SystemExit(1)
-    judge(head, base, base_point)
+    judge(head, head_counts, base, base_point)
 
 
-def judge(head: Mapping[str, int], base: Mapping[str, int], base_point: str) -> None:
-    breaches: Final = evaluate(head, base, ANY_CAPS)
+def judge(head: Sequence[Violation], head_counts: Mapping[str, int], base: Mapping[str, int], base_point: str) -> None:
+    breaches: Final = evaluate(head_counts, base, ANY_CAPS)
     if not breaches:
         print(
             f"OK: every basedpyright rule is within its ceiling "
-            f"({sum(head.values())} errors total, base {base_point[:12]})"
+            f"({sum(head_counts.values())} errors total, base {base_point[:12]})"
         )
         return
     print(f"FAIL: basedpyright errors grew past their ceiling (base {base_point[:12]}):")
+    diff: Final = _run(["git", "diff", base_point, "--unified=0", "--no-color", "--", "litellm"])
+    new: Final = introduced(head, parse_changed_lines(diff))
     for breach in breaches:
         print(f"  {breach.rule}: total {breach.total} over ceiling {breach.ceiling} (this change added {breach.added})")
+        for violation in sorted(v for v in new if v.rule == breach.rule):
+            print(f"    {violation.file}:{violation.line}")
     print(
         "Reduce the new errors or remove an equal number elsewhere; the ceiling is the merge-base "
         "count, or the cap in ANY_CAPS (scripts/type_check_gate.py) when that is higher."
@@ -330,7 +367,7 @@ def main() -> None:
     base_ref: Final = resolve_base_ref(args.base, REPO_ROOT)
     with held_slot():
         ensure_typecheck_env()
-        cmd_check(count_basedpyright(run_basedpyright()), base_ref)
+        cmd_check(parse_basedpyright_violations(run_basedpyright()), base_ref)
 
 
 if __name__ == "__main__":

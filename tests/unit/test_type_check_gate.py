@@ -231,36 +231,77 @@ def test_changing_the_dependency_groups_rekeys_the_base_counts() -> None:
     assert gate.checker_identity(("proxy-dev",)).artifact_name("abc123") != default
 
 
+def _judge(head_counts, base, base_point, monkeypatch, diff=""):
+    monkeypatch.setattr(gate, "_run", lambda cmd, cwd=gate.REPO_ROOT: diff)
+    gate.judge([], head_counts, base, base_point)
+
+
 @pytest.mark.parametrize("rule", ["reportAny", "reportExplicitAny"])
 def test_any_rules_may_grow_past_their_base_up_to_the_cap_and_no_further(
-    rule: str, capsys: pytest.CaptureFixture[str]
+    rule: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cap: Final = gate.ANY_CAPS[rule]
     base: Final = {rule: cap - 5, "reportArgumentType": 3}
-    gate.judge({rule: cap, "reportArgumentType": 3}, base, "a" * 40)
+    _judge({rule: cap, "reportArgumentType": 3}, base, "a" * 40, monkeypatch)
     assert "OK" in capsys.readouterr().out
     with pytest.raises(SystemExit) as exit_info:
-        gate.judge({rule: cap + 1, "reportArgumentType": 3}, base, "a" * 40)
+        _judge({rule: cap + 1, "reportArgumentType": 3}, base, "a" * 40, monkeypatch)
     assert exit_info.value.code == 1
     assert f"BREACHED RULES: {rule} {cap + 1}/{cap} (+6)" in capsys.readouterr().out
 
 
 def test_an_any_rule_already_over_its_cap_at_base_does_not_fail_a_bystander(
-    capsys: pytest.CaptureFixture[str],
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     over: Final = gate.ANY_CAPS["reportAny"] + 50
-    gate.judge({"reportAny": over}, {"reportAny": over}, "a" * 40)
+    _judge({"reportAny": over}, {"reportAny": over}, "a" * 40, monkeypatch)
     assert "OK" in capsys.readouterr().out
 
 
-def test_rules_without_a_cap_may_not_grow_past_their_base(capsys: pytest.CaptureFixture[str]) -> None:
+def test_rules_without_a_cap_may_not_grow_past_their_base(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
     with pytest.raises(SystemExit):
-        gate.judge({"reportArgumentType": 4}, {"reportArgumentType": 3}, "a" * 40)
+        _judge({"reportArgumentType": 4}, {"reportArgumentType": 3}, "a" * 40, monkeypatch)
     assert "BREACHED RULES: reportArgumentType 4/3 (+1)" in capsys.readouterr().out
 
 
 def test_no_head_output_is_refused_as_vacuous_before_any_base_lookup(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exit_info:
-        gate.cmd_check({}, "irrelevant-base-ref")
+        gate.cmd_check([], "irrelevant-base-ref")
     assert exit_info.value.code == 1
     assert "vacuous" in capsys.readouterr().out
+
+
+def test_parse_changed_lines_maps_added_lines_per_file():
+    diff = "+++ b/litellm/a.py\n@@ -10 +10,3 @@\n+x\n+y\n+z\n"
+    assert gate.parse_changed_lines(diff)["litellm/a.py"] == {10, 11, 12}
+
+
+def test_introduced_keeps_only_violations_on_changed_lines():
+    violations = [
+        gate.Violation("litellm/a.py", 10, "reportArgumentType"),
+        gate.Violation("litellm/a.py", 99, "reportArgumentType"),
+    ]
+    assert gate.introduced(violations, {"litellm/a.py": {10}}) == [
+        gate.Violation("litellm/a.py", 10, "reportArgumentType")
+    ]
+
+
+def test_judge_prints_only_the_introduced_violations_for_each_breached_rule(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A pre-existing violation on an unchanged line must not be printed as if
+    # this change introduced it; only the one on a line the diff actually
+    # touched should show up under its rule.
+    head = [
+        gate.Violation("litellm/a.py", 10, "reportArgumentType"),
+        gate.Violation("litellm/b.py", 5, "reportArgumentType"),
+    ]
+    diff = "+++ b/litellm/a.py\n@@ -10 +10 @@\n+x\n"
+    monkeypatch.setattr(gate, "_run", lambda cmd, cwd=gate.REPO_ROOT: diff)
+    with pytest.raises(SystemExit):
+        gate.judge(head, {"reportArgumentType": 2}, {"reportArgumentType": 1}, "a" * 40)
+    out = capsys.readouterr().out
+    assert "litellm/a.py:10" in out
+    assert "litellm/b.py:5" not in out
