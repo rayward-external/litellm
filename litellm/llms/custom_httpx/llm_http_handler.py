@@ -12,6 +12,7 @@ from typing import (
     Final,
     Literal,
     NamedTuple,
+    NoReturn,
     Optional,
     Protocol,
     TypedDict,
@@ -6334,8 +6335,8 @@ class BaseLLMHTTPHandler:
             BaseEvalsAPIConfig,
             BaseRealtimeHTTPConfig,
         ],
-    ) -> None:
-        return self._handle_error(e, provider_config)
+    ) -> NoReturn:
+        self._handle_error(e, provider_config)
 
     @staticmethod
     def _append_query_params(url: str, query_params: RealtimeQueryParams | None) -> str:

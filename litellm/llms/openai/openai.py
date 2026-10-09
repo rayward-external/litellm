@@ -477,7 +477,7 @@ class OpenAIChatCompletion(BaseLLM, BaseOpenAILLM):
         api_key: str | None = None,
         api_base: str | None = None,
         api_version: str | None = None,
-        timeout: float | httpx.Timeout = (_get_openai_client.__defaults__ or ())[3],
+        timeout: float | httpx.Timeout = httpx.Timeout(None),  # noqa: B008  # mirrors _get_openai_client's own default
         max_retries: int | None = DEFAULT_MAX_RETRIES,
         organization: str | None = None,
         client: OpenAI | AsyncOpenAI | None = None,

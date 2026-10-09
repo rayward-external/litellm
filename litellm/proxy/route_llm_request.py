@@ -273,12 +273,11 @@ def _router_default_litellm_params(
     # Mirror exactly the defaults the dispatching router will merge at dispatch time:
     # user_config requests dispatch on their own throwaway Router, and the listed route
     # types (plus model-less direct dispatch) never pass through the router's merge.
-    user_config: Final[Mapping[str, object] | None] = (
-        data.get("user_config") if isinstance(data.get("user_config"), Mapping) else None
-    )
+    _user_config: Final = data.get("user_config")
+    user_config: Final[Mapping[str, object] | None] = _user_config if isinstance(_user_config, Mapping) else None
     if user_config is not None:
-        defaults: Final[Mapping[str, object] | None] = user_config.get("default_litellm_params")
-        return defaults if isinstance(defaults, Mapping) else {}
+        _defaults: Final = user_config.get("default_litellm_params")
+        return _defaults if isinstance(_defaults, Mapping) else {}
     model_name: Final = data.get("model")
     if route_type in _ROUTE_TYPES_WITHOUT_ROUTER_DEFAULTS_MERGE or not isinstance(model_name, str) or not model_name:
         return {}
