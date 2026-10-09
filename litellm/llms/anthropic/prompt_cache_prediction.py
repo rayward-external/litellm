@@ -8,7 +8,14 @@ from dataclasses import dataclass, field
 from functools import reduce
 from itertools import accumulate, groupby
 from types import MappingProxyType
-from typing import Annotated, Final, Literal, Protocol, TypeAlias
+from typing import (
+    Annotated,
+    Final,
+    Literal,
+    Protocol,
+    TypeAlias,
+    cast,  # noqa: TID251  # strip_provider_specific_fields_from_anthropic_messages narrows to Sequence[object] generically
+)
 
 import httpx
 from pydantic import ConfigDict, Field, JsonValue, StrictInt, TypeAdapter, ValidationError
@@ -661,7 +668,9 @@ def prepare_native_baseline_body(request: Mapping[str, object], model: str) -> M
         )
         body: Final = AnthropicMessagesConfig().transform_anthropic_messages_request(
             model=resolved_model,
-            messages=strip_provider_specific_fields_from_anthropic_messages(messages),
+            messages=cast(  # cast-ok: strip_provider_specific_fields_from_anthropic_messages preserves each dict's shape
+                list[dict], strip_provider_specific_fields_from_anthropic_messages(messages)
+            ),
             anthropic_messages_optional_request_params=filtered,
             litellm_params=GenericLiteLLMParams(),
             headers={},
