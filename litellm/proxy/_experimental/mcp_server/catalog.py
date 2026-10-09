@@ -1184,9 +1184,7 @@ async def list_gateway_catalog(
                     None,
                     {
                         "litellm.ai/server_outcomes": {
-                            _aggregate_server_key(server): classify_list_exception(fetch_error).model_dump(
-                                mode="json"
-                            )
+                            _aggregate_server_key(server): classify_list_exception(fetch_error).model_dump(mode="json")
                         }
                     },
                 )
