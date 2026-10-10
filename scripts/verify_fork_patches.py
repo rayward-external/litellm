@@ -141,10 +141,12 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # silencing a LIVE row by flipping its pattern to N/A -- the cheapest possible
 # way to make this script green without fixing anything -- shows up as a diff
 # to this number and has to be argued for in review.
-# 2026-10-10 sync: +3 for the deploy/lens/Dockerfile (x2) and
+# 2026-10-10 sync: +4 for the deploy/lens/Dockerfile (x2) and
 # litellm-rust/crates/traces/src/otlp/span.rs rows flipped to N/A when
-# upstream's #45529 Lens-service refactor deleted those files outright.
-EXPECTED_NA_ROWS = 35
+# upstream's #45529 Lens-service refactor deleted those files outright,
+# plus the new litellm-rust/Cargo.lock regenerate-lockfile row (same
+# recurring class as the 2026-09-13/09-24/10-06 rows).
+EXPECTED_NA_ROWS = 36
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
