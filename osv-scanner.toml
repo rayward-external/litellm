@@ -5,8 +5,8 @@ reason = "diskcache 5.6.3 (latest as of 2026-09-30) still has no fixed release p
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0436"
-ignoreUntil = 2026-10-11
-reason = "paste (transitive dep of the new litellm-rust OCR/token-counter crates pulled in by the 2026-09-11 upstream sync) is unmaintained with no fixed release; remove this entry once one exists"
+ignoreUntil = 2026-11-11
+reason = "paste (transitive dep of the new litellm-rust OCR/token-counter crates pulled in by the 2026-09-11 upstream sync) is unmaintained with no fixed release; re-checked 2026-10-10, still at 1.0.15 with no newer release; remove this entry once one exists"
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2023-0071"

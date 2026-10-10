@@ -1301,13 +1301,16 @@ async def pass_through_request(
         if _parsed_body is None:
             _parsed_body = {}
         _parsed_body["litellm_logging_obj"] = logging_obj
-        is_streaming_pass_through: Final = bool(
+        is_streaming_pass_through: Final = bool(  # pyright: ignore[reportUnusedVariable]  # used 2 lines down
             HttpPassThroughEndpointHelpers._update_stream_param_based_on_request_body(
                 parsed_body=_parsed_body,
                 stream=stream,
             )
         )
-        typed_body: Final[Mapping[str, object]] = cast(Mapping[str, object], _parsed_body)  # cast-ok: json
+        # cast-ok: json
+        typed_body: Final[Mapping[str, object]] = cast(  # pyright: ignore[reportUnusedVariable]  # used next line
+            Mapping[str, object], _parsed_body
+        )
         _parsed_body = guardrail_request_data_with_streaming(typed_body, is_streaming=is_streaming_pass_through)
 
         ### CALL HOOKS ### - modify incoming data / reject request before calling the model
