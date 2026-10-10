@@ -3,7 +3,7 @@ import inspect
 import json
 import ssl
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Coroutine, Iterator, Mapping, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from functools import lru_cache, partial
 from types import MappingProxyType
 from typing import (

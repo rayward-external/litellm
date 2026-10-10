@@ -141,7 +141,10 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # silencing a LIVE row by flipping its pattern to N/A -- the cheapest possible
 # way to make this script green without fixing anything -- shows up as a diff
 # to this number and has to be argued for in review.
-EXPECTED_NA_ROWS = 32
+# 2026-10-10 sync: +3 for the deploy/lens/Dockerfile (x2) and
+# litellm-rust/crates/traces/src/otlp/span.rs rows flipped to N/A when
+# upstream's #45529 Lens-service refactor deleted those files outright.
+EXPECTED_NA_ROWS = 35
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
@@ -193,11 +196,9 @@ EXPECTED_LITERAL_PIN_STAGES = {
     # builder is still vanilla `FROM $LITELLM_BUILD_IMAGE` here.
     "docker/Dockerfile.database": ("uvbin", "ui-builder", "runtime"),
     "docker/Dockerfile.non_root": ("uvbin", "ui-builder", "builder", "runtime"),
-    # 2026-10-08 sync: upstream rewrote the lens service from Python/uv to Rust
-    # (#45148), dropping the uvbin stage entirely and renaming the runtime
-    # stage (now a local `FROM service` alias with no ARG of its own) to
-    # `service`, which is the stage that actually pins LITELLM_RUNTIME_IMAGE.
-    "deploy/lens/Dockerfile": ("builder", "service"),
+    # deploy/lens/Dockerfile's entry was removed on the 2026-10-10 sync:
+    # upstream's #45529 "connect LiteLLM to the independent Lens service"
+    # refactor deleted the file outright, so there are no stages left to pin.
 }
 
 _ARG_PIN_RE = re.compile(
