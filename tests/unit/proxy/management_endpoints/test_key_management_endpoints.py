@@ -38,7 +38,7 @@ from litellm.proxy._types import (
 )
 from litellm.models.object_permission import LiteLLM_ObjectPermissionTable
 from litellm.proxy.auth.auth_checks import (
-    _delete_cache_key_object,
+    delete_cache_key_object,
     jwt_key_mapping_cache_key,
 )
 from litellm.proxy.auth.user_api_key_auth import UserAPIKeyAuth
@@ -55,8 +55,8 @@ from litellm.proxy.management_endpoints.key_management_endpoints import (
     _enforce_upperbound_key_params,
     _execute_virtual_key_regeneration,
     _get_and_validate_existing_key,
-    _list_key_helper,
-    _persist_deleted_verification_tokens,
+    list_key_helper,
+    persist_deleted_verification_tokens,
     _process_single_key_update,
     _requested_end_user_budget_id,
     _save_deleted_verification_token_records,
@@ -108,7 +108,7 @@ async def test_list_keys():
         "admin_team_ids": ["28bd3181-02c5-48f2-b408-ce790fb3d5ba"],
     }
     try:
-        result = await _list_key_helper(**args)
+        result = await list_key_helper(**args)
     except Exception as e:
         print(f"error: {e}")
 
@@ -155,7 +155,7 @@ async def test_list_keys_include_created_by_keys():
     }
 
     try:
-        result = await _list_key_helper(**args)
+        result = await list_key_helper(**args)
     except Exception as e:
         print(f"error: {e}")
 
@@ -219,7 +219,7 @@ async def test_list_keys_include_created_by_keys():
     args["include_created_by_keys"] = False
 
     try:
-        result = await _list_key_helper(**args)
+        result = await list_key_helper(**args)
     except Exception as e:
         print(f"error: {e}")
 
@@ -246,7 +246,7 @@ async def test_list_keys_include_created_by_keys():
     )
 
     try:
-        result = await _list_key_helper(**args)
+        result = await list_key_helper(**args)
     except Exception as e:
         print(f"error: {e}")
 
@@ -1468,7 +1468,7 @@ async def test_list_keys_full_object_returns_lifetime_total_spend():
     )
     mock_prisma_client.db.litellm_verificationtoken.count = AsyncMock(return_value=1)
 
-    result = await _list_key_helper(
+    result = await list_key_helper(
         prisma_client=mock_prisma_client,
         page=1,
         size=50,
@@ -2709,7 +2709,7 @@ async def test_unblock_key_supports_both_sk_and_hashed_tokens(monkeypatch):
         pass
 
     monkeypatch.setattr(
-        "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+        "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
         mock_delete_cache_key_object,
     )
 
@@ -3067,7 +3067,7 @@ async def test_update_key_by_alias_only(monkeypatch):
     request_data = UpdateKeyRequest(key_alias="prod-alias", max_budget=50.0)
 
     with patch(
-        "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object"
+        "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object"
     ) as mock_delete_cache:
         mock_delete_cache.return_value = None
         result = await update_key_fn(
@@ -3122,7 +3122,7 @@ async def test_update_key_changed_alias_must_match_key_alias_pattern(monkeypatch
     mock_prisma_client.update_data.assert_not_awaited()
 
     with patch(
-        "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+        "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
         return_value=None,
     ):
         await update_key_fn(
@@ -3238,7 +3238,7 @@ async def test_update_key_with_key_and_alias_selects_by_key(monkeypatch):
     )
 
     with patch(
-        "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object"
+        "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object"
     ) as mock_delete_cache:
         mock_delete_cache.return_value = None
         result = await update_key_fn(
@@ -3308,7 +3308,7 @@ async def test_block_key_existing_key_succeeds(monkeypatch):
         pass
 
     monkeypatch.setattr(
-        "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+        "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
         mock_delete_cache_key_object,
     )
 
@@ -5380,7 +5380,7 @@ async def test_persist_deleted_verification_tokens():
         allowed_routes=[],
     )
 
-    await _persist_deleted_verification_tokens(
+    await persist_deleted_verification_tokens(
         keys=[key],
         prisma_client=mock_prisma_client,
         user_api_key_dict=user_api_key_dict,
@@ -5468,7 +5468,7 @@ async def test_delete_verification_tokens_persists_deleted_keys(monkeypatch):
         return token if not token.startswith("sk-") else f"hashed-{token}"
 
     monkeypatch.setattr(
-        "litellm.proxy.management_endpoints.key_management_endpoints._hash_token_if_needed",
+        "litellm.proxy.management_endpoints.key_management_endpoints.hash_token_if_needed",
         mock_hash_token,
     )
     monkeypatch.setattr(
@@ -5581,7 +5581,7 @@ async def test_delete_verification_tokens_evicts_jwt_key_mapping_cache(monkeypat
         recording_evict,
     )
     monkeypatch.setattr(
-        "litellm.proxy.management_endpoints.key_management_endpoints._hash_token_if_needed",
+        "litellm.proxy.management_endpoints.key_management_endpoints.hash_token_if_needed",
         lambda token: token,
     )
     monkeypatch.setattr(
@@ -6151,7 +6151,7 @@ async def test_list_keys_with_expand_user():
             "expand": ["user"],  # Test the expand parameter
         }
 
-        result = await _list_key_helper(**args)
+        result = await list_key_helper(**args)
 
         # Verify that keys were fetched
         mock_find_many_keys.assert_called_once()
@@ -6262,7 +6262,7 @@ async def test_list_keys_with_expand_user_includes_created_by_user():
             "expand": ["user"],
         }
 
-        result = await _list_key_helper(**args)
+        result = await list_key_helper(**args)
 
         # Verify that the user lookup included both user_id and created_by
         call_args = mock_find_many_users.call_args
@@ -6343,7 +6343,7 @@ async def test_list_keys_with_status_deleted():
         "status": "deleted",  # Test the status parameter
     }
 
-    result = await _list_key_helper(**args)
+    result = await list_key_helper(**args)
 
     # Verify that deleted table was queried
     mock_find_many_deleted.assert_called_once()
@@ -6482,7 +6482,7 @@ async def test_list_key_helper_revoked_status_filters_live_table_on_blocked():
     mock_prisma_client.db.litellm_verificationtoken.count = AsyncMock(return_value=0)
     mock_prisma_client.db.litellm_deletedverificationtoken.find_many = AsyncMock(return_value=[])
 
-    await _list_key_helper(
+    await list_key_helper(
         prisma_client=mock_prisma_client,
         page=1,
         size=50,
@@ -6677,7 +6677,7 @@ async def test_list_keys_non_admin_user_id_auto_set():
                 return_value=[],
             ):
                 with patch(
-                    "litellm.proxy.management_endpoints.key_management_endpoints._list_key_helper",
+                    "litellm.proxy.management_endpoints.key_management_endpoints.list_key_helper",
                     mock_list_key_helper,
                 ):
                     mock_request = Mock()
@@ -6756,7 +6756,7 @@ async def _invoke_list_keys_and_capture_helper_kwargs(
             AsyncMock(return_value=team_objects),
         ),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._list_key_helper",
+            "litellm.proxy.management_endpoints.key_management_endpoints.list_key_helper",
             mock_list_key_helper,
         ),
     ):
@@ -7177,7 +7177,7 @@ async def test_list_key_helper_applies_search_to_prisma_where():
     mock_prisma_client.db.litellm_verificationtoken.find_many = mock_find_many
     mock_prisma_client.db.litellm_verificationtoken.count = AsyncMock(return_value=0)
 
-    await _list_key_helper(
+    await list_key_helper(
         prisma_client=mock_prisma_client,
         page=1,
         size=50,
@@ -7220,7 +7220,7 @@ async def _run_bulk_update_on_one_key(
 
     with (
         patch(  # test-quality-ok: the handler reads the cache and hook singletons from module globals, no injection seam
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(  # test-quality-ok: the permission check is a classmethod the handler calls directly, no injection seam
@@ -7604,7 +7604,7 @@ async def test_get_and_validate_existing_key():
     )
 
     with patch(
-        "litellm.proxy.management_endpoints.key_management_endpoints._hash_token_if_needed",
+        "litellm.proxy.management_endpoints.key_management_endpoints.hash_token_if_needed",
         return_value="hashed-test-key-123",
     ):
         result = await _get_and_validate_existing_key(
@@ -7623,7 +7623,7 @@ async def test_get_and_validate_existing_key():
     )
 
     with patch(
-        "litellm.proxy.management_endpoints.key_management_endpoints._hash_token_if_needed",
+        "litellm.proxy.management_endpoints.key_management_endpoints.hash_token_if_needed",
         return_value="hashed-non-existent-key",
     ):
         with pytest.raises(ProxyException) as exc_info:
@@ -7705,7 +7705,7 @@ async def test_process_single_key_update():
 
             # Mock _delete_cache_key_object
             with patch(
-                "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object"
+                "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object"
             ) as mock_delete_cache:
                 mock_delete_cache.return_value = None
 
@@ -7715,7 +7715,7 @@ async def test_process_single_key_update():
 
                     # Mock _hash_token_if_needed
                     with patch(
-                        "litellm.proxy.management_endpoints.key_management_endpoints._hash_token_if_needed",
+                        "litellm.proxy.management_endpoints.key_management_endpoints.hash_token_if_needed",
                         return_value="hashed-test-key-123",
                     ):
                         # Mock KeyManagementEventHooks
@@ -7854,7 +7854,7 @@ async def test_bulk_update_keys_success(monkeypatch):
             "litellm.proxy.management_endpoints.key_management_endpoints.TeamMemberPermissionChecks.can_team_member_execute_key_management_endpoint"
         ):
             with patch(
-                "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object"
+                "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object"
             ):
                 with patch("litellm.proxy._types.hash_token") as mock_hash:
                     mock_hash.side_effect = ["hashed-key-1", "hashed-key-2"]
@@ -7866,7 +7866,7 @@ async def test_bulk_update_keys_success(monkeypatch):
                         }[token]
 
                     with patch(
-                        "litellm.proxy.management_endpoints.key_management_endpoints._hash_token_if_needed",
+                        "litellm.proxy.management_endpoints.key_management_endpoints.hash_token_if_needed",
                         side_effect=_hash_for_bulk_success,
                     ):
                         with patch(
@@ -7982,7 +7982,7 @@ async def test_bulk_update_keys_partial_failures(monkeypatch):
             "litellm.proxy.management_endpoints.key_management_endpoints.TeamMemberPermissionChecks.can_team_member_execute_key_management_endpoint"
         ):
             with patch(
-                "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object"
+                "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object"
             ):
                 with patch("litellm.proxy._types.hash_token") as mock_hash:
                     mock_hash.return_value = "hashed-key-1"
@@ -7994,7 +7994,7 @@ async def test_bulk_update_keys_partial_failures(monkeypatch):
                         }[token]
 
                     with patch(
-                        "litellm.proxy.management_endpoints.key_management_endpoints._hash_token_if_needed",
+                        "litellm.proxy.management_endpoints.key_management_endpoints.hash_token_if_needed",
                         side_effect=_hash_for_bulk_partial,
                     ):
                         with patch(
@@ -8187,7 +8187,7 @@ async def test_reset_key_spend_success(monkeypatch):
             "litellm.proxy.management_endpoints.key_management_endpoints._check_proxy_or_team_admin_for_key"
         ) as mock_check_admin,
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object"
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object"
         ) as mock_delete_cache,
     ):
         mock_hash_token.return_value = hashed_key
@@ -8307,7 +8307,7 @@ async def test_reset_key_spend_resets_budget_windows(monkeypatch):
             "litellm.proxy.management_endpoints.key_management_endpoints._check_proxy_or_team_admin_for_key"
         ) as mock_check_admin,
         patch(  # test-quality-ok: no HTTP boundary; same pattern as test_reset_key_spend_success
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object"
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object"
         ) as mock_delete_cache,
     ):
         mock_hash_token.return_value = hashed_key
@@ -8416,7 +8416,7 @@ async def test_reset_key_spend_no_budget_limits_skips_window_reset(monkeypatch):
             "litellm.proxy.management_endpoints.key_management_endpoints._check_proxy_or_team_admin_for_key"
         ) as mock_check_admin,
         patch(  # test-quality-ok: no HTTP boundary; same pattern as test_reset_key_spend_success
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object"
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object"
         ) as mock_delete_cache,
     ):
         mock_hash_token.return_value = hashed_key
@@ -8462,7 +8462,7 @@ async def test_delete_cache_key_object_broadcasts_invalidation(monkeypatch):
         "litellm.proxy.auth.auth_checks.publish_auth_cache_invalidation"
     ) as mock_publish:
         mock_publish.return_value = None
-        await _delete_cache_key_object(
+        await delete_cache_key_object(
             hashed_token="hashed-broadcast-key",
             user_api_key_cache=real_user_api_key_cache,
             proxy_logging_obj=mock_proxy_logging_obj,
@@ -8520,7 +8520,7 @@ async def test_update_key_spend_updates_counter(monkeypatch):
     )
 
     with patch(
-        "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object"
+        "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object"
     ) as mock_delete_cache:
         mock_delete_cache.return_value = None
 
@@ -8617,7 +8617,7 @@ async def test_reset_key_spend_success_team_admin(monkeypatch):
     with (
         patch("litellm.proxy.proxy_server.hash_token") as mock_hash_token,
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object"
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object"
         ) as mock_delete_cache,
     ):
         mock_hash_token.return_value = hashed_key
@@ -8831,7 +8831,7 @@ async def test_reset_key_spend_hashed_key(monkeypatch):
             "litellm.proxy.management_endpoints.key_management_endpoints._check_proxy_or_team_admin_for_key"
         ) as mock_check_admin,
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object"
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object"
         ) as mock_delete_cache,
     ):
         mock_check_admin.return_value = None
@@ -9327,7 +9327,7 @@ async def test_rotate_master_key_reencrypts_model_params_in_place(
 
     from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
     from litellm.proxy.management_endpoints.key_management_endpoints import (
-        _rotate_master_key,
+        rotate_master_key,
     )
 
     # Setup mock prisma client
@@ -9395,7 +9395,7 @@ async def test_rotate_master_key_reencrypts_model_params_in_place(
         "litellm.proxy.proxy_server.proxy_config",
         mock_proxy_config,
     ):
-        await _rotate_master_key(
+        await rotate_master_key(
             prisma_client=mock_prisma_client,
             user_api_key_dict=user_api_key_dict,
             current_master_key="sk-old-master-key",
@@ -11017,7 +11017,7 @@ def _setup_block_unblock_mocks(monkeypatch, mock_key_team_id=None):
         pass
 
     monkeypatch.setattr(
-        "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+        "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
         mock_delete_cache_key_object,
     )
 
@@ -11271,7 +11271,7 @@ async def test_update_key_non_budget_fields_allowed_for_internal_user(monkeypatc
         pass
 
     monkeypatch.setattr(
-        "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+        "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
         mock_delete_cache_key_object,
     )
 
@@ -11432,7 +11432,7 @@ async def test_update_key_throttle_unchanged_allows_non_budget_edit_for_internal
         pass
 
     monkeypatch.setattr(
-        "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+        "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
         _noop,
     )
     monkeypatch.setattr(
@@ -11670,7 +11670,7 @@ async def test_update_key_team_member_with_permission_can_update_non_budget(
         mock_enforce_unique_key_alias,
     )
     monkeypatch.setattr(
-        "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+        "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
         mock_delete_cache_key_object,
     )
     monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
@@ -12812,11 +12812,11 @@ async def test_execute_virtual_key_regeneration_rejects_over_limit_duration(monk
             new_callable=AsyncMock,
         ),
         patch(  # test-quality-ok: archival path is outside upperbound rejection
-            "litellm.proxy.management_endpoints.key_management_endpoints._persist_deleted_verification_tokens",
+            "litellm.proxy.management_endpoints.key_management_endpoints.persist_deleted_verification_tokens",
             new_callable=AsyncMock,
         ) as persist_deleted_verification_tokens,
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
     ):
@@ -12862,11 +12862,11 @@ async def test_execute_virtual_key_regeneration_changed_alias_must_match_key_ali
             new_callable=AsyncMock,
         ),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._persist_deleted_verification_tokens",
+            "litellm.proxy.management_endpoints.key_management_endpoints.persist_deleted_verification_tokens",
             new_callable=AsyncMock,
         ),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
     ):
@@ -12922,7 +12922,7 @@ async def test_execute_virtual_key_regeneration_allows_within_limit_duration(mon
             new_callable=AsyncMock,
         ),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(
@@ -12969,11 +12969,11 @@ async def test_execute_virtual_key_regeneration_rejects_when_custom_key_update_h
             new_callable=AsyncMock,
         ) as insert_deprecated_key,
         patch(  # test-quality-ok: archival path is outside policy rejection
-            "litellm.proxy.management_endpoints.key_management_endpoints._persist_deleted_verification_tokens",
+            "litellm.proxy.management_endpoints.key_management_endpoints.persist_deleted_verification_tokens",
             new_callable=AsyncMock,
         ) as persist_deleted_verification_tokens,
         patch(  # test-quality-ok: cache eviction is outside policy rejection
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(  # test-quality-ok: rotation callback is outside policy rejection
@@ -13029,11 +13029,11 @@ async def test_execute_virtual_key_regeneration_allows_when_custom_key_update_ho
             new_callable=AsyncMock,
         ),
         patch(  # test-quality-ok: verify archival follows policy approval
-            "litellm.proxy.management_endpoints.key_management_endpoints._persist_deleted_verification_tokens",
+            "litellm.proxy.management_endpoints.key_management_endpoints.persist_deleted_verification_tokens",
             new_callable=AsyncMock,
         ) as persist_deleted_verification_tokens,
         patch(  # test-quality-ok: cache eviction is outside policy approval
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(  # test-quality-ok: rotation callback is outside policy approval
@@ -13082,7 +13082,7 @@ async def test_execute_virtual_key_regeneration_skips_custom_key_update_hook_wit
             new_callable=AsyncMock,
         ),
         patch(  # test-quality-ok: cache eviction is outside unchanged request
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(  # test-quality-ok: rotation callback is outside unchanged request
@@ -13132,7 +13132,7 @@ async def test_execute_virtual_key_regeneration_hides_the_untouched_modal_expiry
             new_callable=AsyncMock,
         ),
         patch(  # test-quality-ok: cache eviction is outside the hook input
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(  # test-quality-ok: rotation callback is outside the hook input
@@ -13200,13 +13200,13 @@ def _regenerate_policy_mocks(policy, insert_deprecated_key: AsyncMock, persist: 
     )
     stack.enter_context(
         patch(  # test-quality-ok: archival write must not run on a denied regenerate
-            "litellm.proxy.management_endpoints.key_management_endpoints._persist_deleted_verification_tokens",
+            "litellm.proxy.management_endpoints.key_management_endpoints.persist_deleted_verification_tokens",
             persist,
         )
     )
     stack.enter_context(
         patch(  # test-quality-ok: cache eviction is outside the policy path
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         )
     )
@@ -13343,7 +13343,7 @@ async def test_update_key_fn_runs_custom_key_policy_on_the_effective_row(monkeyp
 
     with (
         patch(  # test-quality-ok: cache eviction is outside the policy path
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch("litellm.proxy.proxy_server.user_custom_key_policy", policy),  # test-quality-ok: inject policy hook
@@ -13390,7 +13390,7 @@ async def test_update_key_fn_rejects_when_custom_key_policy_denies(monkeypatch):
 async def _process_single_key_update_under_policy(prisma_client: AsyncMock, data: UpdateKeyRequest, policy):
     with (
         patch(  # test-quality-ok: cache eviction is outside the policy path
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(  # test-quality-ok: update callback is outside the policy path
@@ -13495,7 +13495,7 @@ def _setup_update_key_fn_object_permission_mocks(monkeypatch, allowed: bool) -> 
     _record_object_permission_writes(mock_prisma_client, events)
     monkeypatch.setattr("litellm.proxy.proxy_server.user_custom_key_policy", _recording_policy(events, allowed))
     monkeypatch.setattr(
-        "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object", AsyncMock()
+        "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object", AsyncMock()
     )
     return mock_prisma_client, events
 
@@ -13631,7 +13631,7 @@ async def test_bulk_update_keys_runs_custom_key_policy_per_key(monkeypatch):
 
     with (
         patch(  # test-quality-ok: cache eviction is outside the policy path
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(  # test-quality-ok: update callback is outside the policy path
@@ -13999,7 +13999,7 @@ async def test_regenerate_evicts_jwt_key_mapping_cache_so_next_jwt_call_gets_new
             new_callable=AsyncMock,
         ),
         patch(  # test-quality-ok: key-object eviction is separate from the mapping eviction under test
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(  # test-quality-ok: background rotation hook is irrelevant to cache eviction
@@ -14093,7 +14093,7 @@ async def test_execute_virtual_key_regeneration_rejects_over_limit_max_budget(mo
             new_callable=AsyncMock,
         ),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
     ):
@@ -14149,7 +14149,7 @@ async def test_execute_virtual_key_regeneration_skips_none_values(monkeypatch):
             new_callable=AsyncMock,
         ),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(
@@ -14196,7 +14196,7 @@ async def test_execute_virtual_key_regeneration_no_upperbound_config_is_noop(mon
             new_callable=AsyncMock,
         ),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(
@@ -14688,7 +14688,7 @@ async def test_process_single_key_update_cache_invalidation_with_token_hash():
             return_value=None,
         ),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ) as mock_delete_cache,
         patch(
@@ -14785,6 +14785,37 @@ async def test_process_single_key_update_non_admin_permissions_explicit_empty_re
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fields",
+    [{"metadata": {}}, {"metadata": None}, {"denied_passthrough_routes": []}],
+    ids=["metadata_replaced", "metadata_null", "denies_cleared"],
+)
+async def test_process_single_key_update_non_admin_cannot_drop_stored_denied_passthrough_routes(
+    fields: dict[str, object],
+) -> None:
+    stored_key: Final = LiteLLM_VerificationToken(
+        token="hashed-key", user_id="key-owner", metadata={"denied_passthrough_routes": ["/svc/admin"]}
+    )
+    prisma_client: Final = AsyncMock()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _process_single_key_update(
+            update_key_request=UpdateKeyRequest.model_validate({"key": "sk-owned-key", **fields}),
+            user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.INTERNAL_USER, user_id="team-admin"),
+            litellm_changed_by=None,
+            prisma_client=prisma_client,
+            user_api_key_cache=MagicMock(),
+            proxy_logging_obj=MagicMock(),
+            llm_router=MagicMock(),
+            existing_key_row=stored_key,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "denied_passthrough_routes" in str(exc_info.value.detail)
+    prisma_client.update_data.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_execute_virtual_key_regeneration_cache_invalidation_with_token_hash():
     """
     _execute_virtual_key_regeneration must pass the token hash as-is (not
@@ -14847,7 +14878,7 @@ async def test_execute_virtual_key_regeneration_cache_invalidation_with_token_ha
             new_callable=AsyncMock,
         ),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ) as mock_delete_cache,
         patch(
@@ -14940,7 +14971,7 @@ def _setup_team_keys_mocks(
         f"{_BULK_PKG}.prepare_key_update_data",
         AsyncMock(return_value={"max_budget": 50.0}),
     )
-    monkeypatch.setattr(f"{_BULK_PKG}._delete_cache_key_object", AsyncMock())
+    monkeypatch.setattr(f"{_BULK_PKG}.delete_cache_key_object", AsyncMock())
     monkeypatch.setattr(
         f"{_BULK_PKG}.KeyManagementEventHooks.async_key_updated_hook", AsyncMock()
     )
@@ -14952,7 +14983,7 @@ def _setup_team_keys_mocks(
     )
     if hash_identity:
         # Tests use already-hashed tokens; the raw-sk regression opts out.
-        monkeypatch.setattr(f"{_BULK_PKG}._hash_token_if_needed", lambda token: token)
+        monkeypatch.setattr(f"{_BULK_PKG}.hash_token_if_needed", lambda token: token)
     return mock_prisma
 
 
@@ -15537,7 +15568,7 @@ def _patch_regenerate_side_effects():
             new_callable=AsyncMock,
         ),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(
@@ -15644,7 +15675,7 @@ async def test_regenerate_premium_gate_allows_actual_master_key_holder():
         patch("litellm.proxy.proxy_server.master_key", master),
         patch("litellm.proxy.proxy_server.prisma_client", AsyncMock()),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._rotate_master_key",
+            "litellm.proxy.management_endpoints.key_management_endpoints.rotate_master_key",
             new_callable=AsyncMock,
         ),
     ):
@@ -17130,7 +17161,7 @@ async def _list_keys_capture_helper_kwargs(user_api_key_dict, **list_kwargs):
             return_value=mock_user_info,
         ):
             with patch(
-                "litellm.proxy.management_endpoints.key_management_endpoints._list_key_helper",
+                "litellm.proxy.management_endpoints.key_management_endpoints.list_key_helper",
                 helper,
             ):
                 await list_keys(
@@ -18439,7 +18470,7 @@ async def test_list_keys_forwards_expires_filter(expires_value, expected_forward
             return_value=mock_user_info,
         ),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._list_key_helper",
+            "litellm.proxy.management_endpoints.key_management_endpoints.list_key_helper",
             mock_helper,
         ),
     ):
@@ -18478,7 +18509,7 @@ async def test_list_keys_without_expires_param_forwards_none():
             return_value=mock_user_info,
         ),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._list_key_helper",
+            "litellm.proxy.management_endpoints.key_management_endpoints.list_key_helper",
             mock_helper,
         ),
     ):
@@ -18518,7 +18549,7 @@ async def test_rotate_master_key_rotates_sso_identity_assertions(
 
     from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
     from litellm.proxy.management_endpoints.key_management_endpoints import (
-        _rotate_master_key,
+        rotate_master_key,
     )
 
     mock_prisma_client = AsyncMock()
@@ -18552,7 +18583,7 @@ async def test_rotate_master_key_rotates_sso_identity_assertions(
         "litellm.proxy.proxy_server.proxy_config",
         mock_proxy_config,
     ):
-        await _rotate_master_key(
+        await rotate_master_key(
             prisma_client=mock_prisma_client,
             user_api_key_dict=user_api_key_dict,
             current_master_key="sk-old-master-key",
@@ -18576,7 +18607,7 @@ async def test_rotate_master_key_rotates_search_tools(monkeypatch):
         encrypt_value_helper,
     )
     from litellm.proxy.management_endpoints.key_management_endpoints import (
-        _rotate_master_key,
+        rotate_master_key,
     )
 
     monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
@@ -18611,7 +18642,7 @@ async def test_rotate_master_key_rotates_search_tools(monkeypatch):
         user_id="test-user",
     )
 
-    await _rotate_master_key(
+    await rotate_master_key(
         prisma_client=mock_prisma_client,
         user_api_key_dict=user_api_key_dict,
         current_master_key="sk-old-master-key",
@@ -18873,7 +18904,7 @@ def _wire_update_key_fn(monkeypatch, existing_key):
         pass
 
     monkeypatch.setattr(
-        "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+        "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
         _noop,
     )
     monkeypatch.setattr(
@@ -19542,7 +19573,7 @@ async def test_update_key_syncs_access_group_assigned_key_ids_in_both_directions
 
     with (
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(
@@ -19629,7 +19660,7 @@ async def test_update_key_leaves_access_groups_alone_when_field_is_unset(monkeyp
     _setup_update_key_mocks(monkeypatch, mock_prisma_client)
 
     with patch(
-        "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+        "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
         new_callable=AsyncMock,
     ):
         await update_key_fn(
@@ -19677,7 +19708,7 @@ async def test_bulk_update_keys_syncs_access_group_assigned_key_ids(monkeypatch)
 
     with (
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(
@@ -19854,7 +19885,7 @@ async def test_regenerate_key_repoints_access_group_assigned_key_ids(monkeypatch
             new_callable=AsyncMock,
         ),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(
@@ -19933,7 +19964,7 @@ async def test_key_write_paths_revoke_the_key_cache_before_syncing_access_groups
 
     with (
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
             side_effect=lambda **kwargs: order.append("revoke_key_cache"),
         ),
@@ -20007,7 +20038,7 @@ async def test_update_key_syncs_many_access_groups_in_one_statement_per_directio
 
     with (
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(
@@ -20090,7 +20121,7 @@ async def test_regenerate_key_repoints_live_membership_not_the_key_row_it_read(
             new_callable=AsyncMock,
         ),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(
@@ -20871,7 +20902,7 @@ async def test_key_regeneration_invalidates_cached_object_permission(monkeypatch
             new_callable=AsyncMock,
         ),
         patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object",
+            "litellm.proxy.management_endpoints.key_management_endpoints.delete_cache_key_object",
             new_callable=AsyncMock,
         ),
         patch(
@@ -20939,7 +20970,7 @@ async def test_key_update_evicts_object_permission_before_key_object(monkeypatch
     """
     from litellm.proxy._types import LiteLLM_ObjectPermissionBase
     from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache, object_permission_cache_key
-    from litellm.proxy.utils import _hash_token_if_needed
+    from litellm.proxy.utils import hash_token_if_needed
 
     deleted: list[str] = []
 
@@ -21000,7 +21031,7 @@ async def test_key_update_evicts_object_permission_before_key_object(monkeypatch
         )
 
     assert deleted.index(object_permission_cache_key(permission_id)) < deleted.index(
-        _hash_token_if_needed("sk-lit5479")
+        hash_token_if_needed("sk-lit5479")
     ), deleted
 
 
@@ -21179,7 +21210,7 @@ async def test_rotate_master_key_reencrypts_guardrail_params(monkeypatch):
     )
     from litellm.proxy.management_endpoints import key_management_endpoints
     from litellm.proxy.management_endpoints.key_management_endpoints import (
-        _rotate_master_key,
+        rotate_master_key,
     )
 
     for rotator in (
@@ -21204,7 +21235,7 @@ async def test_rotate_master_key_reencrypts_guardrail_params(monkeypatch):
     mock_prisma_client.db.litellm_guardrailstable.find_many = AsyncMock(return_value=[guardrail_row])
     mock_prisma_client.db.litellm_guardrailstable.update_many = AsyncMock(return_value=1)
 
-    await _rotate_master_key(
+    await rotate_master_key(
         prisma_client=mock_prisma_client,
         user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN, user_id="test-user"),
         current_master_key="sk-old-master-key",

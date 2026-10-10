@@ -13,7 +13,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from litellm.proxy.openai_files_endpoints.common_utils import (
-    _is_base64_encoded_unified_file_id,
+    is_base64_encoded_unified_file_id,
 )
 
 DECODED_UNIFIED_INPUT_FILE_ID = "litellm_proxy:application/octet-stream;unified_id,test-uuid;target_model_names,azure-gpt-4"
@@ -37,7 +37,7 @@ async def test_should_resolve_raw_input_file_id_to_unified():
     contains a record for that raw ID, the retrieve endpoint should resolve
     it to the unified file ID.
     """
-    unified_batch_id = _is_base64_encoded_unified_file_id(B64_UNIFIED_BATCH_ID)
+    unified_batch_id = is_base64_encoded_unified_file_id(B64_UNIFIED_BATCH_ID)
     assert unified_batch_id, "Test setup: batch_id should decode as unified"
 
     from litellm.types.utils import LiteLLMBatch

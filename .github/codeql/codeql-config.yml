@@ -1,16 +1,5 @@
 name: "LiteLLM CodeQL config"
 
-# security-extended runs the full set of security queries (a superset of the
-# default `security` suite) but omits the code-quality/style half of
-# `security-and-quality`. The quality half produced hundreds of note/warning
-# findings (js/unused-local-variable, js/automatic-semicolon-insertion,
-# js/superfluous-trailing-arguments, js/comparison-between-incompatible-types,
-# js/useless-assignment-to-local, ...) in vendored upstream UI code. Those are
-# style, not vulnerabilities, and rewriting upstream UI to satisfy them would
-# break the keep-the-fork-vanilla rule. Security coverage is unchanged.
-queries:
-  - uses: security-extended
-
 # Known OOM queries on large Python codebases:
 # CodeQL builds a full data flow graph in memory. These two queries trace
 # sensitive data through every log call / regex pattern, causing combinatorial
@@ -26,17 +15,6 @@ query-filters:
   # py/clear-text-logging-sensitive-data above; hangs the python leg without it.
   - exclude:
       id: py/log-injection                      # CWE-117
-  # Import resolution confuses stdlib types with management_endpoints/types.py.
-  # The generic cycle query also reports intentional deferred imports.
-  - exclude:
-      id: py/cyclic-import
-  - exclude:
-      id: py/unsafe-cyclic-import
-  # Known false positives on live settings and Protocol placeholders.
-  - exclude:
-      id: py/unused-global-variable
-  - exclude:
-      id: py/ineffectual-statement
   # Tracebacks only reach loggers; ProxyException.to_dict() never serializes a
   # traceback field, so CodeQL cannot distinguish log sinks from HTTP response
   # sinks here.

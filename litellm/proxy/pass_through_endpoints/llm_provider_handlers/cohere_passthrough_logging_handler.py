@@ -6,6 +6,7 @@ import httpx
 import litellm
 from litellm import stream_chunk_builder
 from litellm._logging import verbose_proxy_logger
+from litellm.litellm_core_utils.hidden_params import set_hidden_param
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.litellm_logging import (
     get_standard_logging_object_payload,
@@ -120,7 +121,7 @@ class CoherePassthroughLoggingHandler(BasePassthroughLoggingHandler):
                     input_texts = request_body.get("input", [])
 
                 # Transform the response
-                litellm_model_response = cohere_embed_config._transform_response(
+                litellm_model_response = cohere_embed_config.transform_response(
                     response=httpx_response,
                     api_key="",
                     logging_obj=logging_obj,
@@ -140,9 +141,7 @@ class CoherePassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 )
 
                 # Set the calculated cost in _hidden_params to prevent recalculation
-                if not hasattr(litellm_model_response, "_hidden_params"):
-                    litellm_model_response._hidden_params = {}
-                litellm_model_response._hidden_params["response_cost"] = response_cost
+                set_hidden_param(litellm_model_response, "response_cost", response_cost)
 
                 kwargs["response_cost"] = response_cost
                 kwargs["model"] = model

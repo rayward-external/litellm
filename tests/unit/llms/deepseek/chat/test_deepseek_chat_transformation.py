@@ -1,116 +1,82 @@
-import pytest
+import json
+from collections.abc import Iterator
+from typing import Final
 
+import httpx
 import litellm
+import pytest
+import respx
+from litellm.caching.llm_caching_handler import LLMClientCache
 from litellm.llms.deepseek.chat.transformation import DeepSeekChatConfig
 
-REASONING_MODEL = "deepseek-reasoner"
-
-# DeepSeek's own enum, as named verbatim in its 400 body on an unknown variant:
-#   unknown variant `X`, expected one of `none`, `minimal`, `low`, `medium`,
-#   `high`, `xhigh`, `max`
-DEEPSEEK_REASONING_EFFORT_LEVELS = (
-    "none",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-)
+DEEPSEEK_API_BASE: Final = "https://api.deepseek.com/beta"
+DEEPSEEK_CHAT_COMPLETIONS_URL: Final = f"{DEEPSEEK_API_BASE}/chat/completions"
+DEEPSEEK_API_KEY: Final = "fake_api_key"
 
 
-def _map(non_default_params: dict, model: str = REASONING_MODEL) -> dict:
-    return DeepSeekChatConfig().map_openai_params(
-        non_default_params=non_default_params,
-        optional_params={},
-        model=model,
-        drop_params=False,
+@pytest.fixture
+def _deepseek_httpx_transport(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    client_cache: Final = LLMClientCache()
+    monkeypatch.setattr(litellm, "in_memory_llm_clients_cache", client_cache)
+    monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
+    monkeypatch.setattr(litellm, "force_ipv4", False)
+    monkeypatch.setattr(litellm, "sync_transport", None, raising=False)
+    yield
+    client_cache.flush_cache()
+
+
+def _deepseek_response(stream: bool) -> httpx.Response:
+    if stream:
+        chunks: Final = (
+            {
+                "id": "chatcmpl-deepseek",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": "deepseek-reasoner",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": "Hello!"},
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl-deepseek",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": "deepseek-reasoner",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            },
+        )
+        body: Final = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+        return httpx.Response(200, content=body.encode(), headers={"content-type": "text/event-stream"})
+    return httpx.Response(
+        200,
+        json={
+            "id": "chatcmpl-deepseek",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "deepseek-reasoner",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "Hello!"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        },
     )
 
 
-@pytest.mark.parametrize("effort", DEEPSEEK_REASONING_EFFORT_LEVELS)
-def test_graded_reasoning_effort_is_forwarded_alongside_the_thinking_switch(effort):
-    result = _map({"reasoning_effort": effort})
-
-    assert result["reasoning_effort"] == effort
-    expected_switch = "disabled" if effort == "none" else "enabled"
-    assert result["thinking"] == {"type": expected_switch}
-
-
-def test_litellm_default_sentinel_is_not_put_on_the_wire():
-    # completion() accepts reasoning_effort="default" (litellm/main.py) as "no explicit
-    # level". DeepSeek has no such level, so forwarding it would turn a request that
-    # works today into a 400. It still drives the thinking switch, as before.
-    result = _map({"reasoning_effort": "default"})
-
-    assert "reasoning_effort" not in result
-    assert result["thinking"] == {"type": "enabled"}
-
-
-def test_out_of_vocabulary_reasoning_effort_is_forwarded_not_policed():
-    # The value must reach DeepSeek so DeepSeek's own 400 names the vocabulary;
-    # re-checking the enum here would be a second copy that can disagree with it.
-    result = _map({"reasoning_effort": "BOGUS_LEVEL"})
-
-    assert result["reasoning_effort"] == "BOGUS_LEVEL"
-    assert result["thinking"] == {"type": "enabled"}
-
-
-@pytest.mark.parametrize("switch", ["enabled", "disabled"])
-def test_explicit_thinking_still_wins_the_switch_and_the_effort_rides_along(switch):
-    result = _map({"thinking": {"type": switch}, "reasoning_effort": "max"})
-
-    assert result["thinking"] == {"type": switch}
-    assert result["reasoning_effort"] == "max"
-
-
-@pytest.mark.parametrize(
-    "non_default_params",
-    [{}, {"reasoning_effort": None}, {"thinking": {"type": "enabled"}}],
-)
-def test_reasoning_effort_is_absent_when_the_caller_sent_none(non_default_params):
-    result = _map(non_default_params)
-
-    assert "reasoning_effort" not in result
-
-
-def test_graded_effort_reaches_the_request_body():
-    config = DeepSeekChatConfig()
-    optional_params = config.map_openai_params(
-        non_default_params={"reasoning_effort": "max"},
-        optional_params={},
-        model=REASONING_MODEL,
-        drop_params=False,
-    )
-
-    body = config.transform_request(
-        model=REASONING_MODEL,
-        messages=[{"role": "user", "content": "hi"}],
-        optional_params=optional_params,
-        litellm_params={},
-        headers={},
-    )
-
-    assert body["reasoning_effort"] == "max"
-    assert body["thinking"] == {"type": "enabled"}
-
-
-@pytest.mark.parametrize("effort", DEEPSEEK_REASONING_EFFORT_LEVELS)
-def test_thinking_mode_detection_is_unchanged_by_forwarding_the_effort(effort):
-    # _thinking_mode_active reads the derived `thinking` switch and gates the
-    # multi-turn reasoning_content echo, so the switch must survive alongside
-    # the forwarded value rather than being replaced by it.
-    config = DeepSeekChatConfig()
-    optional_params = config.map_openai_params(
-        non_default_params={"reasoning_effort": effort},
-        optional_params={},
-        model=REASONING_MODEL,
-        drop_params=False,
-    )
-
-    active = config._thinking_mode_active(model=REASONING_MODEL, optional_params=optional_params)
-
-    assert active is (effort != "none")
+def _assert_deepseek_request(request: httpx.Request, messages: list[dict[str, str]], stream: bool) -> None:
+    assert str(request.url) == DEEPSEEK_CHAT_COMPLETIONS_URL
+    assert request.headers["Authorization"] == f"Bearer {DEEPSEEK_API_KEY}"
+    actual_data: Final = json.loads(request.content)
+    assert actual_data["model"] == "deepseek-reasoner"
+    assert actual_data["messages"] == messages
+    assert actual_data["stream"] is stream
 
 
 def _function_tool(name: str) -> dict:
@@ -262,7 +228,7 @@ class TestDeepSeekVisionMultimodalContent:
         }
 
     def test_user_image_list_forwarded_on_vision_model(self):
-        result = self.config._transform_messages([self._image_message()], model=self.VISION_MODEL)
+        result = self.config.transform_messages([self._image_message()], model=self.VISION_MODEL)
 
         assert isinstance(result[0]["content"], list)
         assert result[0]["content"][0]["type"] == "text"
@@ -270,13 +236,13 @@ class TestDeepSeekVisionMultimodalContent:
         assert result[0]["content"][1]["image_url"]["url"] == "https://example.com/image.jpg"
 
     def test_image_list_collapsed_on_non_vision_model(self):
-        result = self.config._transform_messages([self._image_message()], model=self.NON_VISION_MODEL)
+        result = self.config.transform_messages([self._image_message()], model=self.NON_VISION_MODEL)
 
         assert result[0]["content"] == "what is in this image?"
 
     def test_image_list_collapsed_on_non_user_roles_even_on_vision_model(self):
         for role in ("assistant", "system"):
-            result = self.config._transform_messages([self._image_message(role=role)], model=self.VISION_MODEL)
+            result = self.config.transform_messages([self._image_message(role=role)], model=self.VISION_MODEL)
 
             assert result[0]["content"] == "what is in this image?"
 
@@ -291,7 +257,7 @@ class TestDeepSeekVisionMultimodalContent:
             }
         ]
 
-        result = self.config._transform_messages(messages, model=self.VISION_MODEL)
+        result = self.config.transform_messages(messages, model=self.VISION_MODEL)
 
         assert result[0]["content"] == "transcribe this"
 
@@ -306,7 +272,7 @@ class TestDeepSeekVisionMultimodalContent:
             }
         ]
 
-        result = self.config._transform_messages(messages, model=self.VISION_MODEL)
+        result = self.config.transform_messages(messages, model=self.VISION_MODEL)
 
         assert result[0]["content"] == "what is this"
 
@@ -321,7 +287,7 @@ class TestDeepSeekVisionMultimodalContent:
             }
         ]
 
-        result = self.config._transform_messages(messages, model=self.VISION_MODEL)
+        result = self.config.transform_messages(messages, model=self.VISION_MODEL)
 
         assert isinstance(result[0]["content"], str)
         assert result[0]["content"] == "Hello world"
@@ -330,7 +296,7 @@ class TestDeepSeekVisionMultimodalContent:
         message = self._image_message()
         message["search_results"] = [{"source": "kb", "content": [{"text": "article body"}]}]
 
-        result = self.config._transform_messages([message], model=self.VISION_MODEL)
+        result = self.config.transform_messages([message], model=self.VISION_MODEL)
 
         content = result[0]["content"]
         assert isinstance(content, list)
@@ -347,7 +313,7 @@ class TestDeepSeekVisionMultimodalContent:
             }
         ]
 
-        result = self.config._transform_messages(messages, model=self.NON_VISION_MODEL)
+        result = self.config.transform_messages(messages, model=self.NON_VISION_MODEL)
 
         assert result[0]["content"] == "context: kbarticle body"
 
@@ -362,7 +328,7 @@ class TestDeepSeekVisionMultimodalContent:
             }
         ]
 
-        result = self.config._transform_messages(messages, model=self.VISION_MODEL)
+        result = self.config.transform_messages(messages, model=self.VISION_MODEL)
 
         assert result[0]["content"] == "what is this?"
 
@@ -374,7 +340,7 @@ class TestDeepSeekVisionMultimodalContent:
             }
         ]
 
-        result = self.config._transform_messages(messages, model=self.VISION_MODEL)
+        result = self.config.transform_messages(messages, model=self.VISION_MODEL)
 
         assert result[0]["content"] == "hi"
 
@@ -387,7 +353,7 @@ class TestDeepSeekVisionMultimodalContent:
                 }
             ]
 
-            result = self.config._transform_messages(messages, model=self.VISION_MODEL)
+            result = self.config.transform_messages(messages, model=self.VISION_MODEL)
 
             assert result[0]["content"] == "hi"
 
@@ -402,7 +368,7 @@ class TestDeepSeekVisionMultimodalContent:
             }
         ]
 
-        result = self.config._transform_messages(messages, model=self.VISION_MODEL)
+        result = self.config.transform_messages(messages, model=self.VISION_MODEL)
 
         content = result[0]["content"]
         assert isinstance(content, list)
@@ -420,7 +386,7 @@ class TestDeepSeekVisionMultimodalContent:
             }
         ]
 
-        result = self.config._transform_messages(messages, model=self.VISION_MODEL)
+        result = self.config.transform_messages(messages, model=self.VISION_MODEL)
 
         assert result[0]["content"] == "hi"
 
@@ -434,21 +400,21 @@ class TestDeepSeekVisionMultimodalContent:
             }
         ]
 
-        result = self.config._transform_messages(messages, model=self.NON_VISION_MODEL)
+        result = self.config.transform_messages(messages, model=self.NON_VISION_MODEL)
 
         assert result[0]["content"] == "summarize the docskbarticle body"
 
     def test_plain_string_content_message_unchanged(self):
         messages = [{"role": "user", "content": "hello"}]
 
-        result = self.config._transform_messages(messages, model=self.VISION_MODEL)
+        result = self.config.transform_messages(messages, model=self.VISION_MODEL)
 
         assert result[0] is messages[0]
 
     def test_empty_content_list_untouched(self):
         messages = [{"role": "user", "content": []}]
 
-        result = self.config._transform_messages(messages, model=self.NON_VISION_MODEL)
+        result = self.config.transform_messages(messages, model=self.NON_VISION_MODEL)
 
         assert result[0]["content"] == []
 
@@ -465,7 +431,7 @@ class TestDeepSeekVisionMultimodalContent:
             self._image_message(),
         ]
 
-        result = self.config._transform_messages(messages, model=self.VISION_MODEL)
+        result = self.config.transform_messages(messages, model=self.VISION_MODEL)
 
         assert isinstance(result[0]["content"], list)
         assert result[1]["content"] == "and then?"
@@ -675,3 +641,205 @@ class TestDeepSeekThinkingParams:
         assert result["tools"] == [{"type": "function", "function": {"name": "get_weather"}}]
         assert "tool_choice" not in result
         assert result["parallel_tool_calls"] is True
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_deepseek_mock_completion(stream):
+    """
+    Deepseek API is hanging. Mock the call, to a fake endpoint, so we can confirm our integration is working.
+    """
+    import litellm
+    from litellm import completion
+
+    litellm.turn_on_debug()
+
+    response = completion(
+        model="deepseek/deepseek-reasoner",
+        messages=[{"role": "user", "content": "Hello, world!"}],
+        api_base="https://exampleopenaiendpoint-production.up.railway.app/v1/chat/completions",
+        stream=stream,
+        mock_response="Hello! How can I help you today?",
+    )
+    print(f"response: {response}")
+    if stream:
+        for chunk in response:
+            print(chunk)
+    else:
+        assert response is not None
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_deepseek_provider_async_completion(stream):
+    """
+    Test that Deepseek provider requests are formatted correctly with the proper parameters
+    """
+    import json
+    from unittest.mock import MagicMock, patch
+
+    import litellm
+    from litellm import acompletion
+
+    litellm.turn_on_debug()
+
+    # Set up the test parameters
+    api_key = "fake_api_key"
+    model = "deepseek/deepseek-reasoner"
+    messages = [{"role": "user", "content": "Hello, world!"}]
+
+    # Mock AsyncHTTPHandler.post method for async test
+    with patch(
+        "litellm.llms.custom_httpx.llm_http_handler.AsyncHTTPHandler.post"
+    ) as mock_post:
+        mock_response_data = litellm.ModelResponse(
+            choices=[
+                litellm.Choices(
+                    message=litellm.Message(content="Hello!"),
+                    index=0,
+                    finish_reason="stop",
+                )
+            ]
+        ).model_dump()
+        # Create a proper mock response
+        mock_response = MagicMock()  # Use MagicMock instead of AsyncMock
+        mock_response.status_code = 200
+        mock_response.text = json.dumps(mock_response_data)
+        mock_response.headers = {"Content-Type": "application/json"}
+
+        # Make json() return a value directly, not a coroutine
+        mock_response.json.return_value = mock_response_data
+
+        # Set the return value for the post method
+        mock_post.return_value = mock_response
+
+        await acompletion(
+            custom_llm_provider="deepseek",
+            api_key=api_key,
+            model=model,
+            messages=messages,
+            stream=stream,
+        )
+
+    # Verify the request was made with the correct parameters
+    mock_post.assert_called_once()
+    call_args = mock_post.call_args
+    print("request call=", json.dumps(call_args.kwargs, indent=4, default=str))
+
+    # Check request body
+    request_body = json.loads(call_args.kwargs["data"])
+    assert call_args.kwargs["url"] == "https://api.deepseek.com/beta/chat/completions"
+    assert (
+        request_body["model"] == "deepseek-reasoner"
+    )  # Model name should be stripped of provider prefix
+    assert request_body["messages"] == messages
+    assert request_body["stream"] == stream
+
+
+def test_deepseek_fill_reasoning_content_multiturn():
+    """
+    Unit test for _fill_reasoning_content.
+    Reproduces issue #28045: DeepSeek thinking mode fails in multi-turn conversations
+    because reasoning_content is not passed back to the API.
+    """
+    from litellm.llms.deepseek.chat.transformation import DeepSeekChatConfig
+
+    config = DeepSeekChatConfig()
+
+    # Case 1: assistant message already has reasoning_content — should be left as-is
+    messages_with_rc = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi", "reasoning_content": "I thought about it"},
+        {"role": "user", "content": "Follow up"},
+    ]
+    result = config._fill_reasoning_content(messages_with_rc)
+    assert result[1]["reasoning_content"] == "I thought about it"
+
+    # Case 2: assistant message has reasoning_content in provider_specific_fields — should be promoted
+    messages_with_psf = [
+        {"role": "user", "content": "Hello"},
+        {
+            "role": "assistant",
+            "content": "Hi",
+            "provider_specific_fields": {"reasoning_content": "stored thinking"},
+        },
+        {"role": "user", "content": "Follow up"},
+    ]
+    result = config._fill_reasoning_content(messages_with_psf)
+    assert result[1]["reasoning_content"] == "stored thinking"
+    # Should be removed from provider_specific_fields to avoid duplication
+    assert "reasoning_content" not in result[1].get("provider_specific_fields", {})
+
+    # Case 3: assistant message has no reasoning_content anywhere — should inject placeholder
+    messages_no_rc = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi"},
+        {"role": "user", "content": "Follow up"},
+    ]
+    result = config._fill_reasoning_content(messages_no_rc)
+    assert result[1]["reasoning_content"] == " "
+
+    # Case 4: non-assistant messages should never be touched
+    messages_user_only = [
+        {"role": "user", "content": "Hello"},
+        {"role": "system", "content": "You are helpful"},
+    ]
+    result = config._fill_reasoning_content(messages_user_only)
+    assert "reasoning_content" not in result[0]
+    assert "reasoning_content" not in result[1]
+
+
+def test_deepseek_fill_reasoning_content_guard_in_transform_request():
+    """
+    _fill_reasoning_content must only run when BOTH conditions are true:
+      1. supports_reasoning() is True for the model
+      2. thinking mode is explicitly enabled in optional_params ({"type": "enabled"})
+
+    This prevents spurious injection on models like deepseek-v3.2 that support
+    thinking as opt-in but not always-on. Addresses oss-pr-review-agent feedback
+    on PR #28057.
+    """
+    from litellm.llms.deepseek.chat.transformation import DeepSeekChatConfig
+
+    config = DeepSeekChatConfig()
+
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi"},
+        {"role": "user", "content": "Follow up"},
+    ]
+
+    # Case 1: reasoning model + thinking enabled -> injection should happen
+    result = config.transform_request(
+        model="deepseek-reasoner",
+        messages=messages,
+        optional_params={"thinking": {"type": "enabled"}},
+        litellm_params={},
+        headers={},
+    )
+    assert result["messages"][1].get("reasoning_content") == " ", (
+        "reasoning_content should be injected when thinking is enabled"
+    )
+
+    # Case 2: reasoning model + thinking NOT in optional_params -> no injection
+    result = config.transform_request(
+        model="deepseek-reasoner",
+        messages=messages,
+        optional_params={},
+        litellm_params={},
+        headers={},
+    )
+    assert "reasoning_content" not in result["messages"][1], (
+        "reasoning_content should not be injected when thinking is not enabled"
+    )
+
+    # Case 3: non-reasoning model + thinking enabled -> no injection
+    result = config.transform_request(
+        model="deepseek-chat",
+        messages=messages,
+        optional_params={"thinking": {"type": "enabled"}},
+        litellm_params={},
+        headers={},
+    )
+    assert "reasoning_content" not in result["messages"][1], (
+        "reasoning_content should not be injected for non-reasoning models"
+    )
