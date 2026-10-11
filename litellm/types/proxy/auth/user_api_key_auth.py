@@ -198,7 +198,9 @@ class UserAPIKeyAuth(LiteLLM_VerificationTokenView):  # the expected response ob
             "narrow the agent's access."
         ),
     )
-    budget_reservation: dict[str, Any] | None = Field(default=None, exclude=True)
+    budget_reservation: dict[str, Any] | None = Field(  # pyright: ignore[reportExplicitAny]  # reservation payload
+        default=None, exclude=True
+    )
     team_budget_snapshot: TeamBudgetSnapshot | None = Field(default=None, exclude=True)
     user_budget_snapshot: UserBudgetSnapshot | None = Field(default=None, exclude=True)
     org_budget_snapshot: OrgBudgetSnapshot | None = Field(default=None, exclude=True)
