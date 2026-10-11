@@ -356,7 +356,9 @@ async def add_team_callbacks(
         # Decrypted, because the checks compare the incoming values against
         # the stored ones and the credentials are encrypted at rest.
         decrypted_logging: Final = decrypt_callback_vars(team_metadata).get("logging")
-        stored_capture: Final = stored_capture_entries(decrypted_logging)
+        stored_capture: Final = stored_capture_entries(  # pyright: ignore[reportAny]  # decrypted metadata
+            decrypted_logging
+        )
         stored_entries: Final = decrypted_logging if isinstance(decrypted_logging, list) else ()
         stored_entry_vars: Final = [entry.get("callback_vars") or {} for entry in stored_entries]
         scope_error: Final = conflicting_span_scope_error(data.callback_vars, stored_entry_vars)

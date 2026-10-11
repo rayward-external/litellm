@@ -1288,7 +1288,9 @@ async def pass_through_request(
             proxy_config=proxy_config,
             route_description="pass_through_endpoint",
         )
-        litellm_trace_id: Final[str | None] = get_chain_id_from_headers(dict(request.headers))
+        litellm_trace_id: Final[str | None] = get_chain_id_from_headers(  # pyright: ignore[reportUnusedVariable]
+            dict(request.headers)
+        )  # used below; false positive in this fn
         logging_obj = Logging(
             model=passthrough_model,
             messages=[{"role": "user", "content": safe_dumps(_parsed_body)}],

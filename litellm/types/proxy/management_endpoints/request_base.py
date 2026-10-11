@@ -28,14 +28,14 @@ class GenerateRequestBase(LiteLLMPydanticObjectBase):
 
     key_alias: str | None = None
     duration: str | None = None
-    models: list[Any] | None = []
+    models: list[Any] | None = []  # pyright: ignore[reportExplicitAny]  # mixed model-name shapes
     spend: float | None = 0
     max_budget: float | None = None
     user_id: str | None = None
     team_id: str | None = None
     agent_id: str | None = None
     max_parallel_requests: int | None = None
-    metadata: dict[Any, Any] | None = {}
+    metadata: dict[Any, Any] | None = {}  # pyright: ignore[reportExplicitAny]  # free-form request metadata
     tpm_limit: int | None = None
     rpm_limit: int | None = None
 

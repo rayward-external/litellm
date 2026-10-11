@@ -663,5 +663,7 @@ class ShadowEvalJobResponse(LiteLLMBaseModel):
 
 def __getattr__(name: str) -> object:
     if name in _REQUEST_MODELS_EXPORTS:
-        return getattr(importlib.import_module(_REQUEST_MODELS_MODULE), name)
+        return getattr(  # pyright: ignore[reportAny]  # dynamic re-export
+            importlib.import_module(_REQUEST_MODELS_MODULE), name
+        )
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

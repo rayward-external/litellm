@@ -39,7 +39,7 @@ class NewSkillRequest(LiteLLMPydanticObjectBase):
     file_content: bytes | None = None  # Binary content of skill files (zip)
     file_name: str | None = None  # Original filename
     file_type: str | None = None  # MIME type (e.g., "application/zip")
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None  # pyright: ignore[reportExplicitAny]  # arbitrary skill metadata
     authorization_url: str | None = None
     token_url: str | None = None
     registration_url: str | None = None

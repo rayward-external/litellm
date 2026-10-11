@@ -29,7 +29,7 @@ class KeyRequestBase(GenerateRequestBase):
     enable_prompt_caching: bool | None = None
     throttle_on_budget_exceeded: bool | None = None
     enforced_params: list[str] | None = None
-    allowed_routes: list[Any] | None = []
+    allowed_routes: list[Any] | None = []  # pyright: ignore[reportExplicitAny]  # mixed route-name shapes
     allowed_passthrough_routes: list[object] | None = None
     denied_passthrough_routes: list[str] | None = None
     allowed_vector_store_indexes: list[AllowedVectorStoreIndexItem] | None = None
@@ -87,7 +87,7 @@ class UpdateKeyRequest(KeyRequestBase):
     duration: str | None = None
     spend: float | None = None
     soft_budget: float | None = None
-    metadata: dict[Any, Any] | None = None
+    metadata: dict[Any, Any] | None = None  # pyright: ignore[reportExplicitAny]  # free-form key metadata
     temp_budget_increase: float | None = None
     temp_budget_expiry: datetime | None = None
     auto_rotate: bool | None = None
@@ -133,6 +133,6 @@ class RegenerateKeyRequest(GenerateKeyRequest):
     new_key: str | None = None
     duration: str | None = None
     spend: float | None = None
-    metadata: dict[Any, Any] | None = None
+    metadata: dict[Any, Any] | None = None  # pyright: ignore[reportExplicitAny]  # free-form key metadata
     new_master_key: str | None = None
     grace_period: str | None = None  # Duration to keep old key valid (e.g. "24h", "2d"); None = immediate revoke

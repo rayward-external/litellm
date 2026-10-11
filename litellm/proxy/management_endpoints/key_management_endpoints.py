@@ -1604,7 +1604,10 @@ async def _common_key_generation_helper(
 
     try:
         response = await generate_key_helper_fn(
-            request_type="key", **data_json, table_name="key", llm_router=llm_router
+            request_type="key",
+            **data_json,  # pyright: ignore[reportAny]  # model_dump() values are Any
+            table_name="key",
+            llm_router=llm_router,
         )
     except KeyProjectBindingError:
         if prisma_client is not None:

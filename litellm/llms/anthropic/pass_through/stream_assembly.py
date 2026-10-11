@@ -153,26 +153,26 @@ def collapse_pure_text_chunks(
 
         json_str = ev[idx + len("data:") :].strip()
         try:
-            data = json.loads(json_str)
+            data = json.loads(json_str)  # pyright: ignore[reportAny]  # untyped Anthropic SSE JSON
         except (json.JSONDecodeError, ValueError):
             return None
 
-        etype = data.get("type")
+        etype = data.get("type")  # pyright: ignore[reportAny]  # untyped Anthropic SSE JSON
         if etype == "content_block_start":
-            block = data.get("content_block") or {}
+            block = data.get("content_block") or {}  # pyright: ignore[reportAny]  # untyped Anthropic SSE JSON
             if block.get("type") != "text":
                 return None
-            text_block_indexes.add(data.get("index"))
+            text_block_indexes.add(data.get("index"))  # pyright: ignore[reportAny]  # untyped Anthropic SSE JSON
             flush()
             out.append(ev)
         elif etype == "content_block_delta":
-            delta = data.get("delta") or {}
+            delta = data.get("delta") or {}  # pyright: ignore[reportAny]  # untyped Anthropic SSE JSON
             dtype = delta.get("type")
             if dtype in _FAST_PATH_DISALLOWED_DELTA_TYPES:
                 return None
             if dtype != "text_delta":
                 return None
-            cur_index = data.get("index")
+            cur_index = data.get("index")  # pyright: ignore[reportAny]  # untyped Anthropic SSE JSON
             if cur_index not in text_block_indexes:
                 return None
             # Defensive: Anthropic sends blocks strictly sequentially
@@ -185,7 +185,7 @@ def collapse_pure_text_chunks(
             if pending_text and pending_index is not None and cur_index != pending_index:
                 return None
             saw_any_text_delta = True
-            pending_index = cur_index
+            pending_index = cur_index  # pyright: ignore[reportAny]  # untyped Anthropic SSE JSON
             pending_text.append(delta.get("text") or "")
         elif etype == "ping":
             # Interior no-op; legacy maps it to an empty chunk.
@@ -274,7 +274,7 @@ def extract_sse_data(event_str: str) -> dict | None:
             if not payload or payload == "[DONE]":
                 return None
             try:
-                return json.loads(payload)
+                return json.loads(payload)  # pyright: ignore[reportAny]  # untyped Anthropic SSE JSON
             except (ValueError, TypeError):
                 return None
     return None

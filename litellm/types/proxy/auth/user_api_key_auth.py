@@ -25,7 +25,7 @@ from litellm.types.router import AllowedModelRegion
 if TYPE_CHECKING:
     from opentelemetry.trace import Span as _Span
 
-    Span: TypeAlias = _Span | Any
+    Span: TypeAlias = _Span | Any  # pyright: ignore[reportExplicitAny]  # optional opentelemetry dependency
 else:
     Span: TypeAlias = Any
 
@@ -46,7 +46,7 @@ def hash_token(token: str) -> str:
     return hashed_token
 
 
-_UntypedDict: TypeAlias = dict[Any, Any]
+_UntypedDict: TypeAlias = dict[Any, Any]  # pyright: ignore[reportExplicitAny]  # named for genuinely untyped input
 
 
 def _is_str_keyed_dict(value: object) -> TypeIs[dict[str, object]]:  # guard-ok: pydantic input and JSON keys are str
@@ -66,7 +66,7 @@ class LiteLLM_VerificationTokenView(LiteLLM_VerificationToken):
     team_max_budget: float | None = None
     team_soft_budget: float | None = None
     team_model_max_budget: dict[str, object] | None = None
-    team_models: list[Any] = []
+    team_models: list[Any] = []  # pyright: ignore[reportExplicitAny]  # upstream heterogeneous model list
     team_blocked: bool = False
     soft_budget: float | None = None
     team_model_aliases: _UntypedDict | None = None
@@ -208,11 +208,15 @@ class UserAPIKeyAuth(LiteLLM_VerificationTokenView):  # the expected response ob
     # x-usage-budget without a second (impossible — it is sync) cache read.
     # exclude=True for the same reason as budget_reservation above: transient
     # request state, never persisted and never part of the key's API shape.
-    # See litellm/proxy/common_utils/budget_window_headers.py.
-    budget_window_usage: tuple[Any, ...] | None = Field(default=None, exclude=True)
+    # See litellm/proxy/common_utils/budget_window_headers.py. Typed as Any,
+    # not BudgetWindow, since that type lives in the non-types
+    # litellm.proxy.common_utils package and importing it here risks a cycle.
+    budget_window_usage: tuple[Any, ...] | None = Field(  # pyright: ignore[reportExplicitAny]  # see comment above
+        default=None, exclude=True
+    )
     budget_throttle_pct: float | None = Field(default=None, exclude=True)
-    user: Any | None = None  # Expanded user object when expand=user is used
-    created_by_user: Any | None = None  # Expanded created_by user when expand=user is used
+    user: Any | None = None  # pyright: ignore[reportExplicitAny]  # Expanded user object when expand=user is used
+    created_by_user: Any | None = None  # pyright: ignore[reportExplicitAny]  # Expanded created_by user
     end_user_object_permission: LiteLLM_ObjectPermissionTable | None = None
     # Team object_permission preloaded in auth (e.g. get_team_object) to avoid
     # per-request object_permission fetches in downstream checks (vector stores, etc.)
