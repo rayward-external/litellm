@@ -158,7 +158,7 @@ class TestWiring:
         assert "from litellm.proxy.common_utils.budget_window_headers import" in src, "the formatter import was dropped"
 
     def test_snapshot_field_survives_on_the_auth_object(self):
-        src = (REPO_ROOT / "litellm/proxy/_types.py").read_text()
+        src = (REPO_ROOT / "litellm/types/proxy/auth/user_api_key_auth.py").read_text()
         assert "budget_window_usage" in src, (
             "UserAPIKeyAuth.budget_window_usage is gone; the snapshot has nowhere to live"
         )

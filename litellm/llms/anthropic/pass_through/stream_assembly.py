@@ -300,6 +300,9 @@ def build_usage_only_response_from_chunks(
     cache_creation_5m: int | None = None
     cache_creation_1h: int | None = None
     output_tokens = 0
+    # Adaptive thinking reports its token count only here; the thinking blocks
+    # themselves are signature-only, so nothing downstream can re-derive it.
+    output_tokens_details: Mapping[str, object] | None = None
     web_search_requests: int | None = None
     tool_search_requests: int | None = None
     inference_geo: str | None = None
@@ -331,6 +334,8 @@ def build_usage_only_response_from_chunks(
                     speed_from_stream = usage.get("speed")
                 if usage.get("output_tokens") is not None:
                     output_tokens = usage.get("output_tokens")
+                if isinstance(usage.get("output_tokens_details"), dict):
+                    output_tokens_details = usage["output_tokens_details"]
                 found_usage = True
             elif event_type == "message_delta":
                 _delta_stop = (data.get("delta") or {}).get("stop_reason")
@@ -339,6 +344,8 @@ def build_usage_only_response_from_chunks(
                 usage = data.get("usage") or {}
                 if usage.get("output_tokens") is not None:
                     output_tokens = usage.get("output_tokens")
+                if isinstance(usage.get("output_tokens_details"), dict):
+                    output_tokens_details = usage["output_tokens_details"]
                 _stu = usage.get("server_tool_use")
                 if isinstance(_stu, dict):
                     if _stu.get("web_search_requests") is not None:
@@ -364,6 +371,8 @@ def build_usage_only_response_from_chunks(
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
     }
+    if output_tokens_details is not None:
+        usage_object["output_tokens_details"] = output_tokens_details
     if cache_read:
         usage_object["cache_read_input_tokens"] = cache_read
     if cache_creation:
