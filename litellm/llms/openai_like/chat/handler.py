@@ -6,7 +6,11 @@ For handling OpenAI-like chat completions, like IBM WatsonX, etc.
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from typing import Final, TypedDict
+from typing import (
+    Final,
+    TypedDict,
+    cast,  # noqa: TID251  # is_async defaults False, so this call always returns the sync list branch
+)
 
 import httpx
 from typing_extensions import ReadOnly
@@ -19,6 +23,7 @@ from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.llms.databricks.streaming_utils import ModelResponseIterator
 from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
 from litellm.llms.openai.openai import OpenAIConfig
+from litellm.types.llms.openai import AllMessageValues
 from litellm.types.utils import CustomStreamingDecoder, ModelResponse
 from litellm.utils import CustomStreamWrapper, ProviderConfigManager
 
@@ -268,7 +273,9 @@ class OpenAILikeChatHandler(OpenAILikeBase):
                 model=model, provider=LlmProviders(custom_llm_provider)
             )
             if isinstance(provider_config, OpenAIGPTConfig) or isinstance(provider_config, OpenAIConfig):
-                messages = provider_config._transform_messages(messages=messages, model=model)
+                messages = cast(  # cast-ok: is_async defaults False, so this call always returns the sync list branch
+                    list[AllMessageValues], provider_config.transform_messages(messages=messages, model=model)
+                )
 
         data: Final = {
             "model": model,

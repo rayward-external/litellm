@@ -1034,14 +1034,13 @@ class CheckBatchCost:
         prom_logger: Optional["PrometheusLogger"],
     ) -> tuple[str | None, str | None] | _ClaimLost | None:
         """
-        Fetch a completed batch's results, compute cost/usage, claim the row,
-        and emit the aretrieve_batch spend log. Returns (model_name,
-        llm_provider) with the claim held for the caller to finalize,
-        CLAIM_LOST when another worker claimed the row first (nothing billed,
-        nothing to release), or None when the job can't be routed to a
-        deployment. Raises on results-fetch or cost-computation failures so
-        the caller can leave the job unprocessed and retry it on a later poll;
-        a failure of the spend-log write itself releases the claim first.
+        Fetch a completed batch's results, compute cost/usage, and emit the
+        aretrieve_batch spend log. Returns (model_name, llm_provider) on
+        success, None when the job can't be routed to a deployment or when
+        another pod claimed it. Raises on results-fetch or cost-computation
+        failures so the caller can leave the job unprocessed and retry it on a
+        later poll.
+
         """
         from litellm.batches.batch_utils import (
             count_error_file_failed_requests,
@@ -1125,31 +1124,14 @@ class CheckBatchCost:
             custom_llm_provider=custom_llm_provider,
         )
 
-        # Rows registered by /v1/messages/batches stash the batch's actual
-        # client-facing model. The routing deployment may be a borrowed
-        # same-provider one (shared workspace credentials), so prefer the
-        # stashed model for the spend log's model attribution — pricing for
-        # anthropic rows already uses each result row's own model field.
-        stashed_file_object = self._get_job_file_object(job)
-        if stashed_file_object.get("litellm_attribution") and stashed_file_object.get("model"):
-            model_name = str(stashed_file_object["model"])
-        # Mixed-model batches: the registering deployment is an arbitrary
-        # same-provider one, so neither its model_name nor its custom batch
-        # rates may drive pricing — strip both and let every result row price
-        # by its own model field (codex P1).
-        stashed_mixed_models = bool(stashed_file_object.get("mixed_models"))
-        if stashed_mixed_models:
-            model_name = None
+        from litellm.proxy.openai_files_endpoints.common_utils import ManagedBatchOutputFileWriter
 
-        # CheckBatchCost bypasses async_post_call_success_hook, so convert raw
-        # output/error file IDs to managed base64 IDs before the DB write here.
-        managed_files_hook = self.proxy_logging_obj.get_proxy_hook("managed_files")
-        if managed_files_hook is not None:
+        managed_files_hook: Final = self.proxy_logging_obj.get_proxy_hook("managed_files")
+        if isinstance(managed_files_hook, ManagedBatchOutputFileWriter):
+            managed_file_writer: Final = managed_files_hook
             from litellm.proxy._types import UserAPIKeyAuth
 
-            managed_file_model_name = self._get_managed_file_model_name(
-                job=job, deployment_info=deployment_info
-            )
+            managed_file_model_name = self._get_managed_file_model_name(job=job, deployment_info=deployment_info)
             _minimal_auth = UserAPIKeyAuth(
                 user_id=job.created_by or "default-user-id",
                 team_id=getattr(job, "team_id", None),
@@ -1158,17 +1140,19 @@ class CheckBatchCost:
                 _raw_file_id = cast(str | None, getattr(response, _file_attr, None))
                 if _raw_file_id and not _is_base64_encoded_unified_file_id(_raw_file_id):
                     try:
-                        _unified_file_id = managed_files_hook.get_unified_output_file_id(
+                        _unified_file_id = managed_file_writer.get_unified_output_file_id(
                             output_file_id=_raw_file_id,
                             model_id=model_id,
                             model_name=managed_file_model_name,
                         )
-                        await managed_files_hook.store_unified_file_id(
-                            file_id=_unified_file_id,
-                            file_object=None,
+                        await managed_file_writer.store_batch_output_file(
+                            unified_file_id=_unified_file_id,
+                            provider_file_id=_raw_file_id,
+                            model_id=model_id,
+                            model_name=managed_file_model_name,
+                            owner=_minimal_auth,
                             litellm_parent_otel_span=None,
-                            model_mappings={model_id: _raw_file_id},
-                            user_api_key_dict=_minimal_auth,
+                            size_bytes=len(content_bytes) if _file_attr == "output_file_id" else None,
                         )
                         setattr(response, _file_attr, _unified_file_id)
                         verbose_proxy_logger.info(

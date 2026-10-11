@@ -18,15 +18,17 @@ on:
 # semantic-vs-alphabetical redesign). Real coverage of tests/proxy_unit_tests/
 # moved to those workflows and still runs. But litellm_internal_staging's branch
 # protection still lists the old workflow's 9 matrix job names as required status
-# checks (auth-and-jwt, key-generation, proxy-config, proxy-server,
-# proxy-server-extras, proxy-utils, proxy-token-counter, proxy-response-and-misc,
-# proxy-user-auth-and-spend), which can now never report on any PR -> every PR is
-# permanently blocked from merging ("9 of 54 required status checks are
-# expected"). This shim reproduces only the job name/matrix shape so the
-# required checks can report; same pattern as
-# server-root-path-required-check-shim.yml.
+# checks, which can now never report on any PR -> every PR is permanently
+# blocked from merging ("9 of 54 required status checks are expected"). This
+# shim reproduces only the job name/matrix shape so the required checks can
+# report; same pattern as server-root-path-required-check-shim.yml.
+# The 2026-10-09 sync folded test-unit-proxy-db.yml and friends into test-unit.yml's
+# single "unit" job, whose shard matrix republishes key-generation, proxy-server,
+# and proxy-utils as real check runs again, colliding with this shim's stub of the
+# same three names (caught by check_workflow_job_name_collisions.py). Dropped them
+# here now that they report for real; the remaining 6 still have no job to shim them.
 # REMOVAL CONDITION: remove once an admin updates litellm_internal_staging's
-# required status checks (Settings > Branches) to drop these 9 obsolete contexts.
+# required status checks (Settings > Branches) to drop these 6 obsolete contexts.
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -37,11 +39,8 @@ jobs:
       matrix:
         test-group:
           - auth-and-jwt
-          - key-generation
           - proxy-config
-          - proxy-server
           - proxy-server-extras
-          - proxy-utils
           - proxy-token-counter
           - proxy-response-and-misc
           - proxy-user-auth-and-spend

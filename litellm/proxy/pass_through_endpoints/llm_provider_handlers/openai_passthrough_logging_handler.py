@@ -1122,3 +1122,5 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 "result": None,
                 "kwargs": {},
             }
+
+    handle_logging_openai_collected_chunks = _handle_logging_openai_collected_chunks

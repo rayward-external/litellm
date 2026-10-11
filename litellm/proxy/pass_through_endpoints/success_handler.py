@@ -239,9 +239,9 @@ class PassThroughEndpointLogging:
 
     @property
     def _log_dispatch(self) -> PassThroughLogDispatch:
-        return self._injected_log_dispatch if self._injected_log_dispatch is not None else self._handle_logging
+        return self._injected_log_dispatch if self._injected_log_dispatch is not None else self.handle_logging
 
-    async def _handle_logging(
+    async def handle_logging(
         self,
         logging_obj: LiteLLMLoggingObj,
         standard_logging_response_object: StandardPassThroughResponseObject
@@ -252,7 +252,7 @@ class PassThroughEndpointLogging:
         end_time: datetime,
         cache_hit: bool,
         **kwargs,
-    ):
+    ) -> None:
         """Log pass-through success via the shared async dispatch path."""
         # Always reached from pass_through_async_success_handler, which runs in
         # an async context. call_type is "pass_through_endpoint" here, so the
@@ -269,6 +269,8 @@ class PassThroughEndpointLogging:
             prefer_async_handlers=True,
             **kwargs,
         )
+
+    _handle_logging = handle_logging
 
     def normalize_llm_passthrough_logging_payload(
         self,
@@ -578,7 +580,7 @@ class PassThroughEndpointLogging:
                 )
                 return
         if self.is_assemblyai_route(url_route) and not self.is_azure_speech_route(custom_llm_provider):
-            if AssemblyAIPassthroughLoggingHandler._should_log_request(httpx_response.request.method) is not True:
+            if AssemblyAIPassthroughLoggingHandler.should_log_request(httpx_response.request.method) is not True:
                 return
             self.assemblyai_passthrough_logging_handler.assemblyai_passthrough_logging_handler(
                 httpx_response=httpx_response,
@@ -753,9 +755,13 @@ class PassThroughEndpointLogging:
         `*.cognitiveservices.azure.com` / `*.openai.azure.com` domains are still
         excluded by the path-marker guard.
         """
-        from .common_utils import is_openai_wire_compatible_route
+        if not url_route:
+            return False
+        from .llm_provider_handlers.openai_passthrough_logging_handler import (
+            is_openai_compatible_url,
+        )
 
-        return is_openai_wire_compatible_route(url_route, custom_llm_provider)
+        return is_openai_compatible_url(url_route)
 
     def is_gemini_route(self, url_route: str, custom_llm_provider: str | None = None):
         """Check if the URL route is a Gemini API route."""

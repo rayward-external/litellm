@@ -19,9 +19,13 @@ class MCPServerRegistry(Protocol):
 
     def get_mcp_server_by_name(self, server_name: str, client_ip: str | None = None) -> MCPServer | None: ...
 
-    def _is_server_accessible_from_ip(self, server: MCPServer, client_ip: str | None) -> bool: ...
+    def is_server_accessible_from_ip(self, server: MCPServer, client_ip: str | None) -> bool: ...
 
-    def _build_mcp_server_table(self, server: MCPServer) -> LiteLLM_MCPServerTable: ...
+    _is_server_accessible_from_ip = is_server_accessible_from_ip
+
+    def build_mcp_server_table(self, server: MCPServer) -> LiteLLM_MCPServerTable: ...
+
+    _build_mcp_server_table = build_mcp_server_table
 
     async def get_allowed_mcp_servers(self, user_api_key_auth: UserAPIKeyAuth) -> list[str]: ...
 
@@ -50,9 +54,7 @@ async def resolve_mcp_server(
         temporary_server: Final[MCPServer | None] = await temp_lookup(server_id)
         if temporary_server is not None:
             return ResolvedMCPServer(
-                table=manager._build_mcp_server_table(  # pyright: ignore[reportPrivateUsage]  # protocol member
-                    temporary_server
-                ),
+                table=manager.build_mcp_server_table(temporary_server),
                 runtime=temporary_server,
                 source="temp",
             )
@@ -66,19 +68,12 @@ async def resolve_mcp_server(
     registry_server: Final[MCPServer | None] = (
         registry_candidate
         if registry_candidate is not None
-        and (
-            id_client_ip is None
-            or manager._is_server_accessible_from_ip(  # pyright: ignore[reportPrivateUsage]  # protocol member
-                registry_candidate, id_client_ip
-            )
-        )
+        and (id_client_ip is None or manager.is_server_accessible_from_ip(registry_candidate, id_client_ip))
         else None
     )
     if registry_server is not None:
         return ResolvedMCPServer(
-            table=manager._build_mcp_server_table(  # pyright: ignore[reportPrivateUsage]  # protocol member
-                registry_server
-            ),
+            table=manager.build_mcp_server_table(registry_server),
             runtime=registry_server,
             source="registry",
         )
@@ -87,9 +82,7 @@ async def resolve_mcp_server(
         named_server: Final[MCPServer | None] = manager.get_mcp_server_by_name(server_id, client_ip=name_client_ip)
         if named_server is not None:
             return ResolvedMCPServer(
-                table=manager._build_mcp_server_table(  # pyright: ignore[reportPrivateUsage]  # protocol member
-                    named_server
-                ),
+                table=manager.build_mcp_server_table(named_server),
                 runtime=named_server,
                 source="registry",
             )

@@ -25,7 +25,7 @@ _BEDROCK_MIJ_STATUS_TO_OPENAI: Final[
 ] = {
     "Submitted": "validating",
     "Validating": "validating",
-    "Scheduled": "validating",
+    "Scheduled": "in_progress",
     "InProgress": "in_progress",
     "Stopping": "cancelling",
     "Stopped": "cancelled",
@@ -104,6 +104,11 @@ def _to_epoch(value: object) -> int | None:
         return int(value)
     if isinstance(value, datetime):
         return int(value.timestamp())
+    if isinstance(value, str):
+        try:
+            return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            return None
     return None
 
 
@@ -167,7 +172,7 @@ class BedrockBatchesHandler:
         )
 
         def job_status() -> "LiteLLMBatch":
-            return BedrockBatchesHandler._handle_model_invocation_job_status(
+            return BedrockBatchesHandler.handle_model_invocation_job_status(
                 batch_id=batch_id,
                 aws_region_name=region,
                 logging_obj=logging_obj,
@@ -187,7 +192,7 @@ class BedrockBatchesHandler:
         return job_status()
 
     @staticmethod
-    def _handle_async_invoke_status(batch_id: str, aws_region_name: str, logging_obj=None, **kwargs) -> "LiteLLMBatch":
+    def handle_async_invoke_status(batch_id: str, aws_region_name: str, logging_obj=None, **kwargs) -> "LiteLLMBatch":
         """
         Handle async invoke status check for AWS Bedrock.
 
@@ -210,7 +215,7 @@ class BedrockBatchesHandler:
             embedding_handler: Final = BedrockEmbedding()
 
             # Get the status of the async invoke job
-            status_response: Final = await embedding_handler._get_async_invoke_status(
+            status_response: Final = await embedding_handler.get_async_invoke_status(
                 invocation_arn=batch_id,
                 aws_region_name=aws_region_name,
                 logging_obj=logging_obj,
@@ -226,18 +231,20 @@ class BedrockBatchesHandler:
                 "model_arn": status_response["modelArn"],
             }
 
+            openai_status: Final = _BEDROCK_MIJ_STATUS_TO_OPENAI.get(status_response["status"], "failed")
+            completed_at: Final = _to_epoch(status_response.get("endTime"))
             result: Final = LiteLLMBatch(
                 id=status_response["invocationArn"],
                 object="batch",
-                status=status_response["status"],
-                created_at=status_response["submitTime"],
-                in_progress_at=status_response["lastModifiedTime"],
-                completed_at=status_response.get("endTime"),
-                failed_at=(status_response.get("endTime") if status_response["status"] == "failed" else None),
+                status=openai_status,
+                created_at=_to_epoch(status_response["submitTime"]) or 0,
+                in_progress_at=_to_epoch(status_response["lastModifiedTime"]),
+                completed_at=completed_at if openai_status == "completed" else None,
+                failed_at=completed_at if openai_status == "failed" else None,
                 request_counts=BatchRequestCounts(
                     total=1,
-                    completed=1 if status_response["status"] == "completed" else 0,
-                    failed=1 if status_response["status"] == "failed" else 0,
+                    completed=1 if openai_status == "completed" else 0,
+                    failed=1 if openai_status == "failed" else 0,
                 ),
                 metadata=openai_batch_metadata,
                 completion_window="24h",
@@ -263,8 +270,10 @@ class BedrockBatchesHandler:
             future: Final = executor.submit(run_in_thread)
             return future.result()
 
+    _handle_async_invoke_status = handle_async_invoke_status
+
     @staticmethod
-    def _handle_model_invocation_job_status(
+    def handle_model_invocation_job_status(
         batch_id: str,
         aws_region_name: str | None = None,
         logging_obj=None,
@@ -406,3 +415,5 @@ class BedrockBatchesHandler:
             input_file_id=input_uri,
             output_file_id=output_file_uri if openai_status == "completed" else None,
         )
+
+    _handle_model_invocation_job_status = handle_model_invocation_job_status
