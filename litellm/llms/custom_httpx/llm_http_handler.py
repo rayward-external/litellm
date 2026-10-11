@@ -214,7 +214,6 @@ if TYPE_CHECKING:
         FakeAnthropicMessagesStreamIterator,
     )
     from litellm.llms.base_llm.passthrough.transformation import BasePassthroughConfig
-    from litellm.proxy._types import UserAPIKeyAuth
     from litellm.types.google_genai.main import GenerateContentResponse
     from litellm.types.llms.openai_evals import (
         CancelEvalResponse,
@@ -226,6 +225,7 @@ if TYPE_CHECKING:
         Run,
         RunDeleteResponse,
     )
+    from litellm.types.proxy.auth.user_api_key_auth import UserAPIKeyAuth
 
     LiteLLMLoggingObj = _LiteLLMLoggingObj
 else:
