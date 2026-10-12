@@ -158,10 +158,12 @@ class GoogleGenAIGenerateContentStreamingIterator(BaseGoogleGenAIGenerateContent
     def __next__(self):
         try:
             chunk: Final = _next_google_genai_sse_chunk(self.stream_iterator)
-            self.collected_chunks.append(chunk)
-            return chunk
         except StopIteration:
             raise StopIteration
+        if self._is_terminal_sse_chunk(chunk):
+            raise StopIteration
+        self.collected_chunks.append(chunk)
+        return chunk
 
     def __aiter__(self):
         return self
@@ -209,8 +211,11 @@ class AsyncGoogleGenAIGenerateContentStreamingIterator(BaseGoogleGenAIGenerateCo
     async def __anext__(self):
         try:
             chunk: Final = await _anext_google_genai_sse_chunk(self.stream_iterator)
-            self.collected_chunks.append(chunk)
-            return chunk
         except StopAsyncIteration:
             await self._handle_async_streaming_logging()
             raise StopAsyncIteration
+        if self._is_terminal_sse_chunk(chunk):
+            await self._handle_async_streaming_logging()
+            raise StopAsyncIteration
+        self.collected_chunks.append(chunk)
+        return chunk
