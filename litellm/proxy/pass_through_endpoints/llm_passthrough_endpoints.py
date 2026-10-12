@@ -1064,6 +1064,7 @@ async def anthropic_proxy_route(
         target=str(updated_url),
         custom_headers=_upstream_headers_for_anthropic_route(request, user_api_key_dict, auth_header),
         is_streaming_request=is_streaming_request,
+        custom_llm_provider="anthropic",
     )  # dynamically construct pass-through endpoint based on incoming path
     received_value = await endpoint_func(
         request,

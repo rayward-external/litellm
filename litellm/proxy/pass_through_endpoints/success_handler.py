@@ -370,20 +370,35 @@ class PassThroughEndpointLogging:
                 OpenAIPassthroughLoggingHandler,
             )
 
-            openai_passthrough_logging_handler_result = OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
-                httpx_response=httpx_response,
-                response_body=response_body if isinstance(response_body, dict) else {},
-                logging_obj=logging_obj,
-                url_route=url_route,
-                result=result,
-                start_time=start_time,
-                end_time=end_time,
-                cache_hit=cache_hit,
-                request_body=request_body,
-                **kwargs,
-            )
-            standard_logging_response_object = openai_passthrough_logging_handler_result["result"]
-            kwargs = openai_passthrough_logging_handler_result["kwargs"]
+            if OpenAIPassthroughLoggingHandler.is_openai_responses_item_route(url_route, custom_llm_provider):
+                # Fate 2: priced by nobody.
+                pass
+            else:
+                openai_passthrough_logging_handler_result = OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
+                    httpx_response=httpx_response,
+                    response_body=response_body if isinstance(response_body, dict) else {},
+                    logging_obj=logging_obj,
+                    url_route=url_route,
+                    result=result,
+                    start_time=start_time,
+                    end_time=end_time,
+                    cache_hit=cache_hit,
+                    request_body=request_body,
+                    **kwargs,
+                )
+                standard_logging_response_object = openai_passthrough_logging_handler_result["result"]
+                kwargs = openai_passthrough_logging_handler_result["kwargs"]
+                if standard_logging_response_object is None:
+                    # Fate 3: the OpenAI handler doesn't recognise this route
+                    # (e.g. legacy /v1/completions) — let the generic pricer try.
+                    kwargs = self._price_generic_passthrough(
+                        response_body=response_body if isinstance(response_body, dict) else None,
+                        request_body=request_body,
+                        logging_obj=logging_obj,
+                        url_route=url_route,
+                        custom_llm_provider=custom_llm_provider,
+                        kwargs=kwargs,
+                    )
 
         elif self.is_cursor_route(url_route, custom_llm_provider):
             cursor_passthrough_logging_handler_result = CursorPassthroughLoggingHandler.cursor_passthrough_handler(

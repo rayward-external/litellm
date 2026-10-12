@@ -63,7 +63,7 @@ def test_google_genai_provider_stream_iterator_skips_done_sentinel():
     payload = b'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"OK"}]}}]}\n\n'
 
     class DummyResponse:
-        def iter_bytes(self):
+        def iter_lines(self):
             yield payload
             yield b"data: [DONE]\n\n"
 
@@ -85,7 +85,7 @@ async def test_async_google_genai_provider_stream_iterator_skips_done_sentinel()
     payload = b'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"OK"}]}}]}\n\n'
 
     class DummyResponse:
-        async def aiter_bytes(self):
+        async def aiter_lines(self):
             yield payload
             yield b"data: [DONE]\n\n"
 
