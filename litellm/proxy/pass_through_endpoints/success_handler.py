@@ -9,7 +9,10 @@ import httpx
 from litellm._logging import verbose_proxy_logger
 from litellm.constants import AZURE_SPEECH_CUSTOM_LLM_PROVIDER
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
-from litellm.proxy._types import PassThroughEndpointLoggingResultValues
+from litellm.proxy._types import (
+    PassThroughEndpointLoggingResultValues,
+    PassThroughEndpointLoggingTypedDict,
+)
 from litellm.types.passthrough_endpoints.pass_through_endpoints import (
     PassthroughStandardLoggingPayload,
 )
@@ -355,7 +358,7 @@ class PassThroughEndpointLogging:
             standard_logging_response_object = cohere_passthrough_logging_handler_result["result"]
             kwargs = cohere_passthrough_logging_handler_result["kwargs"]
         elif self.is_openai_route(url_route, custom_llm_provider):
-            standard_logging_response_object, kwargs = self._dispatch_openai_passthrough(
+            openai_dispatch_result: Final = self._dispatch_openai_passthrough(
                 httpx_response=httpx_response,
                 response_body=response_body,
                 logging_obj=logging_obj,
@@ -368,6 +371,8 @@ class PassThroughEndpointLogging:
                 custom_llm_provider=custom_llm_provider,
                 kwargs=kwargs,
             )
+            standard_logging_response_object = openai_dispatch_result["result"]  # rebind-ok: elif-chain
+            kwargs = openai_dispatch_result["kwargs"]  # rebind-ok: elif-chain contract
         elif self.is_cursor_route(url_route, custom_llm_provider):
             cursor_passthrough_logging_handler_result = CursorPassthroughLoggingHandler.cursor_passthrough_handler(
                 httpx_response=httpx_response,
@@ -797,7 +802,7 @@ class PassThroughEndpointLogging:
         request_body: dict,
         custom_llm_provider: str | None,
         kwargs: dict,
-    ) -> tuple[Any | None, dict]:
+    ) -> PassThroughEndpointLoggingTypedDict:
         """Three distinct fates on a recognised OpenAI route, and collapsing
         any two of them has already caused a money bug in each direction:
           1. supported billable endpoint -> the OpenAI handler;
@@ -815,9 +820,9 @@ class PassThroughEndpointLogging:
 
         if OpenAIPassthroughLoggingHandler.is_openai_responses_item_route(url_route, custom_llm_provider):
             # Fate 2: priced by nobody.
-            return None, kwargs
+            return {"result": None, "kwargs": kwargs}
 
-        openai_passthrough_logging_handler_result = OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
+        openai_passthrough_logging_handler_result: Final = OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
             httpx_response=httpx_response,
             response_body=response_body if isinstance(response_body, dict) else {},
             logging_obj=logging_obj,
@@ -829,23 +834,23 @@ class PassThroughEndpointLogging:
             request_body=request_body,
             **kwargs,
         )
-        standard_logging_response_object = openai_passthrough_logging_handler_result["result"]
-        kwargs = openai_passthrough_logging_handler_result["kwargs"]
-        if standard_logging_response_object is not None:
+        if openai_passthrough_logging_handler_result["result"] is not None:
             # Fate 1.
-            return standard_logging_response_object, kwargs
+            return openai_passthrough_logging_handler_result
 
         # Fate 3: the OpenAI handler doesn't recognise this route (e.g.
         # legacy /v1/completions) — let the generic pricer try.
-        kwargs = self._price_generic_passthrough(
-            response_body=response_body if isinstance(response_body, dict) else None,
-            request_body=request_body,
-            logging_obj=logging_obj,
-            url_route=url_route,
-            custom_llm_provider=custom_llm_provider,
-            kwargs=kwargs,
-        )
-        return None, kwargs
+        return {
+            "result": None,
+            "kwargs": self._price_generic_passthrough(
+                response_body=response_body if isinstance(response_body, dict) else None,
+                request_body=request_body,
+                logging_obj=logging_obj,
+                url_route=url_route,
+                custom_llm_provider=custom_llm_provider,
+                kwargs=openai_passthrough_logging_handler_result["kwargs"],
+            ),
+        }
 
     def _resolve_generic_model(
         self,
