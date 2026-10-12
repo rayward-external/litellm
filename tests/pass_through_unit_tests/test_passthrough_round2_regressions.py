@@ -357,7 +357,7 @@ _RESPONSES_COMPLETED_CHUNKS = [
 
 def _build_streaming_result(monkeypatch, request_method):
     handler_mock = MagicMock()
-    handler_mock._handle_logging_openai_collected_chunks.return_value = {
+    handler_mock.handle_logging_openai_collected_chunks.return_value = {
         "result": StandardPassThroughResponseObject(response="priced-by-handler"),
         "kwargs": {"response_cost": 0.5},
     }
@@ -386,12 +386,12 @@ def test_streaming_get_replay_skips_cost_handlers(monkeypatch):
     assert isinstance(result, dict)
     assert "skipped" in str(result["response"])
     assert kwargs == {}
-    handler_mock._handle_logging_openai_collected_chunks.assert_not_called()
+    handler_mock.handle_logging_openai_collected_chunks.assert_not_called()
 
 
 def test_streaming_post_still_runs_cost_handler(monkeypatch):
     result, kwargs, handler_mock = _build_streaming_result(monkeypatch, "POST")
-    handler_mock._handle_logging_openai_collected_chunks.assert_called_once()
+    handler_mock.handle_logging_openai_collected_chunks.assert_called_once()
     assert kwargs["response_cost"] == 0.5
 
 
