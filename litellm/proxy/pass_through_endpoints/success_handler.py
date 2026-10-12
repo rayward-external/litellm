@@ -355,51 +355,19 @@ class PassThroughEndpointLogging:
             standard_logging_response_object = cohere_passthrough_logging_handler_result["result"]
             kwargs = cohere_passthrough_logging_handler_result["kwargs"]
         elif self.is_openai_route(url_route, custom_llm_provider):
-            # Nested on purpose. Three distinct fates on a recognised OpenAI
-            # route, and collapsing any two of them has already caused a money
-            # bug in each direction:
-            #   1. supported billable endpoint -> the OpenAI handler;
-            #   2. a Responses ITEM route -> priced by NOBODY. Its body echoes
-            #      the original usage block, and `POST .../{id}/cancel` slips
-            #      past the generic pricer's method gate — falling through
-            #      re-billed the full generation on every poll;
-            #   3. anything else -> the generic pricer. Blanket-unpricing this
-            #      bucket instead regressed billable provider-less POSTs
-            #      (`/v1/completions` on an OpenAI host) from priced to $0.
-            from .llm_provider_handlers.openai_passthrough_logging_handler import (
-                OpenAIPassthroughLoggingHandler,
+            standard_logging_response_object, kwargs = self._dispatch_openai_passthrough(
+                httpx_response=httpx_response,
+                response_body=response_body,
+                logging_obj=logging_obj,
+                url_route=url_route,
+                result=result,
+                start_time=start_time,
+                end_time=end_time,
+                cache_hit=cache_hit,
+                request_body=request_body,
+                custom_llm_provider=custom_llm_provider,
+                kwargs=kwargs,
             )
-
-            if OpenAIPassthroughLoggingHandler.is_openai_responses_item_route(url_route, custom_llm_provider):
-                # Fate 2: priced by nobody.
-                pass
-            else:
-                openai_passthrough_logging_handler_result = OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
-                    httpx_response=httpx_response,
-                    response_body=response_body if isinstance(response_body, dict) else {},
-                    logging_obj=logging_obj,
-                    url_route=url_route,
-                    result=result,
-                    start_time=start_time,
-                    end_time=end_time,
-                    cache_hit=cache_hit,
-                    request_body=request_body,
-                    **kwargs,
-                )
-                standard_logging_response_object = openai_passthrough_logging_handler_result["result"]
-                kwargs = openai_passthrough_logging_handler_result["kwargs"]
-                if standard_logging_response_object is None:
-                    # Fate 3: the OpenAI handler doesn't recognise this route
-                    # (e.g. legacy /v1/completions) — let the generic pricer try.
-                    kwargs = self._price_generic_passthrough(
-                        response_body=response_body if isinstance(response_body, dict) else None,
-                        request_body=request_body,
-                        logging_obj=logging_obj,
-                        url_route=url_route,
-                        custom_llm_provider=custom_llm_provider,
-                        kwargs=kwargs,
-                    )
-
         elif self.is_cursor_route(url_route, custom_llm_provider):
             cursor_passthrough_logging_handler_result = CursorPassthroughLoggingHandler.cursor_passthrough_handler(
                 httpx_response=httpx_response,
@@ -815,6 +783,69 @@ class PassThroughEndpointLogging:
             or OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route, custom_llm_provider)
             or OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route, custom_llm_provider)
         )
+
+    def _dispatch_openai_passthrough(
+        self,
+        httpx_response: httpx.Response,
+        response_body: dict | list[dict[str, object]] | None,
+        logging_obj: LiteLLMLoggingObj,
+        url_route: str,
+        result: str,
+        start_time: datetime,
+        end_time: datetime,
+        cache_hit: bool,
+        request_body: dict,
+        custom_llm_provider: str | None,
+        kwargs: dict,
+    ) -> tuple[Any | None, dict]:
+        """Three distinct fates on a recognised OpenAI route, and collapsing
+        any two of them has already caused a money bug in each direction:
+          1. supported billable endpoint -> the OpenAI handler;
+          2. a Responses ITEM route -> priced by NOBODY. Its body echoes the
+             original usage block, and `POST .../{id}/cancel` slips past the
+             generic pricer's method gate — falling through re-billed the
+             full generation on every poll;
+          3. anything else -> the generic pricer. Blanket-unpricing this
+             bucket instead regressed billable provider-less POSTs
+             (`/v1/completions` on an OpenAI host) from priced to $0.
+        """
+        from .llm_provider_handlers.openai_passthrough_logging_handler import (
+            OpenAIPassthroughLoggingHandler,
+        )
+
+        if OpenAIPassthroughLoggingHandler.is_openai_responses_item_route(url_route, custom_llm_provider):
+            # Fate 2: priced by nobody.
+            return None, kwargs
+
+        openai_passthrough_logging_handler_result = OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
+            httpx_response=httpx_response,
+            response_body=response_body if isinstance(response_body, dict) else {},
+            logging_obj=logging_obj,
+            url_route=url_route,
+            result=result,
+            start_time=start_time,
+            end_time=end_time,
+            cache_hit=cache_hit,
+            request_body=request_body,
+            **kwargs,
+        )
+        standard_logging_response_object = openai_passthrough_logging_handler_result["result"]
+        kwargs = openai_passthrough_logging_handler_result["kwargs"]
+        if standard_logging_response_object is not None:
+            # Fate 1.
+            return standard_logging_response_object, kwargs
+
+        # Fate 3: the OpenAI handler doesn't recognise this route (e.g.
+        # legacy /v1/completions) — let the generic pricer try.
+        kwargs = self._price_generic_passthrough(
+            response_body=response_body if isinstance(response_body, dict) else None,
+            request_body=request_body,
+            logging_obj=logging_obj,
+            url_route=url_route,
+            custom_llm_provider=custom_llm_provider,
+            kwargs=kwargs,
+        )
+        return None, kwargs
 
     def _resolve_generic_model(
         self,
