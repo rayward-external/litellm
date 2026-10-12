@@ -386,6 +386,7 @@ jobs:
           - shard: router
             test-path: >-
               tests/unit/test_router
+              tests/router_unit_tests
             python-version: "3.12"
             workers: 4
             reruns: 0
@@ -398,6 +399,7 @@ jobs:
               tests/unit/a2a_protocol
               tests/unit/anthropic_interface
               tests/unit/batches
+              tests/batches_tests
               tests/unit/chat_completions
               tests/unit/completion_extras
               tests/unit/containers
@@ -413,6 +415,8 @@ jobs:
               tests/unit/messages
               tests/unit/ocr
               tests/unit/passthrough
+              tests/pass_through_unit_tests
+              tests/unified_google_tests/test_google_genai_proxy_wrapper.py
               tests/unit/rag
               tests/unit/realtime_api
               tests/unit/rerank_api
@@ -450,6 +454,9 @@ jobs:
               tests/unit/repositories
               tests/unit/secret_managers
               tests/unit/skills/test_skills_main.py
+              tests/unit/skills/test_bedrock_anthropic_regression.py
+              tests/unit/skills/test_crusoe.py
+              tests/unit/skills/test_databricks_e2e.py
               tests/unit/tracing
             python-version: "3.12"
             workers: 2
