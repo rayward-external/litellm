@@ -146,7 +146,14 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # upstream's #45529 Lens-service refactor deleted those files outright,
 # plus the new litellm-rust/Cargo.lock regenerate-lockfile row (same
 # recurring class as the 2026-09-13/09-24/10-06 rows).
-EXPECTED_NA_ROWS = 36
+# 2026-10-12 sync: +6 rows flipped to N/A when upstream deleted the
+# jest-based tests/proxy_admin_ui_tests/ui_unit_tests project (replaced by
+# vitest co-located under ui/litellm-dashboard, which already overrides
+# ws/brace-expansion and has no ts-jest/handlebars dependency) and the
+# npm-based tests/pass_through_tests project (replaced by pure-Python
+# tests/pass_through_unit_tests/, with no @google-cloud/vertexai JS
+# dependency to need a protobufjs/brace-expansion override for).
+EXPECTED_NA_ROWS = 42
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
