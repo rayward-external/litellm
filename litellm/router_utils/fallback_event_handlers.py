@@ -839,16 +839,16 @@ async def run_async_fallback(
     # provider-pinned request can be handed a target order whose only deployments the
     # pin already removed. That hop raises RouterRateLimitError ("No deployments
     # available, Try again in N seconds"), and raising it here DISCARDS the real
-    # upstream error -- reporting a deterministic 4xx as a retryable 429 and destroying
-    # the provider's own message. error_from_fallbacks starts life as
-    # original_exception at the top of this function; this restores it for that
+    # upstream error -- reporting a provider failure (a deterministic 4xx, or a 5xx /
+    # mid-stream error) as a retryable 429 and destroying the provider's own message.
+    # error_from_fallbacks starts life as original_exception at the top of this
+    # function; this restores it for that
     # structural case only, established causally by _request_constraints_emptied_target_order.
     # RouterRateLimitErrorBasic is deliberately NOT swapped: its single raise site
     # fires only when the target's configured rpm ceiling is exhausted, which is
     # always a genuine rate-limit condition and never the structural case.
     if (
         isinstance(error_from_fallbacks, RouterRateLimitError)
-        and _is_deterministic_client_error(original_exception)
         and await _request_constraints_emptied_target_order(
             litellm_router=litellm_router,
             original_model_group=original_model_group,
@@ -857,18 +857,6 @@ async def run_async_fallback(
     ):
         raise original_exception
     raise error_from_fallbacks
-
-
-def _is_deterministic_client_error(exc: BaseException) -> bool:
-    """A 4xx the shared retry policy would not retry: the request itself is bad.
-
-    Delegates to litellm._should_retry so 408 and 409 -- which that policy treats as
-    transient -- are never mistaken for a permanent client error.
-    """
-    if isinstance(exc, (litellm.RateLimitError, RouterRateLimitError, RouterRateLimitErrorBasic)):
-        return False
-    status: Final = getattr(exc, "status_code", None)
-    return isinstance(status, int) and 400 <= status < 500 and not litellm._should_retry(status)
 
 
 async def _request_constraints_emptied_target_order(

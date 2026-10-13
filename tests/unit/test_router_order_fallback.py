@@ -842,3 +842,57 @@ def test_check_non_standard_fallback_format():
         == True
     )
     assert check_non_standard_fallback_format([{"model": ["qwen-backup"], "api_key": "some-key"}]) == True
+
+
+# ---------------------------------------------------------------------------
+# Order ladder x tag filtering: a rung the request's own tags emptied says nothing
+# ---------------------------------------------------------------------------
+
+
+def _tagged_three_order_router(*, last_rung_mock: str) -> Router:
+    def deployment(dep_id: str, order: int, tag: str, mock_response: str) -> dict:
+        return {
+            "model_name": "pool-model",
+            "litellm_params": {
+                "model": "gpt-4o",
+                "api_key": "key",
+                "tags": [tag],
+                "order": order,
+                "mock_response": mock_response,
+            },
+            "model_info": {"id": dep_id},
+        }
+
+    return Router(
+        model_list=[
+            deployment("rung-1", 1, "pin:alpha", "litellm.InternalServerError"),
+            deployment("rung-2", 2, "pin:alpha", "litellm.InternalServerError"),
+            deployment("rung-3", 3, "pin:beta", last_rung_mock),
+        ],
+        enable_tag_filtering=True,
+        tag_filtering_match_any=False,
+        enable_pre_call_checks=True,
+        num_retries=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_tag_emptied_last_rung_surfaces_the_upstream_error_not_a_rate_limit():
+    router = _tagged_three_order_router(last_rung_mock="never reached")
+
+    with pytest.raises(litellm.InternalServerError):
+        await router.acompletion(
+            model="pool-model",
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={"tags": ["!pin:beta"]},
+        )
+
+
+@pytest.mark.asyncio
+async def test_untagged_request_still_reaches_the_last_rung():
+    router = _tagged_three_order_router(last_rung_mock="served by rung 3")
+
+    response = await router.acompletion(model="pool-model", messages=[{"role": "user", "content": "hi"}])
+
+    assert response.choices[0].message.content == "served by rung 3"
+    assert response._hidden_params["model_id"] == "rung-3"
