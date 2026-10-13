@@ -16,8 +16,6 @@ Anthropic ``error`` event so the stream stays valid and the client can retry.
 
 import asyncio
 import json
-import os
-import sys
 import threading
 from datetime import datetime
 from collections.abc import Callable
@@ -27,8 +25,6 @@ from unittest.mock import MagicMock
 import pytest
 
 import litellm
-
-sys.path.insert(0, os.path.abspath("../../../../.."))
 
 from litellm.exceptions import MidStreamFallbackError
 from litellm.integrations.custom_logger import CustomLogger
