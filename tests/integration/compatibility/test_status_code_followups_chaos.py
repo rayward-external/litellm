@@ -273,7 +273,7 @@ def _tolerant_status(chaos: _Chaos, kind: str) -> int | None:
 def test_killed_worker_leaves_the_sibling_serving_and_the_respawn_serving(chaos: _Chaos) -> None:
     workers: Final = _worker_pids(chaos.log)
     assert len(workers) >= 2, workers
-    os.kill(workers[-1], signal.SIGKILL)
+    os.kill(workers[-1], signal.SIGKILL)  # test-quality-ok: kill-then-respawn is the behavior under test
     eventually(lambda: _tolerant_status(chaos, "chat"), lambda status: status == 200, seconds=60)
     _assert_served(_burst(chaos, "killed"))
     stable: Final = _stable_call(chaos)

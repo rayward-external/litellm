@@ -1783,7 +1783,9 @@ def test_worker_sigkill_mid_burst_leaves_the_replacement_unwrapping_envelopes(ga
         shares: Final = {pid: _accepted_client_ports(pid, proxy_url.port or 0) & frozenset(ports) for pid in workers}
         assert sum(map(len, shares.values())) == len(clients), shares
         victim: Final = min((pid for pid in workers if shares[pid]), key=lambda pid: len(shares[pid]))
-        psutil.Process(victim).send_signal(signal.SIGKILL)
+        psutil.Process(victim).send_signal(  # test-quality-ok: killing it mid-flight is the behavior under test
+            signal.SIGKILL
+        )
         release.set()
         results: Final = tuple(future.result(timeout=60) for future in futures)
         for port, result, (_, marker_hex) in zip(ports, results, markers, strict=True):
