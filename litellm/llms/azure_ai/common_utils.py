@@ -10,9 +10,69 @@ from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.openai import AllMessageValues
 from litellm.types.router import GenericLiteLLMParams
+from litellm.types.utils import Usage
 
 AzureAIApiKeyHeader = Literal["Authorization", "api-key", "Api-Key", "Ocp-Apim-Subscription-Key"]
 AZURE_OPENAI_V1_HOST_SUFFIXES: Final = (".services.ai.azure.com", ".openai.azure.com")
+
+
+def _is_additive_reasoning_usage(
+    prompt_tokens: int, completion_tokens: int, reasoning_tokens: int, total_tokens: int
+) -> bool:
+    """Exact test for usage that reports reasoning tokens ADDITIVELY.
+
+    Some Azure AI Foundry models (xAI grok) report ``completion_tokens`` as visible text only,
+    with ``reasoning_tokens`` extra and ``total = prompt + completion + reasoning``. Under the
+    OpenAI convention reasoning is inside ``completion_tokens`` and ``total = prompt + completion``,
+    so with ``reasoning > 0`` the two identities cannot both hold.
+    """
+    return reasoning_tokens > 0 and total_tokens == prompt_tokens + completion_tokens + reasoning_tokens
+
+
+def _as_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def normalize_additive_reasoning_usage_dict(usage: Mapping[str, object]) -> Mapping[str, object]:
+    """Fold additively reported reasoning tokens into ``completion_tokens`` (OpenAI convention).
+
+    Returns a new mapping when a fold is needed, otherwise the input unchanged.
+    ``total_tokens`` is left as reported (it already includes reasoning).
+    """
+    details: Final = usage.get("completion_tokens_details")
+    prompt: Final = _as_int(usage.get("prompt_tokens"))
+    completion: Final = _as_int(usage.get("completion_tokens"))
+    total: Final = _as_int(usage.get("total_tokens"))
+    reasoning: Final = (
+        _as_int(details.get("reasoning_tokens"))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  # isinstance narrows untyped JSON to Mapping[Unknown, Unknown]
+        if isinstance(details, Mapping)
+        else None
+    )
+    if prompt is None or completion is None or total is None or reasoning is None:
+        return usage
+    if not _is_additive_reasoning_usage(prompt, completion, reasoning, total):
+        return usage
+    return {**usage, "completion_tokens": completion + reasoning}
+
+
+def normalize_chunk_usage(chunk: Mapping[str, object]) -> Mapping[str, object]:
+    """Apply :func:`normalize_additive_reasoning_usage_dict` to a streaming chunk's ``usage``, if any."""
+    usage: Final = chunk.get("usage")
+    if not isinstance(usage, Mapping):
+        return chunk
+    return {**chunk, "usage": normalize_additive_reasoning_usage_dict(usage)}  # pyright: ignore[reportUnknownArgumentType]  # isinstance narrows untyped JSON to Mapping[Unknown, Unknown]
+
+
+def normalize_additive_reasoning_usage(usage: Usage | None) -> Usage | None:
+    """Return ``usage`` with additively reported reasoning tokens folded into ``completion_tokens``."""
+    if usage is None:
+        return None
+    reasoning: Final = _as_int(getattr(usage.completion_tokens_details, "reasoning_tokens", None))
+    if reasoning is None or not _is_additive_reasoning_usage(
+        usage.prompt_tokens, usage.completion_tokens, reasoning, usage.total_tokens
+    ):
+        return usage
+    return usage.model_copy(update={"completion_tokens": usage.completion_tokens + reasoning})
 
 
 def is_foundry_model_inference_base(api_base: str) -> bool:

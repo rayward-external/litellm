@@ -1,6 +1,7 @@
 import copy
 import enum
 import re
+from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, Final, cast
 
 import httpx
@@ -17,16 +18,19 @@ from litellm.llms.azure.common_utils import BaseAzureLLM
 from litellm.llms.azure_ai.common_utils import (
     api_key_header_for_base,
     is_foundry_model_inference_base,
+    normalize_additive_reasoning_usage,
+    normalize_chunk_usage,
 )
 from litellm.llms.base_llm.chat.transformation import LiteLLMLoggingObj
 from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
+from litellm.llms.openai.chat.gpt_transformation import OpenAIChatCompletionStreamingHandler
 from litellm.llms.openai.common_utils import drop_params_from_unprocessable_entity_error
 from litellm.llms.openai.openai import OpenAIConfig
 from litellm.llms.xai.chat.transformation import XAIChatConfig
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.openai import AllMessageValues
 from litellm.types.router import GenericLiteLLMParams
-from litellm.types.utils import ModelResponse, ProviderField
+from litellm.types.utils import ModelResponse, ModelResponseStream, ProviderField, Usage
 from litellm.utils import add_path_to_api_base, supports_tool_choice
 
 if TYPE_CHECKING:
@@ -64,6 +68,17 @@ class AzureAIGPT5Config(OpenAIGPT5Config):
 
 
 azureAIGPT5Config: Final = AzureAIGPT5Config()
+
+
+class AzureAIStreamingHandler(OpenAIChatCompletionStreamingHandler):
+    """Folds additively reported reasoning tokens (see ``normalize_chunk_usage``)
+    into ``completion_tokens`` on the chunk that carries usage."""
+
+    def chunk_parser(
+        self,
+        chunk: dict,  # mutable-ok: parent signature  # pyright: ignore[reportUnknownParameterType, reportMissingTypeArgument]  # parent's bare dict
+    ) -> ModelResponseStream:
+        return super().chunk_parser(dict(normalize_chunk_usage(chunk)))  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]  # chunk is the parent's bare dict
 
 
 class AzureAIStudioConfig(OpenAIConfig):
@@ -376,7 +391,7 @@ class AzureAIStudioConfig(OpenAIConfig):
         json_mode: bool | None = None,
     ) -> ModelResponse:
         model_response.model = f"azure_ai/{model}"
-        return super().transform_response(
+        response: Final = super().transform_response(  # pyright: ignore[reportUnknownMemberType]  # parent is untyped
             model=model,
             raw_response=raw_response,
             model_response=model_response,
@@ -387,6 +402,24 @@ class AzureAIStudioConfig(OpenAIConfig):
             litellm_params=litellm_params,
             encoding=encoding if encoding is not None else None,
             api_key=api_key,
+            json_mode=json_mode,
+        )
+        # Azure AI Foundry xAI models report reasoning tokens on top of completion_tokens;
+        # normalize to the OpenAI convention so cost math and client-visible usage agree.
+        usage: Final = response.usage  # pyright: ignore[reportAttributeAccessIssue, reportUnknownVariableType]  # set dynamically
+        if isinstance(usage, Usage):
+            response.usage = normalize_additive_reasoning_usage(usage)  # pyright: ignore[reportAttributeAccessIssue]  # set dynamically
+        return response
+
+    def get_model_response_iterator(  # pyright: ignore[reportIncompatibleMethodOverride]  # narrower return than the parent's Any
+        self,
+        streaming_response: Iterator[str] | AsyncIterator[str] | ModelResponse,
+        sync_stream: bool,
+        json_mode: bool | None = False,
+    ) -> AzureAIStreamingHandler:
+        return AzureAIStreamingHandler(
+            streaming_response=streaming_response,
+            sync_stream=sync_stream,
             json_mode=json_mode,
         )
 
