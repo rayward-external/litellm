@@ -13342,6 +13342,18 @@ async def realtime_websocket_endpoint(
     ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth_websocket),
 ):
+    # FORK PATCH (rayward-internal/llm-gateway-infra#646): no realtime-capable model
+    # is served on this deployment, so refuse BEFORE accept() -- uvicorn turns that
+    # into a definitive HTTP 403 (no 101 ever sent), instead of upstream's
+    # accept-then-resolve flow which let a client's handshake succeed and the socket
+    # die empty on its first frame. The route stays REGISTERED (LiteLLMRoutes.openai_routes
+    # lists it) so test_routes_on_litellm_proxy still finds it. Guarded by
+    # test_realtime_websocket_refuses_the_upgrade; see .github/fork-patches.txt --
+    # a `-X theirs` sync drops this with no conflict, re-apply, never delete the guard.
+    # REMOVAL CONDITION: delete once a realtime-capable model is actually served.
+    await websocket.close(code=1008, reason="Realtime WebSocket mode is not supported on this gateway")
+    return
+
     requested_protocols: Final = tuple(
         protocol.strip()
         for protocol in (websocket.headers.get("sec-websocket-protocol") or "").split(",")
