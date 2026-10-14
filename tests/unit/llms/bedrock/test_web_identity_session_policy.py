@@ -326,6 +326,7 @@ _BEDROCK_ROUTE_ACTIONS: Final = MappingProxyType(
             "bedrock-agentcore:InvokeAgentRuntimeForUser"
         ),
         "mcp": "bedrock-agentcore:InvokeGateway",
+        "anthropic/v1/messages/count_tokens (bedrock-mantle endpoint)": "bedrock-mantle:CountTokens",
     }
 )
 
