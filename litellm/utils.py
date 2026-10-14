@@ -3463,20 +3463,18 @@ def register_model(
             _raw_entry = litellm.model_cost.get(key)
         if _raw_entry is None:
             _raw_entry = {}
-        for _cost_field in ("input_cost_per_token", "output_cost_per_token"):
+        #
+        # ``supported_openai_params`` is derived from the registration key the
+        # same way. When that key is a router deployment id rather than a model
+        # name (custom-priced deployments register under their id), the
+        # derivation falls back to the provider's minimal default list -- for
+        # bedrock ``[max_tokens, max_completion_tokens, stream]`` -- and writing
+        # it back makes ``Router._set_model_group_info`` advertise that list for
+        # the whole model group (last deployment wins). Persist it only when it
+        # was set explicitly.
+        for _cost_field in ("input_cost_per_token", "output_cost_per_token", "supported_openai_params"):
             if _cost_field not in _raw_entry and _cost_field not in value:
                 existing_model.pop(_cost_field, None)
-        # ``get_model_info`` derives ``supported_openai_params`` from the
-        # registration key. When that key is a router deployment id rather
-        # than a model name (custom-priced deployments register under their
-        # id), the derivation falls back to the provider's minimal default
-        # list -- for bedrock ``[max_tokens, max_completion_tokens, stream]``.
-        # Writing that back makes ``Router._set_model_group_info`` advertise
-        # the minimal list for the whole model group (last deployment wins),
-        # so the public model hub flip-flops per process. Persist the field
-        # only when it was set explicitly.
-        if "supported_openai_params" not in _raw_entry and "supported_openai_params" not in value:
-            existing_model.pop("supported_openai_params", None)
         ## override / add new keys to the existing model cost dictionary
         updated_dictionary = update_dictionary(existing_model, value)
         litellm.model_cost.setdefault(model_cost_key, {}).update(updated_dictionary)
