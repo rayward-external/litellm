@@ -4,16 +4,6 @@ ignoreUntil = 2026-11-01
 reason = "diskcache 5.6.3 (latest as of 2026-09-30) still has no fixed release published; remove this entry once one exists"
 
 [[IgnoredVulns]]
-id = "RUSTSEC-2024-0436"
-ignoreUntil = 2026-11-11
-reason = "paste (transitive dep of the new litellm-rust OCR/token-counter crates pulled in by the 2026-09-11 upstream sync) is unmaintained with no fixed release; re-checked 2026-10-10, still at 1.0.15 with no newer release; remove this entry once one exists"
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2023-0071"
-ignoreUntil = 2026-11-01
-reason = "rsa 0.9.10 (transitive dep of jsonwebtoken 11.1.0, the litellm-gateway-ui crate's JWT handling) has no fixed release for the Marvin Attack timing sidechannel (only an unreleased 0.10.0-rc); remove this entry once a stable patched release exists"
-
-[[IgnoredVulns]]
 id = "GHSA-vfj7-8cjw-p6xm"
 ignoreUntil = 2026-11-03
 reason = "braces has no fixed release published (3.0.3, 2024-05-21, is latest and last_affected); dev-only via eslint-config-next > @next/eslint-plugin-next > fast-glob > micromatch (the knip > fast-glob path this reason used to describe was fixed by the 2026-10-03 knip 6 bump); remove this entry once one exists"
