@@ -294,7 +294,7 @@ def _router_default_litellm_params(
     # merges only for a model `get_model_list` lists.
     if route_type in _ROUTE_TYPES_WITHOUT_ROUTER_DEFAULTS_MERGE:
         return {}
-    user_config: Final[Mapping[str, object] | None] = (
+    user_config: Final[Mapping[str, object] | None] = (  # pyright: ignore[reportAssignmentType]  # narrows 2nd .get()
         data.get("user_config") if isinstance(data.get("user_config"), Mapping) else None
     )
     if user_config is not None:
