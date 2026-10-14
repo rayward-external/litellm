@@ -206,6 +206,7 @@ jobs:
             test-path: |-
               tests/unit/llms/bedrock
               tests/unit/llms/bedrock_mantle
+              tests/unit/skills/test_bedrock_anthropic_regression.py
             python-version: "3.12"
             workers: 4
             reruns: 0
@@ -223,6 +224,8 @@ jobs:
               tests/unit/llms/test_oss_decision.py
               tests/unit/llms/test_polling_url_origin_match.py
               tests/unit/llms/test_predibase_transformation.py
+              tests/unit/skills/test_crusoe.py
+              tests/unit/skills/test_databricks_e2e.py
               tests/unit/llms/a2a
               tests/unit/llms/aiml
               tests/unit/llms/aiohttp_openai
