@@ -9,6 +9,11 @@ ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2
 # Pinned by digest like the other base images; bump explicitly on Node upgrades.
 ARG UI_BUILD_IMAGE=node:24.19-alpine3.24@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
 # Checksum from https://www.pgbouncer.org/downloads/ (the Wolfi repo only carries 1.24.x)
+# OpenSSL major stream for every apk install below. Wolfi's unversioned
+# `openssl`/`openssl-dev` names float between streams (a 4.0 stream is now
+# served, which does not compile pgbouncer 1.25.2: opaque ASN1_TIME), and the pgbouncer-builder,
+# builder and runtime stages must link/load the same one. Bump deliberately.
+ARG OPENSSL_STREAM=4.0
 ARG PGBOUNCER_VERSION=1.26.0
 ARG PGBOUNCER_SHA256=afd25dd61ee6775d37b40629b87ce08736b3e6955f3057bb212e410fbf21c71d
 
@@ -17,8 +22,9 @@ FROM ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2e4e1e333
 FROM cgr.dev/chainguard/wolfi-base@sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d AS pgbouncer-builder
 ARG PGBOUNCER_VERSION
 ARG PGBOUNCER_SHA256
+ARG OPENSSL_STREAM
 USER root
-RUN apk add --no-cache build-base pkgconf libevent-dev openssl-dev curl
+RUN apk add --no-cache build-base pkgconf libevent-dev "openssl-${OPENSSL_STREAM}-dev" curl
 WORKDIR /build
 RUN curl -fsSL -o pgbouncer.tar.gz "https://www.pgbouncer.org/downloads/files/${PGBOUNCER_VERSION}/pgbouncer-${PGBOUNCER_VERSION}.tar.gz" && \
     echo "${PGBOUNCER_SHA256}  pgbouncer.tar.gz" | sha256sum -c - && \
@@ -48,6 +54,7 @@ RUN npm run build
 # Builder stage
 FROM cgr.dev/chainguard/wolfi-base@sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d AS builder
 
+ARG OPENSSL_STREAM
 WORKDIR /app
 USER root
 
@@ -60,8 +67,8 @@ RUN apk add --no-cache \
     python-3.13 \
     python-3.13-dev \
     rust \
-    openssl \
-    openssl-dev \
+    "openssl-${OPENSSL_STREAM}" \
+    "openssl-${OPENSSL_STREAM}-dev" \
     nodejs \
     npm \
     libsndfile
@@ -130,6 +137,7 @@ RUN mkdir /tmp/liteadmin && tar xzf /tmp/liteadmin.tar.gz --strip-components=1 -
 # Runtime stage
 FROM cgr.dev/chainguard/wolfi-base@sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d AS runtime
 ARG LITELLM_RELEASE_TAG=""
+ARG OPENSSL_STREAM
 ENV LITELLM_RELEASE_TAG=${LITELLM_RELEASE_TAG}
 
 USER root
@@ -141,7 +149,7 @@ USER root
 RUN echo "https://packages.wolfi.dev/os" >> /etc/apk/repositories
 
 # node (without npm) is required by the prisma CLI at runtime
-RUN apk add --no-cache bash openssl tzdata nodejs python-3.13 libsndfile libevent
+RUN apk add --no-cache bash "openssl-${OPENSSL_STREAM}" tzdata nodejs python-3.13 libsndfile libevent
 COPY --from=pgbouncer-builder /usr/local/bin/pgbouncer /usr/local/bin/pgbouncer
 
 WORKDIR /app
