@@ -152,6 +152,11 @@ class ServiceLogging(CustomLogger):
         except Exception as e:  # noqa: BLE001  # dispatch must not crash the caller whose service call it is monitoring
             verbose_logger.exception("Error dispatching service event - %s", e)
 
+    def redis_breaker_hook(self, transitions_to: str | None, failure_class: str | None) -> None:
+        prometheus_logger: Final[PrometheusServicesLogger | None] = getattr(self, "prometheusServicesLogger", None)
+        if prometheus_logger is not None:
+            prometheus_logger.redis_breaker_hook(transitions_to=transitions_to, failure_class=failure_class)
+
     def service_success_hook(
         self,
         service: ServiceTypes,

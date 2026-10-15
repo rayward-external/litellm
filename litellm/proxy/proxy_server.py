@@ -590,6 +590,7 @@ from litellm.proxy.health_check import (
     perform_health_check,
 )
 from litellm.proxy.health_endpoints._health_endpoints import router as health_router
+from litellm.proxy.health_endpoints.deployment_warning_endpoints import router as deployment_warning_router
 from litellm.proxy.hooks.model_max_budget_limiter import (  # noqa: F401, RUF100  # legacy module exports
     PROXY_VirtualKeyModelMaxBudgetLimiter,
     _PROXY_VirtualKeyModelMaxBudgetLimiter,  # pyright: ignore[reportPrivateUsage,reportUnusedImport]  # backwards-compatible package export
@@ -1724,7 +1725,7 @@ async def proxy_startup_event(app: FastAPI) -> AsyncGenerator[ProxyLifespanState
                     litellm_version=version,
                     settings=telemetry_settings,
                     db=lambda: (  # pyright: ignore[reportArgumentType]  # PrismaWrapper forwards raw queries via __getattr__
-                        getattr(prisma_client.db, "writer", prisma_client.db) if prisma_client is not None else None
+                        prisma_client.writer_db if prisma_client is not None else None
                     ),
                     register=litellm.logging_callback_manager.add_litellm_callback,
                 )
@@ -1913,7 +1914,11 @@ app = FastAPI(
 ## middleware after an application has started". See
 ## ``litellm.integrations.otel.mount`` for the full rationale; the call is a safe
 ## no-op when the gate is off or the instrumentation package is unavailable.
-from litellm.integrations.otel.mount import instrument_fastapi_app
+from litellm.integrations.otel.mount import (
+    instrument_fastapi_app,
+    trace_response_expose_headers,
+    trace_response_headers,
+)
 
 instrument_fastapi_app(app)
 
@@ -2230,6 +2235,12 @@ async def otel_request_validation_exception_handler(request: Request, exc: Reque
 async def otel_unhandled_exception_handler(request: Request, exc: Exception):
     if isinstance(exc, (ProxyException, HTTPException, RequestValidationError)):
         raise exc
+    response: Final = await _unhandled_exception_response(request, exc)
+    response.headers.update(trace_response_headers(getattr(request.state, "parent_otel_span", None)))
+    return response
+
+
+async def _unhandled_exception_response(request: Request, exc: Exception) -> Response:
     if PrismaDBExceptionHandler.is_database_service_unavailable_error_in_chain(exc):
         verbose_proxy_logger.warning("Database unavailable during request: %s", type(exc).__name__)
         return await openai_exception_handler(
@@ -2613,7 +2624,7 @@ app.add_middleware(
     allow_credentials=allow_cors_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=LITELLM_UI_ALLOW_HEADERS,
+    expose_headers=[*LITELLM_UI_ALLOW_HEADERS, *trace_response_expose_headers()],
 )
 
 app.add_middleware(PrometheusAuthMiddleware)
@@ -18679,6 +18690,7 @@ _GENERAL_SETTINGS_CONFIG_LIST_FIELD_TYPES: Final[Mapping[str, str]] = MappingPro
         "pass_through_endpoints": "PydanticModel",
         "store_model_in_db": "Boolean",
         "store_prompts_in_spend_logs": "Boolean",
+        "disable_requester_ip_address_logging": "Boolean",
         "disable_fallbacks_on_per_model_rate_limits": "Boolean",
         "maximum_spend_logs_retention_period": "String",
         "maximum_health_check_retention_period": "String",
@@ -20457,6 +20469,7 @@ app.include_router(openai_files_router)
 reserve_lazy_slot(app, "llm_passthrough")
 app.include_router(pass_through_router)
 app.include_router(health_router)
+app.include_router(deployment_warning_router)
 app.include_router(key_management_router)
 app.include_router(internal_user_router)
 app.include_router(daily_activity_router)
