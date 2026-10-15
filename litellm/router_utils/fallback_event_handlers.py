@@ -34,9 +34,13 @@ from litellm.router_utils.router_callbacks.track_deployment_metrics import (
 from litellm.types.router import (
     FallbackSkipReason,
     LiteLLMParamsTypedDict,
+    RouterErrors,
+    RouterRateLimitError,
+    RouterRateLimitErrorBasic,
     SkippedFallbackTarget,
     reject_server_owned_wif_params,
 )
+from litellm.utils import _get_deployment_order
 
 if TYPE_CHECKING:
     from litellm.router import Router as _Router

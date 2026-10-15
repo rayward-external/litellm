@@ -39,8 +39,24 @@ from litellm.types.responses.main import (
 _MAX_ARGUMENTS_LEN: Final = 1_000_000
 
 TOOL_CALL_ITEM_ID_PREFIX_BY_TYPE: Final = MappingProxyType(
-    {"function_call": "fc", "custom_tool_call": "ctc", "tool_search_call": "tsc"}
+    {"function_call": "fc", "custom_tool_call": "ctc", "web_search_call": "ws", "tool_search_call": "tsc"}
 )
+
+# Anthropic stamps every tool call its OWN fleet executed with this prefix
+# (``server_tool_use`` blocks), as opposed to the ``toolu_`` calls it hands to
+# the client. The distinction is invisible in the Chat Completions shape both
+# collapse into, so the id prefix is the only signal the Responses bridge has.
+SERVER_EXECUTED_TOOL_CALL_ID_PREFIX: Final = "srvtoolu_"
+
+# Server-executed tool names that map onto OpenAI's ``web_search_call`` output
+# item. ``web_fetch`` belongs here because OpenAI has no fetch-shaped item: a
+# page fetch is a ``web_search_call`` with an ``open_page`` action. Code
+# execution has its own item type and is converted elsewhere (see
+# ``_extract_tool_result_output_items``), so it is deliberately absent here.
+SERVER_EXECUTED_WEB_SEARCH_TOOL_NAMES: Final = frozenset({"web_search", "web_fetch"})
+
+# The one whose Anthropic input is ``{"url": ...}`` rather than ``{"query": ...}``.
+SERVER_EXECUTED_WEB_FETCH_TOOL_NAME: Final = "web_fetch"
 
 
 def openai_shaped_tool_call_item_id(item_type: str, tool_id: str) -> str:

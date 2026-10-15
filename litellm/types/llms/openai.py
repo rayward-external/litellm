@@ -92,6 +92,7 @@ from litellm.types.responses.main import (
     OutputFunctionToolCall,
     OutputImageGenerationCall,
     OutputToolSearchCall,
+    OutputWebSearchCall,
 )
 
 from .base import CachedTokensDetails
