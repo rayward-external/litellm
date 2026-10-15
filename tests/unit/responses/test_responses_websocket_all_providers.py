@@ -3548,7 +3548,7 @@ class TestNativeWebSocketEncryptedContentAffinity:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "failure_frame, expected_status",
+        "failure_frame, expected_status, expected_message",
         [
             (
                 {
@@ -3560,6 +3560,7 @@ class TestNativeWebSocketEncryptedContentAffinity:
                     },
                 },
                 400,
+                "The encrypted content for item rs_1 could not be verified.",
             ),
             (
                 {
@@ -3571,11 +3572,17 @@ class TestNativeWebSocketEncryptedContentAffinity:
                     },
                 },
                 500,
+                "upstream blew up",
+            ),
+            (
+                {"type": "error", "code": "rate_limit_exceeded", "message": "Rate limit reached for gpt-5.6"},
+                429,
+                "Rate limit reached for gpt-5.6",
             ),
         ],
     )
     async def test_backend_to_client_books_failure_frames_as_failures(
-        self, failure_frame: dict[str, object], expected_status: int
+        self, failure_frame: dict[str, object], expected_status: int, expected_message: str
     ):
         from unittest.mock import AsyncMock
 
@@ -3611,7 +3618,7 @@ class TestNativeWebSocketEncryptedContentAffinity:
         logging_obj.dispatch_failure_handlers.assert_awaited_once()
         exception = logging_obj.dispatch_failure_handlers.await_args[0][0]
         assert exception.status_code == expected_status
-        assert failure_frame.get("error", failure_frame.get("response", {}).get("error"))["message"] in str(exception)
+        assert expected_message in str(exception)
 
     @pytest.mark.asyncio
     async def test_backend_to_client_bills_completed_turns_before_a_failure(self):
