@@ -2635,7 +2635,13 @@ class LiteLLMCompletionResponsesConfig:
     def transform_chat_completion_tools_to_responses_tools(
         chat_completion_response: ModelResponse,
         responses_api_request: ResponsesAPIOptionalRequestParams | None = None,
-    ) -> list[ResponseFunctionToolCall | ResponseFunctionWebSearch | CustomToolCallOutputItem | OutputToolSearchCall]:
+    ) -> list[
+        ResponseFunctionToolCall
+        | ResponseFunctionWebSearch
+        | CustomToolCallOutputItem
+        | OutputToolSearchCall
+        | OutputWebSearchCall
+    ]:
         """
         Transform a Chat Completion tools into a Responses API tools.
 
@@ -2677,7 +2683,13 @@ class LiteLLMCompletionResponsesConfig:
             chat_completion_response
         )
         responses_tools: Final[
-            list[ResponseFunctionToolCall | ResponseFunctionWebSearch | CustomToolCallOutputItem | OutputToolSearchCall]
+            list[
+                ResponseFunctionToolCall
+                | ResponseFunctionWebSearch
+                | CustomToolCallOutputItem
+                | OutputToolSearchCall
+                | OutputWebSearchCall
+            ]
         ] = []
         for tool in all_chat_completion_tools:
             if tool.type == "function":
@@ -2762,7 +2774,7 @@ class LiteLLMCompletionResponsesConfig:
         tool_search_requested: bool,
         client_function_tool_names: frozenset[str],
         request_declares_hosted_web_search: bool,
-    ) -> ResponseFunctionWebSearch | OutputToolSearchCall | None:
+    ) -> ResponseFunctionWebSearch | OutputToolSearchCall | OutputWebSearchCall | None:
         web_search_call: Final = web_search_calls.get(tool_id)
         if web_search_call is not None:
             return web_search_call
