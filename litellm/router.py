@@ -3492,7 +3492,10 @@ class Router:
             refusal_hold = self._refusal_stream_hold_for_call(initial_kwargs)
             try:
                 async for item in _achunks_with_first(model_response, first_chunk):
-                    yield item
+                    for released_item in refusal_hold.process(item):
+                        yield released_item
+                for released_item in refusal_hold.flush():
+                    yield released_item
             except MidStreamFallbackError as e:
                 with anyio.CancelScope(shield=True):
                     await close_model_response()
