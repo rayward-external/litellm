@@ -247,7 +247,7 @@ def test_xai_batch_output_file_answers_at_once_while_results_are_unavailable_and
             raw_batch_id,
             0,
         ), unavailable_detail
-        assert elapsed < 5, elapsed
+        assert elapsed < 5, elapsed  # test-quality-ok: guards against blocking on the unavailable upstream
 
         register_scenario(batch.upstream.scenario_id, _xai_routes())
         content: Final = gateway.request("GET", f"/v1/files/{output_id}/content", key=batch.owner_key)
