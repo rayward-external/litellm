@@ -649,6 +649,8 @@ class AWSEventStreamDecoder:
                 "reasoningContent": delta_obj["reasoningContent"],
             }
             reasoning_content = self.extract_reasoning_content_str(delta_obj["reasoningContent"])
+            if reasoning_content:
+                self.accumulated_reasoning_content += reasoning_content
             thinking_blocks = self.translate_thinking_blocks(delta_obj["reasoningContent"], index)
             if thinking_blocks and len(thinking_blocks) > 0 and reasoning_content is None:
                 reasoning_content = ""  # set to non-empty string to ensure consistency with Anthropic
