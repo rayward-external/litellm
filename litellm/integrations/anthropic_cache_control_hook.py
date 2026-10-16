@@ -478,6 +478,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
             messages=processed_messages,
             max_blocks=MAX_CACHE_CONTROL_BLOCKS - reserved_blocks,
             openai_dialect=openai_dialect,
+            default_control=default_control,
             answered_tool_ids=answered_tool_ids,
         )
         if (
@@ -624,6 +625,7 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         messages: list[AllMessageValues],
         max_blocks: int,
         openai_dialect: bool = False,
+        default_control: ChatCompletionCachedContent | None = None,
         answered_tool_ids: frozenset[str] | None = None,
     ) -> list[AllMessageValues]:
         """Apply message-level cache control injection points in order.
