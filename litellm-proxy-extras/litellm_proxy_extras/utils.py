@@ -90,6 +90,10 @@ class _InvalidIndex:
 MAX_MIGRATE_DEPLOY_ATTEMPTS = 4
 LIBPQ_URL_PARAMS: Final = frozenset(
     {
+        # A Unix-socket URL names its socket directory as `?host=`, which both
+        # Prisma and libpq read; dropping it sends libpq to localhost:5432.
+        "host",
+        "port",
         "sslmode",
         "sslcert",
         "sslkey",
