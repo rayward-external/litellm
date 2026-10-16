@@ -76,9 +76,12 @@ jobs:
           if gh api --paginate "repos/${{ github.repository }}/secret-scanning/alerts?state=open&per_page=100" > secrets.json; then
             total=$(jq length secrets.json)
             echo "Open secret-scanning alerts: $total" | tee -a $GITHUB_STEP_SUMMARY
+            echo "::notice::Open secret-scanning alerts: $total"
             jq -r '.[] | "#\(.number) [\(.secret_type)]: \(.locations_url // "no-location-url")"' secrets.json | tee -a $GITHUB_STEP_SUMMARY
+            jq -r '.[] | "::notice::#\(.number) [\(.secret_type)] state=\(.state) path=\(.path_in_source // "n/a")"' secrets.json
           else
             echo "secret-scanning API call failed (likely missing token scope)" | tee -a $GITHUB_STEP_SUMMARY
+            echo "::notice::secret-scanning API call failed (likely missing token scope)"
           fi
 
       - name: Dismiss alerts
