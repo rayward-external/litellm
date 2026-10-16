@@ -199,10 +199,12 @@ except ImportError as e:
     BlobResourceContents = None
     GetPromptResult = None
     ReadResourceResult = None
+    RequestParams = None
     Resource = None
     ResourceTemplate = None
     Server = None
     TextResourceContents = None
+    serve_loop = None
 
 active_mcp_session_var: Final[contextvars.ContextVar["_McpServerSession | None"]] = contextvars.ContextVar(
     "active_mcp_session", default=None
