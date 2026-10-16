@@ -1530,6 +1530,16 @@ class TestStripPrismaQueryParams:
             == "postgresql://u:p@writer/db"
         )
 
+    def test_a_unix_socket_host_and_port_survive_so_libpq_dials_the_socket(self):
+        url = "postgresql://u:p@localhost/db?host=/run/sockets/pg&port=5433&sslmode=disable&connection_limit=5&pool_timeout=30"
+
+        cleaned = ProxyExtrasDBManager._strip_prisma_query_params(url)
+
+        assert self._query(cleaned) == {"host": "/run/sockets/pg", "port": "5433", "sslmode": "disable"}
+        from psycopg.conninfo import conninfo_to_dict
+
+        assert conninfo_to_dict(cleaned)["host"] == "/run/sockets/pg"
+
 
 class TestBuildRequestLogIndexes:
     """The migration job hands the index build the direct database URL and the schema
