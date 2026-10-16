@@ -7,8 +7,10 @@ import time
 import traceback
 import uuid
 from collections.abc import AsyncIterable, Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
+from itertools import chain
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn, Protocol, cast, overload, runtime_checkable
 
@@ -27,6 +29,7 @@ from litellm.constants import (
 from litellm.exceptions import MidStreamFallbackError, RateLimitError
 from litellm.litellm_core_utils.asyncify import run_async_function
 from litellm.litellm_core_utils.core_helpers import process_response_headers
+from litellm.litellm_core_utils.internal_call_metadata import without_budget_reservation
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.llm_response_utils.get_api_base import get_api_base
 from litellm.litellm_core_utils.llm_response_utils.response_metadata import (
@@ -1621,6 +1624,30 @@ def _stamp_responses_usage_cost(
         setattr(usage_obj, "cost", cost)
 
 
+def opening_item_payload(payload: Mapping[str, object]) -> Mapping[str, object]:
+    match payload.get("type"):
+        case "message":
+            return {**payload, "content": [], "status": "in_progress"}
+        case "function_call":
+            return {**payload, "arguments": "", "status": "in_progress"}
+        case "custom_tool_call":
+            return {**payload, "input": ""}
+        case "reasoning":
+            return {**payload, "summary": []}
+        case _:
+            return payload
+
+
+def opening_part_payload(payload: Mapping[str, object]) -> Mapping[str, object]:
+    match payload.get("type"):
+        case "output_text":
+            return {**payload, "text": ""}
+        case "refusal":
+            return {**payload, "refusal": ""}
+        case _:
+            return payload
+
+
 def build_synthetic_response_events(
     *,
     transformed: ResponsesAPIResponse,
@@ -1646,7 +1673,7 @@ def build_synthetic_response_events(
             openai_types.OutputItemAddedEvent(
                 type=openai_types.ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED,
                 output_index=output_index,
-                item=openai_types.BaseLiteLLMOpenAIResponseObject(**output_item_payload),
+                item=openai_types.BaseLiteLLMOpenAIResponseObject(**opening_item_payload(output_item_payload)),
             )
         )
 
@@ -1660,7 +1687,7 @@ def build_synthetic_response_events(
                         item_id=item_id,
                         output_index=output_index,
                         content_index=content_index,
-                        part=openai_types.BaseLiteLLMOpenAIResponseObject(**part_payload),
+                        part=openai_types.BaseLiteLLMOpenAIResponseObject(**opening_part_payload(part_payload)),
                     )
                 )
                 _add_text_like_part_events(
@@ -1698,11 +1725,43 @@ def build_synthetic_response_events(
                     arguments=arguments,
                 )
             )
+        elif item_type == "custom_tool_call":
+            tool_input = str(output_item_payload.get("input") or "")
+            for i in range(0, len(tool_input), chunk_size):
+                events.append(
+                    openai_types.GenericEvent.model_validate(
+                        {
+                            "type": openai_types.ResponsesAPIStreamEvents.CUSTOM_TOOL_CALL_INPUT_DELTA.value,
+                            "item_id": item_id,
+                            "output_index": output_index,
+                            "delta": tool_input[i : i + chunk_size],
+                        }
+                    )
+                )
+            events.append(
+                openai_types.GenericEvent.model_validate(
+                    {
+                        "type": openai_types.ResponsesAPIStreamEvents.CUSTOM_TOOL_CALL_INPUT_DONE.value,
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "input": tool_input,
+                    }
+                )
+            )
         elif item_type == "reasoning":
             summaries: Sequence[object] = _json_array_or_empty(output_item_payload.get("summary"))
             for summary_index, summary in enumerate(summaries):
                 summary_payload = _dump_response_object(summary)
                 summary_text = str(summary_payload.get("text") or "")
+                events.append(
+                    openai_types.ResponsePartAddedEvent(
+                        type=openai_types.ResponsesAPIStreamEvents.RESPONSE_PART_ADDED,
+                        item_id=item_id,
+                        output_index=output_index,
+                        summary_index=summary_index,
+                        part={**summary_payload, "text": ""},
+                    )
+                )
                 for i in range(0, len(summary_text), chunk_size):
                     events.append(
                         openai_types.ReasoningSummaryTextDeltaEvent(
@@ -1850,6 +1909,77 @@ _HISTORY_TERMINAL_EVENT_TYPES: Final = frozenset({"response.completed", "respons
 RESPONSES_WS_MASKABLE_TEXT_BLOCK_TYPES: Final = frozenset({"input_text", "output_text", "text"})
 
 _RESPONSES_WS_FAILURE_EVENT_TYPES: Final = frozenset({"error", "response.failed"})
+_PER_TURN_METADATA_KEYS: Final = frozenset({"metadata", "litellm_metadata"})
+
+_RESPONSES_WS_TERMINAL_EVENT_TYPES: Final = _HISTORY_TERMINAL_EVENT_TYPES | _RESPONSES_WS_FAILURE_EVENT_TYPES
+
+
+def _json_object_or_none(message: object) -> Mapping[str, object] | None:
+    if _is_json_object(message):
+        return message
+    if not isinstance(message, (str, bytes)):
+        return None
+    try:
+        parsed: Final = _load_json_value(message)
+    except json.JSONDecodeError:
+        return None
+    return parsed if _is_json_object(parsed) else None
+
+
+def _user_texts_in_input_item(item: object) -> tuple[str, ...]:
+    if not _is_json_object(item) or item.get("type") != "message" or item.get("role") != "user":
+        return ()
+    content: Final = item.get("content", [])
+    if isinstance(content, str):
+        return (content,)
+    return tuple(
+        text
+        for block in _json_array_or_empty(content)
+        if _is_json_object(block)
+        and block.get("type") == "input_text"
+        and isinstance(text := block.get("text"), str)
+        and text
+    )
+
+
+def _logged_user_messages(client_frame: object) -> tuple[Mapping[str, object], ...]:
+    frame: Final = _json_object_or_none(client_frame)
+    if frame is None or frame.get("type") != "response.create":
+        return ()
+    input_items: Final = frame.get("input", [])
+    if isinstance(input_items, str):
+        return ({"role": "user", "content": input_items},)
+    texts: Final = chain.from_iterable(_user_texts_in_input_item(item) for item in _json_array_or_empty(input_items))
+    return tuple({"role": "user", "content": text} for text in texts)
+
+
+def _record_usage_for_failure(turn_logging_obj: LiteLLMLoggingObj, events: Sequence[Mapping[str, object]]) -> None:
+    from litellm.cost_calculator import ResponsesWebSocketTokenUsageProcessor
+
+    logging_result: Final = ResponsesWebSocketTokenUsageProcessor.create_logging_object(events)
+    response_cost: Final = turn_logging_obj.response_cost_calculator(result=logging_result) or 0.0
+    turn_logging_obj.record_partial_usage_for_failure(logging_result.usage, response_cost)
+
+
+@dataclass(frozen=True, slots=True)
+class _ResponsesWsTurn:
+    """One ``response.create`` on a native Responses socket, logged and billed as its own call once a terminal
+    event (``response.completed``, ``response.incomplete``, ``response.failed`` or ``error``) closes it."""
+
+    logging_obj: LiteLLMLoggingObj
+    events: tuple[Mapping[str, object], ...] = ()
+
+    def with_event(self, event: Mapping[str, object]) -> _ResponsesWsTurn:
+        return _ResponsesWsTurn(logging_obj=self.logging_obj, events=(*self.events, event))
+
+    def failure(self, model: str, custom_llm_provider: str) -> Exception | None:
+        failed_event: Final = next(
+            (event for event in self.events if event.get("type") in _RESPONSES_WS_FAILURE_EVENT_TYPES), None
+        )
+        if failed_event is None:
+            return None
+        return _map_stream_error_to_exception(_ws_event_error(failed_event), model, custom_llm_provider)
+
 
 _RESPONSES_WS_OUTPUT_ITEM_EVENT_TYPES: Final = frozenset({"response.output_item.added", "response.output_item.done"})
 
@@ -1966,8 +2096,8 @@ class ResponsesWebSocketStreaming:
         litellm_metadata: Final = self.request_data.get("litellm_metadata")
         self.litellm_metadata: dict[str, object] = litellm_metadata if _is_json_object(litellm_metadata) else {}
         self.custom_llm_provider: str | None = custom_llm_provider
-        self.messages: list[_MutableJsonObject] = []
-        self.input_messages: list[dict[str, object]] = []
+        self._open_turns: tuple[_ResponsesWsTurn, ...] = ()
+        self._failure: Exception | None = None
         self.first_message = first_message
         self.guardrail_callbacks: Sequence[PresidioGuardrailCallback] = guardrail_callbacks or []
         self.output_guardrail_callbacks: list[PresidioGuardrailCallback] = output_guardrail_callbacks or []
@@ -1979,7 +2109,7 @@ class ResponsesWebSocketStreaming:
         self.responses_api_provider_config: BaseResponsesAPIConfig | None = responses_api_provider_config
         self.api_base = api_base
         # Strong references to in-flight per-turn cost dispatch tasks
-        # (_dispatch_turn_cost). asyncio only holds a WEAK reference to a
+        # (_log_turn). asyncio only holds a WEAK reference to a
         # bare create_task() result -- per the stdlib docs, a task whose
         # result is not retained anywhere can be garbage-collected mid-run.
         # These tasks are now the ENTIRE billing path for the native WS
@@ -1991,231 +2121,79 @@ class ResponsesWebSocketStreaming:
             set()
         )  # mutable-ok: registry, entries removed via add_done_callback
 
-    def _should_store_event(self, event_obj: _MutableJsonObject) -> bool:
-        return event_obj.get("type") in RESPONSES_WS_LOGGED_EVENT_TYPES
-
-    def _store_event(self, event: str | bytes | dict[str, object]) -> None:
-        if isinstance(event, bytes):
-            event = event.decode("utf-8")
-        if isinstance(event, str):
-            try:
-                event_obj = _load_json_object(event)
-            except (json.JSONDecodeError, TypeError):
-                return
-        else:
-            event_obj = event
-
-        if self._should_store_event(event_obj):
-            self.messages.append(event_obj)
-
-    def _collect_input_from_client_event(self, message: object) -> None:
-        """Extract user input content from response.create for logging."""
-        try:
-            if isinstance(message, str):
-                msg_obj = _load_json_object(message)
-            elif _is_json_object(message):
-                msg_obj = message
-            else:
-                return
-
-            if msg_obj.get("type") != "response.create":
-                return
-
-            input_items: Final = msg_obj.get("input", [])
-            if isinstance(input_items, str):
-                self.input_messages.append({"role": "user", "content": input_items})
-                return
-
-            if _is_json_array(input_items):
-                for item in input_items:
-                    if not _is_json_object(item):
-                        continue
-                    if item.get("type") == "message" and item.get("role") == "user":
-                        content = item.get("content", [])
-                        if isinstance(content, str):
-                            self.input_messages.append({"role": "user", "content": content})
-                        elif _is_json_array(content):
-                            for c in content:
-                                if _is_json_object(c) and c.get("type") == "input_text":
-                                    text = c.get("text", "")
-                                    if text:
-                                        self.input_messages.append({"role": "user", "content": text})
-        except (json.JSONDecodeError, AttributeError, TypeError):
-            pass
-
-    def _store_input(self, message: object) -> None:
-        self._collect_input_from_client_event(message)
-        if self.logging_obj:
-            self.logging_obj.pre_call(input=message, api_key="")
-
-    def _failure_exception(self) -> Exception | None:
-        failed_event: Final = next(
-            (event for event in self.messages if event.get("type") in _RESPONSES_WS_FAILURE_EVENT_TYPES), None
+    def _start_turn(self, client_frame: str | None) -> None:
+        start_time: Final = datetime.now()  # noqa: DTZ005  # naive to match the logging pipeline start_time
+        turn_logging_obj: Final = self.logging_obj.copy_for_new_call(
+            litellm_call_id=str(uuid.uuid4()), start_time=start_time
         )
-        if failed_event is None:
-            return None
-        return _map_stream_error_to_exception(
-            _ws_event_error(failed_event), self.authorized_model or "", self.custom_llm_provider or ""
+        self._detach_budget_reservation()
+        turn_logging_obj.model_call_details["messages"] = list(_logged_user_messages(client_frame))
+        turn_logging_obj.pre_call(input=client_frame, api_key="")
+        self._open_turns = (*self._open_turns, _ResponsesWsTurn(logging_obj=turn_logging_obj))
+
+    def _detach_budget_reservation(self) -> None:
+        """Only the first turn settles the connection's admission reservation; later turns charge their cost directly."""
+        litellm_params: Final = _json_object_or_none(
+            self.logging_obj.litellm_params  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  # Logging.litellm_params is untyped
         )
-
-    def _record_usage_for_failure(self) -> None:
-        from litellm.cost_calculator import ResponsesWebSocketTokenUsageProcessor
-        from litellm.types.utils import LiteLLMRealtimeStreamLoggingObject
-
-        usage: Final = ResponsesWebSocketTokenUsageProcessor.collect_and_combine_usage_from_responses_ws_results(
-            self.messages
-        )
-        tier_partition: Final = ResponsesWebSocketTokenUsageProcessor.partition_results_by_service_tier(self.messages)
-        service_tier: Final = next(iter(tier_partition)) if len(tier_partition) == 1 else None
-        logging_result: Final = LiteLLMRealtimeStreamLoggingObject(
-            usage=usage, results=self.messages, service_tier=service_tier
-        )
-        response_cost: Final = self.logging_obj.response_cost_calculator(result=logging_result) or 0.0
-        self.logging_obj.record_partial_usage_for_failure(usage, response_cost)
-
-    async def _log_messages(self) -> None:
-        """Connection-close bookkeeping. Per-turn cost/usage dispatch for a
-        completed or incomplete turn happens in _dispatch_turn_cost, called
-        from backend_to_client as each terminal event arrives -- NOT here.
-        This used to ALSO dispatch self.messages (a raw list of stored WS
-        event dicts) as the "response" for a successful connection, once, at
-        connection close. That shape cannot be costed at all
-        (_get_assembled_streaming_response has no branch for a bare list, so
-        it silently computed $0 -- rayward-internal/llm-gateway-infra#657)
-        and, now that _dispatch_turn_cost costs every completed/incomplete
-        turn as it happens, would ALSO double-count. Dropped.
-
-        The failure path below is unaffected by that bug -- it costs a typed
-        LiteLLMRealtimeStreamLoggingObject, not a bare list -- so it still
-        runs here, once, at connection close.
-        """
-        if not self.logging_obj:
+        if litellm_params is None:
             return
-        if self.input_messages:
-            self.logging_obj.model_call_details["messages"] = self.input_messages
-        if not self.messages:
+        self.logging_obj.litellm_params = {
+            key: without_budget_reservation(value)
+            if key in _PER_TURN_METADATA_KEYS and _is_json_object(value)
+            else value
+            for key, value in litellm_params.items()
+        }
+
+    def _record_client_frame(self, client_frame: str) -> None:
+        frame: Final = _json_object_or_none(client_frame)
+        if frame is not None and frame.get("type") == "response.create":
+            self._start_turn(client_frame)
+
+    def _record_backend_event(self, event: str) -> None:
+        event_obj: Final = _json_object_or_none(event)
+        if event_obj is None or event_obj.get("type") not in RESPONSES_WS_LOGGED_EVENT_TYPES:
             return
-        exception: Final = self._failure_exception()
+        if not self._open_turns:
+            self._start_turn(None)
+        turn: Final = self._open_turns[0].with_event(event_obj)
+        if event_obj.get("type") in _RESPONSES_WS_TERMINAL_EVENT_TYPES:
+            self._open_turns = self._open_turns[1:]
+            self._log_turn(turn)
+            return
+        self._open_turns = (turn, *self._open_turns[1:])
+
+    def _log_open_turns(self) -> None:
+        open_turns: Final = self._open_turns
+        self._open_turns = ()
+        for turn in open_turns:
+            if turn.events:
+                self._log_turn(turn)
+
+    def _log_turn(self, turn: _ResponsesWsTurn) -> None:
+        # Retain a strong reference (self._pending_cost_tasks, drained with a
+        # bounded wait in bidirectional_forward's finally: before the
+        # connection tears down) -- asyncio only holds a WEAK reference to a
+        # bare create_task() result, so an unretained task carrying this
+        # turn's entire billing path can be garbage-collected mid-run.
+        events: Final = list(turn.events)
+        exception: Final = turn.failure(self.authorized_model or "", self.custom_llm_provider or "")
         if exception is None:
+            cost_task: Final = asyncio.create_task(
+                turn.logging_obj.dispatch_success_handlers(events, prefer_async_handlers=True)
+            )
+            self._pending_cost_tasks.add(cost_task)
+            cost_task.add_done_callback(self._pending_cost_tasks.discard)
             return
-        self._record_usage_for_failure()
+        if self._failure is None:
+            self._failure = exception
+        _record_usage_for_failure(turn.logging_obj, events)
         traceback_exception: Final = "".join(traceback.format_exception(exception))
         failure_task: Final = asyncio.create_task(
-            self.logging_obj.dispatch_failure_handlers(exception, traceback_exception, prefer_async_handlers=True)
+            turn.logging_obj.dispatch_failure_handlers(exception, traceback_exception, prefer_async_handlers=True)
         )
         self._pending_cost_tasks.add(failure_task)
         failure_task.add_done_callback(self._pending_cost_tasks.discard)
-
-    def _build_per_turn_logging_obj(self, model_name: str) -> LiteLLMLoggingObj:
-        """Fresh LiteLLMLoggingObj for ONE completed/failed/incomplete turn.
-
-        MUST be a new instance per turn, not the connection-level
-        self.logging_obj: dispatch_success_handlers's stream-success dedup
-        guard (model_call_details["has_dispatched_final_stream_success"],
-        set the first time _is_assembled_stream_success(result) is True for
-        a given logging_obj) silently drops every call after the first on a
-        shared object once stream=True -- verified by running a 3-turn
-        simulation against one shared Logging(stream=True) instance: only
-        turn 1 fired, kwargs showed has_dispatched_final_stream_success go
-        None -> True after it. A fresh Logging(...) per turn (mirroring what
-        litellm.utils.function_setup builds per real HTTP/managed-path
-        completion call) does not carry that guard's state across turns.
-
-        stream=True is required: _get_assembled_streaming_response
-        (litellm/litellm_core_utils/litellm_logging.py:3670-3672) returns
-        None outright when self.stream is not True, before it ever reaches
-        the ResponseCompletedEvent/ResponseIncompleteEvent/ResponseFailedEvent
-        branch that computes real cost.
-
-        litellm_metadata mirrors self.request_data["litellm_metadata"] (the
-        SAME connection-level dict _build_litellm_metadata_for_ws built from
-        add_litellm_data_to_request's user_api_key-carrying metadata --
-        litellm/responses/main.py:2085-2090) into BOTH litellm_params
-        "metadata" and "litellm_metadata", exactly like
-        litellm.utils.function_setup does for a real call
-        (litellm/utils.py:1143-1154), so _PROXY_track_cost_callback and the
-        active rate limiter attribute this turn's cost/usage to the right key.
-        """
-        start_time: Final = datetime.now()  # noqa: DTZ005  # naive datetime, matching every other LiteLLMLoggingObj start_time in this file
-        turn_logging_obj: Final = LiteLLMLoggingObj(
-            model=model_name,
-            messages=[],  # mutable-ok: this turn's own text lives in the typed event handed to dispatch_success_handlers, not here
-            stream=True,
-            call_type=CallTypes.aresponses_websocket.value,
-            start_time=start_time,
-            litellm_call_id=str(uuid.uuid4()),
-            function_id="ResponsesWebSocketStreaming._dispatch_turn_cost",
-        )
-        _raw_turn_metadata: Final = self.request_data.get("litellm_metadata")
-        # Copied so per-turn mutation by downstream callbacks never leaks back
-        # into self.request_data.
-        turn_metadata: Final[dict[str, object]] = (  # mutable-ok: per-turn copy
-            dict(_raw_turn_metadata) if isinstance(_raw_turn_metadata, dict) else {}  # mutable-ok: see above
-        )
-        turn_logging_obj.update_environment_variables(
-            model=model_name,
-            user=None,
-            optional_params={},  # mutable-ok: no optional params to carry for a cost-only synthetic dispatch
-            litellm_params={  # mutable-ok: built fresh per turn, matching function_setup's own litellm_params construction
-                "metadata": turn_metadata,
-                "litellm_metadata": turn_metadata,
-                "api_base": self.api_base,
-            },
-            custom_llm_provider=self.custom_llm_provider,
-        )
-        return turn_logging_obj
-
-    def _dispatch_turn_cost(self, output_masked_str: str) -> None:
-        """Cost and log ONE completed/failed/incomplete turn as it happens.
-
-        Reads output_masked_str -- the SAME string already sent to the
-        client (post output-masking) -- so a masked text block never gets
-        billed as if it were the unmasked original, and no event is ever
-        parsed or forwarded before this reads it. Masking only rewrites text
-        content, never the response's usage object, so read-after-mask does
-        not change what gets costed either way; ordering is kept this way
-        purely so this never races ahead of what the client actually saw.
-        """
-        try:
-            evt_obj: Final = _load_json_object(output_masked_str)
-        except (json.JSONDecodeError, TypeError) as exc:
-            # A terminal frame we cannot even parse as JSON is a silently
-            # unbilled turn -- the exact failure class rayward-internal/
-            # llm-gateway-infra#657 is about. Warn (not debug) so this is
-            # visible instead of repeating the original bug in a new place.
-            verbose_logger.warning(
-                "ResponsesWebSocketStreaming: could not parse a WS frame for cost logging, "
-                "this turn will NOT be billed: %s",
-                exc,
-            )
-            return
-        event_type: Final = evt_obj.get("type") if _is_json_object(evt_obj) else None
-        event_cls: Final = RESPONSES_WS_TERMINAL_EVENT_CLASSES.get(event_type) if isinstance(event_type, str) else None
-        if event_cls is None:
-            return
-        try:
-            typed_event: Final = event_cls.model_validate(evt_obj)
-        except Exception as exc:  # noqa: BLE001  # a malformed/unexpected terminal-event shape must never crash frame forwarding; skip costing this turn and keep the connection alive
-            verbose_logger.warning(
-                "ResponsesWebSocketStreaming: could not build %s for cost logging, this turn will NOT be billed: %s",
-                event_type,
-                exc,
-            )
-            return
-        model_name: Final = typed_event.response.model or self.authorized_model or ""
-        turn_logging_obj: Final = self._build_per_turn_logging_obj(model_name)
-        # Retain a strong reference (see self._pending_cost_tasks in __init__)
-        # and self-discard on completion -- create_task() alone leaves this
-        # task reachable only via the event loop's WEAK reference, so it can
-        # be garbage-collected mid-run per asyncio's own documentation. These
-        # tasks carry the entire billing path for this code path; unowned is
-        # not acceptable here. Drained with a bounded wait in
-        # bidirectional_forward's finally: before the connection tears down.
-        cost_task: Final = asyncio.create_task(
-            turn_logging_obj.dispatch_success_handlers(typed_event, prefer_async_handlers=True)
-        )
-        self._pending_cost_tasks.add(cost_task)
-        cost_task.add_done_callback(self._pending_cost_tasks.discard)
 
     def _wrap_response_event(self, response_str: str) -> str:
         try:
@@ -2272,15 +2250,12 @@ class ResponsesWebSocketStreaming:
                 output_masked_str = await self._mask_response_completed(unmasked_str)
                 wrapped_str = self._wrap_response_event(output_masked_str)
 
-                # Log the output-masked form so PII redacted by apply_to_output
-                # guardrails does not appear in success logs.
-                self._store_event(wrapped_str)
-
-                # Cost/log this turn now, from the SAME (already masked and
-                # wrapped) string about to be sent -- not at connection close
-                # (see _log_messages). A no-op for every event type except the
-                # three terminal ones (response.completed/failed/incomplete).
-                self._dispatch_turn_cost(wrapped_str)
+                # Log and cost this turn now, from the SAME (already masked and
+                # wrapped) string about to be sent -- not at connection close.
+                # A no-op for every event type except the three terminal ones
+                # (response.completed/failed/incomplete), which dispatch cost
+                # on a fresh per-turn logging_obj (see _start_turn/_log_turn).
+                self._record_backend_event(wrapped_str)
 
                 await self.websocket.send_text(wrapped_str)
 
@@ -2289,7 +2264,7 @@ class ResponsesWebSocketStreaming:
         except Exception as e:
             verbose_logger.exception("Error in responses WS backend_to_client: %s", e)
         finally:
-            await self._log_messages()
+            self._log_open_turns()
 
     def _enforce_authorized_model(self, msg_obj: _MutableJsonObject) -> bool:
         """
@@ -2714,8 +2689,7 @@ class ResponsesWebSocketStreaming:
         try:
             if self.first_message is not None and await self._enforce_or_reject_frame(self.first_message):
                 masked_first: Final = await self._mask_response_create(self.first_message)
-                self._store_input(masked_first)
-                self._store_event(masked_first)
+                self._record_client_frame(masked_first)
                 await self.backend_ws.send(masked_first)
 
             while True:
@@ -2723,8 +2697,7 @@ class ResponsesWebSocketStreaming:
                 if not await self._enforce_or_reject_frame(message):
                     continue
                 masked = await self._mask_response_create(message)
-                self._store_input(masked)
-                self._store_event(masked)
+                self._record_client_frame(masked)
                 await self.backend_ws.send(masked)
 
         except Exception as e:
@@ -2795,7 +2768,7 @@ class ResponsesWebSocketStreaming:
                 await self.backend_ws.close()
             except Exception:
                 pass
-        return self._failure_exception()
+        return self._failure
 
 
 # ---------------------------------------------------------------------------

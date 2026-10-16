@@ -153,7 +153,11 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # npm-based tests/pass_through_tests project (replaced by pure-Python
 # tests/pass_through_unit_tests/, with no @google-cloud/vertexai JS
 # dependency to need a protobufjs/brace-expansion override for).
-EXPECTED_NA_ROWS = 42
+# 2026-10-16 sync: +1 for the gemini_passthrough_logging_handler.py row
+# flipped to N/A when upstream rewrote _build_complete_streaming_response
+# around GeminiSseChunkParser, eliminating the GeminiModelResponseIterator/
+# Any construction that row's pattern protected.
+EXPECTED_NA_ROWS = 43
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",

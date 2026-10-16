@@ -17,6 +17,7 @@ from litellm._logging import verbose_proxy_logger
 from litellm.constants import (
     CLI_SESSION_KEY_PREFIX,
     EMPTY_MAPPING,
+    INTERNAL_CALL_ORIGIN_METADATA_KEY,
     LITELLM_PROXY_MASTER_KEY_ALIAS,
     LITELLM_TRUNCATED_PAYLOAD_FIELD,
     LITELLM_TRUNCATION_DB_SAFEGUARD_NOTE,
@@ -24,6 +25,7 @@ from litellm.constants import (
     LITTELM_INTERNAL_HEALTH_SERVICE_ACCOUNT_NAME,
     MAX_SPEND_LOG_MODEL_NAME_LENGTH,
     MCP_SPEND_LOG_MODEL_PREFIX,
+    NON_INFERENCE_CALL_TYPES,
     REDACTED_BY_LITELM_STRING,
     SESSION_ID_OMITTED_METADATA_KEY,
     UNKNOWN_MODEL_SPEND_LOG_MODEL,
@@ -63,6 +65,7 @@ from litellm.proxy.spend_tracking.spend_log_error_logger import spend_log_error
 from litellm.proxy.utils import PrismaClient, hash_token
 from litellm.types.router import DeploymentTypedDict, LiteLLM_Params
 from litellm.types.utils import (
+    BACKGROUND_RESPONSE_COST_POLL_CALL_ORIGIN,
     PROMPT_CARRYING_GUARDRAIL_FIELDS,
     AzureSpillover,
     CallTypes,
@@ -292,19 +295,33 @@ def _get_spend_logs_metadata(
 
 
 BATCH_COST_REQUEST_ID_SUFFIX: Final = "_batch_cost"
+BACKGROUND_RESPONSE_COST_REQUEST_ID_SUFFIX: Final = "_background_cost"
 BATCH_COST_CALL_ID_PREFIX: Final = "batch-cost-"
 
 
-def get_spend_logs_id(call_type: str, response_obj: dict, kwargs: dict) -> str | None:
+def _cost_row_request_id_suffix(call_type: str, metadata: Mapping[str, object]) -> str:
     if call_type == CallTypes.aretrieve_batch.value:
-        # RAYWARD FORK PATCH: CheckBatchCost supplies its own deterministic
-        # per-batch call id (prefixed so ordinary user polls, whose random
-        # call ids never carry this prefix, are unaffected) and dedups its
-        # SpendLogs row against it directly — honor it verbatim instead of
-        # falling through to the suffix below, which would compute a
-        # different request_id than the one CheckBatchCost looks up.
+        return BATCH_COST_REQUEST_ID_SUFFIX
+    if (
+        call_type in NON_INFERENCE_CALL_TYPES
+        and metadata.get(INTERNAL_CALL_ORIGIN_METADATA_KEY) == BACKGROUND_RESPONSE_COST_POLL_CALL_ORIGIN
+    ):
+        return BACKGROUND_RESPONSE_COST_REQUEST_ID_SUFFIX
+    return ""
+
+
+def get_spend_logs_id(
+    call_type: str, response_obj: dict, kwargs: dict, metadata: Mapping[str, object] = EMPTY_MAPPING
+) -> str | None:
+    if call_type == CallTypes.aretrieve_batch.value:
+        # CheckBatchCost supplies its own deterministic per-batch call id
+        # (prefixed so ordinary user polls, whose random call ids never carry
+        # this prefix, are unaffected) and dedups its SpendLogs row against it
+        # directly — honor it verbatim instead of falling through to the
+        # suffix below, which would compute a different request_id than the
+        # one CheckBatchCost looks up.
         caller_id = cast(
-            str | None,
+            "str | None",
             kwargs.get("litellm_call_id") or (kwargs.get("litellm_params") or {}).get("litellm_call_id"),
         )
         if caller_id and caller_id.startswith(BATCH_COST_CALL_ID_PREFIX):
@@ -318,9 +335,9 @@ def get_spend_logs_id(call_type: str, response_obj: dict, kwargs: dict) -> str |
     resolved_id: Final = next(
         (candidate for candidate in candidate_ids if isinstance(candidate, str) and candidate), None
     )
-    if resolved_id is not None and call_type == CallTypes.aretrieve_batch.value:
-        return f"{resolved_id}{BATCH_COST_REQUEST_ID_SUFFIX}"
-    return resolved_id
+    if resolved_id is None:
+        return None
+    return f"{resolved_id}{_cost_row_request_id_suffix(call_type, metadata)}"
 
 
 _MISSING_ATTRIBUTE: Final = object()
@@ -574,8 +591,8 @@ def get_logging_payload(
     if not usage and isinstance(_combined_usage, litellm.Usage):
         usage = _combined_usage.model_dump()
 
-    id = get_spend_logs_id(call_type or "acompletion", response_obj_dict, kwargs)
-    standard_logging_payload = cast(StandardLoggingPayload | None, kwargs.get("standard_logging_object", None))
+    id = get_spend_logs_id(call_type or "acompletion", response_obj_dict, kwargs, metadata)
+    standard_logging_payload: Final = cast(StandardLoggingPayload | None, kwargs.get("standard_logging_object", None))
 
     end_user_id = get_end_user_id_for_cost_tracking(litellm_params)
 
@@ -609,7 +626,8 @@ def get_logging_payload(
             )
             or ""
         )
-        end_user_id = end_user_id or standard_logging_payload["metadata"].get("user_api_key_end_user_id")
+        if not litellm.disable_end_user_cost_tracking:
+            end_user_id = end_user_id or standard_logging_payload["metadata"].get("user_api_key_end_user_id")
     request_tags = safe_dumps(metadata.get("tags", [])) if isinstance(metadata.get("tags", []), list) else "[]"
     if (
         standard_logging_payload is not None and standard_logging_payload.get("request_tags") is not None
