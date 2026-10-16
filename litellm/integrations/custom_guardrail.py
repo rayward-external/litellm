@@ -154,6 +154,10 @@ def _unified_hook_fields(guardrail: "CustomGuardrail", request_data: Mapping[str
     }
 
 
+def _instance_attributes(value: object) -> Mapping[str, object]:
+    return vars(value)
+
+
 def _strict_guardrail_modes_enabled() -> bool:
     """Whether guardrail-mode validation raises (default) or logs a warning.
 
@@ -405,7 +409,7 @@ class CustomGuardrail(CustomLogger):
 
     def inject_advisory_message(
         self,
-        data: dict[str, Any],  # mutable-ok: caller's dict is mutated in place, matching mark_pre_call_hook_ran
+        data: dict[str, object],  # mutable-ok: caller's dict is mutated in place, matching mark_pre_call_hook_ran
         message: str,
     ) -> bool:
         """
@@ -482,8 +486,8 @@ class CustomGuardrail(CustomLogger):
     def raise_sensitive_data_route_exception(
         self,
         route_to_model: str,
-        request_data: dict[str, Any],
-        detection_info: dict[str, Any] | None = None,
+        request_data: dict[str, object],
+        detection_info: dict[str, object] | None = None,
     ) -> None:
         """
         Raise an exception to reroute the request to a different model.
@@ -629,8 +633,8 @@ class CustomGuardrail(CustomLogger):
 
     def handle_sensitive_data_detection(
         self,
-        request_data: dict[str, Any],
-        detection_info: dict[str, Any] | None = None,
+        request_data: dict[str, object],
+        detection_info: dict[str, object] | None = None,
     ) -> None:
         """
         Handle sensitive data detection based on guardrail configuration.
@@ -897,7 +901,9 @@ class CustomGuardrail(CustomLogger):
             ) from e
         return unified_guardrail
 
-    async def async_pre_call_deployment_hook(self, kwargs: dict[str, Any], call_type: CallTypes | None) -> dict | None:
+    async def async_pre_call_deployment_hook(
+        self, kwargs: dict[str, object], call_type: CallTypes | None
+    ) -> dict | None:
         # should run guardrail
         litellm_guardrails: Final = kwargs.get("guardrails")
         if litellm_guardrails is None or not isinstance(litellm_guardrails, list):
@@ -1588,7 +1594,7 @@ class CustomGuardrail(CustomLogger):
         """
         Update the guardrails litellm params in memory
         """
-        for key, value in vars(litellm_params).items():
+        for key, value in _instance_attributes(litellm_params).items():
             setattr(self, key, value)
 
     def get_guardrails_messages_for_call_type(
