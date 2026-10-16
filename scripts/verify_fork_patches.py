@@ -157,7 +157,11 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # flipped to N/A when upstream rewrote _build_complete_streaming_response
 # around GeminiSseChunkParser, eliminating the GeminiModelResponseIterator/
 # Any construction that row's pattern protected.
-EXPECTED_NA_ROWS = 43
+# 2026-10-16 security sweep: +1 for the .github/dependabot.yml row recording
+# the removal of its two dead npm ecosystem entries (tests/pass_through_tests,
+# tests/proxy_admin_ui_tests/ui_unit_tests) -- the row documents a deletion,
+# so it has no current-state pattern to check.
+EXPECTED_NA_ROWS = 44
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",

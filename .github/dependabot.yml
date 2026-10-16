@@ -55,20 +55,6 @@ updates:
     open-pull-requests-limit: 10
 
   - package-ecosystem: "npm"
-    directory: "/tests/pass_through_tests"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-
-  - package-ecosystem: "npm"
-    directory: "/tests/proxy_admin_ui_tests/ui_unit_tests"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-
-  - package-ecosystem: "npm"
     directory: "/vscode-extension"
     schedule:
       interval: "weekly"
