@@ -181,6 +181,7 @@ REQUIRED_PINNED_DOCKERFILES = (
 STAGE_TO_ARG = {
     "builder": "LITELLM_BUILD_IMAGE",
     "liteadmin-builder": "LITELLM_BUILD_IMAGE",
+    "rust-native": "LITELLM_BUILD_IMAGE",
     "runtime": "LITELLM_RUNTIME_IMAGE",
     "service": "LITELLM_RUNTIME_IMAGE",
     "ui-builder": "UI_BUILD_IMAGE",
@@ -209,9 +210,9 @@ STAGE_TO_ARG = {
 # node ui-builder pins are the ones that were actually found stale.
 EXPECTED_LITERAL_PIN_STAGES = {
     "Dockerfile": ("uvbin", "ui-builder", "builder", "runtime", "liteadmin-builder"),
-    "backend/Dockerfile": ("uvbin", "builder", "runtime"),
-    "gateway/Dockerfile": ("uvbin", "builder", "runtime"),
-    "migrations/Dockerfile": ("uvbin", "builder", "runtime"),
+    "backend/Dockerfile": ("uvbin", "rust-native", "builder", "runtime"),
+    "gateway/Dockerfile": ("uvbin", "rust-native", "builder", "runtime"),
+    "migrations/Dockerfile": ("uvbin", "rust-native", "builder", "runtime"),
     # builder is still vanilla `FROM $LITELLM_BUILD_IMAGE` here.
     "docker/Dockerfile.database": ("uvbin", "ui-builder", "runtime"),
     "docker/Dockerfile.non_root": ("uvbin", "ui-builder", "builder", "runtime"),
