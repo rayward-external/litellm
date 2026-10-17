@@ -81,3 +81,12 @@ paths-ignore:
   # CodeQL cannot express "accepted, scoped client-side token cache", and a
   # query-filter exclude cannot be scoped to one file, so the file is ignored.
   - "ui/litellm-dashboard/src/utils/mcpTokenStore.ts"
+  # Same FP class as mcpTokenStore.ts above, new in upstream's 2026-10-17
+  # playground rewrite: persist()'s `else window.sessionStorage.setItem(key,
+  # value)` branch only ever runs for fields storedValues() tags
+  # `secure: false`; the virtualKey/apiKeySource/customHeaders fields are
+  # routed to setSecureItem() on the sibling branch instead. CodeQL's taint
+  # tracking can't follow that per-field discriminant and flags the whole
+  # settings object (which also carries the secure fields) as reaching the
+  # plain-text sink.
+  - "ui/litellm-dashboard/src/app/(dashboard)/playground/components/chat/usePlaygroundSettings.ts"
