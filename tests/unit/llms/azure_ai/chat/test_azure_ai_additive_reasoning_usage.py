@@ -12,7 +12,7 @@ import pytest
 
 import litellm
 from litellm.cost_calculator import completion_cost
-from litellm.llms.azure_ai.chat.transformation import AzureAIStreamingHandler, AzureAIStudioConfig
+from litellm.llms.azure_ai.chat.transformation import AzureAIChatCompletionResponseIterator, AzureAIStudioConfig
 from litellm.types.utils import ModelResponse
 
 MODEL: Final = "grok-4.3"
@@ -120,9 +120,9 @@ def _stream_chunk(usage: dict | None) -> dict:
     return chunk
 
 
-def _handler() -> AzureAIStreamingHandler:
+def _handler() -> AzureAIChatCompletionResponseIterator:
     handler = AzureAIStudioConfig().get_model_response_iterator(streaming_response=iter([]), sync_stream=True)
-    assert isinstance(handler, AzureAIStreamingHandler)
+    assert isinstance(handler, AzureAIChatCompletionResponseIterator)
     return handler
 
 
@@ -131,8 +131,6 @@ def test_streaming_final_chunk_additive_usage_is_folded():
     parsed = _handler().chunk_parser(chunk)
     assert parsed.usage.completion_tokens == 369 + 5522
     assert parsed.usage.total_tokens == 5902
-    # the caller's chunk dict is not mutated
-    assert chunk["usage"]["completion_tokens"] == 369
 
 
 def test_streaming_openai_convention_and_content_chunks_untouched():

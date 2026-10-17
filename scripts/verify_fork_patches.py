@@ -161,7 +161,9 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # the removal of its two dead npm ecosystem entries (tests/pass_through_tests,
 # tests/proxy_admin_ui_tests/ui_unit_tests) -- the row documents a deletion,
 # so it has no current-state pattern to check.
-EXPECTED_NA_ROWS = 44
+# 2026-10-17 sync: +1 for the azure_ai additive-reasoning row, superseded by
+# upstream's own XAIChatConfig.fold_reasoning_tokens_into_completion.
+EXPECTED_NA_ROWS = 45
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",

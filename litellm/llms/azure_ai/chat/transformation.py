@@ -18,12 +18,9 @@ from litellm.llms.azure.common_utils import BaseAzureLLM
 from litellm.llms.azure_ai.common_utils import (
     api_key_header_for_base,
     is_foundry_model_inference_base,
-    normalize_additive_reasoning_usage,
-    normalize_chunk_usage,
 )
 from litellm.llms.base_llm.chat.transformation import LiteLLMLoggingObj
 from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
-from litellm.llms.openai.chat.gpt_transformation import OpenAIChatCompletionStreamingHandler
 from litellm.llms.openai.common_utils import drop_params_from_unprocessable_entity_error
 from litellm.llms.openai.openai import OpenAIChatCompletionResponseIterator, OpenAIConfig
 from litellm.llms.xai.chat.transformation import XAIChatConfig
@@ -76,17 +73,6 @@ class AzureAIGPT5Config(OpenAIGPT5Config):
 
 
 azureAIGPT5Config: Final = AzureAIGPT5Config()
-
-
-class AzureAIStreamingHandler(OpenAIChatCompletionStreamingHandler):
-    """Folds additively reported reasoning tokens (see ``normalize_chunk_usage``)
-    into ``completion_tokens`` on the chunk that carries usage."""
-
-    def chunk_parser(
-        self,
-        chunk: dict,  # mutable-ok: parent signature  # pyright: ignore[reportUnknownParameterType, reportMissingTypeArgument]  # parent's bare dict
-    ) -> ModelResponseStream:
-        return super().chunk_parser(dict(normalize_chunk_usage(chunk)))  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]  # chunk is the parent's bare dict
 
 
 class AzureAIStudioConfig(OpenAIConfig):
