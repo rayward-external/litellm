@@ -24,7 +24,9 @@ RUN curl -fsSL -o pgbouncer.tar.gz "https://www.pgbouncer.org/downloads/files/${
 
 # ---------- Rust extension ----------
 # Copies only the native build's inputs, so the fat-LTO compile stays cached across Python-only changes
-FROM $LITELLM_BUILD_IMAGE AS rust-native
+# Pin by digest so supply-chain scanners (OpenSSF Scorecard PinnedDependencies)
+# recognise the image as pinned. Update the ARG default above in sync.
+FROM cgr.dev/chainguard/wolfi-base@sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d AS rust-native
 
 WORKDIR /app
 USER root
