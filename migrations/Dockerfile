@@ -52,7 +52,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uvx --python python3.13 --from maturin==1.15.0 --with puccinialin==0.1.14 \
         python -c "import maturin; maturin.build_wheel('/wheels')"
 
-FROM $LITELLM_BUILD_IMAGE AS builder
+FROM cgr.dev/chainguard/wolfi-base@sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d AS builder
 
 WORKDIR /app
 USER root

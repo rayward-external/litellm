@@ -156,7 +156,7 @@ _WEB_IDENTITY_SESSION_POLICY_ACTIONS: Final[Mapping[str, tuple[str, ...]]] = Map
             "sts:GetWebIdentityToken",
             "sts:TagGetWebIdentityToken",
         ),
-        "BedrockMantleLiteLLM": ("bedrock-mantle:CreateInference",),
+        "BedrockMantleLiteLLM": ("bedrock-mantle:CreateInference", "bedrock-mantle:CountTokens"),
     }
 )
 
