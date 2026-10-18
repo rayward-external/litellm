@@ -772,14 +772,14 @@ class TestCheckBatchCost:
 
             await check_batch_cost_instance.check_batch_cost()
 
-        assert mock_prisma_client.db.litellm_managedobjecttable.update_many.call_count >= 3, (
-            "Expected update() to be called exactly once for the completed job"
-        )
-        update_data = mock_prisma_client.db.litellm_managedobjecttable.update_many.call_args[1]["data"]
+        finalize_writes = [
+            data for data in _row_writes(mock_prisma_client) if data.get("status") == "complete"
+        ]
+        assert len(finalize_writes) == 1, "Expected exactly one finalize write for the completed job"
+        update_data = finalize_writes[0]
         assert update_data["batch_processed"] is True, (
-            "update() must include batch_processed=True when column is present"
+            "finalize write must include batch_processed=True when column is present"
         )
-        assert update_data["status"] == "complete"
 
     @pytest.mark.asyncio
     async def test_completed_batch_with_no_attributable_owner_still_writes_spend_log(

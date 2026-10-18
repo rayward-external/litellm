@@ -4,7 +4,7 @@ import inspect
 import json
 import ssl
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from functools import lru_cache, partial, reduce
 from types import MappingProxyType
 from typing import (
@@ -7107,6 +7107,8 @@ class BaseLLMHTTPHandler:
                     authorized_model=model,
                     custom_llm_provider=custom_llm_provider,
                     request_defaults=request_defaults,
+                    responses_api_provider_config=responses_api_provider_config,
+                    api_base=api_base,
                     frame_guard=frame_guard,
                 )
                 return await streaming.bidirectional_forward()

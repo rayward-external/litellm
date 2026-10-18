@@ -2217,6 +2217,8 @@ class ResponsesWebSocketStreaming:
         authorized_model: str | None = None,
         custom_llm_provider: str | None = None,
         request_defaults: ResponsesWebSocketRequestDefaults | None = None,
+        responses_api_provider_config: BaseResponsesAPIConfig | None = None,
+        api_base: str | None = None,
         frame_guard: ResponsesWsFrameGuard | None = None,
     ):
         self.websocket = websocket

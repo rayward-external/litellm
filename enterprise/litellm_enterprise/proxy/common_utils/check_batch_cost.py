@@ -210,32 +210,6 @@ class CheckBatchCost:
             return False
         return claimed_count == 1
 
-    async def _release_job_claim(self, job: "ManagedObjectRow") -> None:
-        """Return a claimed-but-unpriced row to the pool so the next poll
-        retries it. Fenced to the claim-held state: after a reclaim, a slow
-        ex-owner's release must not flip a row another worker has since
-        claimed or finalized. Best effort: an orphaned claim (release also
-        failed) is recovered by _reclaim_abandoned_pricing_claims on later
-        cycles — the deterministic litellm_call_id backstops the double-bill
-        side."""
-        try:
-            if not self._has_batch_processed_column:
-                await _managed_object_table(self.prisma_client).update(
-                    where={"id": job.id},
-                    data={"batch_processed": False, "status": "validating"},
-                )
-                return
-            released = await _managed_object_table(self.prisma_client).update_many(
-                where={"id": job.id, "status": "pricing", "batch_processed": True},
-                data={"batch_processed": False, "status": "validating"},
-            )
-            if released != 1:
-                verbose_proxy_logger.warning(
-                    f"CheckBatchCost: release skipped for job {job.id} — the claim was taken over by another worker"
-                )
-        except Exception as release_err:
-            verbose_proxy_logger.error(f"CheckBatchCost: failed to release claim on job {job.id}: {release_err}")
-
     @classmethod
     def _augment_update_with_owner_key(cls, job: "ManagedObjectRow", update_data: dict[str, Any]) -> dict[str, Any]:
         """Self-heal the owner_key column (which backs the owner-scoped
@@ -1460,7 +1434,46 @@ class CheckBatchCost:
                 continue
 
             ## RETRIEVE THE BATCH JOB OUTPUT FILE
+            # Terminal-but-not-completed jobs (stopped/failed/expired) can
+            # still carry billable partial output — Bedrock writes whatever
+            # records finished, and the batch route serves those results.
+            # Finalizing them without pricing hands out free tokens via
+            # cancel-after-partial-processing (codex P1); salvage-price when
+            # an output object was predicted for the job.
+            salvaged_output_file_id: str | None = None
+            if response.status in ("failed", "expired", "cancelled") and response.output_file_id is None:
+                response_metadata = getattr(response, "metadata", None)
+                if isinstance(response_metadata, dict) and response_metadata.get("output_file_uri"):
+                    salvaged_output_file_id = str(response_metadata["output_file_uri"])
+                    response.output_file_id = salvaged_output_file_id
+
             if response.status in PROVIDER_TERMINAL_BATCH_STATUSES and response.output_file_id is not None:
+                terminal_status = "complete" if response.status == "completed" else response.status
+                if await self._spend_already_recorded(batch_id, job):
+                    # A prior worker billed this batch but died before
+                    # finalizing (or was reclaimed) — finalize WITHOUT
+                    # re-running spend side effects. Finalization is fenced to
+                    # a held claim and the claim is only taken inside
+                    # _track_completed_batch_cost, so take one here first.
+                    if not await self._claim_job(job):
+                        continue
+                    verbose_proxy_logger.warning(
+                        f"CheckBatchCost: spend already recorded for batch {batch_id}; "
+                        f"finalizing job {job.id} without re-billing"
+                    )
+                    try:
+                        already_billed_update: dict = {
+                            "status": terminal_status,
+                            "file_object": self._finalized_file_object(job, response, spend_recorded=True),
+                        }
+                        if self._has_batch_processed_column:
+                            already_billed_update["batch_processed"] = True
+                        await self._finalize_job(job, already_billed_update)
+                    except Exception as db_err:
+                        verbose_proxy_logger.error(
+                            f"CheckBatchCost: failed to finalize already-billed job {job.id}: {db_err}"
+                        )
+                    continue
                 try:
                     tracked = await self._track_completed_batch_cost(
                         job=job,
@@ -1542,19 +1555,21 @@ class CheckBatchCost:
                     # one rather than racing another worker's costing run.
                     continue
 
-                if not self._has_batch_processed_column:
-                    try:
-                        await _managed_object_table(self.prisma_client).update(
-                            where={"id": job.id},
-                            data={
-                                "status": response.status if response.status != "completed" else "complete",
-                                "file_object": response.model_dump_json(),
-                            },
-                        )
-                    except Exception as db_err:
-                        verbose_proxy_logger.error(
-                            f"CheckBatchCost: failed to mark job {job.id} complete in DB: {db_err}"
-                        )
+                # finalize, fenced to the claim this worker holds
+                try:
+                    update_data: dict = {
+                        "status": response.status if response.status != "completed" else "complete",
+                        "file_object": response.model_dump_json(),
+                    }
+                    if self._has_batch_processed_column:
+                        update_data["batch_processed"] = True
+                    await self._finalize_job(job, update_data)
+                except Exception as db_err:
+                    verbose_proxy_logger.error(
+                        f"CheckBatchCost: failed to mark job {job.id} {terminal_status} in DB: {db_err}"
+                    )
+                    if not self._has_batch_processed_column:
+                        # nothing claimed the row, so it stays in the poll page and its lines wait for that retry
                         continue
                 self._store_batch_line_items_in_background(job, response, model_id, batch_id, billed=True)
 

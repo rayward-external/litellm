@@ -3306,6 +3306,7 @@ _BEDROCK_REGION_PREFIXES: Final = (
 )
 
 _TOKEN_COST_FIELDS: Final = ("input_cost_per_token", "output_cost_per_token")
+_DERIVED_REGISTRATION_FIELDS: Final = (*_TOKEN_COST_FIELDS, "supported_openai_params")
 
 
 def _builtin_cost_map() -> dict[str, Mapping[str, object]]:
@@ -3326,15 +3327,19 @@ def _without_synthesized_costs(
     model_info: Mapping[str, object], key: str, value: Mapping[str, object]
 ) -> Mapping[str, object]:
     """``_get_model_info_helper`` synthesizes ``input_cost_per_token`` / ``output_cost_per_token`` = 0 when the raw
-    entry has neither (#30198). Persisting those zeros would turn a name-priced entry into a free one and make
-    ``_is_cost_explicitly_configured`` disable budget enforcement on the next re-registration."""
+    entry has neither (#30198), and ``supported_openai_params`` from the provider's generic default list when
+    ``key`` doesn't resolve to a real model name (e.g. a custom-priced deployment re-registering under its router
+    deployment id, once that id is already a ``litellm.model_cost`` key from an earlier registration). Persisting
+    the former would turn a name-priced entry into a free one and make ``_is_cost_explicitly_configured`` disable
+    budget enforcement on the next re-registration; persisting the latter makes ``Router._set_model_group_info``
+    advertise that generic list for the whole model group (last deployment wins)."""
     builtin_cost_map: Final = _builtin_cost_map()
     raw_fields: Final = frozenset(builtin_cost_map.get(str(model_info["key"]), builtin_cost_map.get(key, {})))
     return MappingProxyType(
         {
             name: field_value
             for name, field_value in model_info.items()
-            if name not in _TOKEN_COST_FIELDS or name in raw_fields or name in value
+            if name not in _DERIVED_REGISTRATION_FIELDS or name in raw_fields or name in value
         }
     )
 

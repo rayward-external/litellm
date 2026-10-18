@@ -3,7 +3,16 @@ import contextlib
 import json
 import logging
 import math
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterable,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Mapping,
+    Sequence,
+)
 from datetime import datetime
 from functools import lru_cache
 from types import MappingProxyType
@@ -1024,6 +1033,40 @@ def _extract_error_from_sse_chunk(event_line: str | bytes) -> dict:
             pass
 
     return default_error
+
+
+class StreamWriteStalled(Exception):
+    """No progress was made writing a streamed chunk within the configured window.
+
+    Raised instead of `starlette.requests.ClientDisconnect` so a caller can tell
+    an inferred stall from a disconnect the transport actually reported.
+    """
+
+
+def _stall_guarded_send(send: Send, timeout_seconds: float) -> Send:
+    """Wrap an ASGI `send` so a write that makes no progress ends the stream.
+
+    `asyncio.wait_for` cancels the pending `send()` on expiry. The bytes it was
+    draining are abandoned, which is correct: the response is being torn down and
+    the peer is, by construction, not reading them.
+    """
+
+    async def guarded(message: Message) -> None:
+        try:
+            await asyncio.wait_for(send(message), timeout=timeout_seconds)
+        except asyncio.TimeoutError as exc:
+            # Deliberately not specific about what is still open: the stall can
+            # land on the terminating empty-body frame, by which point the
+            # upstream has already finished and there is nothing left to close.
+            verbose_proxy_logger.warning(
+                "client stopped reading the stream: no write progress in %ss, abandoning the response",
+                timeout_seconds,
+            )
+            raise StreamWriteStalled(
+                f"no streaming write progress in {timeout_seconds}s; treating the client as gone"
+            ) from exc
+
+    return guarded
 
 
 async def _close_upstream(upstream: object) -> None:
