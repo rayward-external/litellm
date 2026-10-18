@@ -537,7 +537,7 @@ class CheckBatchCost:
             "so it will no longer be polled"
         )
 
-    async def _claim_job_for_costing(self, job: "ManagedObjectRow") -> bool:
+    async def _claim_job_for_costing(self, job: "ManagedObjectRow", response: "LiteLLMBatch") -> bool:
         """
         Atomically flip batch_processed from false to true, returning whether this pod won
         the row. Every pod and uvicorn worker schedules its own poller against the shared
@@ -551,10 +551,16 @@ class CheckBatchCost:
         """
         if not self._has_batch_processed_column:
             return True
+        from litellm_enterprise.proxy.hooks.managed_files import postgres_storable_json
+
         try:
             claimed: Final = await _managed_object_table(self.prisma_client).update_many(
                 where={"id": job.id, "batch_processed": False},
-                data={"batch_processed": True},
+                data={
+                    "batch_processed": True,
+                    "status": response.status if response.status != "completed" else "complete",
+                    "file_object": postgres_storable_json(response),
+                },
             )
         except Exception as db_err:
             verbose_proxy_logger.error(
@@ -562,6 +568,32 @@ class CheckBatchCost:
             )
             return False
         return claimed > 0
+
+    async def _release_job_claim(
+        self, job: "ManagedObjectRow", original_status: str | None, original_file_object: object
+    ) -> None:
+        """Give a claimed row back once billing it failed, so a later poll cycle retries it.
+
+        Safe to match on batch_processed=True: while this poller is active the retrieve
+        path leaves the column alone (batch_cost_poller_is_active), so a true value here
+        is always this pod's own claim.
+        """
+        if not self._has_batch_processed_column:
+            return
+        try:
+            await _managed_object_table(self.prisma_client).update_many(
+                where={"id": job.id, "batch_processed": True},
+                data={
+                    "batch_processed": False,
+                    "status": original_status,
+                    "file_object": json.dumps(original_file_object),
+                },
+            )
+        except Exception as db_err:
+            verbose_proxy_logger.error(
+                f"CheckBatchCost: failed to release the claim on job {job.id}, "
+                f"so its cost will not be retried: {db_err}"
+            )
 
     @staticmethod
     def _has_unified_id_without_model(job: "ManagedObjectRow") -> bool:
@@ -1006,8 +1038,7 @@ class CheckBatchCost:
                         )
                     except Exception as _e:
                         verbose_proxy_logger.warning(
-                            f"CheckBatchCost: failed to create managed file ID for "
-                            f"{_file_attr}={_raw_file_id!r}: {_e}"
+                            f"CheckBatchCost: failed to create managed file ID for {_file_attr}={_raw_file_id!r}: {_e}"
                         )
 
         # Pass the deployment's router-registered pricing (litellm_params custom
@@ -1043,8 +1074,9 @@ class CheckBatchCost:
                 failed_requests=output_file_result.failed_requests + error_file_failed_requests,
             )
         )
+        logging_model: Final = batch_result.models[0] if batch_result.models else litellm_model_name or model_id
         logging_obj = LiteLLMLogging(
-            model=batch_result.models[0] if batch_result.models else (model_name or "unknown"),
+            model=logging_model,
             messages=[{"role": "user", "content": "<retrieve_batch>"}],
             stream=False,
             call_type="aretrieve_batch",
@@ -1104,15 +1136,9 @@ class CheckBatchCost:
             custom_llm_provider=str(llm_provider) if llm_provider else None,
         )
 
-        # Claim HERE, after the results are in hand and immediately before the
-        # spend log is written, not before the fetch. batch_processed is also
-        # what keeps an unbilled row selectable by later poll cycles and what
-        # makes the managed-files deletion guard hold the output file, so
-        # flipping it early let a concurrent delete remove the very file this
-        # fetch reads, and left a worker killed mid-fetch's batch billable by
-        # nobody until the reclaim sweep. Losing the race here costs only a
-        # duplicated fetch; the winner bills exactly once.
-        if not await self._claim_job(job):
+        original_status: Final = job.status
+        original_file_object: Final = job.file_object
+        if not await self._claim_job_for_costing(job, response.model_copy(update={"usage": batch_result.usage})):
             verbose_proxy_logger.info(
                 f"CheckBatchCost: batch {batch_id} (job {job.id}) was claimed by another pod "
                 "in this window, so its cost is already being tracked there"
@@ -1131,9 +1157,7 @@ class CheckBatchCost:
                 batch_completion_cost=batch_result.completion_cost,
             )
         except Exception:
-            # Hand the row back so the next cycle retries it, rather than
-            # leaving a claimed-but-unbilled row for the reclaim sweep.
-            await self._release_job_claim(job)
+            await self._release_job_claim(job, original_status, original_file_object)
             raise
 
         # Record batch duration (completed_at - created_at)
@@ -1436,51 +1460,7 @@ class CheckBatchCost:
                 continue
 
             ## RETRIEVE THE BATCH JOB OUTPUT FILE
-            # Terminal-but-not-completed jobs (stopped/failed/expired) can
-            # still carry billable partial output — Bedrock writes whatever
-            # records finished, and the batch route serves those results.
-            # Finalizing them without pricing hands out free tokens via
-            # cancel-after-partial-processing (codex P1); salvage-price when
-            # an output object was predicted for the job.
-            salvaged_output_file_id: str | None = None
-            if response.status in ("failed", "expired", "cancelled") and response.output_file_id is None:
-                response_metadata = getattr(response, "metadata", None)
-                if isinstance(response_metadata, dict) and response_metadata.get("output_file_uri"):
-                    salvaged_output_file_id = str(response_metadata["output_file_uri"])
-                    response.output_file_id = salvaged_output_file_id
-
-            if (
-                response.status in PROVIDER_TERMINAL_BATCH_STATUSES
-                and response.output_file_id is not None
-            ):
-                terminal_status = "complete" if response.status == "completed" else response.status
-                if await self._spend_already_recorded(batch_id, job):
-                    # A prior worker billed this batch but died before
-                    # finalizing (or was reclaimed) — finalize WITHOUT
-                    # re-running spend side effects. Finalization is fenced to
-                    # a held claim and the claim is only taken inside
-                    # _track_completed_batch_cost, so take one here first.
-                    if not await self._claim_job(job):
-                        continue
-                    verbose_proxy_logger.warning(
-                        f"CheckBatchCost: spend already recorded for batch {batch_id}; "
-                        f"finalizing job {job.id} without re-billing"
-                    )
-                    try:
-                        already_billed_update: dict = {
-                            "status": terminal_status,
-                            "file_object": self._finalized_file_object(
-                                job, response, spend_recorded=True
-                            ),
-                        }
-                        if self._has_batch_processed_column:
-                            already_billed_update["batch_processed"] = True
-                        await self._finalize_job(job, already_billed_update)
-                    except Exception as db_err:
-                        verbose_proxy_logger.error(
-                            f"CheckBatchCost: failed to finalize already-billed job {job.id}: {db_err}"
-                        )
-                    continue
+            if response.status in PROVIDER_TERMINAL_BATCH_STATUSES and response.output_file_id is not None:
                 try:
                     tracked = await self._track_completed_batch_cost(
                         job=job,
@@ -1562,21 +1542,19 @@ class CheckBatchCost:
                     # one rather than racing another worker's costing run.
                     continue
 
-                # finalize, fenced to the claim this worker holds
-                try:
-                    update_data: dict = {
-                        "status": response.status if response.status != "completed" else "complete",
-                        "file_object": response.model_dump_json(),
-                    }
-                    if self._has_batch_processed_column:
-                        update_data["batch_processed"] = True
-                    await self._finalize_job(job, update_data)
-                except Exception as db_err:
-                    verbose_proxy_logger.error(
-                        f"CheckBatchCost: failed to mark job {job.id} {terminal_status} in DB: {db_err}"
-                    )
-                    if not self._has_batch_processed_column:
-                        # nothing claimed the row, so it stays in the poll page and its lines wait for that retry
+                if not self._has_batch_processed_column:
+                    try:
+                        await _managed_object_table(self.prisma_client).update(
+                            where={"id": job.id},
+                            data={
+                                "status": response.status if response.status != "completed" else "complete",
+                                "file_object": response.model_dump_json(),
+                            },
+                        )
+                    except Exception as db_err:
+                        verbose_proxy_logger.error(
+                            f"CheckBatchCost: failed to mark job {job.id} complete in DB: {db_err}"
+                        )
                         continue
                 self._store_batch_line_items_in_background(job, response, model_id, batch_id, billed=True)
 

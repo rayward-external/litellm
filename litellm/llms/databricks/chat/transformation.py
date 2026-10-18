@@ -278,10 +278,8 @@ class DatabricksConfig(DatabricksBase, OpenAILikeChatConfig, AnthropicConfig):
         litellm_params: dict,
         stream: bool | None = None,
     ) -> str:
-        use_ai_gateway: Final = model.removeprefix("databricks/").count(".") >= 2
-        api_base = self._get_api_base(
-            api_base, use_ai_gateway=use_ai_gateway
-        )  # rebind-ok: resolves the effective api_base once ai-gateway routing is known
+        use_ai_gateway: Final = self.uses_ai_gateway(model)
+        api_base = self._get_api_base(api_base, use_ai_gateway=use_ai_gateway)
         url_base: Final = api_base.rstrip("/") if use_ai_gateway else api_base
         complete_url: Final = f"{url_base}/chat/completions"
         return complete_url
