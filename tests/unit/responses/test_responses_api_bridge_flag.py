@@ -59,7 +59,9 @@ class TestUseResponsesApiBridgeFlag:
         import_module("litellm.responses.main").litellm_completion_transformation_handler, "response_api_handler"
     )
     @patch.object(import_module("litellm.responses.main").ProviderConfigManager, "get_provider_responses_api_config")
-    def test_bridge_used_when_use_chat_completions_api_true(self, mock_get_config, mock_bridge_handler):
+    def test_bridge_used_when_use_chat_completions_api_true(  # test-quality-ok: upstream test, reformat shifted it
+        self, mock_get_config, mock_bridge_handler
+    ):
         """When use_chat_completions_api=True, the bridge handler should be called."""
         mock_get_config.return_value = litellm.OpenAIResponsesAPIConfig()
         mock_bridge_handler.return_value = MagicMock()
@@ -99,7 +101,9 @@ class TestUseResponsesApiBridgeFlag:
         import_module("litellm.responses.main").litellm_completion_transformation_handler, "response_api_handler"
     )
     @patch.object(import_module("litellm.responses.main").ProviderConfigManager, "get_provider_responses_api_config")
-    def test_bridge_used_when_model_uses_chat_completions_prefix(self, mock_get_config, mock_bridge_handler):
+    def test_bridge_used_when_model_uses_chat_completions_prefix(  # test-quality-ok: upstream test, reformat shifted it
+        self, mock_get_config, mock_bridge_handler
+    ):
         """`openai/chat_completions/<name>` normalizes to `openai/<name>` and uses the bridge."""
         mock_get_config.return_value = litellm.OpenAIResponsesAPIConfig()
         mock_bridge_handler.return_value = MagicMock()
@@ -116,7 +120,9 @@ class TestUseResponsesApiBridgeFlag:
 
     @patch.object(import_module("litellm.responses.main").base_llm_http_handler, "response_api_handler")
     @patch.object(import_module("litellm.responses.main").ProviderConfigManager, "get_provider_responses_api_config")
-    def test_native_forwarding_when_flag_absent(self, mock_get_config, mock_native_handler):
+    def test_native_forwarding_when_flag_absent(  # test-quality-ok: upstream test, reformat shifted it
+        self, mock_get_config, mock_native_handler
+    ):
         """When use_chat_completions_api is not set, openai/ models should use
         native responses API forwarding (existing behavior)."""
         mock_get_config.return_value = litellm.OpenAIResponsesAPIConfig()
@@ -154,7 +160,9 @@ class TestUseResponsesApiBridgeFlag:
         import_module("litellm.responses.main").litellm_completion_transformation_handler, "response_api_handler"
     )
     @patch.object(import_module("litellm.responses.main").ProviderConfigManager, "get_provider_responses_api_config")
-    def test_bridge_used_when_provider_config_none(self, mock_get_config, mock_bridge_handler):
+    def test_bridge_used_when_provider_config_none(  # test-quality-ok: upstream test, reformat shifted it
+        self, mock_get_config, mock_bridge_handler
+    ):
         """When the provider has no native responses API config (returns None),
         the bridge should be used regardless of the flag (existing behavior)."""
         mock_get_config.return_value = None
@@ -170,7 +178,9 @@ class TestUseResponsesApiBridgeFlag:
 
     @patch("litellm.acompletion")
     @patch.object(import_module("litellm.responses.main").ProviderConfigManager, "get_provider_responses_api_config")
-    async def test_allowed_openai_params_forwarded_through_bridge(self, mock_get_config, mock_acompletion):
+    async def test_allowed_openai_params_forwarded_through_bridge(  # test-quality-ok: reformat shifted it
+        self, mock_get_config, mock_acompletion
+    ):
         """allowed_openai_params is a named param of responses(), so it must be
         explicitly forwarded to the bridge; otherwise litellm.acompletion raises
         UnsupportedParamsError for params the caller explicitly allowed."""
