@@ -2,7 +2,13 @@ from collections.abc import Mapping
 from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
-from typing import Annotated, Final, Literal, TypeAlias, cast
+from typing import (
+    Annotated,
+    Final,
+    Literal,
+    TypeAlias,
+    cast,  # noqa: TID251  # upstream's own file; see cast-ok call sites
+)
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from pydantic.fields import FieldInfo
