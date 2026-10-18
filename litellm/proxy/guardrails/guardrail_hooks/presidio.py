@@ -17,7 +17,15 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import accumulate, count, pairwise
-from typing import TYPE_CHECKING, Any, Final, Literal, Optional, Protocol, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Final,
+    Literal,
+    Optional,
+    Protocol,
+    cast,  # noqa: TID251  # narrows validated analyzer/anonymizer secrets, see isinstance guards above
+)
 
 import aiohttp
 from pydantic import ConfigDict, JsonValue, TypeAdapter, with_config
