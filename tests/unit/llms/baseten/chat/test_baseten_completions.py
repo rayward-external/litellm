@@ -81,7 +81,7 @@ if __name__ == "__main__":
     pytest.main([__file__])
 
 
-class TestBasetenReasoningEffort:
+class TestBasetenReasoningEffortDeclaredUnconditionally:
     """reasoning_effort was silently dropped for every Baseten model -- the
     param list simply never included it, and drop_params strips anything not
     on that list before the request is built. Baseten hosts arbitrary,
