@@ -1549,6 +1549,14 @@ class CheckBatchCost:
                     # finalizing so a crash in between can't re-bill after
                     # reclamation, even with disable_spend_logs set.
                     await self._mark_spend_recorded(job)
+                    if self._has_batch_processed_column:
+                        # _claim_job_for_costing already wrote the terminal
+                        # status/file_object/batch_processed as part of the
+                        # claim itself (immediately before the spend log was
+                        # written); finalizing again here would just no-op
+                        # against a row whose status is no longer "pricing".
+                        self._store_batch_line_items_in_background(job, response, model_id, batch_id, billed=True)
+                        continue
                 elif not await self._claim_job(job):
                     # Salvage path only: nothing was billed and no claim was
                     # taken, so fence the zero-cost finalization below behind
