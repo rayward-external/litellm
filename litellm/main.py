@@ -5827,8 +5827,10 @@ def completion(
         mapping_special_params: Final = MappingProxyType(dict(non_default_params))
 
         def optional_params_for_model_info(deployment_info: Mapping[str, object] | None) -> dict[str, object]:
-            return get_optional_params(  # pyright: ignore[reportArgumentType]  # dict built to match the signature
-                **mapping_args, model_info=deployment_info, **mapping_special_params
+            return get_optional_params(
+                **mapping_args,  # pyright: ignore[reportArgumentType]  # dict built to match the signature
+                model_info=deployment_info,
+                **mapping_special_params,
             )
 
         optional_params = optional_params_for_model_info(
