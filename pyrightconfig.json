@@ -5,7 +5,14 @@
     "executionEnvironments": [
         {
             "root": "tests/e2e_harness",
-            "extraPaths": ["tests/e2e", "tests/e2e/batches", "tests/e2e/guardrails", "tests/e2e/perf", "tests/e2e/logging"]
+            "extraPaths": [
+                "tests/e2e",
+                "tests/e2e/batches",
+                "tests/e2e/guardrails",
+                "tests/e2e/perf",
+                "tests/e2e/logging",
+                "litellm-proxy-extras"
+            ]
         }
     ],
     "pythonVersion": "3.12",
