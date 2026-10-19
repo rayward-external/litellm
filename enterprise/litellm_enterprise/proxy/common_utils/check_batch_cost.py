@@ -210,32 +210,6 @@ class CheckBatchCost:
             return False
         return claimed_count == 1
 
-    async def _release_job_claim(self, job: "ManagedObjectRow") -> None:
-        """Return a claimed-but-unpriced row to the pool so the next poll
-        retries it. Fenced to the claim-held state: after a reclaim, a slow
-        ex-owner's release must not flip a row another worker has since
-        claimed or finalized. Best effort: an orphaned claim (release also
-        failed) is recovered by _reclaim_abandoned_pricing_claims on later
-        cycles — the deterministic litellm_call_id backstops the double-bill
-        side."""
-        try:
-            if not self._has_batch_processed_column:
-                await _managed_object_table(self.prisma_client).update(
-                    where={"id": job.id},
-                    data={"batch_processed": False, "status": "validating"},
-                )
-                return
-            released = await _managed_object_table(self.prisma_client).update_many(
-                where={"id": job.id, "status": "pricing", "batch_processed": True},
-                data={"batch_processed": False, "status": "validating"},
-            )
-            if released != 1:
-                verbose_proxy_logger.warning(
-                    f"CheckBatchCost: release skipped for job {job.id} — the claim was taken over by another worker"
-                )
-        except Exception as release_err:
-            verbose_proxy_logger.error(f"CheckBatchCost: failed to release claim on job {job.id}: {release_err}")
-
     @classmethod
     def _augment_update_with_owner_key(cls, job: "ManagedObjectRow", update_data: dict[str, Any]) -> dict[str, Any]:
         """Self-heal the owner_key column (which backs the owner-scoped
@@ -537,7 +511,7 @@ class CheckBatchCost:
             "so it will no longer be polled"
         )
 
-    async def _claim_job_for_costing(self, job: "ManagedObjectRow") -> bool:
+    async def _claim_job_for_costing(self, job: "ManagedObjectRow", response: "LiteLLMBatch") -> bool:
         """
         Atomically flip batch_processed from false to true, returning whether this pod won
         the row. Every pod and uvicorn worker schedules its own poller against the shared
@@ -551,10 +525,16 @@ class CheckBatchCost:
         """
         if not self._has_batch_processed_column:
             return True
+        from litellm_enterprise.proxy.hooks.managed_files import postgres_storable_json
+
         try:
             claimed: Final = await _managed_object_table(self.prisma_client).update_many(
                 where={"id": job.id, "batch_processed": False},
-                data={"batch_processed": True},
+                data={
+                    "batch_processed": True,
+                    "status": response.status if response.status != "completed" else "complete",
+                    "file_object": postgres_storable_json(response),
+                },
             )
         except Exception as db_err:
             verbose_proxy_logger.error(
@@ -562,6 +542,32 @@ class CheckBatchCost:
             )
             return False
         return claimed > 0
+
+    async def _release_job_claim(
+        self, job: "ManagedObjectRow", original_status: str | None, original_file_object: object
+    ) -> None:
+        """Give a claimed row back once billing it failed, so a later poll cycle retries it.
+
+        Safe to match on batch_processed=True: while this poller is active the retrieve
+        path leaves the column alone (batch_cost_poller_is_active), so a true value here
+        is always this pod's own claim.
+        """
+        if not self._has_batch_processed_column:
+            return
+        try:
+            await _managed_object_table(self.prisma_client).update_many(
+                where={"id": job.id, "batch_processed": True},
+                data={
+                    "batch_processed": False,
+                    "status": original_status,
+                    "file_object": json.dumps(original_file_object),
+                },
+            )
+        except Exception as db_err:
+            verbose_proxy_logger.error(
+                f"CheckBatchCost: failed to release the claim on job {job.id}, "
+                f"so its cost will not be retried: {db_err}"
+            )
 
     @staticmethod
     def _has_unified_id_without_model(job: "ManagedObjectRow") -> bool:
@@ -1006,8 +1012,7 @@ class CheckBatchCost:
                         )
                     except Exception as _e:
                         verbose_proxy_logger.warning(
-                            f"CheckBatchCost: failed to create managed file ID for "
-                            f"{_file_attr}={_raw_file_id!r}: {_e}"
+                            f"CheckBatchCost: failed to create managed file ID for {_file_attr}={_raw_file_id!r}: {_e}"
                         )
 
         # Pass the deployment's router-registered pricing (litellm_params custom
@@ -1043,8 +1048,9 @@ class CheckBatchCost:
                 failed_requests=output_file_result.failed_requests + error_file_failed_requests,
             )
         )
+        logging_model: Final = batch_result.models[0] if batch_result.models else litellm_model_name or model_id
         logging_obj = LiteLLMLogging(
-            model=batch_result.models[0] if batch_result.models else (model_name or "unknown"),
+            model=logging_model,
             messages=[{"role": "user", "content": "<retrieve_batch>"}],
             stream=False,
             call_type="aretrieve_batch",
@@ -1104,15 +1110,9 @@ class CheckBatchCost:
             custom_llm_provider=str(llm_provider) if llm_provider else None,
         )
 
-        # Claim HERE, after the results are in hand and immediately before the
-        # spend log is written, not before the fetch. batch_processed is also
-        # what keeps an unbilled row selectable by later poll cycles and what
-        # makes the managed-files deletion guard hold the output file, so
-        # flipping it early let a concurrent delete remove the very file this
-        # fetch reads, and left a worker killed mid-fetch's batch billable by
-        # nobody until the reclaim sweep. Losing the race here costs only a
-        # duplicated fetch; the winner bills exactly once.
-        if not await self._claim_job(job):
+        original_status: Final = job.status
+        original_file_object: Final = job.file_object
+        if not await self._claim_job_for_costing(job, response.model_copy(update={"usage": batch_result.usage})):
             verbose_proxy_logger.info(
                 f"CheckBatchCost: batch {batch_id} (job {job.id}) was claimed by another pod "
                 "in this window, so its cost is already being tracked there"
@@ -1131,9 +1131,7 @@ class CheckBatchCost:
                 batch_completion_cost=batch_result.completion_cost,
             )
         except Exception:
-            # Hand the row back so the next cycle retries it, rather than
-            # leaving a claimed-but-unbilled row for the reclaim sweep.
-            await self._release_job_claim(job)
+            await self._release_job_claim(job, original_status, original_file_object)
             raise
 
         # Record batch duration (completed_at - created_at)
@@ -1449,10 +1447,7 @@ class CheckBatchCost:
                     salvaged_output_file_id = str(response_metadata["output_file_uri"])
                     response.output_file_id = salvaged_output_file_id
 
-            if (
-                response.status in PROVIDER_TERMINAL_BATCH_STATUSES
-                and response.output_file_id is not None
-            ):
+            if response.status in PROVIDER_TERMINAL_BATCH_STATUSES and response.output_file_id is not None:
                 terminal_status = "complete" if response.status == "completed" else response.status
                 if await self._spend_already_recorded(batch_id, job):
                     # A prior worker billed this batch but died before
@@ -1469,9 +1464,7 @@ class CheckBatchCost:
                     try:
                         already_billed_update: dict = {
                             "status": terminal_status,
-                            "file_object": self._finalized_file_object(
-                                job, response, spend_recorded=True
-                            ),
+                            "file_object": self._finalized_file_object(job, response, spend_recorded=True),
                         }
                         if self._has_batch_processed_column:
                             already_billed_update["batch_processed"] = True
@@ -1556,6 +1549,14 @@ class CheckBatchCost:
                     # finalizing so a crash in between can't re-bill after
                     # reclamation, even with disable_spend_logs set.
                     await self._mark_spend_recorded(job)
+                    if self._has_batch_processed_column:
+                        # _claim_job_for_costing already wrote the terminal
+                        # status/file_object/batch_processed as part of the
+                        # claim itself (immediately before the spend log was
+                        # written); finalizing again here would just no-op
+                        # against a row whose status is no longer "pricing".
+                        self._store_batch_line_items_in_background(job, response, model_id, batch_id, billed=True)
+                        continue
                 elif not await self._claim_job(job):
                     # Salvage path only: nothing was billed and no claim was
                     # taken, so fence the zero-cost finalization below behind

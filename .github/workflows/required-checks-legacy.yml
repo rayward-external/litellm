@@ -21,7 +21,10 @@ jobs:
       pull-requests: read
       actions: read
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The 4 ratchet gates alone eat ~10-13 minutes whenever their count-cache artifact
+    # is missing and they fall back to computing merge-base counts locally; 15 left no
+    # room for the e2e harness pytest step that runs after them.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:

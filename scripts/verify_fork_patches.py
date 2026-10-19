@@ -163,7 +163,7 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # so it has no current-state pattern to check.
 # 2026-10-17 sync: +1 for the azure_ai additive-reasoning row, superseded by
 # upstream's own XAIChatConfig.fold_reasoning_tokens_into_completion.
-EXPECTED_NA_ROWS = 45
+EXPECTED_NA_ROWS = 46
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",

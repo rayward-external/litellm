@@ -9,6 +9,8 @@ with deployment credentials, bypassing the managed files access-control hooks.
 """
 
 import base64
+import json
+from typing import Final
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -367,23 +369,14 @@ async def test_check_batch_cost_should_call_afile_content_directly_with_credenti
         # managed_files_obj.afile_content should NOT have been called
         mock_managed_files_hook.afile_content.assert_not_called()
 
-        # Verify the finalize write (claim-fenced update_many since PR #136)
-        # sets batch_processed, status, and file_object.
-        finalize_calls = [
-            c
-            for c in mock_prisma.db.litellm_managedobjecttable.update_many.call_args_list
-            if c.kwargs.get("data", {}).get("status") == "complete"
-        ]
-        assert len(finalize_calls) == 1, (
-            f"expected exactly one finalize update_many call, got: "
-            f"{mock_prisma.db.litellm_managedobjecttable.update_many.call_args_list}"
+        claim_data: Final = next(
+            call.kwargs["data"]
+            for call in mock_prisma.db.litellm_managedobjecttable.update_many.call_args_list
+            if call.kwargs["where"].get("id") == mock_job.id
         )
-        finalize_data = finalize_calls[0].kwargs["data"]
-        assert finalize_data["batch_processed"] is True
-        assert finalize_data["status"] == "complete"
-        assert (
-            "file_object" in finalize_data
-        ), "file_object must be written to DB so list_batches reads updated status"
-        # The legacy unconditional update() path must not be used on schemas
-        # that have the batch_processed column.
-        mock_prisma.db.litellm_managedobjecttable.update.assert_not_called()
+        assert claim_data["batch_processed"] is True
+        assert claim_data["status"] == "complete"
+        persisted_batch: Final = json.loads(claim_data["file_object"])
+        assert persisted_batch["status"] == "completed"
+        assert persisted_batch["usage"]["prompt_tokens"] == 10
+        assert persisted_batch["usage"]["completion_tokens"] == 5
