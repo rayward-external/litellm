@@ -2,6 +2,7 @@
     "include": ["litellm", "litellm_cli"],
     "ignore": [],
     "exclude": ["**/node_modules", "**/__pycache__", "tests/e2e/claude_code", "tests/e2e_harness/claude_code", "tests/e2e/ui", "litellm/types/utils.py", "litellm/proxy/_types.py"],
+    "extraPaths": ["litellm-proxy-extras"],
     "executionEnvironments": [
         {
             "root": "tests/e2e_harness",
