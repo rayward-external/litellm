@@ -4331,7 +4331,7 @@ async def test_batch_cost_reaches_configured_success_callbacks(
     from litellm.integrations.custom_logger import CustomLogger
     from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER
     from litellm.types.utils import LiteLLMBatch
-    from litellm_enterprise.proxy.common_utils.check_batch_cost import CheckBatchCost
+    from litellm_enterprise.proxy.common_utils.check_batch_cost import CLAIM_LOST, CheckBatchCost
 
     events: Final[SimpleQueue[tuple[str, object, int, int]]] = SimpleQueue()
 
@@ -4459,7 +4459,7 @@ async def test_batch_cost_reaches_configured_success_callbacks(
             await litellm.afile_content(file_id="output", **credentials)
             await GLOBAL_LOGGING_WORKER.flush()
         result: Final = await checker._track_completed_batch_cost(job, response, "deployment", "batch-record", None)
-        assert result == ((model, "openai") if claimed else None)
+        assert result == ((model, "openai") if claimed else CLAIM_LOST)
         if kind == "executor_shutdown" and claimed:
             prisma.db.litellm_managedobjecttable.update_many.assert_awaited_once()
         await GLOBAL_LOGGING_WORKER.flush()
