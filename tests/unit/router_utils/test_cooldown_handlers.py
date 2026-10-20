@@ -3350,7 +3350,7 @@ def _routable_while_up(up: tuple[CooldownDeploymentInfo, ...], request_kwargs: d
                 model="tenants", request_kwargs=copy.deepcopy(request_kwargs), messages=REFUSAL_MESSAGES
             )
         )
-    except ValueError:
+    except (ValueError, litellm.BadRequestError):
         return set()
     return {str(deployment["model_info"]["id"]) for deployment in pool}
 

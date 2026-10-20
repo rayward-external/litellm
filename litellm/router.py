@@ -13152,7 +13152,7 @@ class Router:
                     request_kwargs=tag_request,
                     metadata_variable_name=metadata_variable_name,
                 )
-            except ValueError:  # tag routing sends this request to none of the rest
+            except (ValueError, litellm.BadRequestError):  # tag routing sends this request to none of the rest
                 break
             picked_identities = frozenset(id(deployment) for deployment in picked)
             rest = tuple(deployment for deployment in remaining if id(deployment) not in picked_identities)
