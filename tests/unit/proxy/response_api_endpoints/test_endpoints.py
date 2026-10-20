@@ -1702,7 +1702,10 @@ class TestResponsesWSStreamingFirstMessage:
         (ValueError("No deployments available - crossed budget: Exceeded budget for deployment"), 429, "rate_limit_exceeded"),
         (litellm.BadRequestError(message="bad input", model="m", llm_provider="openai"), 400, "invalid_request_error"),
         (RuntimeError("boom"), 500, "server_error"),
-        (ValueError(f"{RouterErrors.no_deployments_with_tag_routing.value}=['free']"), 401, "invalid_request_error"),
+        # Fork-specific: ProxyException.__init__ (litellm/proxy/_types.py) maps this
+        # message to 400, not upstream's 401 -- a tag-routing miss is a client-addressable
+        # request problem, not an auth failure.
+        (ValueError(f"{RouterErrors.no_deployments_with_tag_routing.value}=['free']"), 400, "invalid_request_error"),
         (ProxyException(message="Authentication Error", type="auth_error", param=None, code=401), 401, "invalid_request_error"),
         (HTTPException(status_code=403, detail="key not allowed"), 403, "invalid_request_error"),
     ],

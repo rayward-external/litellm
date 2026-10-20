@@ -2301,6 +2301,18 @@ class ResponsesWebSocketStreaming:
         self.user_api_key_dict = user_api_key_dict
         self.responses_api_provider_config = responses_api_provider_config
         self.api_base = api_base
+        # Strong references to in-flight per-turn cost dispatch tasks
+        # (_log_turn). asyncio only holds a WEAK reference to a
+        # bare create_task() result -- per the stdlib docs, a task whose
+        # result is not retained anywhere can be garbage-collected mid-run.
+        # These tasks are now the ENTIRE billing path for the native WS
+        # bridge (rayward-internal/llm-gateway-infra#657), so losing one
+        # silently is the same bug in a new place. Retained here and drained
+        # with a bounded wait in bidirectional_forward's finally: before the
+        # connection tears down.
+        self._pending_cost_tasks: set[asyncio.Task] = (
+            set()
+        )  # mutable-ok: registry, entries removed via add_done_callback
         self.frame_guard: ResponsesWsFrameGuard | None = frame_guard
         self.request_data: dict[str, object] = request_data or {}
         litellm_metadata: Final = self.request_data.get("litellm_metadata")
