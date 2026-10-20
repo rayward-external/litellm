@@ -138,7 +138,6 @@ class AzureAIStudioConfig(OpenAIConfig):
             optional_params=optional_params,
             model=model,
             drop_params=drop_params,
-            declared_reasoning_efforts=declared_reasoning_efforts,
         )
         # super().map_openai_params() (OpenAIConfig) dispatches, for any model
         # name that isn't OpenAI's own o-series/gpt-5/gpt-audio pattern, to

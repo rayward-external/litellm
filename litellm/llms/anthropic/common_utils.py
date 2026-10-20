@@ -1009,7 +1009,10 @@ class AnthropicModelInfo(BaseLLMModelInfo):
         if budget_tokens is None:
             return
         effort: Final = AnthropicModelInfo._legacy_budget_to_effort(
-            model=model, budget_tokens=budget_tokens, custom_llm_provider=custom_llm_provider
+            model=model,
+            budget_tokens=budget_tokens,
+            custom_llm_provider=custom_llm_provider,
+            max_tokens=_numeric_budget_tokens(optional_params.get("max_tokens")),
         )
         existing_output_config: Final = optional_params.get("output_config")
         optional_params["output_config"] = {
