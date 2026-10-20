@@ -1,7 +1,7 @@
 import copy
 import enum
 import re
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Collection, Iterator
 from typing import TYPE_CHECKING, Final, cast
 
 import httpx
@@ -123,6 +123,8 @@ class AzureAIStudioConfig(OpenAIConfig):
         optional_params: dict[str, object],  # mutable-ok: OpenAIConfig.map_openai_params signature
         model: str,
         drop_params: bool,
+        *,
+        declared_reasoning_efforts: Collection[str] = (),
     ) -> dict[str, object]:  # mutable-ok: OpenAIConfig.map_openai_params signature
         if azureAIGPT5Config.is_model_gpt_5_model(model):
             return azureAIGPT5Config.map_openai_params(
@@ -136,6 +138,7 @@ class AzureAIStudioConfig(OpenAIConfig):
             optional_params=optional_params,
             model=model,
             drop_params=drop_params,
+            declared_reasoning_efforts=declared_reasoning_efforts,
         )
         # super().map_openai_params() (OpenAIConfig) dispatches, for any model
         # name that isn't OpenAI's own o-series/gpt-5/gpt-audio pattern, to

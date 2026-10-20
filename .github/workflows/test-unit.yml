@@ -269,6 +269,7 @@ jobs:
               tests/unit/llms/featherless_ai
               tests/unit/llms/firecrawl
               tests/unit/llms/fireworks_ai
+              tests/unit/llms/friendliai
               tests/unit/llms/gdc
               tests/unit/llms/gemini
               tests/unit/llms/gigachat
@@ -415,6 +416,7 @@ jobs:
               tests/unit/embeddings
               tests/unit/endpoints
               tests/unit/files
+              tests/unit/fine_tuning
               tests/unit/images
               tests/unit/interactions
               --deselect=tests/unit/interactions/test_openapi_compliance.py::TestRequestCompliance::test_create_model_interaction_request_schema
