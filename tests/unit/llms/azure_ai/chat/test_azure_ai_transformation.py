@@ -330,6 +330,23 @@ def test_foundry_gpt_6_astra_refuses_reasoning_effort_none_before_the_call(_loca
         )
 
 
+def test_map_openai_params_accepts_declared_reasoning_efforts_for_non_gpt5_model():
+    """get_optional_params passes declared_reasoning_efforts to every provider's
+    map_openai_params (litellm/utils.py). AzureAIStudioConfig.map_openai_params used to
+    forward it straight into OpenAIConfig.map_openai_params for any non-GPT-5 model, which
+    doesn't accept that keyword -- a TypeError on every such azure_ai request. The GPT-5
+    branch never took this path, so only a non-GPT-5 model name reproduces it."""
+    optional_params = AzureAIStudioConfig().map_openai_params(
+        non_default_params={"temperature": 0.2},
+        optional_params={},
+        model="grok-4.3",
+        drop_params=False,
+        declared_reasoning_efforts=("low", "high"),
+    )
+
+    assert optional_params == {"temperature": 0.2}
+
+
 
 
 def test_azure_ai_grok_stop_parameter_handling():
