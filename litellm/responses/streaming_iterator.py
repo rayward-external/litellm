@@ -2291,12 +2291,16 @@ class ResponsesWebSocketStreaming:
         custom_llm_provider: str | None = None,
         request_defaults: ResponsesWebSocketRequestDefaults | None = None,
         turn_admission: Callable[[], Awaitable[None]] | None = None,
+        responses_api_provider_config: BaseResponsesAPIConfig | None = None,
+        api_base: str | None = None,
         frame_guard: ResponsesWsFrameGuard | None = None,
     ):
         self.websocket = websocket
         self.backend_ws = backend_ws
         self.logging_obj = logging_obj
         self.user_api_key_dict = user_api_key_dict
+        self.responses_api_provider_config = responses_api_provider_config
+        self.api_base = api_base
         self.frame_guard: ResponsesWsFrameGuard | None = frame_guard
         self.request_data: dict[str, object] = request_data or {}
         litellm_metadata: Final = self.request_data.get("litellm_metadata")
