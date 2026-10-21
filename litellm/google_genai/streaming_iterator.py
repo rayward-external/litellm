@@ -72,7 +72,11 @@ class BaseGoogleGenAIGenerateContentStreamingIterator:
     ):
         self.litellm_logging_obj = litellm_logging_obj
         self.request_body = request_body
-        self.start_time = litellm_logging_obj.start_time if litellm_logging_obj is not None else datetime.now()
+        self.start_time = (
+            litellm_logging_obj.start_time
+            if litellm_logging_obj is not None
+            else datetime.now()  # noqa: DTZ005  # naive to match end_time's naive datetime.now() for duration math
+        )
         self.collected_chunks: list[bytes] = []
         self.model = model
         self.custom_llm_provider = custom_llm_provider
