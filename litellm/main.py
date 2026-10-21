@@ -400,7 +400,11 @@ class LiteLLM:
 
 
 class Chat:
-    def __init__(self, params, router_obj: "Router | None"):
+    def __init__(
+        self,
+        params: dict[str, object],  # mutable-ok: pops the acompletion flag in place
+        router_obj: "Router | None",
+    ):
         self.params = params
         if self.params.get("acompletion", False) is True:
             self.params.pop("acompletion")
@@ -480,6 +484,7 @@ async def acompletion(
     service_tier: str | None = None,
     store: bool | None = None,
     prompt_cache_key: str | None = None,
+    prompt_cache_retention: str | None = None,
     # set api_base, api_version, api_key
     base_url: str | None = None,
     api_version: str | None = None,
@@ -657,6 +662,7 @@ async def acompletion(
         "service_tier": service_tier,
         "store": store,
         "prompt_cache_key": prompt_cache_key,
+        "prompt_cache_retention": prompt_cache_retention,
         "extra_headers": extra_headers,
         "acompletion": True,  # assuming this is a required parameter
         "thinking": thinking,
@@ -5358,6 +5364,7 @@ def completion(
     service_tier: str | None = None,
     store: bool | None = None,
     prompt_cache_key: str | None = None,
+    prompt_cache_retention: str | None = None,
     # soon to be deprecated params by OpenAI
     functions: list | None = None,
     function_call: str | None = None,
@@ -5480,6 +5487,7 @@ def completion(
             service_tier=service_tier,
             store=store,
             prompt_cache_key=prompt_cache_key,
+            prompt_cache_retention=prompt_cache_retention,
             base_url=base_url,
             api_version=api_version,
             api_key=api_key,
@@ -5845,6 +5853,7 @@ def completion(
             "service_tier": service_tier,
             "store": store,
             "prompt_cache_key": prompt_cache_key,
+            "prompt_cache_retention": prompt_cache_retention,
             "allowed_openai_params": allowed_openai_params,
             "base_model": base_model,
         }
@@ -5985,6 +5994,7 @@ def completion(
                     *OPENAI_WIF_KWARGS_KEYS,
                     *OAUTH_TOKEN_EXCHANGE_KWARGS_KEYS,
                     "github_copilot_auth_type",
+                    "github_copilot_host",
                     "github_copilot_user_session",
                     PROVIDER_AFFINITY_HEADER_KWARG_KEY,
                     "fireworks_forward_user_id",
@@ -6018,6 +6028,7 @@ def completion(
             optional_params=processed_non_default_params,  # [IMPORTANT] - using processed_non_default_params ensures consistent params logged to langfuse for finetuning / eval datasets.
             litellm_params=litellm_params,
             custom_llm_provider=custom_llm_provider,
+            model_id=optional_params.get("model_id"),
         )
         if mock_response or mock_tool_calls or mock_timeout:
             kwargs.pop("mock_timeout", None)  # remove for any fallbacks triggered
@@ -8841,8 +8852,11 @@ def speech(
 
         generic_optional_params: Final = GenericLiteLLMParams.model_validate(kwargs)
 
-        # Handle Gemini models separately (they use speech_to_completion_bridge)
-        if "gemini" in model:
+        needs_cloud_text_to_speech: Final = (
+            litellm.utils.is_gemini_tts_model(model)
+            and response_format in VertexAITextToSpeechConfig.GEMINI_FORMAT_MAPPINGS
+        )
+        if "gemini" in model and not needs_cloud_text_to_speech:
             from .endpoints.speech.speech_to_completion_bridge.handler import (
                 speech_to_completion_bridge_handler,
             )
@@ -9148,7 +9162,7 @@ async def ahealth_check(
 
 ####### HELPER FUNCTIONS ################
 ## Set verbose to true -> ```litellm.set_verbose = True```
-def print_verbose(print_statement):
+def print_verbose(print_statement: object):
     try:
         verbose_logger.debug(print_statement)
         if litellm.set_verbose:
@@ -9252,6 +9266,7 @@ async def acount_tokens(
                     request_model=model,
                     tools=tools,
                     system=system,
+                    messages_format="openai",
                 )
                 if result is not None and not result.error:
                     return result

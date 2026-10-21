@@ -71,6 +71,7 @@ from litellm.constants import (
     DEFAULT_TRIM_RATIO,
     FUNCTION_DEFINITION_TOKEN_COUNT,
     HF_CONFIG_FETCH_TIMEOUT_SECONDS,
+    HUGGINGFACE_TOKENIZER_LOAD_RETRY_SECONDS,
     INITIAL_RETRY_DELAY,
     JITTER,
     MAX_RETRY_DELAY,
@@ -390,6 +391,7 @@ if TYPE_CHECKING:
     from litellm.llms.base_llm.containers.transformation import BaseContainerConfig
     from litellm.llms.base_llm.decisions.transformation import BaseDecisionsConfig
     from litellm.llms.base_llm.embedding.transformation import BaseEmbeddingConfig
+    from litellm.llms.base_llm.extraction.transformation import BaseExtractionConfig
     from litellm.llms.base_llm.files.transformation import BaseFilesConfig
     from litellm.llms.base_llm.google_genai.transformation import (
         BaseGoogleGenAIGenerateContentConfig,
@@ -858,6 +860,11 @@ def _is_gemini_model(model: str | None, custom_llm_provider: str | None) -> bool
     return model is not None and "gemini" in model.lower()
 
 
+def is_gemini_tts_model(model: str) -> bool:
+    model_name: Final = model.lower()
+    return "gemini" in model_name and "tts" in model_name
+
+
 def _remove_thought_signature_from_id(tool_call_id: str, separator: str) -> str:
     """
     Remove thought signature from a tool call ID.
@@ -1124,83 +1131,90 @@ def function_setup(
         dynamic_callbacks: Final[list[str | Callable | CustomLogger] | None] = kwargs.pop("callbacks", None)
         all_callbacks: Final = get_dynamic_callbacks(dynamic_callbacks=dynamic_callbacks)
 
-        if len(all_callbacks) > 0:
-            for callback in all_callbacks:
-                # check if callback is a string - e.g. "lago", "openmeter"
-                if isinstance(callback, str):
-                    callback = litellm.litellm_core_utils.litellm_logging._init_custom_logger_compatible_class(
-                        callback,
-                        internal_usage_cache=None,
-                        llm_router=None,
-                    )
-                    if callback is None or any(
-                        type(cb) is type(callback) for cb in litellm._async_success_callback
-                    ):  # don't double add a callback
-                        continue
-                if callback not in litellm.input_callback:
-                    litellm.input_callback.append(callback)
-                if callback not in litellm.success_callback:
-                    litellm.logging_callback_manager.add_litellm_success_callback(callback)
-                if callback not in litellm.failure_callback:
-                    litellm.logging_callback_manager.add_litellm_failure_callback(callback)
-                if callback not in litellm._async_success_callback:
-                    litellm.logging_callback_manager.add_litellm_async_success_callback(callback)
-                if callback not in litellm._async_failure_callback:
-                    litellm.logging_callback_manager.add_litellm_async_failure_callback(callback)
-            print_verbose(f"Initialized litellm callbacks, Async Success Callbacks: {litellm._async_success_callback}")
+        with litellm.logging_callback_manager.callback_lists_lock:
+            if len(all_callbacks) > 0:
+                for callback in all_callbacks:
+                    # check if callback is a string - e.g. "lago", "openmeter"
+                    if isinstance(callback, str):
+                        callback = litellm.litellm_core_utils.litellm_logging._init_custom_logger_compatible_class(
+                            callback,
+                            internal_usage_cache=None,
+                            llm_router=None,
+                        )
+                        if callback is None or any(
+                            type(cb) is type(callback) for cb in litellm._async_success_callback
+                        ):  # don't double add a callback
+                            continue
+                    if callback not in litellm.input_callback:
+                        litellm.input_callback.append(callback)
+                    if callback not in litellm.success_callback:
+                        litellm.logging_callback_manager.add_litellm_success_callback(callback)
+                    if callback not in litellm.failure_callback:
+                        litellm.logging_callback_manager.add_litellm_failure_callback(callback)
+                    if callback not in litellm._async_success_callback:
+                        litellm.logging_callback_manager.add_litellm_async_success_callback(callback)
+                    if callback not in litellm._async_failure_callback:
+                        litellm.logging_callback_manager.add_litellm_async_failure_callback(callback)
+                print_verbose(
+                    f"Initialized litellm callbacks, Async Success Callbacks: {litellm._async_success_callback}"
+                )
 
-        if (
-            len(litellm.input_callback) > 0 or len(litellm.success_callback) > 0 or len(litellm.failure_callback) > 0
-        ) and len(callback_list) == 0:
-            callback_list = list(set(litellm.input_callback + litellm.success_callback + litellm.failure_callback))
+            callbacks_to_set_up: Final = (
+                list(set(litellm.input_callback + litellm.success_callback + litellm.failure_callback))
+                if len(callback_list) == 0
+                else []
+            )
+            if callbacks_to_set_up:
+                callback_list = callbacks_to_set_up
+            ## ASYNC CALLBACKS - safety net for callbacks added via direct append
+            if len(litellm.input_callback) > 0:
+                removed_async_items = []
+                for index, callback in enumerate(litellm.input_callback):
+                    if coroutine_checker.is_async_callable(callback):
+                        litellm._async_input_callback.append(callback)
+                        removed_async_items.append(index)
+
+                # Pop the async items from input_callback in reverse order to avoid index issues
+                for index in reversed(removed_async_items):
+                    litellm.input_callback.pop(index)
+            if len(litellm.success_callback) > 0:
+                removed_async_items = []
+                for index, callback in enumerate(litellm.success_callback):
+                    if coroutine_checker.is_async_callable(callback):
+                        litellm.logging_callback_manager.add_litellm_async_success_callback(callback)
+                        removed_async_items.append(index)
+                    elif callback == "dynamodb" or callback == "openmeter":
+                        # dynamo is an async callback, it's used for the proxy and needs to be async
+                        # we only support async dynamo db logging for acompletion/aembedding since that's used on proxy
+                        litellm.logging_callback_manager.add_litellm_async_success_callback(callback)
+                        removed_async_items.append(index)
+                    elif callback in litellm._known_custom_logger_compatible_callbacks and isinstance(callback, str):
+                        add_custom_logger_callback_to_specific_event(callback, "success")
+
+                # Pop the async items from success_callback in reverse order to avoid index issues
+                for index in reversed(removed_async_items):
+                    litellm.success_callback.pop(index)
+
+            if len(litellm.failure_callback) > 0:
+                removed_async_items = []
+                for index, callback in enumerate(litellm.failure_callback):
+                    if coroutine_checker.is_async_callable(callback):
+                        litellm.logging_callback_manager.add_litellm_async_failure_callback(callback)
+                        removed_async_items.append(index)
+                    elif callback in litellm._known_custom_logger_compatible_callbacks and isinstance(callback, str):
+                        add_custom_logger_callback_to_specific_event(callback, "failure")
+
+                # Pop the async items from failure_callback in reverse order to avoid index issues
+                for index in reversed(removed_async_items):
+                    litellm.failure_callback.pop(index)
+        if callbacks_to_set_up:
             get_set_callbacks: Final[Callable[[], Callable[..., None]]] = litellm_utils.get_set_callbacks
-            get_set_callbacks()(callback_list=callback_list, function_id=function_id)
-        ## ASYNC CALLBACKS - safety net for callbacks added via direct append
-        if len(litellm.input_callback) > 0:
-            removed_async_items = []
-            for index, callback in enumerate(litellm.input_callback):
-                if coroutine_checker.is_async_callable(callback):
-                    litellm._async_input_callback.append(callback)
-                    removed_async_items.append(index)
-
-            # Pop the async items from input_callback in reverse order to avoid index issues
-            for index in reversed(removed_async_items):
-                litellm.input_callback.pop(index)
-        if len(litellm.success_callback) > 0:
-            removed_async_items = []
-            for index, callback in enumerate(litellm.success_callback):
-                if coroutine_checker.is_async_callable(callback):
-                    litellm.logging_callback_manager.add_litellm_async_success_callback(callback)
-                    removed_async_items.append(index)
-                elif callback == "dynamodb" or callback == "openmeter":
-                    # dynamo is an async callback, it's used for the proxy and needs to be async
-                    # we only support async dynamo db logging for acompletion/aembedding since that's used on proxy
-                    litellm.logging_callback_manager.add_litellm_async_success_callback(callback)
-                    removed_async_items.append(index)
-                elif callback in litellm._known_custom_logger_compatible_callbacks and isinstance(callback, str):
-                    add_custom_logger_callback_to_specific_event(callback, "success")
-
-            # Pop the async items from success_callback in reverse order to avoid index issues
-            for index in reversed(removed_async_items):
-                litellm.success_callback.pop(index)
-
-        if len(litellm.failure_callback) > 0:
-            removed_async_items = []
-            for index, callback in enumerate(litellm.failure_callback):
-                if coroutine_checker.is_async_callable(callback):
-                    litellm.logging_callback_manager.add_litellm_async_failure_callback(callback)
-                    removed_async_items.append(index)
-                elif callback in litellm._known_custom_logger_compatible_callbacks and isinstance(callback, str):
-                    add_custom_logger_callback_to_specific_event(callback, "failure")
-
-            # Pop the async items from failure_callback in reverse order to avoid index issues
-            for index in reversed(removed_async_items):
-                litellm.failure_callback.pop(index)
+            get_set_callbacks()(callback_list=callbacks_to_set_up, function_id=function_id)
         ### DYNAMIC CALLBACKS ###
-        dynamic_success_callbacks: list[str | Callable | CustomLogger] | None = None
-        dynamic_async_success_callbacks: list[str | Callable | CustomLogger] | None = None
-        dynamic_failure_callbacks: list[str | Callable | CustomLogger] | None = None
-        dynamic_async_failure_callbacks: Final[list[str | Callable | CustomLogger] | None] = None
+        dynamic_success_callbacks: list[str | Callable[..., object] | CustomLogger] | None = None
+        dynamic_async_success_callbacks: list[str | Callable[..., object] | CustomLogger] | None = None
+        dynamic_failure_callbacks: list[str | Callable[..., object] | CustomLogger] | None = None
+        dynamic_async_failure_callbacks: Final[list[str | Callable[..., object] | CustomLogger] | None] = None
         if kwargs.get("success_callback", None) is not None and isinstance(kwargs["success_callback"], list):
             removed_async_items = []
             for index, callback in enumerate(kwargs["success_callback"]):
@@ -1500,6 +1514,7 @@ def _schedule_async_success_logging(
         return
 
     def _enqueue_async_logging() -> None:
+        logging_obj.mark_async_success_log_enqueued()
         asyncio.create_task(
             _client_async_logging_helper(
                 logging_obj=logging_obj,
@@ -1576,6 +1591,22 @@ def _get_wrapper_timeout(kwargs: dict[str, object]) -> object:
         return logging_obj.applied_timeout
     stream_timeout: Final = kwargs.get("stream_timeout")
     return kwargs.get("timeout") if stream_timeout is None else stream_timeout
+
+
+def _runs_as_async_success_callback(callback: str | Callable[..., object] | CustomLogger) -> bool:
+    get_coroutine_checker: Final = litellm_utils.get_coroutine_checker
+    return get_coroutine_checker().is_async_callable(callback) or callback in ("dynamodb", "s3")
+
+
+def split_dynamic_success_callbacks(
+    callbacks: Sequence[str | Callable[..., object] | CustomLogger],
+) -> tuple[
+    tuple[str | Callable[..., object] | CustomLogger, ...], tuple[str | Callable[..., object] | CustomLogger, ...]
+]:
+    return (
+        tuple(callback for callback in callbacks if not _runs_as_async_success_callback(callback)),
+        tuple(callback for callback in callbacks if _runs_as_async_success_callback(callback)),
+    )
 
 
 def check_coroutine(value) -> bool:
@@ -2165,7 +2196,11 @@ def client(original_function):
 
             # Sync logging_obj.stream after deployment hooks (they may convert it).
             _hook_stream: Final = kwargs.get("stream")
-            if _hook_stream is not None and logging_obj.stream != _hook_stream:
+            if (
+                _hook_stream is not None
+                and logging_obj.stream != _hook_stream
+                and call_type not in _NEVER_STREAMING_CALL_TYPES
+            ):
                 logging_obj.stream = _hook_stream
 
             kwargs["litellm_logging_obj"] = logging_obj
@@ -2370,7 +2405,7 @@ def client(original_function):
                 unbind_budget_reservation_from_callbacks(logging_obj.litellm_params)
                 try:
                     logging_obj.failure_handler(
-                        e, traceback_exception, start_time, end_time
+                        e, traceback_exception, start_time, end_time, for_async_request=True
                     )  # DO NOT MAKE THREADED - router retry fallback relies on this!
                 except Exception as e:
                     raise e
@@ -2509,6 +2544,15 @@ _STREAMING_CALL_TYPES: Final = frozenset(
     }
 )
 
+_NEVER_STREAMING_CALL_TYPES: Final = frozenset(
+    {
+        CallTypes.extraction,
+        CallTypes.aextraction,
+        CallTypes.extraction.value,
+        CallTypes.aextraction.value,
+    }
+)
+
 
 def _is_streaming_request(
     kwargs: dict[str, object],
@@ -2520,6 +2564,8 @@ def _is_streaming_request(
         - if "stream=True" in kwargs  (litellm chat completion, litellm text completion, litellm messages)
         - if call_type is generate_content_stream or agenerate_content_stream (litellm google genai)
     """
+    if call_type in _NEVER_STREAMING_CALL_TYPES:
+        return False
     if "stream" in kwargs and kwargs["stream"] is True:
         return True
     return call_type in _STREAMING_CALL_TYPES
@@ -2564,19 +2610,14 @@ def _select_tokenizer_helper(model: str) -> SelectTokenizerResponse:
 
     try:
         result: Final = _return_huggingface_tokenizer(model)
-        if result is not None:
+        if result is not None and not isinstance(result, _HuggingFaceTokenizerLoadFailure):
             return result
     except Exception as e:
         from litellm.rust_bridge.fork_guard import ForkedAfterNativeRuntimeStarted, ProcessReservedForForking
 
         if isinstance(e, (ForkedAfterNativeRuntimeStarted, ProcessReservedForForking)):
             raise
-        verbose_logger.warning(
-            "Falling back to tiktoken for %s; token counts may be approximate. "
-            "For Python Hugging Face tokenization, install tokenizers and huggingface-hub. Error: %s",
-            json.dumps(redact_secrets(model)),
-            json.dumps(redact_secrets(str(e))),
-        )
+        _warn_huggingface_tokenizer_fallback(model, str(e))
 
     # default - tiktoken
     return _return_openai_tokenizer(model)
@@ -2616,13 +2657,39 @@ def huggingface_tokenizer_kind(model: str) -> HuggingFaceTokenizerKind | None:
     return None
 
 
-def _return_huggingface_tokenizer(model: str) -> SelectTokenizerResponse | None:
+@dataclass(frozen=True, slots=True)
+class _HuggingFaceTokenizerLoadFailure:
+    reason: str
+
+
+def _warn_huggingface_tokenizer_fallback(model: str, reason: str) -> None:
+    verbose_logger.warning(
+        "Falling back to tiktoken for %s; token counts may be approximate. "
+        "For Python Hugging Face tokenization, install tokenizers and huggingface-hub. Error: %s",
+        json.dumps(redact_secrets(model)),
+        json.dumps(redact_secrets(reason)),
+    )
+
+
+def _return_huggingface_tokenizer(model: str) -> SelectTokenizerResponse | _HuggingFaceTokenizerLoadFailure | None:
     kind: Final = huggingface_tokenizer_kind(model)
     if kind is None:
         return None
+    backend: Final = _huggingface_tokenizer_backend()
+    key: Final = _huggingface_tokenizer_failure_key(kind, backend)
     with _BUNDLED_TOKENIZER_LOAD_LOCKS.get(kind, nullcontext()):
-        tokenizer: Final = _load_huggingface_tokenizer(kind, _huggingface_tokenizer_backend())
+        cached_failure: Final = _HUGGINGFACE_TOKENIZER_LOAD_FAILURES.get_cache(key)
+        if isinstance(cached_failure, _HuggingFaceTokenizerLoadFailure):
+            return cached_failure
+        tokenizer: Final = _load_huggingface_tokenizer_recording_failure(kind, backend, key)
+    if isinstance(tokenizer, _HuggingFaceTokenizerLoadFailure):
+        _warn_huggingface_tokenizer_fallback(model, tokenizer.reason)
+        return tokenizer
     return {"type": "huggingface_tokenizer", "tokenizer": tokenizer}
+
+
+def _huggingface_tokenizer_failure_key(kind: HuggingFaceTokenizerKind, backend: Decision) -> str:
+    return f"{kind}:{backend.name}"
 
 
 @lru_cache(maxsize=DEFAULT_MAX_LRU_CACHE_SIZE)
@@ -2645,6 +2712,21 @@ def _load_huggingface_tokenizer(kind: HuggingFaceTokenizerKind, backend: Decisio
             return tokenizer_dispatch.from_pretrained("Xenova/llama-3-tokenizer")
         case _:
             assert_never(kind)
+
+
+def _load_huggingface_tokenizer_recording_failure(
+    kind: HuggingFaceTokenizerKind, backend: Decision, key: str
+) -> HuggingFace | _HuggingFaceTokenizerLoadFailure:
+    try:
+        return _load_huggingface_tokenizer(kind, backend)
+    except Exception as error:
+        from litellm.rust_bridge.fork_guard import ForkedAfterNativeRuntimeStarted, ProcessReservedForForking
+
+        if isinstance(error, (ForkedAfterNativeRuntimeStarted, ProcessReservedForForking)):
+            raise
+        failure: Final = _HuggingFaceTokenizerLoadFailure(reason=str(error))
+        _HUGGINGFACE_TOKENIZER_LOAD_FAILURES.set_cache(key, failure, ttl=HUGGINGFACE_TOKENIZER_LOAD_RETRY_SECONDS)
+        return failure
 
 
 def encode(model="", text="", custom_tokenizer: dict | None = None):
@@ -3412,14 +3494,20 @@ def _builtin_cost_map() -> dict[str, Mapping[str, object]]:
     return cast(dict[str, Mapping[str, object]], litellm.model_cost)
 
 
-def _replace_cost_map_entry(cost_map: dict[str, Mapping[str, object]], key: str, entry: Mapping[str, object]) -> None:
+def _replace_cost_map_entry(
+    cost_map: dict[str, Mapping[str, object]], key: str, entry: Mapping[str, object], registration: Mapping[str, object]
+) -> None:
     current: Final = cost_map.get(key)
     merged: Final = {**(current or {}), **entry}
-    if not isinstance(current, AliasedCostEntry):
-        cost_map.update({key: merged})
-        return
-    sharing_names: Final = tuple(name for name in current.names if cost_map.get(name) is current)
-    cost_map.update(dict.fromkeys((key, *sharing_names), AliasedCostEntry(merged, current.names)))
+    names: Final = current.names if isinstance(current, AliasedCostEntry) else ()
+    previous_fields: Final[frozenset[str]] = (
+        current.registered_fields if isinstance(current, AliasedCostEntry) else frozenset()
+    )
+    registered_fields: Final = previous_fields | frozenset(
+        name for name, value in registration.items() if value is not None
+    )
+    sharing_names: Final = tuple(name for name in names if cost_map.get(name) is current)
+    cost_map.update(dict.fromkeys((key, *sharing_names), AliasedCostEntry(merged, names, registered_fields)))
 
 
 def _without_synthesized_costs(
@@ -3504,6 +3592,25 @@ def _without_overridden_price_variants(
     )
 
 
+@with_config(ConfigDict(extra="allow"))
+class _PricingModelInfo(ModelInfo):
+    pass
+
+
+_PRICING_MODEL_INFO: Final = TypeAdapter(_PricingModelInfo)
+
+
+def model_info_with_pricing_overrides(model_info: ModelInfo, registration: Mapping[str, object]) -> ModelInfo:
+    from litellm.types.utils import is_server_derived_pricing_key
+
+    overrides: Final = {
+        name: value for name, value in registration.items() if value is not None and is_server_derived_pricing_key(name)
+    }
+    return _PRICING_MODEL_INFO.validate_python(
+        update_dictionary(dict(_without_overridden_price_variants(model_info, overrides)), overrides)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _BuiltinCostMatch:
     key: str
@@ -3512,7 +3619,7 @@ class _BuiltinCostMatch:
 
 
 @dataclass(frozen=True, slots=True)
-class _LookupMiss:
+class ModelInfoLookupMiss:
     tripped: bool
 
 
@@ -3599,17 +3706,19 @@ def is_generalized_model_info(model_info: ModelInfo) -> bool:
 _REGISTRATION_ATTEMPTS: Final = 3
 
 
-def _lookup_for_registration(model: str, custom_llm_provider: str | None) -> ModelInfo | _LookupMiss:
+def lookup_model_info_for_registration(model: str, custom_llm_provider: str | None) -> ModelInfo | ModelInfoLookupMiss:
     try:
         info: Final = get_model_info(model=model, custom_llm_provider=custom_llm_provider)
     except ModelNotMappedError:
-        return _LookupMiss(tripped=False)
+        return ModelInfoLookupMiss(tripped=False)
     except Exception:
-        return _LookupMiss(tripped=True)
-    return _LookupMiss(tripped=False) if is_generalized_model_info(info) else info
+        return ModelInfoLookupMiss(tripped=True)
+    return ModelInfoLookupMiss(tripped=False) if is_generalized_model_info(info) else info
 
 
-def _get_builtin_model_info_for_registration(model: str, custom_llm_provider: str | None) -> ModelInfo | _LookupMiss:
+def _get_builtin_model_info_for_registration(
+    model: str, custom_llm_provider: str | None
+) -> ModelInfo | ModelInfoLookupMiss:
     """Resolve ``model`` to its built-in cost-map entry for registration merging.
 
     Misses when the lookup cannot map the model or resolved it via a
@@ -3618,10 +3727,12 @@ def _get_builtin_model_info_for_registration(model: str, custom_llm_provider: st
     changing the map mid-walk, is retried, so a transient failure registers exactly
     where the untripped lookup would.
     """
-    lookups: Final = (_lookup_for_registration(model, custom_llm_provider) for _ in range(_REGISTRATION_ATTEMPTS))
+    lookups: Final = (
+        lookup_model_info_for_registration(model, custom_llm_provider) for _ in range(_REGISTRATION_ATTEMPTS)
+    )
     return next(
-        (lookup for lookup in lookups if not (isinstance(lookup, _LookupMiss) and lookup.tripped)),
-        _LookupMiss(tripped=True),
+        (lookup for lookup in lookups if not (isinstance(lookup, ModelInfoLookupMiss) and lookup.tripped)),
+        ModelInfoLookupMiss(tripped=True),
     )
 
 
@@ -3656,7 +3767,7 @@ def _registration_base(
     builtin_model_info: Final = _get_builtin_model_info_for_registration(
         model=key, custom_llm_provider=custom_llm_provider
     )
-    if not isinstance(builtin_model_info, _LookupMiss):
+    if not isinstance(builtin_model_info, ModelInfoLookupMiss):
         return _RegistrationWrite(
             key=builtin_model_info["key"],
             entry=dict(_without_synthesized_costs(builtin_model_info, key=key, value=value)),
@@ -3713,7 +3824,7 @@ def _registration_attempt(
 ) -> _RegistrationWrite | None:
     source: Final = _builtin_cost_map()
     write: Final = _registration_write(key, value, custom_llm_provider, warning_display_name)
-    _replace_cost_map_entry(_builtin_cost_map() if final_attempt else source, write.key, write.entry)
+    _replace_cost_map_entry(_builtin_cost_map() if final_attempt else source, write.key, write.entry, value)
     return write if final_attempt or litellm.model_cost is source else None
 
 
@@ -3734,6 +3845,27 @@ def _register_on_current_map(
 
 
 _runtime_registered_model_cost: Final[dict[str, dict[str, object]]] = {}  # mutable-ok: replayed on reload
+
+
+def runtime_model_cost_registrations(
+    model: str, custom_llm_provider: str
+) -> tuple[tuple[str, Mapping[str, object]], ...]:
+    names: Final = get_potential_model_names(model, custom_llm_provider)
+    candidates: Final = (
+        model,
+        names["combined_model_name"],
+        f"{custom_llm_provider}/{names['split_model']}",
+        names["split_model"],
+        names["stripped_model_name"],
+    )
+    entries: Final = ((key, _builtin_cost_map().get(key)) for key in dict.fromkeys(candidates))
+    registered: Final = (
+        (key, entry) for key, entry in entries if isinstance(entry, AliasedCostEntry) and entry.registered_fields
+    )
+    return tuple(
+        (key, MappingProxyType({name: value for name, value in entry.items() if name in entry.registered_fields}))
+        for key, entry in registered
+    )
 
 
 class _LiveDeploymentReplay:
@@ -3848,7 +3980,10 @@ def register_model(
     if persist_across_reloads:
         _registrations: Final[Mapping[str, Mapping[str, object]]] = loaded_model_cost
         for _registered_key, _registered_value in _registrations.items():
-            _runtime_registered_model_cost[_registered_key] = dict(_registered_value)
+            _runtime_registered_model_cost[_registered_key] = update_dictionary(
+                dict(_runtime_registered_model_cost.get(_registered_key, {})),
+                _RATE_TABLE.validate_python(_registered_value),
+            )
 
     for key, value in loaded_model_cost.items():
         write = _register_on_current_map(str(key), value, custom_llm_provider, warning_display_name)
@@ -5506,8 +5641,9 @@ def add_provider_specific_params_to_optional_params(
         # for openai, azure we should pass the extra/passed params within `extra_body` https://github.com/openai/openai-python/blob/ac33853ba10d13ac149b1fa3ca6dba7d613065c9/src/openai/resources/models.py#L46
         if _should_drop_param(k="extra_body", additional_drop_params=additional_drop_params) is False:
             extra_body: Final = dict(passed_params.pop("extra_body", None) or {})
+            withheld_params: Final = frozenset[str]() if custom_llm_provider == "litellm_proxy" else LITELLM_ONLY_PARAMS
             for k in passed_params:
-                if k not in openai_params and k not in LITELLM_ONLY_PARAMS and passed_params[k] is not None:
+                if k not in openai_params and k not in withheld_params and passed_params[k] is not None:
                     extra_body[k] = passed_params[k]
             if not isinstance(optional_params.get("extra_body"), dict):
                 optional_params["extra_body"] = {}
@@ -6831,6 +6967,7 @@ def get_model_info_helper(
                 supports_computer_use=_model_info.get("supports_computer_use", None),
                 search_context_cost_per_query=_model_info.get("search_context_cost_per_query", None),
                 web_search_billing_unit=_model_info.get("web_search_billing_unit", None),
+                search_free_requests=_model_info.get("search_free_requests", None),
                 google_maps_grounding_cost_per_query=_model_info.get("google_maps_grounding_cost_per_query", None),
                 tpm=_model_info.get("tpm", None),
                 rpm=_model_info.get("rpm", None),
@@ -7844,12 +7981,16 @@ class TextCompletionStreamWrapper:
             text_choices: Final = TextChoices()
             if isinstance(chunk, Choices):  # chunk should always be of type StreamingChoices
                 raise Exception
-            delta: Final = chunk["choices"][0]["delta"]
-            text_choices["text"] = delta["content"]
-            text_choices["reasoning_content"] = delta.get("reasoning_content")
-            text_choices["index"] = chunk["choices"][0]["index"]
-            text_choices["finish_reason"] = chunk["choices"][0]["finish_reason"]
-            response["choices"] = [text_choices]
+
+            if chunk["choices"]:
+                delta: Final = chunk["choices"][0]["delta"]
+                text_choices["text"] = delta["content"]
+                text_choices["reasoning_content"] = delta.get("reasoning_content")
+                text_choices["index"] = chunk["choices"][0]["index"]
+                text_choices["finish_reason"] = chunk["choices"][0]["finish_reason"]
+                response["choices"] = [text_choices]
+            else:
+                response["choices"] = []
 
             # only pass usage when stream_options["include_usage"] is True
             if self.stream_options and self.stream_options.get("include_usage", False) is True:
@@ -8212,6 +8353,26 @@ def trim_messages(
 
 
 from litellm.caching.in_memory_cache import InMemoryCache
+
+
+class _HuggingFaceTokenizerLoadFailureCache(Protocol):
+    def get_cache(self, key: str) -> object | None: ...
+
+    def set_cache(self, key: str, value: object, ttl: float | None = None) -> None: ...
+
+    def flush_cache(self) -> None: ...
+
+
+_HUGGINGFACE_TOKENIZER_LOAD_FAILURES: Final[_HuggingFaceTokenizerLoadFailureCache] = (
+    cast(  # cast-ok: cache methods are untyped
+        _HuggingFaceTokenizerLoadFailureCache,
+        InMemoryCache(
+            max_size_in_memory=16,
+            default_ttl=HUGGINGFACE_TOKENIZER_LOAD_RETRY_SECONDS,
+            clock=lambda: time.monotonic(),
+        ),
+    )
+)
 
 
 class AvailableModelsCache(InMemoryCache):
@@ -9539,6 +9700,12 @@ class ProviderConfigManager:
         return None
 
     @staticmethod
+    def get_provider_extraction_config(model: str, provider: LlmProviders) -> BaseExtractionConfig | None:
+        if provider == LlmProviders.CLOUDFLARE:
+            return litellm.CloudflareExtractionConfig()
+        return None
+
+    @staticmethod
     def get_provider_anthropic_messages_config(
         model: str,
         provider: LlmProviders,
@@ -10599,6 +10766,10 @@ class ProviderConfigManager:
             )
 
             return OpenCodeHarnessConfig()
+        if harness == _Harness.PI:
+            from litellm.llms.pi.harness.transformation import PiHarnessConfig
+
+            return PiHarnessConfig()
         if harness == _Harness.DEEPAGENTS:
             from litellm.llms.deepagents.harness.transformation import (
                 DeepAgentsHarnessConfig,

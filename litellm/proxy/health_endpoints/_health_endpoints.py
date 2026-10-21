@@ -2156,6 +2156,7 @@ async def test_model_connection(
         "ocr",
         "evaluation",
         "decisions",
+        "extraction",
     ]
     | None = fastapi.Body(
         None,
