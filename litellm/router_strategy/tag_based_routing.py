@@ -750,9 +750,18 @@ async def get_deployments_for_tag(
     verbose_logger.debug("request metadata: %s", request_kwargs.get(metadata_variable_name))
     if metadata_variable_name in request_kwargs:
         metadata: Final = request_kwargs[metadata_variable_name]
+        # A hard provider pin derives the routing tag set SOLELY from the pin --
+        # ignoring tags/inherited_tags/router-consumption entirely (see
+        # _resolve_request_tags) -- and must never spill to the ``default`` pool:
+        # an empty tag match fails loud rather than being served by a
+        # ``default``-tagged deployment.
         request_tags: Final = without_baggage_mapped_tags(
-            _request_tags_after_router_consumption(metadata, model), metadata
+            _resolve_request_tags(metadata)
+            if pinned_provider is not None
+            else _request_tags_after_router_consumption(metadata, model),
+            metadata,
         )
+        disable_default_fallback: Final = pinned_provider is not None
         match_any: Final = llm_router_instance.tag_filtering_match_any
         routing_prefix: Final = llm_router_instance.tag_routing_prefix or ""
 

@@ -60,6 +60,8 @@ from litellm.types.integrations.custom_logger import converted_stream_requested
 from litellm.types.llms.openai import (
     PART_UNION_TYPES,
     ResponseAPIUsage,
+    ResponseCompletedEvent,
+    ResponseFailedEvent,
     ResponseIncompleteEvent,
     ResponsesAPIResponse,
     ResponsesAPIStreamEvents,
@@ -2500,17 +2502,19 @@ class ResponsesWebSocketStreaming:
         events: Final = list(turn.events)
         exception: Final = turn.failure(self.authorized_model or "", self.custom_llm_provider or "", self.logging_obj)
         if exception is None:
-            spawn_logging_task(
+            cost_task: Final = spawn_logging_task(
                 asyncio.get_running_loop(),
                 turn.logging_obj.dispatch_success_handlers(events, prefer_async_handlers=True),
                 task_name="Responses WebSocket success logging",
             )
+            self._pending_cost_tasks.add(cost_task)
+            cost_task.add_done_callback(self._pending_cost_tasks.discard)
             return
         if self._failure is None:
             self._failure = exception
         _record_usage_for_failure(turn.logging_obj, events)
         traceback_exception: Final = "".join(traceback.format_exception(exception))
-        spawn_logging_task(
+        failure_task: Final = spawn_logging_task(
             asyncio.get_running_loop(),
             turn.logging_obj.dispatch_failure_handlers(exception, traceback_exception, prefer_async_handlers=True),
             task_name="Responses WebSocket failure logging",
