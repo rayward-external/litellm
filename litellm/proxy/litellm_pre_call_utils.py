@@ -2920,6 +2920,46 @@ async def add_litellm_data_to_request(
         request=request, request_data=data, metadata_key=_metadata_variable_name
     )
 
+    # Re-assert the trusted, URL-derived provider-pin routing signal LAST, from
+    # request.state (set by the pinned routes). Any client-supplied copy was
+    # already stripped from both metadata buckets above (_UNTRUSTED_METADATA_
+    # CONTROL_FIELDS) and from the body root below; running the trusted write
+    # after the body has been parsed/merged means a client string-encoded
+    # metadata bucket can never preempt it. Absent on unified routes (no pin on
+    # request.state), so their routing/attribution is unchanged.
+    data.pop(PINNED_PROVIDER_ROUTE_KEY, None)
+    _pinned_provider = _trusted_pinned_provider_route(request)
+    if _pinned_provider is not None:
+        data[_metadata_variable_name][PINNED_PROVIDER_ROUTE_KEY] = _pinned_provider
+        # ATTRIBUTION-TAG SANITIZE (P2). Routing already derives SOLELY from the
+        # trusted signal above, but the attribution ``tags`` list has by now
+        # accumulated every baseline source -- client body tags, key tags
+        # (add_key_level_controls), team tags, project tags, and baggage-mapped
+        # tags -- merged into this ONE list above. Any of those may carry a
+        # NON-authoritative ``pin:*`` tag (e.g. a key tagged ``pin:openai``
+        # calling ``/bedrock/*``), which would otherwise land in SpendLogs
+        # alongside the authoritative pin and double-count / misattribute the
+        # spend under a pin-grouped report. Running ONE sanitize here -- after
+        # every tag source (including the baggage-mapped tags just above) has
+        # merged, and before the router snapshots ``tags``
+        # (Router._update_kwargs_before_fallbacks) and rebuilds attribution from
+        # that snapshot -- reduces the pin:* namespace to EXACTLY the one
+        # authoritative ``pin:<provider>`` by construction, while PRESERVING all
+        # non-pin attribution tags (cost-center:*, customer:* ...). Routing is
+        # untouched (it never reads ``tags``). No-op on unified routes (no
+        # trusted pin), so their attribution is byte-for-byte unchanged.
+        _authoritative_pin_tag = PIN_TAG_PREFIX + _pinned_provider
+        _existing_tags = data[_metadata_variable_name].get("tags")
+        if isinstance(_existing_tags, list):
+            _sanitized_tags = [
+                tag
+                for tag in _existing_tags
+                if not (isinstance(tag, str) and tag.startswith(PIN_TAG_PREFIX)) or tag == _authoritative_pin_tag
+            ]
+            if _authoritative_pin_tag not in _sanitized_tags:
+                _sanitized_tags.append(_authoritative_pin_tag)
+            data[_metadata_variable_name]["tags"] = _sanitized_tags
+
     data.update(key_and_team_logging_fields(user_api_key_dict=user_api_key_dict, proxy_config=proxy_config))
 
     # Guardrails from key/team metadata and policy engine

@@ -3352,7 +3352,7 @@ async def test_tag_routing_prefix_routes_on_prefixed_and_policy_tags(metadata, e
 async def test_tag_routing_prefix_caller_cannot_route_around_a_policy_requirement():
     router = _tag_router([_deployment("eu-1", ["region:eu"]), _deployment("us-1", ["region:us"])])
 
-    with pytest.raises(ValueError, match=RouterErrors.no_deployments_with_tag_routing.value):
+    with pytest.raises(litellm.BadRequestError, match=RouterErrors.no_deployments_with_tag_routing.value):
         await _routed_to(router, {"tags": ["&region:eu", "route:region:us"], "inherited_tags": ["&region:eu"]})
 
 
@@ -3360,7 +3360,7 @@ async def test_tag_routing_prefix_caller_cannot_route_around_a_policy_requiremen
 async def test_without_tag_routing_prefix_an_unknown_caller_tag_still_refuses_an_untagged_group():
     router = _tag_router([_deployment("untagged", [])], tag_routing_prefix="")
 
-    with pytest.raises(ValueError, match=RouterErrors.no_deployments_with_tag_routing.value):
+    with pytest.raises(litellm.BadRequestError, match=RouterErrors.no_deployments_with_tag_routing.value):
         await _routed_to(router, {"tags": ["user_id:234"]})
 
 
