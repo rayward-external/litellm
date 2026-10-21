@@ -6,7 +6,12 @@ reason = "diskcache 5.6.3 (latest as of 2026-09-30) still has no fixed release p
 [[IgnoredVulns]]
 id = "GHSA-vfj7-8cjw-p6xm"
 ignoreUntil = 2026-11-03
-reason = "braces has no fixed release published (3.0.3, 2024-05-21, is latest and last_affected); dev-only via eslint-config-next > @next/eslint-plugin-next > fast-glob > micromatch (the knip > fast-glob path this reason used to describe was fixed by the 2026-10-03 knip 6 bump); remove this entry once one exists"
+reason = "braces has no fixed release published (3.0.3, 2024-05-21, is latest and last_affected); the only remaining path is ui/litellm-dashboard's eslint-config-next -> @next/eslint-plugin-next, which pins fast-glob 3.3.1 -> micromatch -> braces on every 16.x release through the current latest; remove this entry once Next.js ships a patched release"
+
+[[IgnoredVulns]]
+id = "GHSA-6q48-6c7w-9gw2"
+ignoreUntil = 2026-10-23
+reason = "certifi 2026.10.19 (published 2026-10-20) is inside the 3-day uv exclude-newer window until 2026-10-23 02:24 UTC; bump certifi and remove this entry once it clears"
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0449"
@@ -22,3 +27,11 @@ reason = "paste (transitive dep of the litellm-rust OCR/token-counter crates) is
 id = "RUSTSEC-2023-0071"
 ignoreUntil = 2026-11-01
 reason = "rsa 0.9.10 (transitive dep of jsonwebtoken 11.1.0, the litellm-gateway-ui crate's JWT handling) has no fixed release for the Marvin Attack timing sidechannel (only an unreleased 0.10.0-rc); remove this entry once a stable patched release exists"
+
+[[PackageOverrides]]
+name = "pillow"
+version = "12.3.0"
+ecosystem = "PyPI"
+vulnerability.ignore = true
+effectiveUntil = 2026-10-27
+reason = "pillow 13.0.0 requires Python >= 3.11, so the Python 3.10 resolution of the ci and dev groups stays on 12.3.0; 3.11+ is on 13.0.0"

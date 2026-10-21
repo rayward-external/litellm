@@ -306,15 +306,45 @@ def _local_model_cost_map(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(litellm, "model_cost", get_model_cost_map(url=litellm.model_cost_map_url))
 
 
-def test_foundry_gpt_6_astra_keeps_sampling_params_when_reasoning_effort_is_none(_local_model_cost_map):
+def test_foundry_gpt_6_sol_keeps_sampling_params_when_reasoning_effort_is_none(_local_model_cost_map):
+    """gpt-6-sol's Foundry row still says none, so the sampling params that ride on it stay. gpt-6-astra
+    used to be the model here until its row turned none off (a live Foundry deployment answered none
+    with a 400 naming low through xhigh on 2026-10-01); the test below pins that flip."""
     optional_params = AzureAIStudioConfig().map_openai_params(
         non_default_params={"reasoning_effort": "none", "temperature": 0.2, "top_p": 0.9},
         optional_params={},
-        model="gpt-6-astra",
+        model="gpt-6-sol",
         drop_params=False,
     )
 
     assert optional_params == {"reasoning_effort": "none", "temperature": 0.2, "top_p": 0.9}
+
+
+def test_foundry_gpt_6_astra_refuses_reasoning_effort_none_before_the_call(_local_model_cost_map):
+    with pytest.raises(litellm.utils.UnsupportedParamsError):
+        AzureAIStudioConfig().map_openai_params(
+            non_default_params={"reasoning_effort": "none"},
+            optional_params={},
+            model="gpt-6-astra",
+            drop_params=False,
+        )
+
+
+def test_map_openai_params_accepts_declared_reasoning_efforts_for_non_gpt5_model():
+    """get_optional_params passes declared_reasoning_efforts to every provider's
+    map_openai_params (litellm/utils.py). AzureAIStudioConfig.map_openai_params used to
+    forward it straight into OpenAIConfig.map_openai_params for any non-GPT-5 model, which
+    doesn't accept that keyword -- a TypeError on every such azure_ai request. The GPT-5
+    branch never took this path, so only a non-GPT-5 model name reproduces it."""
+    optional_params = AzureAIStudioConfig().map_openai_params(
+        non_default_params={"temperature": 0.2},
+        optional_params={},
+        model="grok-4.3",
+        drop_params=False,
+        declared_reasoning_efforts=("low", "high"),
+    )
+
+    assert optional_params == {"temperature": 0.2}
 
 
 

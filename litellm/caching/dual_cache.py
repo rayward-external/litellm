@@ -60,16 +60,6 @@ class PendingBatchRead:
     previous_access_times: dict[str, float | None]  # mutable-ok: shares _reserve_redis_batch_keys's dict shape
 
 
-@dataclass(frozen=True, slots=True)
-class DeclaredBatchRead:
-    """A ``async_batch_get_cache`` split in two: the memory half done, the Redis half declared on a ``RedisBatch``
-    so it rides that batch's next round trip, resolved later with ``async_resolve_batch_get``."""
-
-    keys: tuple[str, ...]
-    pending: PendingBatchRead
-    result: BatchResult[Mapping[str, object]] | None
-
-
 def _log_deferred_increment_failure(future: asyncio.Future[float]) -> None:
     if future.cancelled():
         return
@@ -396,24 +386,6 @@ class DualCache(BaseCache):
                 if value is not None:
                     await self.in_memory_cache.async_set_cache(key, value, **self._backfill_kwargs(kwargs))
         return merged
-
-    async def declare_batch_get(self, keys: Sequence[str], batch: RedisBatch) -> DeclaredBatchRead:
-        pending: Final = await self._prepare_batch_get(
-            list(keys),
-            local_only=False,
-            throttle_redis=False,
-        )
-        return DeclaredBatchRead(
-            keys=tuple(keys),
-            pending=pending,
-            result=batch.mget(pending.redis_keys) if pending.redis_keys else None,
-        )
-
-    async def async_resolve_batch_get(
-        self, declared: DeclaredBatchRead
-    ) -> list[object | None]:  # mutable-ok: async_batch_get_cache's public return type
-        redis_result: Final = None if declared.result is None else await declared.result
-        return await self._apply_batch_get(declared.pending, redis_result)
 
     async def async_batch_get_cache(
         self,

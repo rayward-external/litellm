@@ -78,6 +78,7 @@ from litellm.litellm_core_utils.get_supported_openai_params import (
     get_supported_openai_params,
 )
 from litellm.litellm_core_utils.internal_call_metadata import is_unbilled_non_inference_call_from_params
+from litellm.litellm_core_utils.litellm_logging import BilledRoundsDispatch
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.llm_cost_calc.guardrail_cost import guardrail_information_cost
 from litellm.litellm_core_utils.llm_response_utils.get_headers import (
@@ -143,16 +144,19 @@ from litellm.proxy.utils import (  # noqa: F401  # legacy module exports
     _check_and_merge_model_level_guardrails,  # pyright: ignore[reportPrivateUsage,reportUnusedImport]  # backwards-compatible package export
     check_and_merge_model_level_guardrails,
 )
+from litellm.responses.streaming_iterator import partial_responses_incomplete_event_on_disconnect
 from litellm.router import Router
 from litellm.router_utils.add_retry_fallback_headers import get_hidden_params_dict
 from litellm.router_utils.auto_router_model_naming import AUTO_ROUTER_MODEL_PREFIX
 from litellm.router_utils.common_utils import resolve_model_group_alias, resolve_served_model
+from litellm.types.extraction import ExtractionResponse
 from litellm.types.guardrails import GuardrailEventHooks
 from litellm.types.router import RouterRateLimitError
 from litellm.types.router_weights import validate_router_weights
 
 _LateResponseT = TypeVar("_LateResponseT", bound=Response)
 _LlmCallT = TypeVar("_LlmCallT")
+_ResponseT: Final = TypeVar("_ResponseT")
 _ChunkT: Final = TypeVar("_ChunkT")
 
 KNOWN_PROXY_ROUTES: Final = frozenset(
@@ -204,6 +208,7 @@ ProxyRouteType: TypeAlias = Literal[
     "asearch",
     "adecisions",
     "asystemone",
+    "aextraction",
     "avideo_generation",
     "avideo_list",
     "avideo_status",
@@ -268,12 +273,15 @@ from litellm.proxy.anthropic_endpoints.streaming_model_restamp import (
     AnthropicStreamModelRestamper,
 )
 from litellm.proxy.litellm_pre_call_utils import (
+    LiteLLMProxyRequestSetup,
     add_litellm_data_to_request,
+    get_metadata_variable_name,
     refresh_proxy_server_request_body_snapshot,
     reject_url_valued_destination,
     sanitize_for_log,
 )
 from litellm.proxy.policy_engine.response_retrieval import attach_post_call_pipelines_to_retrieval
+from litellm.types.litellm_params import STREAM_USAGE_INJECTED_FIELD
 from litellm.types.utils import (
     ModelResponse,
     ModelResponseStream,
@@ -560,6 +568,13 @@ async def _bill_partial_streamed_spend_on_disconnect(request_data: dict, respons
         # A natural end-of-stream success event already fired and released the
         # slot; do not bill again, and let the caller skip the slot release.
         return True
+    partial_responses_event: Final = partial_responses_incomplete_event_on_disconnect(response)
+    if partial_responses_event is not None:
+        verbose_proxy_logger.debug(
+            "Billing partial streamed Responses API spend after client disconnect, litellm_call_id=%s",
+            sanitize_for_log(logging_obj.litellm_call_id),
+        )
+        return await _dispatch_disconnect_billing_event(logging_obj, partial_responses_event)
     chunks: Final[object] = getattr(response, "chunks", None)
     if not isinstance(chunks, list) or not chunks:
         return False
@@ -589,6 +604,10 @@ async def _bill_partial_streamed_spend_on_disconnect(request_data: dict, respons
     partial_usage: Final = getattr(partial_response, "usage", None)
     if isinstance(partial_usage, Usage):
         backfill_missing_cache_usage_fields(partial_usage)
+    return await _dispatch_disconnect_billing_event(logging_obj, partial_response)
+
+
+async def _dispatch_disconnect_billing_event(logging_obj: LiteLLMLoggingObj, partial_response: object) -> bool:
     try:
         await logging_obj.dispatch_success_handlers(
             partial_response,
@@ -641,22 +660,29 @@ def model_deployments_support_stream_options(
     return all(_litellm_model_supports_stream_options(m) for m in candidate_models)
 
 
+_STREAM_USAGE_FLAGS: Final = ("_litellm_strip_stream_usage", STREAM_USAGE_INJECTED_FIELD)
+
+
 def stream_usage_tracking_updates(
     data: Mapping[str, object],
     general_settings: Mapping[str, object],
     route_type: str,
     supports_stream_options: Callable[[], bool],
 ) -> Mapping[str, object]:
-    scrub: Final = {"_litellm_strip_stream_usage": False} if "_litellm_strip_stream_usage" in data else {}
+    scrub: Final = {flag: False for flag in _STREAM_USAGE_FLAGS if flag in data}
     if data.get("stream", False) is not True:
         return scrub
     always_include: Final = general_settings.get("always_include_stream_usage")
     stream_options: Final = data.get("stream_options")
     if always_include is True:
         if "stream_options" not in data:
-            return {**scrub, "stream_options": {"include_usage": True}}
+            return {**scrub, "stream_options": {"include_usage": True}, STREAM_USAGE_INJECTED_FIELD: True}
         if isinstance(stream_options, dict) and "include_usage" not in stream_options:
-            return {**scrub, "stream_options": {**stream_options, "include_usage": True}}
+            return {
+                **scrub,
+                "stream_options": {**stream_options, "include_usage": True},
+                STREAM_USAGE_INJECTED_FIELD: True,
+            }
         return scrub
     if always_include is False and route_type == "agenerate_content_stream" and "stream_options" not in data:
         return {**scrub, "stream_options": {"include_usage": False}}
@@ -670,6 +696,7 @@ def stream_usage_tracking_updates(
     return {
         "stream_options": {**merged_stream_options, "include_usage": True},
         "_litellm_strip_stream_usage": True,
+        STREAM_USAGE_INJECTED_FIELD: True,
     }
 
 
@@ -1632,11 +1659,11 @@ _is_azure_model_router_request: Final = is_azure_model_router_request
 
 def _override_openai_response_model(
     *,
-    response_obj: object,
+    response_obj: _ResponseT,
     requested_model: str,
     log_context: str,
     return_raw_model_name: bool = False,
-) -> None:
+) -> _ResponseT:
     """
     Force the OpenAI-compatible `model` field in the response to match what the client requested.
 
@@ -1660,7 +1687,7 @@ def _override_openai_response_model(
        model group name instead of the comma-separated list the client sent.
     """
     if return_raw_model_name or not requested_model:
-        return
+        return response_obj
 
     hidden_params: Final = get_hidden_params_dict(response_obj)
     if isinstance(hidden_params, dict):
@@ -1673,7 +1700,7 @@ def _override_openai_response_model(
                 log_context,
                 attempted_fallbacks,
             )
-            return
+            return response_obj
 
         # For fastest_response batch completions, use the winning model's group
         # name rather than the comma-separated list the client sent.
@@ -1692,7 +1719,7 @@ def _override_openai_response_model(
                     "%s: fastest_response detected but no model group header found, preserving actual model from response.",
                     log_context,
                 )
-                return
+                return response_obj
 
     # Check if this is an Azure Model Router request - if so, preserve the actual model used
     if is_azure_model_router_request(requested_model, hidden_params):
@@ -1700,11 +1727,12 @@ def _override_openai_response_model(
             "%s: Azure Model Router detected - preserving actual model used from response instead of overriding to router model.",
             log_context,
         )
-        return
+        return response_obj
 
+    unchanged_response: Final = response_obj
     if isinstance(response_obj, dict):
         if "model" not in response_obj:
-            return
+            return unchanged_response
         downstream_model = response_obj.get("model")
         if downstream_model != requested_model:
             verbose_proxy_logger.debug(
@@ -1714,10 +1742,10 @@ def _override_openai_response_model(
                 downstream_model,
             )
         response_obj["model"] = requested_model
-        return
+        return unchanged_response
 
     if not hasattr(response_obj, "model"):
-        return
+        return response_obj
 
     downstream_model = getattr(response_obj, "model", None)
     if downstream_model != requested_model:
@@ -1727,6 +1755,9 @@ def _override_openai_response_model(
             requested_model,
             downstream_model,
         )
+
+    if isinstance(response_obj, ExtractionResponse):
+        return response_obj.model_copy(update={"model": requested_model})
 
     try:
         setattr(response_obj, "model", requested_model)
@@ -1739,6 +1770,7 @@ def _override_openai_response_model(
             str(e),
             exc_info=True,
         )
+    return response_obj
 
 
 _METADATA_BUCKET_KEYS: Final = ("metadata", "litellm_metadata")
@@ -2401,6 +2433,7 @@ class ProxyBaseLLMRequestProcessing:
             "asearch",
             "adecisions",
             "asystemone",
+            "aextraction",
             "avideo_generation",
             "avideo_list",
             "avideo_status",
@@ -2459,6 +2492,7 @@ class ProxyBaseLLMRequestProcessing:
         llm_router: Router | None = None,
         rate_limited_model: str | None = None,
         skip_guardrails: bool = False,
+        logging_auth: UserAPIKeyAuth | None = None,
     ) -> tuple[dict, LiteLLMLoggingObj]:
         start_time: Final = datetime.now()  # start before calling guardrail hooks
 
@@ -2478,6 +2512,14 @@ class ProxyBaseLLMRequestProcessing:
             version=version,
             proxy_config=proxy_config,
         )
+        if logging_auth is not None:
+            metadata_variable_name: Final = get_metadata_variable_name(request)
+            request_metadata: Final = self.data.get(metadata_variable_name)
+            if isinstance(request_metadata, dict):
+                self.data[metadata_variable_name] = {
+                    **TypeAdapter(dict[str, object]).validate_python(request_metadata),
+                    **LiteLLMProxyRequestSetup.get_sanitized_user_information_from_key(logging_auth),
+                }
         if not general_settings.get("expose_fallback_errors_to_caller"):
             self.data.pop("include_fallback_errors", None)
         if route_type in {"aresponses", "_aresponses_websocket"}:
@@ -2500,8 +2542,6 @@ class ProxyBaseLLMRequestProcessing:
 
         # Store queue time in metadata after add_litellm_data_to_request to ensure it's preserved
         if queue_time_seconds is not None:
-            from litellm.proxy.litellm_pre_call_utils import get_metadata_variable_name
-
             _metadata_variable_name: Final = get_metadata_variable_name(request)
             if _metadata_variable_name not in self.data:
                 self.data[_metadata_variable_name] = {}
@@ -3453,7 +3493,7 @@ class ProxyBaseLLMRequestProcessing:
         # Always return the client-requested model name (not provider-prefixed internal identifiers)
         # for OpenAI-compatible responses.
         if requested_model_from_client:
-            _override_openai_response_model(
+            response = _override_openai_response_model(  # rebind-ok: a frozen response comes back as a copy
                 response_obj=response,
                 requested_model=requested_model_from_client,
                 log_context=f"litellm_call_id={logging_obj.litellm_call_id}",
@@ -4205,6 +4245,8 @@ class ProxyBaseLLMRequestProcessing:
 
         async def _on_deferred_native_stream_complete(*args: object) -> None:
             match args:
+                case (BilledRoundsDispatch(dispatch=logging_coroutine),):
+                    GLOBAL_LOGGING_WORKER.ensure_initialized_and_enqueue(async_coroutine=logging_coroutine)
                 case (logging_coroutine,) if asyncio.iscoroutine(logging_coroutine):
                     GLOBAL_LOGGING_WORKER.ensure_initialized_and_enqueue(async_coroutine=logging_coroutine)
                 case (assembled_response, cache_hit):

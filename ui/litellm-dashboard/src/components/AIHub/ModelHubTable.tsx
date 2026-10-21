@@ -55,6 +55,7 @@ import {
   isDecisionMode,
 } from "@/lib/decisionModels";
 import DecisionModelGarden from "@/components/AIHub/DecisionModelGarden";
+import { ModelCustomMetadata } from "./ModelCustomMetadata";
 
 interface ModelHubTableProps {
   accessToken: string | null;
@@ -720,6 +721,10 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({
                       <p className="mt-1">{selectedModel.description}</p>
                     </div>
                   )}
+                  <ModelCustomMetadata
+                    customTags={selectedModel.custom_tags}
+                    customMetadata={selectedModel.custom_metadata}
+                  />
                 </div>
               </div>
 

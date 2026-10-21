@@ -64,7 +64,7 @@ class BaseGoogleGenAIGenerateContentStreamingIterator:
 
     def __init__(
         self,
-        litellm_logging_obj: LiteLLMLoggingObj,
+        litellm_logging_obj: LiteLLMLoggingObj | None,
         request_body: dict,
         model: str,
         custom_llm_provider: str,
@@ -72,7 +72,8 @@ class BaseGoogleGenAIGenerateContentStreamingIterator:
     ):
         self.litellm_logging_obj = litellm_logging_obj
         self.request_body = request_body
-        self.start_time = datetime.now()
+        naive_now: Final = datetime.now()  # noqa: DTZ005  # naive to match end_time's naive clock below
+        self.start_time = litellm_logging_obj.start_time if litellm_logging_obj is not None else naive_now
         self.collected_chunks: list[bytes] = []
         self.model = model
         self.custom_llm_provider = custom_llm_provider
@@ -101,6 +102,8 @@ class BaseGoogleGenAIGenerateContentStreamingIterator:
         self,
     ):
         """Handle the logging after all chunks have been collected."""
+        if self.litellm_logging_obj is None:
+            return
         from litellm.proxy.pass_through_endpoints.streaming_handler import (
             PassThroughStreamingHandler,
         )
@@ -217,5 +220,7 @@ class AsyncGoogleGenAIGenerateContentStreamingIterator(BaseGoogleGenAIGenerateCo
         if self._is_terminal_sse_chunk(chunk):
             await self._handle_async_streaming_logging()
             raise StopAsyncIteration
+        if self.litellm_logging_obj is not None and self.litellm_logging_obj.completion_start_time is None:
+            self.litellm_logging_obj.update_completion_start_time(completion_start_time=datetime.now())
         self.collected_chunks.append(chunk)
         return chunk

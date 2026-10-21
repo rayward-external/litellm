@@ -25,7 +25,7 @@ from litellm.litellm_core_utils.bug_report import (
     build_bug_report,
 )
 from litellm.types.router import RouterRateLimitError, RouterRateLimitErrorBasic
-from litellm.types.utils import CachingDetails
+from litellm.types.utils import CachingDetails, Delta, ModelResponseStream, StreamingChoices
 from litellm.constants import (
     CLIENT_REQUESTED_MODEL_SCOPE_KEY,
     MAX_LITELLM_CALL_ID_LENGTH,
@@ -76,6 +76,8 @@ from litellm.proxy.hooks.model_max_budget_limiter import (
 )
 from litellm.proxy.utils import ProxyLogging
 from litellm.router import Router
+from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
+from litellm.utils import ModelResponseListIterator
 from litellm.router_utils.add_retry_fallback_headers import prepare_response_for_header_attachment
 
 
@@ -3548,6 +3550,30 @@ class TestOverrideOpenAIResponseModel:
         )
 
         assert response_obj.model == "downstream-model"
+
+    def test_frozen_response_comes_back_as_a_copy_carrying_the_requested_model(self):
+        from litellm.types.extraction import ExtractionResponse
+
+        response_obj = ExtractionResponse.model_validate(
+            {
+                "model": "cloudflare/@cf/cloudflare/clairic",
+                "answers": {"vendor": {"type": "text", "value": "Acme Tools"}},
+                "truncated": False,
+                "usage": {"input_tokens": 52, "output_tokens": 0},
+            }
+        )
+        response_obj.set_hidden_params({"response_cost": 0.0000052})
+
+        stamped = _override_openai_response_model(
+            response_obj=response_obj,
+            requested_model="invoice-reader",
+            log_context="test_context",
+        )
+
+        assert isinstance(stamped, ExtractionResponse)
+        assert stamped.model == "invoice-reader"
+        assert stamped.answers == response_obj.answers
+        assert stamped.hidden_params["response_cost"] == 0.0000052
 
 
 class TestIsAzureModelRouterRequest:
@@ -8598,9 +8624,11 @@ class _RecordingSuccessLogger(CustomLogger):
     def __init__(self):
         super().__init__()
         self.success_events = []
+        self.logged: Final = asyncio.Event()
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         self.success_events.append({"kwargs": kwargs, "response_obj": response_obj})
+        self.logged.set()
 
 
 class TestStreamingClientDisconnectBilling:
@@ -8710,6 +8738,60 @@ class TestStreamingClientDisconnectBilling:
         partial_response: Final = recorder.success_events[0]["response_obj"]
         assert getattr(partial_response, "service_tier") == "priority"
         assert partial_response.usage.total_tokens > 0
+
+    @pytest.mark.asyncio
+    async def test_disconnect_after_finish_chunk_bills_the_estimate_when_the_provider_sent_no_usage(self):
+        model: Final = "gpt-4o"
+        messages: Final = [{"role": "user", "content": "Write a long sentence about a fox. " * 30}]
+        text: Final = "The quick brown fox jumps over the lazy dog. " * 20
+        recorder: Final = _RecordingSuccessLogger()
+        logging_obj: Final = LiteLLMLoggingObj(
+            model=model,
+            messages=messages,
+            stream=True,
+            call_type="acompletion",
+            start_time=datetime.datetime(2025, 3, 3, 21, 38, 10),
+            litellm_call_id="no-usage-disconnect-call",
+            function_id="no-usage-disconnect-fn",
+            dynamic_async_success_callbacks=[recorder],
+        )
+        logging_obj.update_environment_variables(
+            model=model, user=None, optional_params={}, litellm_params={"litellm_call_id": "no-usage-disconnect-call"}
+        )
+        response: Final = CustomStreamWrapper(
+            completion_stream=ModelResponseListIterator(
+                model_responses=[
+                    ModelResponseStream(id="chatcmpl-no-usage", created=1741037890, model=model, choices=choices)
+                    for choices in (
+                        [StreamingChoices(index=0, delta=Delta(role="assistant", content=text))],
+                        [StreamingChoices(index=0, delta=Delta(content=""), finish_reason="stop")],
+                    )
+                ]
+            ),
+            model=model,
+            custom_llm_provider="openai",
+            logging_obj=logging_obj,
+            stream_options=None,
+        )
+        stream_iter: Final = response.__aiter__()
+        first_chunk: Final = await stream_iter.__anext__()
+        finish_chunk: Final = await stream_iter.__anext__()
+        assert first_chunk.choices[0].finish_reason is None
+        assert finish_chunk.choices[0].finish_reason == "stop"
+
+        billed: Final = await _bill_partial_streamed_spend_on_disconnect(
+            {"litellm_logging_obj": logging_obj},
+            response,
+        )
+        await asyncio.wait_for(recorder.logged.wait(), timeout=5)
+
+        assert billed is True
+        assert len(recorder.success_events) == 1
+        usage: Final = recorder.success_events[0]["response_obj"].usage
+        assert (usage.prompt_tokens, usage.completion_tokens) == (
+            litellm.token_counter(model=model, messages=messages),
+            litellm.token_counter(model=model, text=text, count_response_tokens=True),
+        )
 
     @pytest.mark.asyncio
     async def test_completed_stream_does_not_double_bill_on_late_disconnect(self):
@@ -9071,6 +9153,118 @@ def _apply_stream_usage_tracking(
     )
 
 
+    async def _start_partial_responses_stream(self, recorder: _RecordingSuccessLogger, *, relay_text: bool = True):
+        from litellm.llms.openai.responses.transformation import OpenAIResponsesAPIConfig
+        from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator
+
+        mocked: Final = await litellm.aresponses(
+            model="gpt-4o-mini",
+            input="tell me a story",
+            mock_response="The codename is AZURE-FALCON-42 and the story is long.",
+            stream=True,
+            api_key="test-key",
+        )
+        logging_obj: Final = mocked.logging_obj
+        logging_obj.dynamic_async_success_callbacks = [recorder]
+        stream: Final = ResponsesAPIStreamingIterator(
+            response=httpx.Response(200),
+            model="gpt-4o-mini",
+            responses_api_provider_config=OpenAIResponsesAPIConfig(),
+            logging_obj=logging_obj,
+            request_data={"model": "gpt-4o-mini", "input": "tell me a story"},
+            custom_llm_provider="openai",
+        )
+        created: Final = {
+            "type": "response.created",
+            "sequence_number": 0,
+            "response": {
+                "id": "resp_partial",
+                "object": "response",
+                "created_at": 1700000000.0,
+                "model": "gpt-4o-mini",
+                "status": "in_progress",
+                "output": [],
+                "parallel_tool_calls": True,
+                "tool_choice": "auto",
+                "tools": [],
+                "service_tier": "priority",
+            },
+        }
+        delta: Final = {
+            "type": "response.output_text.delta",
+            "sequence_number": 1,
+            "item_id": "msg_partial",
+            "output_index": 0,
+            "content_index": 0,
+            "delta": "The codename is AZURE-FALCON-42",
+        }
+        for event in (created, delta) if relay_text else (created,):
+            stream._process_chunk(json.dumps(event))
+        return stream
+
+    async def _bill_and_wait(self, recorder: _RecordingSuccessLogger, streamed: object, logging_obj: object) -> bool:
+        billed: Final = await _bill_partial_streamed_spend_on_disconnect({"litellm_logging_obj": logging_obj}, streamed)
+        for _ in range(50):
+            if recorder.success_events:
+                break
+            await asyncio.sleep(0.1)
+        await asyncio.sleep(0.5)
+        return billed
+
+    @pytest.mark.asyncio
+    async def test_disconnect_bills_partial_native_responses_stream_with_counted_usage(self):
+        from litellm.types.llms.openai import ResponsesAPIResponse
+
+        recorder: Final = _RecordingSuccessLogger()
+        stream: Final = await self._start_partial_responses_stream(recorder)
+        billed: Final = await self._bill_and_wait(recorder, stream, stream.logging_obj)
+
+        assert billed is True
+        assert len(recorder.success_events) == 1
+        partial_response: Final = recorder.success_events[0]["response_obj"]
+        assert isinstance(partial_response, ResponsesAPIResponse)
+        assert partial_response.status == "incomplete"
+        assert getattr(partial_response, "service_tier") == "priority"
+        assert partial_response.usage.output_tokens == litellm.token_counter(
+            model="gpt-4o-mini", text="The codename is AZURE-FALCON-42"
+        )
+        assert partial_response.usage.input_tokens > 0
+
+    @pytest.mark.asyncio
+    async def test_disconnect_bills_partial_default_route_messages_stream_through_the_responses_adapter(self):
+        from litellm.llms.anthropic.pass_through.responses_adapters.streaming_iterator import (
+            AnthropicResponsesStreamWrapper,
+        )
+        from litellm.router import FallbackAwareAnthropicMessagesStream
+        from litellm.types.llms.openai import ResponsesAPIResponse
+
+        async def _sse_frames() -> AsyncGenerator[bytes, None]:
+            yield b"event: message_start\n\n"
+
+        recorder: Final = _RecordingSuccessLogger()
+        stream: Final = await self._start_partial_responses_stream(recorder)
+        wrapper: Final = AnthropicResponsesStreamWrapper(responses_stream=stream, model="gpt-4o-mini")
+        streamed: Final = FallbackAwareAnthropicMessagesStream(_sse_frames(), wrapper.async_anthropic_sse_wrapper())
+        billed: Final = await self._bill_and_wait(recorder, streamed, stream.logging_obj)
+
+        assert billed is True
+        assert len(recorder.success_events) == 1
+        partial_response: Final = recorder.success_events[0]["response_obj"]
+        assert isinstance(partial_response, ResponsesAPIResponse)
+        assert partial_response.usage.output_tokens == litellm.token_counter(
+            model="gpt-4o-mini", text="The codename is AZURE-FALCON-42"
+        )
+
+    @pytest.mark.asyncio
+    async def test_disconnect_before_any_responses_output_bills_nothing(self):
+        recorder: Final = _RecordingSuccessLogger()
+        stream: Final = await self._start_partial_responses_stream(recorder, relay_text=False)
+        billed: Final = await self._bill_and_wait(recorder, stream, stream.logging_obj)
+
+        assert billed is False
+        assert recorder.success_events == []
+
+
 class TestApplyStreamUsageTracking:
     @pytest.mark.parametrize(
         ("general_settings", "requested_stream_options", "expected_stream_options"),
@@ -9105,6 +9299,7 @@ class TestApplyStreamUsageTracking:
 
         assert data["stream_options"] == {"include_usage": True}
         assert data["_litellm_strip_stream_usage"] is True
+        assert data["_litellm_stream_usage_injected"] is True
 
     def test_default_preserves_other_client_stream_options_keys(self):
         data = {"stream": True, "stream_options": {"include_obfuscation": True}}
@@ -9113,6 +9308,7 @@ class TestApplyStreamUsageTracking:
 
         assert data["stream_options"] == {"include_obfuscation": True, "include_usage": True}
         assert data["_litellm_strip_stream_usage"] is True
+        assert data["_litellm_stream_usage_injected"] is True
 
     def test_client_requested_usage_is_left_untouched_and_not_stripped(self):
         data = {"stream": True, "stream_options": {"include_usage": True}}
@@ -9129,6 +9325,7 @@ class TestApplyStreamUsageTracking:
 
         assert data["stream_options"]["include_usage"] is True
         assert data["_litellm_strip_stream_usage"] is True
+        assert data["_litellm_stream_usage_injected"] is True
 
     def test_explicit_false_flag_disables_injection_entirely(self):
         data = {"stream": True}
@@ -9153,6 +9350,36 @@ class TestApplyStreamUsageTracking:
 
         assert data["stream_options"] == {"include_usage": True}
         assert "_litellm_strip_stream_usage" not in data
+
+    @pytest.mark.parametrize("client_stream_options", [None, {"include_obfuscation": True}])
+    def test_flag_true_marks_usage_injected_for_clients_that_did_not_ask(
+        self, client_stream_options: dict[str, bool] | None
+    ):
+        data: Final = {
+            "stream": True,
+            **({} if client_stream_options is None else {"stream_options": client_stream_options}),
+        }
+
+        _apply_stream_usage_tracking(
+            data=data,
+            general_settings={"always_include_stream_usage": True},
+            route_type="acompletion",
+        )
+
+        assert data["stream_options"]["include_usage"] is True
+        assert data["_litellm_stream_usage_injected"] is True
+
+    def test_flag_true_leaves_usage_unmarked_when_client_asked_and_neutralizes_client_marker(self):
+        data: Final = {"stream": True, "stream_options": {"include_usage": True}, "_litellm_stream_usage_injected": True}
+
+        _apply_stream_usage_tracking(
+            data=data,
+            general_settings={"always_include_stream_usage": True},
+            route_type="acompletion",
+        )
+
+        assert data["stream_options"] == {"include_usage": True}
+        assert data["_litellm_stream_usage_injected"] is False
 
     def test_flag_true_respects_client_explicit_include_usage_false(self):
         data = {"stream": True, "stream_options": {"include_usage": False}}
