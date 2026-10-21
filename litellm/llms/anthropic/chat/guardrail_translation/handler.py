@@ -702,7 +702,7 @@ class AnthropicMessagesHandler(BaseTranslation):
                 anthropic_config: Final = AnthropicConfig()
                 anthropic_tools: Final[list[AllAnthropicToolsValues]] = []
                 for tool in guardrailed_tools:
-                    converted_tool, _mcp_server = anthropic_config.map_tool_helper(
+                    converted_tool, _ = anthropic_config.map_tool_helper(
                         _with_original_name(tool, original_tool_names.declared)
                     )
                     if converted_tool is not None:
