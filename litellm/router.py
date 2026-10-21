@@ -164,6 +164,11 @@ from litellm.router_strategy.lowest_tpm_rpm import LowestTPMLoggingHandler
 from litellm.router_strategy.lowest_tpm_rpm_v2 import LowestTPMLoggingHandler_v2, PrefetchedUsage
 from litellm.router_strategy.simple_shuffle import simple_shuffle
 from litellm.router_strategy.tag_based_routing import (
+    ORIGINAL_REQUEST_TAGS_KEY,
+    ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY,
+    PIN_TAG_PREFIX,
+    _pinned_provider_from_kwargs,
+    _raise_no_deployments_for_tags,
     baggage_stamp_for_serving_deployment,
     get_deployments_for_tag,
     get_routing_tags_from_request_kwargs,
@@ -3600,6 +3605,19 @@ class Router:
             self._update_kwargs_before_fallbacks(model=model, kwargs=kwargs)
             start_time: Final = time.time()
             is_prompt_management_model: Final = self._is_prompt_management_model(model)
+            if is_prompt_management_model:
+                # HARD PROVIDER-PIN vs PROMPT-MANAGEMENT: prompt management can resolve to a
+                # different, potentially cross-provider deployment, erasing the trusted pin
+                # signal before the deployment chokepoint ever sees it. Refuse a pinned
+                # request to a prompt-managed model here, at the entry, before that happens.
+                pinned_provider = _pinned_provider_from_kwargs(kwargs, "metadata") or _pinned_provider_from_kwargs(
+                    kwargs, "litellm_metadata"
+                )
+                if pinned_provider is not None:
+                    _raise_no_deployments_for_tags(
+                        model=(f"pinned provider {pinned_provider} does not support prompt-managed model {model}"),
+                        request_tags=[PIN_TAG_PREFIX + pinned_provider],
+                    )
             if not is_prompt_management_model:
                 controls: Final = per_request_fallback_controls(kwargs)
                 kwargs[MID_STREAM_FALLBACK_CONTROLS_KEY] = controls  # rebind-ok: forwarded to every hop

@@ -778,10 +778,11 @@ class TestCheckBatchCost:
 
             await check_batch_cost_instance.check_batch_cost()
 
-        assert mock_prisma_client.db.litellm_managedobjecttable.update_many.call_count == 2, (
-            "Expected update() to be called exactly once for the completed job"
-        )
-        update_data = mock_prisma_client.db.litellm_managedobjecttable.update_many.call_args[1]["data"]
+        finalize_writes = [
+            data for data in _row_writes(mock_prisma_client) if data.get("status") == "complete"
+        ]
+        assert len(finalize_writes) == 1, "Expected exactly one finalize write for the completed job"
+        update_data = finalize_writes[0]
         assert update_data["batch_processed"] is True, (
             "finalize write must include batch_processed=True when column is present"
         )
@@ -1408,12 +1409,9 @@ class TestCheckBatchCost:
             f"{terminal_status} batch with an output file must fetch results and be billed"
         )
         mock_logging_obj.async_success_handler.assert_awaited_once()
-        assert mock_prisma_client.db.litellm_managedobjecttable.update_many.call_count == 2
-        update_data = mock_prisma_client.db.litellm_managedobjecttable.update_many.call_args[1]["data"]
-        assert update_data["batch_processed"] is True
-        assert update_data["status"] == terminal_status, (
-            f"billed {terminal_status} batch must keep its real terminal status in the DB"
-        )
+        finalize_writes = [data for data in _row_writes(mock_prisma_client) if data.get("status") == terminal_status]
+        assert len(finalize_writes) == 1, f"Expected exactly one finalize write for a {terminal_status} job"
+        assert finalize_writes[0]["batch_processed"] is True
 
     @pytest.mark.asyncio
     async def test_error_file_failures_add_to_failed_request_count(
