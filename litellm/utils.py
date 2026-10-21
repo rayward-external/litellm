@@ -1094,6 +1094,14 @@ def _ocr_document_summary(document: object) -> str:
     return kind
 
 
+def _resolve_string_callback_class(callback: str) -> CustomLogger | None:
+    from litellm.litellm_core_utils import litellm_logging as _lm
+
+    return _lm._init_custom_logger_compatible_class(  # pyright: ignore[reportPrivateUsage]  # shared callback factory
+        callback, internal_usage_cache=None, llm_router=None
+    )
+
+
 # Runs once per call to check if the user wants to send their data anywhere - PostHog/Sentry/Slack/etc.
 
 
@@ -1136,11 +1144,7 @@ def function_setup(
                 for callback in all_callbacks:
                     # check if callback is a string - e.g. "lago", "openmeter"
                     if isinstance(callback, str):
-                        callback = litellm.litellm_core_utils.litellm_logging._init_custom_logger_compatible_class(
-                            callback,
-                            internal_usage_cache=None,
-                            llm_router=None,
-                        )
+                        callback = _resolve_string_callback_class(callback)
                         if callback is None or any(
                             type(cb) is type(callback) for cb in litellm._async_success_callback
                         ):  # don't double add a callback
