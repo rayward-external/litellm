@@ -34,6 +34,13 @@ EXCLUDED_ROLLOUT_FLAGS = {
     "LITELLM_BUILTIN_PASS_THROUGH_ROUTES_FIRST",
 }
 
+# Fork-only build-time flags with no upstream equivalent. The public docs this
+# check scans (BerriAI/litellm-docs) are an upstream-owned repo we don't
+# control, so a fork-only var can never be documented there.
+EXCLUDED_FORK_ONLY_VARS = {
+    "LITELLM_PRISMA_CLIENT_PREBAKED",
+}
+
 # Internal infrastructure tuning parameters for streaming/queue management
 # These are advanced settings with sensible defaults that most users should not modify
 EXCLUDED_INTERNAL_TUNING_VARS = {
@@ -60,7 +67,11 @@ EXCLUDED_TERMINAL_VARS = {
 }
 
 EXCLUDED_KEYS = frozenset(
-    EXCLUDED_TERMINAL_VARS | EXCLUDED_GUARD_ONLY_VARS | EXCLUDED_ROLLOUT_FLAGS | EXCLUDED_INTERNAL_TUNING_VARS
+    EXCLUDED_TERMINAL_VARS
+    | EXCLUDED_GUARD_ONLY_VARS
+    | EXCLUDED_ROLLOUT_FLAGS
+    | EXCLUDED_INTERNAL_TUNING_VARS
+    | EXCLUDED_FORK_ONLY_VARS
 )
 
 # Directories to skip (dependencies, venvs, caches) - only scan litellm source

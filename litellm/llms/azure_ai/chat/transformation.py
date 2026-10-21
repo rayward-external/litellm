@@ -1,7 +1,7 @@
 import copy
 import enum
 import re
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Collection, Iterator
 from typing import TYPE_CHECKING, Final, cast
 
 import httpx
@@ -20,10 +20,14 @@ from litellm.llms.azure_ai.common_utils import (
     is_foundry_model_inference_base,
 )
 from litellm.llms.base_llm.chat.transformation import LiteLLMLoggingObj
-from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
+from litellm.llms.openai.chat.gpt_5_transformation import (
+    OpenAIGPT5Config,
+    unsupported_reasoning_effort_message,
+)
 from litellm.llms.openai.common_utils import drop_params_from_unprocessable_entity_error
 from litellm.llms.openai.openai import OpenAIChatCompletionResponseIterator, OpenAIConfig
 from litellm.llms.xai.chat.transformation import XAIChatConfig
+from litellm.router_utils.reasoning_effort_capability import REASONING_EFFORT_STRENGTH_ORDER
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.openai import AllMessageValues
 from litellm.types.router import GenericLiteLLMParams
@@ -123,6 +127,8 @@ class AzureAIStudioConfig(OpenAIConfig):
         optional_params: dict[str, object],  # mutable-ok: OpenAIConfig.map_openai_params signature
         model: str,
         drop_params: bool,
+        *,
+        declared_reasoning_efforts: Collection[str] = (),
     ) -> dict[str, object]:  # mutable-ok: OpenAIConfig.map_openai_params signature
         if azureAIGPT5Config.is_model_gpt_5_model(model):
             return azureAIGPT5Config.map_openai_params(
@@ -130,6 +136,7 @@ class AzureAIStudioConfig(OpenAIConfig):
                 optional_params=optional_params,
                 model=model,
                 drop_params=drop_params,
+                declared_reasoning_efforts=declared_reasoning_efforts,
             )
         optional_params = super().map_openai_params(
             non_default_params=non_default_params,
@@ -147,8 +154,28 @@ class AzureAIStudioConfig(OpenAIConfig):
         # would correctly ADVERTISE reasoning_effort as supported while the
         # value was still silently dropped at request-build time -- forward it
         # explicitly here, gated by the same capability check.
+        requested_effort: Final = non_default_params.get("reasoning_effort")
+        # Only a concrete strength level (medium, high, ...) needs a declared level to back it --
+        # "none" (the off switch) and "adaptive" (let the provider decide) are never rounded onto
+        # the declared ladder upstream (reasoning_effort_capability.nearest_declared_reasoning_effort)
+        # and must reach the provider unchanged, same as a non-string (dict-shaped) value.
+        refuses_undeclared_effort: Final = (
+            isinstance(requested_effort, str)
+            and requested_effort in REASONING_EFFORT_STRENGTH_ORDER
+            and requested_effort not in declared_reasoning_efforts
+        )
         if "reasoning_effort" in non_default_params and self._supports_reasoning(model):
-            optional_params["reasoning_effort"] = non_default_params["reasoning_effort"]
+            if not refuses_undeclared_effort:
+                optional_params["reasoning_effort"] = requested_effort
+            elif litellm.drop_params or drop_params:
+                non_default_params.pop("reasoning_effort", None)
+            else:
+                raise litellm.utils.UnsupportedParamsError(
+                    message=unsupported_reasoning_effort_message(
+                        "reasoning_effort", cast(str, requested_effort), model
+                    ),
+                    status_code=400,
+                )
         return optional_params
 
     def _supports_stop_reason(self, model: str) -> bool:
