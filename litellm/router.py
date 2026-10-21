@@ -5202,15 +5202,31 @@ class Router:
         credential_name: Final = deployment.get("litellm_params", {}).get("litellm_credential_name")
         credential_tag: Final = f"Credential: {credential_name}" if credential_name else None
 
-        deployment_attribution_tags: Final = tuple(
-            dict.fromkeys((*(deployment_tags or ()), *((credential_tag,) if credential_tag else ())))
-        )
-
-        if deployment_attribution_tags:
+        if deployment_tags:
+            # Rebuilding from the caller's ROUTING_REQUEST_TAGS_METADATA_KEY snapshot (not
+            # the live, possibly previous-attempt-polluted "tags") must still keep
+            # tags_with_serving_deployment_tags' own ordering guarantee -- deployment
+            # tags ahead of baggage-mapped ones -- since guardrail Mode tag-matching
+            # (EnterpriseCustomGuardrailHelper._should_run_if_mode_by_tag) picks the
+            # FIRST matching tag; reusing it here on a caller_baseline-seeded view
+            # keeps that guarantee instead of re-deriving a from-scratch ordering.
             caller_baseline: Final = kwargs[metadata_variable_name][ROUTING_REQUEST_TAGS_METADATA_KEY]
-            kwargs[metadata_variable_name]["tags"] = list(
-                dict.fromkeys((*caller_baseline, *deployment_attribution_tags))
+            rebuilt_tags: Final = tags_with_serving_deployment_tags(
+                {
+                    "tags": list(caller_baseline),
+                    BAGGAGE_MAPPED_TAGS_METADATA_KEY: kwargs[metadata_variable_name].get(
+                        BAGGAGE_MAPPED_TAGS_METADATA_KEY
+                    ),
+                },
+                deployment_tags,
             )
+            if rebuilt_tags is not None:
+                kwargs[metadata_variable_name]["tags"] = list(rebuilt_tags)
+
+        if credential_tag:
+            existing_tags: Final = kwargs[metadata_variable_name].get("tags") or []
+            if credential_tag not in existing_tags:
+                kwargs[metadata_variable_name]["tags"] = [*existing_tags, credential_tag]
 
         from litellm.llms.github_copilot.per_user_auth import (
             github_copilot_per_user_credential_name,
