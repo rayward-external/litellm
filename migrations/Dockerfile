@@ -1,5 +1,5 @@
-ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d
-ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d
+ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:81211e15a86ea1d5357f284482af45730c51de45eaf10ad9ce205d6bfc2df323
+ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:81211e15a86ea1d5357f284482af45730c51de45eaf10ad9ce205d6bfc2df323
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2e4e1e333f7d67fbdd923d00a506a516a
 
 # Pin by digest so supply-chain scanners (OpenSSF Scorecard PinnedDependencies)
@@ -29,7 +29,7 @@ FROM ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2e4e1e333
 # Copies only the native build's inputs, so the fat-LTO compile stays cached across Python-only changes
 # Pin by digest so supply-chain scanners (OpenSSF Scorecard PinnedDependencies)
 # recognise the image as pinned. Update the ARG default above in sync.
-FROM cgr.dev/chainguard/wolfi-base@sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d AS rust-native
+FROM cgr.dev/chainguard/wolfi-base@sha256:81211e15a86ea1d5357f284482af45730c51de45eaf10ad9ce205d6bfc2df323 AS rust-native
 
 WORKDIR /app
 USER root
@@ -54,7 +54,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uvx --python python3.13 --from maturin==1.15.0 --with puccinialin==0.1.14 \
         python -c "import maturin; maturin.build_wheel('/wheels')"
 
-FROM cgr.dev/chainguard/wolfi-base@sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d AS builder
+FROM cgr.dev/chainguard/wolfi-base@sha256:81211e15a86ea1d5357f284482af45730c51de45eaf10ad9ce205d6bfc2df323 AS builder
 
 WORKDIR /app
 USER root
@@ -117,12 +117,12 @@ RUN HOME=/opt/prisma XDG_CACHE_HOME=/opt/prisma/.cache PRISMA_BINARY_CACHE_DIR=/
     prisma generate --schema=./schema.prisma
 
 # ---------- Runtime ----------
-FROM cgr.dev/chainguard/wolfi-base@sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d AS runtime
+FROM cgr.dev/chainguard/wolfi-base@sha256:81211e15a86ea1d5357f284482af45730c51de45eaf10ad9ce205d6bfc2df323 AS runtime
 
 USER root
 
 RUN for i in 1 2 3; do \
-      apk add --no-cache bash openssl tzdata python-3.13 nodejs libsndfile libatomic && break; \
+      apk add --no-cache bash openssl libssl3 tzdata python-3.13 nodejs libsndfile libatomic && break; \
       [ $i = 3 ] && { echo "apk add failed after 3 retries" >&2; exit 1; }; \
       sleep 5; \
     done

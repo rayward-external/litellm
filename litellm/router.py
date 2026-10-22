@@ -14505,6 +14505,7 @@ class Router:
             input_messages = LiteLLMCompletionResponsesConfig.transform_responses_api_input_to_messages(
                 input=typed_input,
                 responses_api_request={"instructions": instructions} if instructions is not None else {},
+                only_since_compaction=True,
             )
             return litellm.token_counter(
                 messages=cast(list, input_messages),  # cast-ok: transformed chat messages
