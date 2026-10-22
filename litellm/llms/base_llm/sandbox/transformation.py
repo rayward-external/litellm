@@ -7,7 +7,7 @@ run code -> delete container; `code_interpreter_tool` combines all three.
 """
 
 import builtins
-from typing import Final
+from typing import Any, Final
 
 import httpx
 from pydantic import Field, PrivateAttr
