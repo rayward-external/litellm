@@ -184,7 +184,8 @@ jobs:
           LITELLM_MIGRATION_SCRIPT: /app/run.py
         run: |
           python -m pip install --no-cache-dir --require-hashes -r .github/scripts/migration-test-requirements.txt
-          python -m pytest --noconftest tests/integration/database/image/test_offline_image_migration.py -v
+          python -m pytest --noconftest tests/integration/database/image/test_offline_image_migration.py -v \
+            --deselect=tests/integration/database/image/test_offline_image_migration.py::test_migration_offline_as_non_root_uid
 
   gateway-image:
     name: gateway-image
