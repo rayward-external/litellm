@@ -42,8 +42,8 @@ class CodeExecutionResult(LiteLLMPydanticObjectBase):
 
     stdout: str = ""
     stderr: str = ""
-    results: list[dict[str, Any]] = Field(default_factory=list)
-    error: dict[str, Any] | None = None
+    results: list[dict[str, object]] = Field(default_factory=list)
+    error: dict[str, object] | None = None
     execution_count: int | None = None
     object: str = "code_execution"
 
