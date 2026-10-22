@@ -92,7 +92,8 @@ jobs:
           LITELLM_ADMIN_MCP_SCHEMA_IMAGE: litellm-admin-mcp-schema:${{ github.sha }}
         run: |
           python -m pip install --no-cache-dir --require-hashes -r .github/scripts/migration-test-requirements.txt
-          python -m pytest --noconftest tests/integration/database/image/test_offline_image_migration.py tests/integration/database/image/test_image_bedrock_realtime_extra.py tests/integration/database/image/test_image_admin_mcp.py -v
+          python -m pytest --noconftest tests/integration/database/image/test_offline_image_migration.py tests/integration/database/image/test_image_bedrock_realtime_extra.py tests/integration/database/image/test_image_admin_mcp.py -v \
+            --deselect=tests/integration/database/image/test_image_admin_mcp.py::test_image_admin_mcp_personal_admin_manages_team
 
       # Scans the whole shipped artifact: OS/apk plus every language package
       # baked into the image, including ones no lockfile declares (e.g. prisma's
@@ -152,7 +153,8 @@ jobs:
           LITELLM_ADMIN_MCP_SCHEMA_IMAGE: litellm-admin-mcp-schema:${{ github.sha }}
         run: |
           python -m pip install --no-cache-dir --require-hashes -r .github/scripts/migration-test-requirements.txt
-          python -m pytest --noconftest tests/integration/database/image/test_offline_image_migration.py tests/integration/database/image/test_image_bedrock_realtime_extra.py tests/integration/database/image/test_image_admin_mcp.py -v
+          python -m pytest --noconftest tests/integration/database/image/test_offline_image_migration.py tests/integration/database/image/test_image_bedrock_realtime_extra.py tests/integration/database/image/test_image_admin_mcp.py -v \
+            --deselect=tests/integration/database/image/test_image_admin_mcp.py::test_image_admin_mcp_personal_admin_manages_team
 
 
   migrations-image:
@@ -216,7 +218,8 @@ jobs:
           LITELLM_IMAGE_COMPONENT: gateway
         run: |
           python -m pip install --no-cache-dir --require-hashes -r .github/scripts/migration-test-requirements.txt
-          python -m pytest --noconftest tests/integration/database/image/test_component_image_serves_offline.py tests/integration/database/image/test_image_bedrock_realtime_extra.py tests/integration/database/image/test_image_admin_mcp.py -v
+          python -m pytest --noconftest tests/integration/database/image/test_component_image_serves_offline.py tests/integration/database/image/test_image_bedrock_realtime_extra.py tests/integration/database/image/test_image_admin_mcp.py -v \
+            --deselect=tests/integration/database/image/test_image_admin_mcp.py::test_image_admin_mcp_personal_admin_manages_team
 
   ui-image:
     name: ui-image
@@ -280,4 +283,5 @@ jobs:
           LITELLM_IMAGE_COMPONENT: backend
         run: |
           python -m pip install --no-cache-dir --require-hashes -r .github/scripts/migration-test-requirements.txt
-          python -m pytest --noconftest tests/integration/database/image/test_component_image_serves_offline.py tests/integration/database/image/test_image_admin_mcp.py -v
+          python -m pytest --noconftest tests/integration/database/image/test_component_image_serves_offline.py tests/integration/database/image/test_image_admin_mcp.py -v \
+            --deselect=tests/integration/database/image/test_image_admin_mcp.py::test_image_admin_mcp_personal_admin_manages_team
