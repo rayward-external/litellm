@@ -1,0 +1,18 @@
+name: _tmp-uv-lock-regen
+on:
+  workflow_dispatch: {}
+
+jobs:
+  regen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-uv-with-retries
+        with:
+          version: "0.10.9"
+      - run: uv lock
+      - uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: regenerated-uv-lock
+          path: uv.lock
+          retention-days: 1
