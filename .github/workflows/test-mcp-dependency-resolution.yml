@@ -77,7 +77,7 @@ jobs:
       - name: Verify lockfile
         if: steps.changes.outputs.decision != 'skip'
         run: |
-          uv lock --check
+          uv lock --check -v
 
       - name: Check locked runtime installations
         if: steps.changes.outputs.decision != 'skip'
