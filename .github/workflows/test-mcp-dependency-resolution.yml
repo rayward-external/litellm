@@ -77,9 +77,6 @@ jobs:
       - name: Verify lockfile
         if: steps.changes.outputs.decision != 'skip'
         run: |
-          uv lock
-          git diff --no-color uv.lock || true
-          git checkout -- uv.lock
           uv lock --check
 
       - name: Check locked runtime installations

@@ -10,7 +10,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-10-20T06:41:01.515572128Z"
+exclude-newer = "2026-10-21T06:35:09.769993307Z"
 exclude-newer-span = "P3D"
 
 [options.exclude-newer-package]
@@ -5095,12 +5095,24 @@ name = "litellm-admin-mcp"
 version = "0.1.0"
 source = { url = "https://github.com/BerriAI/liteadmin-mcp/archive/d35ec9c19c117d4c50cc1eccf6ce1296aac25a1a.tar.gz" }
 dependencies = [
-    { name = "httpx2" },
-    { name = "jsonschema" },
-    { name = "mcp" },
-    { name = "uvicorn" },
+    { name = "httpx2", marker = "python_full_version >= '3.12'" },
+    { name = "jsonschema", marker = "python_full_version >= '3.12'" },
+    { name = "mcp", marker = "python_full_version >= '3.12'" },
+    { name = "uvicorn", marker = "python_full_version >= '3.12'" },
 ]
 sdist = { hash = "sha256:86b930f6706fb2da10d53d1798ee7fd14e44fb0afdef0da122cf0e6bb88fa2c3" }
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp", marker = "extra == 'test'", specifier = "==3.14.3" },
+    { name = "httpx2", specifier = "==2.13.0" },
+    { name = "jsonschema", specifier = "==4.26.0" },
+    { name = "mcp", specifier = "==2.2.0" },
+    { name = "pytest", marker = "extra == 'test'", specifier = "==9.1.1" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = "==1.4.0" },
+    { name = "uvicorn", specifier = ">=0.30,<1" },
+]
+provides-extras = ["test"]
 
 [[package]]
 name = "litellm-enterprise"
