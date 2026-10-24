@@ -152,7 +152,7 @@ export const getModelHubTableColumns = ({
           <div className="flex flex-wrap gap-1">
             {providers.slice(0, 2).map((provider) => (
               <Badge key={provider} variant="secondary">
-                {provider}
+                {getProviderLogoAndName(provider).displayName}
               </Badge>
             ))}
             {providers.length > 2 && <span className="text-xs text-muted-foreground">+{providers.length - 2}</span>}
