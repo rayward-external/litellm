@@ -354,7 +354,7 @@ cache-keys = [
     { file = "litellm-rust/crates/**/*" },
 ]
 constraint-dependencies = [
-    "gitpython>=3.1.55",
+    "gitpython>=3.2.1",
     "pyasn1>=0.6.4",
     "h2>=4.4.1",
     "tornado>=6.5.8",
