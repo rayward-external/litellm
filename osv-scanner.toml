@@ -9,9 +9,24 @@ ignoreUntil = 2026-11-20
 reason = "the only fixed filelock is 4.2.1, a new major that requires Python >= 3.11 while litellm still supports 3.10, and the advisory is in ReadWriteLock, which litellm never uses (only FileLock); bump filelock and remove this entry once 3.10 is dropped or a 3.x fix ships"
 
 [[IgnoredVulns]]
-id = "GHSA-vfj7-8cjw-p6xm"
-ignoreUntil = 2026-11-03
-reason = "braces has no fixed release published (3.0.3, 2024-05-21, is latest and last_affected); the only remaining path is ui/litellm-dashboard's eslint-config-next -> @next/eslint-plugin-next, which pins fast-glob 3.3.1 -> micromatch -> braces on every 16.x release through the current latest; remove this entry once Next.js ships a patched release"
+id = "GHSA-567q-5qvw-pf92"
+ignoreUntil = 2026-11-24
+reason = "same filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8, blocked by the same Python >= 3.11 requirement; the flaw is a Windows-only oplock on SoftFileLock's marker file blocking a stale-lock break, which litellm's Linux-only proxy deployment never hits; remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-9vhv-jxww-xfm5"
+ignoreUntil = 2026-11-24
+reason = "same filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8, blocked by the same Python >= 3.11 requirement; the flaw is a Windows-only TOCTOU in ReadWriteLock's SQLite backend, which litellm never uses (only FileLock); remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0387"
+ignoreUntil = 2026-11-24
+reason = "crypto-bigint 0.7.6 (fix) is a breaking major for elliptic-curve, which pins crypto-bigint ^0.5 and is itself pinned to ^0.13.x by p256/p384 via jsonwebtoken 11.1.0's rust_crypto feature; no release of this chain supports crypto-bigint 0.7 yet; remove once one does"
+
+[[IgnoredVulns]]
+id = "GHSA-xcx6-jx8p-x3h5"
+ignoreUntil = 2026-11-24
+reason = "@azure/msal-node 7.1.0 (fix) is a breaking major that @azure/identity (latest 4.14.0, vscode-extension's only consumer via the dev-only @vscode/vsce publish CLI) still pins to ^6.0.0; remove once @azure/identity bumps its msal-node requirement"
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0449"

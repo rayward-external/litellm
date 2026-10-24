@@ -163,7 +163,11 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # so it has no current-state pattern to check.
 # 2026-10-17 sync: +1 for the azure_ai additive-reasoning row, superseded by
 # upstream's own XAIChatConfig.fold_reasoning_tokens_into_completion.
-EXPECTED_NA_ROWS = 48
+# 2026-10-24 security sweep: +3 -- the osv-scanner.toml braces/GHSA-vfj7-8cjw-p6xm
+# row flipped to N/A (its ignore is unused now, condition met), plus two new
+# removal-tracked rows with no current-state pattern to check: the ctutils
+# Cargo.lock bump and the tests/e2e/ui/package-lock.json dev-dependency bump.
+EXPECTED_NA_ROWS = 51
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
