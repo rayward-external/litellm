@@ -36,6 +36,7 @@ constraints = [
     { name = "h2", specifier = ">=4.4.1" },
     { name = "httplib2", specifier = ">=0.32.0" },
     { name = "packaging", specifier = ">=24.0" },
+    { name = "pyasn1", specifier = ">=0.6.4" },
     { name = "setuptools", specifier = ">=84.1.0" },
     { name = "soupsieve", specifier = ">=2.8.4" },
     { name = "tornado", specifier = ">=6.5.8" },
