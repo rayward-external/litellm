@@ -1,35 +1,38 @@
-# Complement to the path-filtered "Check UI API Types Sync" workflow
-# (.github/workflows/check-ui-api-types.yml), so its check name can be REQUIRED
-# by branch protection on litellm_internal_staging without deadlocking PRs that
-# don't touch those paths (e.g. a Python-only fix under litellm/llms/**, where
-# the real workflow never fires and a required context would wait forever).
+# Shim for the required status check "Verify schema.d.ts matches the proxy
+# OpenAPI spec" on litellm_internal_staging's branch protection.
 #
-# The job below mirrors the job NAME in check-ui-api-types.yml and runs a no-op
-# ONLY when that real workflow is path-filtered out. When a PR *does* touch the
-# filtered paths, the real workflow runs and this complement is skipped by
-# paths-ignore, so there is no duplicate/conflict for a paths-only PR.
-#   - job check-sync mirrors "Verify schema.d.ts matches the proxy OpenAPI spec"
+# That name used to be a standalone path-filtered workflow
+# (.github/workflows/check-ui-api-types.yml), with this file as its
+# path-inverted complement so the required context could still report on PRs
+# that don't touch the filtered paths. Upstream's CI reorg (ci: render lint,
+# unit and smoke checks as <tier> / <job> with one collector per tier, #45480,
+# absorbed by a 2026-10-xx sync) inlined check-ui-api-types.yml's job into
+# test-linting.yml as the unconditional "ui-api-types" job (same path-gated
+# logic internally, via steps.changes.outputs.relevant), deleting the
+# standalone workflow outright. With no real workflow left to ever produce the
+# literal "Verify schema.d.ts matches the proxy OpenAPI spec" context, the
+# path-filtered complement below went the same way as
+# ci-layout-2026-10-10-required-check-shim.yml's other legacy names: any PR
+# touching ui/litellm-dashboard/package.json (e.g. dependabot npm bumps, see
+# PR #329) fell inside this file's old paths-ignore list, so the complement
+# skipped itself expecting the real check to report under the same name, and
+# nothing ever did -> permanently blocked ("expected" but never reported).
+#
+# Fix: run this shim unconditionally. Real schema/OpenAPI-sync coverage lives
+# entirely in test-linting.yml's "ui-api-types" job now, independent of this
+# file, so there is no longer a "real" workflow this complement needs to defer
+# to for any path.
 #
 # Mirrors the infra repo's required-checks-complement.yml (llm-gateway-infra
 # PR #261).
 #
-# INVARIANT: the paths-ignore list below must stay byte-equal to
-# check-ui-api-types.yml's pull_request paths list (same order, same globs).
-# check-ui-api-types.yml has no branches filter, so this complement has none
-# either. The job name: string must stay character-for-character identical to
-# the required status check context.
+# REMOVAL CONDITION: remove once an admin updates litellm_internal_staging's
+# required status checks (Settings > Branches) to require "ui-api-types"
+# instead of "Verify schema.d.ts matches the proxy OpenAPI spec".
 name: required-checks-complement-ui-api-types
 
 on:
   pull_request:
-    paths-ignore:
-      - "litellm/proxy/**"
-      - "litellm/types/**"
-      - "ui/litellm-dashboard/src/lib/http/schema.d.ts"
-      - "ui/litellm-dashboard/scripts/gen-api-types.mjs"
-      - "ui/litellm-dashboard/package.json"
-      - "ui/litellm-dashboard/package-lock.json"
-      - ".github/workflows/check-ui-api-types.yml"
 
 permissions:
   contents: read
@@ -39,4 +42,4 @@ jobs:
     name: "Verify schema.d.ts matches the proxy OpenAPI spec"
     runs-on: ubuntu-latest
     steps:
-      - run: echo "UI API types paths not touched — real check not applicable."
+      - run: echo "Real schema/OpenAPI-sync coverage lives in test-linting.yml's ui-api-types job; this shim only satisfies the legacy required-check name."
