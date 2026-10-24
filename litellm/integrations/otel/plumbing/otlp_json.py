@@ -113,7 +113,7 @@ class OTLPJsonSpanExporter(OTLPSpanExporter):
                 )
                 return SpanExportResult.FAILURE
 
-            export_result = self._client.export(serialized_data)  # pyright: ignore[reportPrivateUsage]  # no public accessor
+            export_result: Final = self._client.export(serialized_data)  # pyright: ignore[reportPrivateUsage]  # no public accessor
             if not export_result.success:
                 result.error = export_result.error
                 result.error_attrs = (
