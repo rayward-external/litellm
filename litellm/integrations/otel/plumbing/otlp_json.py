@@ -14,17 +14,13 @@ from typing import Final, TypeAlias
 import requests
 from google.protobuf.json_format import MessageToDict
 from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
-from opentelemetry.exporter.otlp.proto.http._common import (
-    RequestPayloadTooLargeError,
-    _is_request_too_large,  # pyright: ignore[reportPrivateUsage]  # no public re-export; needed to mirror the base exporter's own oversize check
-)
+from opentelemetry.exporter.otlp.proto.http._common import RequestPayloadTooLargeError
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExportResult
 from opentelemetry.semconv.attributes.http_attributes import HTTP_RESPONSE_STATUS_CODE
 
 _logger: Final = logging.getLogger(__name__)
-
 JSON_CONTENT_TYPE: Final = "application/json"
 _HEX_ID_KEYS: Final = frozenset({"traceId", "spanId", "parentSpanId"})
 
@@ -75,45 +71,42 @@ class OTLPJsonSpanExporter(OTLPSpanExporter):
     def __init__(
         self,
         endpoint: str | None,
-        headers: dict[str, str],  # mutable-ok: SDK __init__ takes Dict
+        headers: Mapping[str, str],
         certificate_file: str | None = None,
         session: "requests.Session | None" = None,
+        *,
+        max_request_size: int | None = None,
     ) -> None:
-        super().__init__(endpoint=endpoint, headers=headers, certificate_file=certificate_file, session=session)
-        self._client._headers["content-type"] = JSON_CONTENT_TYPE  # pyright: ignore[reportPrivateUsage]  # no public hook to override the OTLP/HTTP content type
+        super().__init__(
+            endpoint=endpoint,
+            headers={**{key.lower(): value for key, value in headers.items()}, "content-type": JSON_CONTENT_TYPE},
+            certificate_file=certificate_file,
+            session=session,
+            max_request_size=max_request_size,
+        )
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
-        """Mirrors ``OTLPSpanExporter.export`` but serializes to OTLP/JSON.
-
-        The base class hardcodes ``encode_spans(spans).SerializePartialToString()``
-        with no overridable serialization hook, so the whole method is duplicated
-        here with the one line that differs.
-        """
-        if self._shutdown:  # pyright: ignore[reportPrivateUsage]  # no public shutdown-state accessor
+        if self._shutdown:
             _logger.warning("Exporter already shutdown, ignoring batch")
             return SpanExportResult.FAILURE
 
-        with self._metrics.export_operation(len(spans)) as result:  # pyright: ignore[reportPrivateUsage]  # no public metrics accessor
+        with self._metrics.export_operation(len(spans)) as result:
             try:
                 serialized_data: Final = encode_spans_json(spans)
-            except Exception as error:  # noqa: BLE001  # mirrors the base exporter's own catch-all
+            except Exception as error:  # noqa: BLE001  # SDK export contract reports encoding failures as results
                 _logger.error("Failed to encode span batch: %s", error)
                 result.error = error
                 return SpanExportResult.FAILURE
 
-            if _is_request_too_large(serialized_data, self._max_request_size):  # pyright: ignore[reportPrivateUsage]  # no public accessor
-                _logger.warning(
-                    "Dropping span batch: serialized size %d bytes exceeds max_request_size %d bytes.",
-                    len(serialized_data),
-                    self._max_request_size,  # pyright: ignore[reportPrivateUsage]  # no public accessor
-                )
+            if 0 < self._max_request_size < len(serialized_data):
                 result.error = RequestPayloadTooLargeError(
-                    f"Serialized span request size {len(serialized_data)} "
-                    f"bytes exceeds max_request_size {self._max_request_size} bytes."  # pyright: ignore[reportPrivateUsage]  # no public accessor
+                    f"Serialized span request size {len(serialized_data)} bytes "
+                    f"exceeds max_request_size {self._max_request_size} bytes."
                 )
+                _logger.warning("Dropping span batch: %s", result.error)
                 return SpanExportResult.FAILURE
 
-            export_result: Final = self._client.export(serialized_data)  # pyright: ignore[reportPrivateUsage]  # no public accessor
+            export_result: Final = self._client.export(serialized_data)
             if not export_result.success:
                 result.error = export_result.error
                 result.error_attrs = (
@@ -122,4 +115,5 @@ class OTLPJsonSpanExporter(OTLPSpanExporter):
                     else None
                 )
                 return SpanExportResult.FAILURE
+
         return SpanExportResult.SUCCESS
