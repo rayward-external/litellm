@@ -88,9 +88,9 @@ def test_agentops_exporter_mints_jwt_lazily(monkeypatch):
     exporter = _build_agentops_exporter(spec)
 
     # No auth header until the first export triggers the (off-loop) fetch.
-    assert "Authorization" not in exporter._session.headers
+    assert "authorization" not in exporter._client._headers
     exporter._ensure_authenticated()
-    assert exporter._session.headers["Authorization"] == "Bearer jwt-xyz"
+    assert exporter._client._headers["authorization"] == "Bearer jwt-xyz"
 
     # Cached: a second resolution does not re-fetch.
     calls = []
@@ -118,7 +118,7 @@ def test_agentops_exporter_tolerates_fetch_failure(monkeypatch):
         )
     )
     exporter._ensure_authenticated()  # must not raise
-    assert "Authorization" not in exporter._session.headers
+    assert "authorization" not in exporter._client._headers
 
 
 def test_fetch_jwt_uses_owned_client_not_shared_pool(monkeypatch):

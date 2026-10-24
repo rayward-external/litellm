@@ -2073,7 +2073,7 @@ def test_langtrace_callback_exports_to_api_trace_with_x_api_key(
         exporter: Final = logger._get_span_processor().span_exporter
         assert isinstance(exporter, OTLPSpanExporter)
         assert exporter._endpoint == expected_endpoint
-        assert exporter._headers == {"x-api-key": api_key}
+        assert exporter._client._headers["x-api-key"] == api_key
         assert "OTEL_EXPORTER_OTLP_TRACES_HEADERS" not in os.environ
     finally:
         logging_module._in_memory_loggers.clear()

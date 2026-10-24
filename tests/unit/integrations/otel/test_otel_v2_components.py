@@ -22,11 +22,13 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (  # noqa: 
 )
 from opentelemetry import baggage  # noqa: E402
 from opentelemetry.context import attach, detach  # noqa: E402
+from opentelemetry._logs import LogRecord  # noqa: E402
 from opentelemetry._logs.severity import SeverityNumber  # noqa: E402
-from opentelemetry.sdk._logs import LogData, LogRecord  # noqa: E402
-from opentelemetry.sdk._logs.export import LogExportResult  # noqa: E402
+from opentelemetry.sdk._logs import ReadableLogRecord  # noqa: E402
+from opentelemetry.sdk._logs.export import LogRecordExportResult  # noqa: E402
 from opentelemetry.sdk.metrics import MeterProvider  # noqa: E402
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader  # noqa: E402
+from opentelemetry.sdk.resources import Resource  # noqa: E402
 from opentelemetry.sdk.trace import TracerProvider  # noqa: E402
 from opentelemetry.sdk.trace.export import (  # noqa: E402
     BatchSpanProcessor,
@@ -733,7 +735,10 @@ def _export_one_trace_to_local_collector(exporter_kind: str) -> tuple[list[dict]
     class Collector(BaseHTTPRequestHandler):
         def do_POST(self):
             body = self.rfile.read(int(self.headers["Content-Length"]))
-            received.append({"path": self.path, "headers": dict(self.headers), "body": body})
+            # Headers are HTTP-case-insensitive; keep the ``Message`` object (whose
+            # ``__getitem__``/``__contains__`` are case-insensitive) instead of a plain
+            # dict, so assertions don't depend on which case the client happened to send.
+            received.append({"path": self.path, "headers": self.headers, "body": body})
             self.send_response(200)
             self.end_headers()
 
@@ -1630,9 +1635,11 @@ def test_v2_otlp_http_log_export_trusts_ssl_cert_file(monkeypatch: pytest.Monkey
             severity_number=SeverityNumber.INFO,
             body="v2-tls-test",
         )
-        log_data = LogData(log_record=record, instrumentation_scope=InstrumentationScope("v2-tls-test"))
+        log_data = ReadableLogRecord(
+            log_record=record, resource=Resource.create({}), instrumentation_scope=InstrumentationScope("v2-tls-test")
+        )
         result = exporter.export([log_data])
-        assert result is LogExportResult.SUCCESS, f"log export failed: {result}"
+        assert result is LogRecordExportResult.SUCCESS, f"log export failed: {result}"
         assert tls_sink.received.get(timeout=5) == "/v1/logs"
     finally:
         exporter.shutdown()

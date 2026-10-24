@@ -622,10 +622,8 @@ class TestLangfuseOtelKeyDynamicConfig:
         import base64
 
         expected_auth = base64.b64encode(b"key_public:key_secret").decode()
-        assert exporter._headers == {
-            "Authorization": f"Basic {expected_auth}",
-            "x-langfuse-ingestion-version": "4",
-        }
+        assert exporter._client._headers["authorization"] == f"Basic {expected_auth}"
+        assert exporter._client._headers["x-langfuse-ingestion-version"] == "4"
 
     def test_key_dynamic_params_reuse_cached_provider(self):
         with self._clean_env():
@@ -678,10 +676,8 @@ class TestLangfuseOtelKeyDynamicConfig:
         provider = next(iter(logger._tracer_provider_cache.values())).provider
         exporter = provider._active_span_processor._span_processors[0].span_exporter
         assert isinstance(exporter, OTLPSpanExporter)
-        assert exporter._headers == {
-            "Authorization": f"Basic {secret}",
-            "x-langfuse-ingestion-version": "4",
-        }
+        assert exporter._client._headers["authorization"] == f"Basic {secret}"
+        assert exporter._client._headers["x-langfuse-ingestion-version"] == "4"
 
 
 class TestLangfuseOtelResponsesAPI:

@@ -102,10 +102,10 @@ def _build_agentops_exporter(spec: ExporterSpec) -> SpanExporter:
             try:
                 token: Final = _fetch_agentops_jwt(self._agentops_api_key).get("token")
                 if token:
-                    # ``_session`` is the requests.Session the base exporter
-                    # POSTs through; updating its Authorization header is how the
-                    # minted JWT reaches every subsequent export.
-                    self._session.headers["Authorization"] = f"Bearer {token}"
+                    # ``_client._headers`` is the dict the base exporter sends on every
+                    # export; setting it here is how the minted JWT reaches every
+                    # subsequent export.
+                    self._client._headers["authorization"] = f"Bearer {token}"  # pyright: ignore[reportPrivateUsage]  # no public hook to set a header post-construction
             except Exception as e:
                 verbose_logger.debug("AgentOps JWT fetch failed: %s", e)
 

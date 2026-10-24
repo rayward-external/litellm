@@ -80,6 +80,7 @@ jobs:
           uv lock
           git diff --no-color uv.lock || true
           git checkout -- uv.lock
+          uv lock --check
 
       - name: Check locked runtime installations
         if: steps.changes.outputs.decision != 'skip'

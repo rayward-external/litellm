@@ -71,7 +71,7 @@ class OTLPJsonSpanExporter(OTLPSpanExporter):
         session: "requests.Session | None" = None,
     ) -> None:
         super().__init__(endpoint=endpoint, headers=headers, certificate_file=certificate_file, session=session)
-        self._session.headers["Content-Type"] = JSON_CONTENT_TYPE
+        self._client._headers["content-type"] = JSON_CONTENT_TYPE  # pyright: ignore[reportPrivateUsage]  # no public hook to override the OTLP/HTTP content type
 
     def _serialize_spans(self, spans: Sequence[ReadableSpan]) -> bytes:
         return encode_spans_json(spans)

@@ -143,6 +143,14 @@ def instrument_fastapi_app(app: "FastAPI", tracer_provider: "TracerProvider | No
             claim_server_span,
         )
 
+        # Starlette freezes the middleware stack once the lifespan has run, and
+        # instrumenting an already-started app silently no-ops (opentelemetry-instrumentation-fastapi
+        # >= 0.66b1 stopped raising for this case; 0.54b1 raised, which this function relied on to
+        # skip registering a propagator for an app that was never actually instrumented).
+        # ``middleware_stack`` is the same attribute Starlette's own ``add_middleware`` checks.
+        if app.middleware_stack is not None:
+            return
+
         def server_request_hook(span: "Span | None", scope: Mapping[str, object]) -> None:
             if span is not None:
                 claim_server_span(span)
