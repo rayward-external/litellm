@@ -16,7 +16,6 @@ import {
 import { cn } from "@/lib/cva.config";
 import { displayMode } from "@/lib/decisionModels";
 import { copyToClipboard } from "@/utils/dataUtils";
-import { getProviderLogoAndName } from "@/components/provider_info_helpers";
 
 import { ModelCustomTags, type ModelCustomMetadataValue } from "./ModelCustomMetadata";
 import { formatModelModeLabel, ProviderLogo } from "./ModelHubProviders";
