@@ -24,11 +24,6 @@ ignoreUntil = 2026-11-24
 reason = "crypto-bigint 0.7.6 (fix) is a breaking major for elliptic-curve, which pins crypto-bigint ^0.5 and is itself pinned to ^0.13.x by p256/p384 via jsonwebtoken 11.1.0's rust_crypto feature; no release of this chain supports crypto-bigint 0.7 yet; remove once one does"
 
 [[IgnoredVulns]]
-id = "GHSA-xcx6-jx8p-x3h5"
-ignoreUntil = 2026-11-24
-reason = "@azure/msal-node 7.1.0 (fix) is a breaking major that @azure/identity (latest 4.14.0, vscode-extension's only consumer via the dev-only @vscode/vsce publish CLI) still pins to ^6.0.0; remove once @azure/identity bumps its msal-node requirement"
-
-[[IgnoredVulns]]
 id = "RUSTSEC-2024-0449"
 ignoreUntil = 2026-11-13
 reason = "unsafe-libyaml 0.2.11 (transitive dep of serde_yaml_ng, present byte-identical in upstream's own Cargo.lock) is unmaintained with no patched or unaffected version published (RUSTSEC advisory lists both as empty); remove this entry once one exists"
