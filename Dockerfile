@@ -67,8 +67,9 @@ RUN apk add --no-cache \
     python-3.13 \
     python-3.13-dev \
     rust \
-    "openssl-${OPENSSL_STREAM}" \
-    "openssl-${OPENSSL_STREAM}-dev" \
+    openssl \
+    libssl3 \
+    openssl-dev \
     nodejs \
     npm \
     libsndfile
@@ -127,8 +128,8 @@ RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh && \
 FROM cgr.dev/chainguard/wolfi-base@sha256:81211e15a86ea1d5357f284482af45730c51de45eaf10ad9ce205d6bfc2df323 AS liteadmin-builder
 COPY --from=uvbin /uv /usr/local/bin/uv
 RUN apk add --no-cache python-3.13
-ADD --checksum=sha256:2f7ae5cdd9d91731c0990e74a58239dc3e3fd2bf28dab23b55eafcdc47aaf87e \
-    https://github.com/BerriAI/litellm-admin-agent/archive/ef501e94bc9fbacb9233b922abf71427f030408c.tar.gz /tmp/liteadmin.tar.gz
+ADD --checksum=sha256:4fb1847e28e2be30ba76dac94f02c4903291326516a0f4ba772f6ffb8b25d05c \
+    https://github.com/BerriAI/litellm-admin-agent/archive/5661c805ce479a0cf11b842ea133cf8d22cd7e34.tar.gz /tmp/liteadmin.tar.gz
 RUN mkdir /tmp/liteadmin && tar xzf /tmp/liteadmin.tar.gz --strip-components=1 -C /tmp/liteadmin && \
     uv venv /opt/liteadmin --python python3.13 && \
     uv pip install --python /opt/liteadmin/bin/python --require-hashes -r /tmp/liteadmin/requirements.txt && \
