@@ -2885,17 +2885,21 @@ if MCP_AVAILABLE:
                 scoped_server_endpoint=scoped_server_endpoint,
                 is_initialize=asgi_scope_fields(scope).get("method", "") == "GET",
             ):
-                request_token: Final = legacy_subscription_request.set(StarletteRequest(scope))
-                try:
-                    await serve_loop(
-                        server,
-                        read_stream,
-                        write_stream,
-                        lifespan_state=lifespan_state,
-                        init_options=server.create_initialization_options(),
-                    )
-                finally:
-                    legacy_subscription_request.reset(request_token)
+                async with (
+                    sse.connect_sse(transport_scope, receive, send) as (read_stream, write_stream),
+                    server.lifespan(server) as lifespan_state,
+                ):
+                    request_token: Final = legacy_subscription_request.set(StarletteRequest(scope))
+                    try:
+                        await serve_loop(
+                            server,
+                            read_stream,
+                            write_stream,
+                            lifespan_state=lifespan_state,
+                            init_options=server.create_initialization_options(),
+                        )
+                    finally:
+                        legacy_subscription_request.reset(request_token)
 
         except MCPUpstreamAuthError as e:
             # Upstream delegated auth returned 401; surface it to the client so

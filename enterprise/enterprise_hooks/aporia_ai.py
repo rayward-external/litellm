@@ -15,12 +15,11 @@ sys.path.insert(
 )  # Adds the parent directory to the system path
 import json
 import sys
-from typing import Final, List, Literal, Optional
+from typing import Final, List, Optional
 
 from fastapi import HTTPException
 from pydantic import TypeAdapter
 
-import litellm
 from litellm._logging import verbose_proxy_logger
 from litellm.integrations.custom_guardrail import CustomGuardrail
 from litellm.litellm_core_utils.logging_utils import (

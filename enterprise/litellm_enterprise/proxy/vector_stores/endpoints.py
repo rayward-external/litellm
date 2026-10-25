@@ -8,7 +8,6 @@ All /vector_store management endpoints
 /vector_store/list
 """
 
-import copy
 import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Final, List, Optional, Protocol
