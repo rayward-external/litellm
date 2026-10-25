@@ -23,6 +23,7 @@ from typing import Final, Literal, TypeAlias
 from pydantic import TypeAdapter, ValidationError
 
 from litellm.exceptions import BadRequestError
+from litellm.litellm_core_utils.core_helpers import as_str_mapping
 from litellm.types.llms.base import LiteLLMBaseModel
 from litellm.types.llms.openai import (
     ChatCompletionToolParam,
@@ -37,6 +38,7 @@ from litellm.types.responses.main import (
 )
 
 _MAX_ARGUMENTS_LEN: Final = 1_000_000
+_DECODED_JSON: Final = TypeAdapter(object)
 
 TOOL_CALL_ITEM_ID_PREFIX_BY_TYPE: Final = MappingProxyType(
     {"function_call": "fc", "custom_tool_call": "ctc", "web_search_call": "ws", "tool_search_call": "tsc"}
@@ -134,8 +136,8 @@ def unwrap_custom_tool_arguments(arguments: str) -> str:
     if len(arguments) > _MAX_ARGUMENTS_LEN:
         return arguments
     try:
-        parsed: Final = json.loads(arguments)
-        if isinstance(parsed, dict) and "content" in parsed:
+        parsed: Final = as_str_mapping(_DECODED_JSON.validate_python(json.loads(arguments)))
+        if parsed is not None and "content" in parsed:
             return str(parsed["content"])
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
