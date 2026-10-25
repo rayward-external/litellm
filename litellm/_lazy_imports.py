@@ -426,8 +426,9 @@ def _lazy_import_http_handlers(name: str) -> object:
         params: Final = {"timeout": async_timeout, "client_alias": "module level aclient"}
 
         # Create the client instance
+        provider_id: Final = "litellm_module_level_client"
         async_client: Final = get_async_httpx_client(
-            llm_provider="litellm_module_level_client",
+            llm_provider=provider_id,
             params=params,
         )
 

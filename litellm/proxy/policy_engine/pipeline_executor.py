@@ -17,7 +17,7 @@ from typing import (
     cast,  # noqa: TID251  # upstream's own file; see cast-ok call sites
 )
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
 import litellm
 from litellm._logging import verbose_proxy_logger
@@ -57,6 +57,8 @@ try:
     from fastapi.exceptions import HTTPException
 except ImportError:
     HTTPException = None
+
+_LEGACY_HOOK_REPLACEMENT: Final = TypeAdapter(object)
 
 
 class UndeliverableStreamRewrite(Exception):
@@ -238,10 +240,12 @@ class _LegacyHookStreamAdapter(CustomGuardrail):
         logging_obj: "LiteLLMLoggingObj | None" = None,
     ) -> GenericGuardrailAPIInputs:
         hooked: Final = self.endpoint_translation.post_call_hook_response(request_data.get("response"))
-        replacement: Final = await self.inner.async_post_call_success_hook(
-            data=request_data,
-            user_api_key_dict=self.user_api_key_dict,
-            response=hooked,
+        replacement: Final = _LEGACY_HOOK_REPLACEMENT.validate_python(
+            await self.inner.async_post_call_success_hook(
+                data=request_data,
+                user_api_key_dict=self.user_api_key_dict,
+                response=hooked,
+            )
         )
         rewrite: Final = hooked if replacement is None else replacement
         if rewrite is None:

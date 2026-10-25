@@ -167,7 +167,10 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # row flipped to N/A (its ignore is unused now, condition met), plus two new
 # removal-tracked rows with no current-state pattern to check: the ctutils
 # Cargo.lock bump and the tests/e2e/ui/package-lock.json dev-dependency bump.
-EXPECTED_NA_ROWS = 51
+# 2026-10-25 sync: +2 -- the deepseek reasoning_effort row flipped to N/A,
+# superseded by upstream's own fix (BerriAI/litellm#38736), plus a new
+# N/A row recording the #1131 code-scanning alert dismissal.
+EXPECTED_NA_ROWS = 53
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",

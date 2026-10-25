@@ -65,6 +65,9 @@ from litellm.types.proxy.guardrails.guardrail_hooks.qohash import (
 from litellm.types.proxy.guardrails.guardrail_hooks.qualifire import (
     QualifireGuardrailConfigModel,
 )
+from litellm.types.proxy.guardrails.guardrail_hooks.reco import (
+    RecoConfigModel,
+)
 from litellm.types.proxy.guardrails.guardrail_hooks.repelloai import (
     RepelloAIGuardrailConfigModel,
 )
@@ -159,6 +162,7 @@ class SupportedGuardrailIntegrations(Enum):
     TYPESAFE = "typesafe"
     STRAIKER = "straiker"
     ALICE = "alice"
+    RECO = "reco"
     AGENT_365 = "agent_365"
     LLM_SHIELD_PROXY = "llm_shield_proxy"
     CONDUCT = "conduct"
@@ -1404,6 +1408,7 @@ class LitellmParams(  # pyright: ignore[reportIncompatibleVariableOverride]  # o
     QostodianNexusConfigModel,
     VigilGuardGuardrailConfigModel,
     SingulrGuardrailConfigModel,
+    RecoConfigModel,
     Agent365GuardrailConfigModel,
     WingbackGuardrailConfigModel,
 ):
