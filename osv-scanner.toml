@@ -58,5 +58,5 @@ name = "pillow"
 version = "12.3.0"
 ecosystem = "PyPI"
 vulnerability.ignore = true
-effectiveUntil = 2026-10-27
-reason = "pillow 13.0.0 requires Python >= 3.11, so the Python 3.10 resolution of the ci and dev groups stays on 12.3.0; 3.11+ is on 13.0.0"
+effectiveUntil = 2026-11-24
+reason = "security sweep 2026-10-26: effectiveUntil was expiring in 24h, re-verified rather than left to lapse. pillow 13.0.0 (PyPI requires_python >=3.11, confirmed against the published metadata) is still the only fixed release for the 41 Dependabot alerts open against uv.lock's Python 3.10 resolution (pillow 12.3.0); litellm's requires-python still floors at 3.10 (pyproject.toml), so a flat bump would drop that floor. Same unavoidable shape as the filelock rows above. Remove once 3.10 is dropped or pillow ships a patched 12.x backport"
