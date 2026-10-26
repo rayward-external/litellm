@@ -6,17 +6,32 @@ reason = "diskcache 5.6.3 (latest as of 2026-09-30) still has no fixed release p
 [[IgnoredVulns]]
 id = "GHSA-v4x8-3wr5-3wq8"
 ignoreUntil = 2026-11-20
-reason = "the only fixed filelock is 4.2.1, a new major that requires Python >= 3.11 while litellm still supports 3.10, and the advisory is in ReadWriteLock, which litellm never uses (only FileLock); bump filelock and remove this entry once 3.10 is dropped or a 3.x fix ships"
+reason = "security sweep 2026-10-25: pyproject.toml now splits the filelock floor on python_version, so Python >= 3.11 resolves to the fixed 4.2.1+ (same pattern as the pillow/lunary rows elsewhere in pyproject.toml); only the Python 3.10 resolution stays on pre-4.2.1 filelock, since 4.2.0+ dropped 3.10 support entirely. The advisory is in ReadWriteLock, which litellm never uses (only FileLock). Remove once 3.10 is dropped or a 3.x fix ships"
 
 [[IgnoredVulns]]
 id = "GHSA-567q-5qvw-pf92"
 ignoreUntil = 2026-11-24
-reason = "same filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8, blocked by the same Python >= 3.11 requirement; the flaw is a Windows-only oplock on SoftFileLock's marker file blocking a stale-lock break, which litellm's Linux-only proxy deployment never hits; remove once 3.10 is dropped or a 3.x fix ships"
+reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); the flaw is a Windows-only oplock on SoftFileLock's marker file blocking a stale-lock break, which litellm's Linux-only proxy deployment never hits; remove once 3.10 is dropped or a 3.x fix ships"
 
 [[IgnoredVulns]]
 id = "GHSA-9vhv-jxww-xfm5"
 ignoreUntil = 2026-11-24
-reason = "same filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8, blocked by the same Python >= 3.11 requirement; the flaw is a Windows-only TOCTOU in ReadWriteLock's SQLite backend, which litellm never uses (only FileLock); remove once 3.10 is dropped or a 3.x fix ships"
+reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); the flaw is a Windows-only TOCTOU in ReadWriteLock's SQLite backend, which litellm never uses (only FileLock); remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-2g95-wg33-c5x2"
+ignoreUntil = 2026-11-24
+reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); missed by the 2026-10-25 security sweep because pip-audit was run against the standalone 3.32.7 package rather than uv.lock's actual Python 3.10 resolution (filelock 4.1.0), which this osv-scan caught; CVSS 4.7, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed, but it shares the fix version and the same unavoidable 3.10 ceiling as the other filelock rows here. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-crv4-6mhj-j5jh"
+ignoreUntil = 2026-11-24
+reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); missed by the 2026-10-25 security sweep for the same reason as GHSA-2g95-wg33-c5x2 above; CVSS 5.3, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-jqc4-5cvw-7w85"
+ignoreUntil = 2026-11-24
+reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); missed by the 2026-10-25 security sweep for the same reason as GHSA-2g95-wg33-c5x2 above; CVSS 6.1, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0387"
