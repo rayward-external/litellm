@@ -19,6 +19,21 @@ ignoreUntil = 2026-11-24
 reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); the flaw is a Windows-only TOCTOU in ReadWriteLock's SQLite backend, which litellm never uses (only FileLock); remove once 3.10 is dropped or a 3.x fix ships"
 
 [[IgnoredVulns]]
+id = "GHSA-2g95-wg33-c5x2"
+ignoreUntil = 2026-11-24
+reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); missed by the 2026-10-25 security sweep because pip-audit was run against the standalone 3.32.7 package rather than uv.lock's actual Python 3.10 resolution (filelock 4.1.0), which this osv-scan caught; CVSS 4.7, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed, but it shares the fix version and the same unavoidable 3.10 ceiling as the other filelock rows here. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-crv4-6mhj-j5jh"
+ignoreUntil = 2026-11-24
+reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); missed by the 2026-10-25 security sweep for the same reason as GHSA-2g95-wg33-c5x2 above; CVSS 5.3, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-jqc4-5cvw-7w85"
+ignoreUntil = 2026-11-24
+reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); missed by the 2026-10-25 security sweep for the same reason as GHSA-2g95-wg33-c5x2 above; CVSS 6.1, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
 id = "RUSTSEC-2026-0387"
 ignoreUntil = 2026-11-24
 reason = "crypto-bigint 0.7.6 (fix) is a breaking major for elliptic-curve, which pins crypto-bigint ^0.5 and is itself pinned to ^0.13.x by p256/p384 via jsonwebtoken 11.1.0's rust_crypto feature; no release of this chain supports crypto-bigint 0.7 yet; remove once one does"
