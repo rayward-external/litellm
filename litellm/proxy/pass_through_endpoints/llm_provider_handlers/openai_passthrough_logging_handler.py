@@ -137,9 +137,10 @@ def _is_image_editing_path(path: str) -> bool:
 
 # Path segments that may legitimately precede a `responses` segment. `v1` is the
 # OpenAI-v1 surface (`/v1/responses`, `/openai/v1/responses`), `openai` is the
-# classic Azure surface (`/openai/responses?api-version=...`), and the empty
-# string is OpenAI proper at the root (`/responses`).
-_RESPONSES_PARENT_SEGMENTS = ("", "v1", "openai")
+# classic Azure surface (`/openai/responses?api-version=...`), `codex` is the
+# ChatGPT subscription passthrough (`/backend-api/codex/responses`), and the
+# empty string is OpenAI proper at the root (`/responses`).
+_RESPONSES_PARENT_SEGMENTS = ("", "v1", "openai", "codex")
 
 
 def _is_responses_path(path: str) -> bool:
