@@ -1039,6 +1039,7 @@ async def _request_constraints_emptied_target_order(
             healthy_deployments=team_scoped,
             request_kwargs=probe_kwargs,
             metadata_variable_name=metadata_key,
+            request_deployments=team_scoped,
         )
     except litellm.BadRequestError as no_match:
         # A hard provider pin that matches nothing raises instead of returning an empty pool.

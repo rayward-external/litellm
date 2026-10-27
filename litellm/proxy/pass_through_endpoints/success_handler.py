@@ -745,11 +745,9 @@ class PassThroughEndpointLogging:
         """
         if not url_route:
             return False
-        from .llm_provider_handlers.openai_passthrough_logging_handler import (
-            is_openai_compatible_url,
-        )
+        from .common_utils import is_openai_wire_compatible_route
 
-        return is_openai_compatible_url(url_route)
+        return is_openai_wire_compatible_route(url_route, custom_llm_provider)
 
     def is_gemini_route(self, url_route: str, custom_llm_provider: str | None = None):
         """Check if the URL route is a Gemini API route."""
@@ -832,6 +830,7 @@ class PassThroughEndpointLogging:
             end_time=end_time,
             cache_hit=cache_hit,
             request_body=request_body,
+            custom_llm_provider=custom_llm_provider,
             **kwargs,
         )
         if openai_passthrough_logging_handler_result["result"] is not None:

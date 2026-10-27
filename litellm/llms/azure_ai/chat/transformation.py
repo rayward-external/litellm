@@ -21,7 +21,7 @@ from litellm.llms.azure_ai.common_utils import (
     is_foundry_model_inference_base,
 )
 from litellm.llms.base_llm.chat.transformation import LiteLLMLoggingObj
-from litellm.llms.openai.chat.gpt_5_transformation import (
+from litellm.llms.openai.chat.gpt_reasoning_transformation import (
     OpenAIGPT5Config,
     unsupported_reasoning_effort_message,
 )

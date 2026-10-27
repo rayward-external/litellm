@@ -170,7 +170,7 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-10-25 sync: +2 -- the deepseek reasoning_effort row flipped to N/A,
 # superseded by upstream's own fix (BerriAI/litellm#38736), plus a new
 # N/A row recording the #1131 code-scanning alert dismissal.
-EXPECTED_NA_ROWS = 53
+EXPECTED_NA_ROWS = 54
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
