@@ -1860,7 +1860,7 @@ async def test_tag_fail_open_resolves_public_model_names(route: str) -> None:
 @pytest.mark.parametrize("opted_in_group", (None, "other-group"))
 async def test_tag_fail_open_requires_opt_in_in_the_requested_group(opted_in_group: str | None) -> None:
     router: Final = _fail_open_router(opted_in_group)
-    with pytest.raises(ValueError, match=RouterErrors.no_deployments_with_tag_routing.value):
+    with pytest.raises(litellm.BadRequestError, match=RouterErrors.no_deployments_with_tag_routing.value):
         await router.async_get_healthy_deployments(
             model="chat",
             request_kwargs={
@@ -1888,7 +1888,7 @@ async def test_tag_fail_open_does_not_use_another_teams_opt_in() -> None:
         ],
         enable_tag_filtering=True,
     )
-    with pytest.raises(ValueError, match=RouterErrors.no_deployments_with_tag_routing.value):
+    with pytest.raises(litellm.BadRequestError, match=RouterErrors.no_deployments_with_tag_routing.value):
         await router.async_get_healthy_deployments(
             model="public-chat",
             request_kwargs={
@@ -1901,7 +1901,7 @@ async def test_tag_fail_open_does_not_use_another_teams_opt_in() -> None:
 @pytest.mark.parametrize("inherited_tag", ("&vision", "!region:eu"))
 async def test_tag_fail_open_preserves_inherited_policy_after_affinity(inherited_tag: str) -> None:
     router: Final = _fail_open_router()
-    with pytest.raises(ValueError, match=RouterErrors.no_deployments_with_tag_routing.value):
+    with pytest.raises(litellm.BadRequestError, match=RouterErrors.no_deployments_with_tag_routing.value):
         await router.async_get_healthy_deployments(
             model="chat",
             request_kwargs={
