@@ -10,7 +10,7 @@ from typing import (
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
-from litellm.llms.anthropic.pass_through.messages.utils import anthropic_messages_optional_param_keys
+from litellm.llms.anthropic.messages.native.utils import anthropic_messages_optional_param_keys
 
 CACHE_SETTINGS: Final = (
     "system",

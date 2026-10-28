@@ -740,6 +740,7 @@ DD_TRACER_STREAMING_CHUNK_YIELD_RESOURCE: Final = os.getenv(
 )
 
 LITELLM_HTTP_STATUS_CLIENT_DISCONNECTED: Final = 499
+LITELLM_CLIENT_DISCONNECT_DETAIL: Final = "Client disconnected the request"
 # A stream the proxy itself ended because the upstream model produced nothing
 # for longer than ``litellm.stream_max_upstream_idle_seconds``. Deliberately NOT
 # the client-disconnect code above: the client may still be attached and

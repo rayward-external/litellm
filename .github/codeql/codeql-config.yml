@@ -54,6 +54,30 @@ query-filters:
   # not by actual content. Confirmed FP on audit of alert #1114.
   - exclude:
       id: py/weak-sensitive-data-hashing          # CWE-327/328/916
+  # litellm/proxy/mcp_server/discoverable_endpoints.py's _set_oauth_state_cookie
+  # (byte-identical to upstream) stores encode_state_with_base_url()'s output,
+  # which is already ciphertext (an encrypted OAuth session blob per its own
+  # docstring), in an httponly/secure cookie -- there is no clear-text secret
+  # here, just a generically-named "state" variable the query's name-based
+  # heuristic flags regardless of its content. Confirmed FP on audit of alert #1133.
+  - exclude:
+      id: py/clear-text-storage-sensitive-data    # CWE-312/327
+  # Same call site as py/clear-text-storage-sensitive-data above: the cookie's
+  # distinguishing name component is relay_state, which is secrets.token_urlsafe()
+  # output generated server-side before the cookie is set, never user input at
+  # this call site. CodeQL's taint tracking can't see past the random-handle
+  # indirection documented in the surrounding LIT-4197 comment. Confirmed FP on
+  # audit of alert #1134.
+  - exclude:
+      id: py/cookie-injection                     # CWE-20
+  # litellm/proxy/mcp_server/byok_oauth_endpoints.py's BYOK authorization-code
+  # redirect (byte-identical to upstream) only reaches redirect_uri after
+  # validate_loopback_redirect_uri() rejects anything but localhost/127.0.0.0/8/::1
+  # (RFC 8252 native-app pattern), so the redirect target can never leave the
+  # user's own machine; CodeQL's taint tracking doesn't model that upstream
+  # validation call as a sanitizer. Confirmed FP on audit of alert #1132.
+  - exclude:
+      id: py/url-redirection                      # CWE-601
 
 paths-ignore:
   - tests
