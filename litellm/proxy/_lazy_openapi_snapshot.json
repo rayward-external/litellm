@@ -47950,6 +47950,12 @@
                       },
                       {
                         "$ref": "#/components/schemas/ChatCompletionImageObject"
+                      },
+                      {
+                        "$ref": "#/components/schemas/ChatCompletionAudioObject"
+                      },
+                      {
+                        "$ref": "#/components/schemas/ChatCompletionFileObject"
                       }
                     ]
                   },
@@ -48086,8 +48092,11 @@
         },
         "ChatCompletionAudioObject": {
           "properties": {
+            "cache_control": {
+              "$ref": "#/components/schemas/ChatCompletionCachedContent"
+            },
             "input_audio": {
-              "$ref": "#/components/schemas/InputAudio"
+              "$ref": "#/components/schemas/ChatCompletionInputAudio"
             },
             "type": {
               "const": "input_audio",
@@ -48096,8 +48105,8 @@
             }
           },
           "required": [
-            "input_audio",
-            "type"
+            "type",
+            "input_audio"
           ],
           "title": "ChatCompletionAudioObject",
           "type": "object"
@@ -48334,12 +48343,35 @@
             "url": {
               "title": "Url",
               "type": "string"
+            },
+            "video_metadata": {
+              "additionalProperties": true,
+              "title": "Video Metadata",
+              "type": "object"
             }
           },
           "required": [
             "url"
           ],
           "title": "ChatCompletionImageUrlObject",
+          "type": "object"
+        },
+        "ChatCompletionInputAudio": {
+          "properties": {
+            "data": {
+              "title": "Data",
+              "type": "string"
+            },
+            "format": {
+              "title": "Format",
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "format"
+          ],
+          "title": "ChatCompletionInputAudio",
           "type": "object"
         },
         "ChatCompletionMessageToolCall": {
@@ -48627,6 +48659,12 @@
                       },
                       {
                         "$ref": "#/components/schemas/ChatCompletionImageObject"
+                      },
+                      {
+                        "$ref": "#/components/schemas/ChatCompletionAudioObject"
+                      },
+                      {
+                        "$ref": "#/components/schemas/ChatCompletionFileObject"
                       },
                       {
                         "$ref": "#/components/schemas/ChatCompletionToolReferenceObject"
@@ -49065,28 +49103,6 @@
             }
           },
           "title": "HTTPValidationError",
-          "type": "object"
-        },
-        "InputAudio": {
-          "properties": {
-            "data": {
-              "title": "Data",
-              "type": "string"
-            },
-            "format": {
-              "enum": [
-                "wav",
-                "mp3"
-              ],
-              "title": "Format",
-              "type": "string"
-            }
-          },
-          "required": [
-            "data",
-            "format"
-          ],
-          "title": "InputAudio",
           "type": "object"
         },
         "PolicyGuardrailsResponse": {
