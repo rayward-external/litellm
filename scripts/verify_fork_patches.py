@@ -170,7 +170,11 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-10-25 sync: +2 -- the deepseek reasoning_effort row flipped to N/A,
 # superseded by upstream's own fix (BerriAI/litellm#38736), plus a new
 # N/A row recording the #1131 code-scanning alert dismissal.
-EXPECTED_NA_ROWS = 54
+# 2026-10-28 security sweep: +1 for the spend-logs-guard.yml row recording
+# the #1135 Scorecard DangerousWorkflowID alert dismissal, plus +3 for the
+# crypto-bigint, rsa and deepmerge REPORTED-no-patch dependency rows, plus +1
+# for the dnspython REPORTED-sandbox-blocked row.
+EXPECTED_NA_ROWS = 59
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
