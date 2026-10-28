@@ -181,6 +181,7 @@ def _proxy_logging_obj() -> MagicMock:
     obj.post_call_failure_hook = AsyncMock(return_value=None)
     obj.post_call_response_headers_hook = AsyncMock(return_value={})
     obj.arelease_max_parallel_requests_on_disconnect = AsyncMock(return_value=None)
+    obj.arelease_max_parallel_requests = AsyncMock(return_value=None)
     obj.async_post_call_streaming_hook = AsyncMock(side_effect=lambda response, **_: response)
     # Returns the async iterable synchronously - it is consumed with `async for`,
     # not awaited.
