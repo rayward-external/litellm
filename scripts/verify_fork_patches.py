@@ -172,8 +172,9 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # N/A row recording the #1131 code-scanning alert dismissal.
 # 2026-10-28 security sweep: +1 for the spend-logs-guard.yml row recording
 # the #1135 Scorecard DangerousWorkflowID alert dismissal, plus +3 for the
-# crypto-bigint, rsa and deepmerge REPORTED-no-patch dependency rows.
-EXPECTED_NA_ROWS = 58
+# crypto-bigint, rsa and deepmerge REPORTED-no-patch dependency rows, plus +1
+# for the dnspython REPORTED-sandbox-blocked row.
+EXPECTED_NA_ROWS = 59
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
