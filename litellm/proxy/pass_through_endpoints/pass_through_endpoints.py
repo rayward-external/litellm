@@ -119,7 +119,7 @@ from litellm.proxy.litellm_pre_call_utils import (  # noqa: F401  # legacy modul
     _strip_client_pricing_overrides,  # pyright: ignore[reportPrivateUsage]  # sanitize before trusted hooks add guardrail costs
     get_dynamic_logging_metadata,  # pyright: ignore[reportPrivateUsage]  # shared proxy helper, same import style as _read_request_body above
     redact_credential_headers,
-    strip_client_guardrail_information,
+    strip_client_guardrail_information,  # pyright: ignore[reportUnusedImport]  # called at pass_through_request's client_body step; basedpyright's CFG mis-tags that function unreachable past its local `from litellm.proxy.proxy_server import proxy_config, proxy_logging_obj`, flagging every later reference as unused
 )
 from litellm.proxy.pass_through_endpoints.passthrough_admission import (
     PassthroughAdmissionError,
@@ -160,7 +160,7 @@ from .streaming_handler import PassThroughStreamingHandler
 from .success_handler import PassThroughEndpointLogging
 from .upstream_usage_headers import (
     UpstreamReportedUsage,
-    apply_upstream_reported_model,
+    apply_upstream_reported_model,  # pyright: ignore[reportUnusedImport]  # called twice in pass_through_request; same basedpyright CFG dead-zone as strip_client_guardrail_information above
     apply_upstream_reported_usage,
 )
 
@@ -1610,7 +1610,7 @@ async def pass_through_request(
                 logging_obj=logging_obj,
                 headers=response.headers,
             )
-            upstream_model = apply_upstream_reported_model(  # rebind-ok: bound once per branch, like upstream_usage
+            upstream_model = apply_upstream_reported_model(  # rebind-ok: bound once per branch, like upstream_usage  # pyright: ignore[reportUnusedVariable]  # read below via _build_passthrough_failure_request_payload; same CFG dead-zone as the module-level imports above
                 logging_obj=logging_obj,
                 headers=response.headers,
             )
@@ -1703,7 +1703,7 @@ async def pass_through_request(
             logging_obj=logging_obj,
             headers=response.headers,
         )
-        upstream_model = apply_upstream_reported_model(  # rebind-ok: bound once per branch, like upstream_usage
+        upstream_model = apply_upstream_reported_model(  # rebind-ok: bound once per branch, like upstream_usage  # pyright: ignore[reportUnusedVariable]  # read below via _build_passthrough_failure_request_payload; same CFG dead-zone as the module-level imports above
             logging_obj=logging_obj,
             headers=response.headers,
         )
