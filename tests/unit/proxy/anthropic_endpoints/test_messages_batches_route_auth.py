@@ -61,12 +61,15 @@ def test_non_admin_key_passes_route_check(method, path):
     request.method = method
     request.query_params = {}
 
-    # Must not raise for a plain, role-less, non-admin key.
-    RouteChecks.non_proxy_admin_allowed_routes_check(
-        user_obj=None,
-        _user_role=None,
-        route=_concrete(path),
-        request=request,
-        valid_token=UserAPIKeyAuth(api_key="hashed-non-admin-key"),
-        request_data={},
+    # Must not raise (the admin-only 401) for a plain, role-less, non-admin key.
+    assert (
+        RouteChecks.non_proxy_admin_allowed_routes_check(
+            user_obj=None,
+            _user_role=None,
+            route=_concrete(path),
+            request=request,
+            valid_token=UserAPIKeyAuth(api_key="hashed-non-admin-key"),
+            request_data={},
+        )
+        is None
     )
