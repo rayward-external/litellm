@@ -4485,6 +4485,7 @@ class Router:
         async def stream_with_fallbacks():
             held_lifecycle_events: tuple[object, ...] = ()  # rebind-ok: flushed at first output, dropped on fallback
             response_id_exposed = False  # rebind-ok: set once, before an early-released lifecycle event is yielded
+            refusal_hold = self._refusal_stream_hold_for_call(initial_kwargs, hold_cls=_ResponsesRefusalStreamHold)
             try:
                 async for item in cast(  # cast-ok: response iterators are async streams
                     AsyncIterator[object], source_iterator
@@ -4510,6 +4511,7 @@ class Router:
             except MidStreamFallbackError as e:
                 if response_id_exposed:
                     self._raise_released_stream_error(e, initial_kwargs)
+                await _maybe_abandon_refused_stream_source(e, source_iterator, "stream_with_fallbacks(aresponses)")
                 async with contextlib.aclosing(
                     self._aresponses_fallback_attempt(
                         e, source_iterator, initial_kwargs, wrapper.adopt_fallback_headers, held_lifecycle_events
