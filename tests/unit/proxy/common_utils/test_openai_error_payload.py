@@ -487,7 +487,10 @@ def test_an_upstream_failure_answers_with_its_own_status_not_the_routes_default(
 @pytest.mark.parametrize(
     "router_rejection, expected",
     [
-        (f"{RouterErrors.no_deployments_with_tag_routing.value}. Passed model=gpt-5.4-mini", ("401", "auth_error")),
+        (
+            f"{RouterErrors.no_deployments_with_tag_routing.value}. Passed model=gpt-5.4-mini",
+            ("400", "invalid_request_error"),
+        ),
         (f"{RouterErrors.no_deployments_available.value}. Passed model=gpt-5.4-mini", ("429", "rate_limit_error")),
     ],
 )
