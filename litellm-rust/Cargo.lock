@@ -3407,7 +3407,7 @@ dependencies = [
  "reqwest",
  "rstest",
  "serde_json",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "tokio",
  "url",
  "wiremock",
@@ -3426,7 +3426,7 @@ dependencies = [
  "serde-pickle",
  "serde_json",
  "tempfile",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "tokio",
 ]
 
@@ -3445,7 +3445,7 @@ dependencies = [
  "reqwest",
  "rstest",
  "serde_json",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "tokio",
  "wiremock",
 ]
@@ -3495,7 +3495,7 @@ dependencies = [
  "redis-test",
  "rstest",
  "serde_json",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "tokio",
 ]
 
@@ -3577,7 +3577,7 @@ dependencies = [
  "rstest",
  "serde_json",
  "sha2 0.10.9",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "tokio",
  "uuid",
 ]
@@ -3595,7 +3595,7 @@ dependencies = [
  "rstest",
  "serde_json",
  "strum",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3628,7 +3628,7 @@ dependencies = [
 name = "litellm-core-utils"
 version = "0.1.0"
 dependencies = [
- "fancy-regex 0.19.2",
+ "fancy-regex",
  "litellm-error",
  "litellm-llms-types",
  "litellm-tracing",
@@ -3656,11 +3656,11 @@ version = "0.1.0"
 dependencies = [
  "jiff",
  "rstest",
- "schemars 1.2.2",
+ "schemars 1.2.3",
  "serde",
  "serde_json",
  "strum",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3695,7 +3695,7 @@ name = "litellm-error"
 version = "0.1.0"
 dependencies = [
  "rstest",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3886,7 +3886,7 @@ dependencies = [
  "litellm-coroutine",
  "rstest",
  "serde_json",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "tokio",
 ]
 
@@ -3957,7 +3957,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "tokio-rustls 0.26.4",
+ "tokio-rustls",
  "tokio-tungstenite",
  "tracing",
  "url",
@@ -4204,7 +4204,7 @@ dependencies = [
 name = "litellm-model-catalog"
 version = "0.1.0"
 dependencies = [
- "indexmap 2.14.0",
+ "indexmap 2.14.2",
  "jiff",
  "jsonschema",
  "litellm-cost",
@@ -4216,7 +4216,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "strum",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "time",
 ]
 
@@ -4229,7 +4229,7 @@ dependencies = [
  "litellm-model-catalog",
  "reqwest",
  "rstest",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "tokio",
  "url",
 ]
@@ -4283,7 +4283,7 @@ dependencies = [
  "sqlx",
  "strum",
  "tempfile",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite",
  "tracing",
@@ -4605,7 +4605,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "litellm-error",
- "rand 0.8.7",
+ "rand 0.8.8",
  "rstest",
  "rustc-hash",
  "serde",
@@ -6057,9 +6057,9 @@ dependencies = [
  "pastey",
  "pin-project-lite",
  "process-wrap",
- "rand 0.10.2",
+ "rand 0.10.3",
  "reqwest",
- "schemars 1.2.2",
+ "schemars 1.2.3",
  "serde",
  "serde_json",
  "sse-stream",
@@ -6180,7 +6180,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
- "http 1.4.2",
+ "http",
  "reqwest",
  "rustify_derive",
  "serde",
@@ -7770,7 +7770,7 @@ dependencies = [
  "http",
  "httparse",
  "log",
- "rand 0.8.7",
+ "rand 0.8.8",
  "sha1 0.10.7",
  "thiserror 1.0.69",
  "utf-8",
@@ -7815,7 +7815,7 @@ dependencies = [
  "dyn-clone",
  "futures",
  "pin-project",
- "rand 0.10.2",
+ "rand 0.10.3",
  "reqwest",
  "serde",
  "serde_json",
@@ -8029,7 +8029,7 @@ checksum = "30ffcc0e81025065dda612ec1e26a3d81bb16ef3062354873d17a35965d68522"
 dependencies = [
  "async-trait",
  "derive_builder",
- "http 1.4.2",
+ "http",
  "reqwest",
  "rustify",
  "rustify_derive",

@@ -63,6 +63,11 @@ id = "GHSA-gcqx-w48m-w2h4"
 ignoreUntil = 2026-11-27
 reason = "2026-10-28 sync: deepmerge 4.3.1 (a dev-only dependency of the root package.json) is the latest published release and still vulnerable (prototype pollution via a crafted merge target); npm registry lists no newer version. Remove this entry once one exists"
 
+[[IgnoredVulns]]
+id = "GHSA-45c3-73f7-pv4m"
+ignoreUntil = 2026-11-28
+reason = "2026-10-29 sync: dnspython 2.9.0 (PyPI requires_python >=3.11, confirmed against published metadata) is the only fixed release for a DoS via excessive CPU use in dns.name.from_wire_parser() on a crafted DNS message; litellm's requires-python still floors at 3.10 (pyproject.toml), so uv.lock's Python 3.10 resolution stays on the vulnerable 2.8.0 while Python >= 3.11 already resolves to the fixed 2.9.0, same unavoidable shape as the filelock/pillow rows above. Remove once 3.10 is dropped or dnspython ships a patched 2.8.x backport"
+
 [[PackageOverrides]]
 name = "pillow"
 version = "12.3.0"
