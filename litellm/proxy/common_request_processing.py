@@ -4899,6 +4899,7 @@ class ProxyBaseLLMRequestProcessing:
                     client_disconnected=client_disconnected,
                     user_api_key_dict=user_api_key_dict,
                     proxy_logging_obj=proxy_logging_obj,
+                    ended_by_upstream_idle=ended_by_upstream_idle,
                 )
 
     @staticmethod
