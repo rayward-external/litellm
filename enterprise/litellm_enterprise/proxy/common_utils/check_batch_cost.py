@@ -5,9 +5,9 @@ Polls LiteLLM_ManagedObjectTable to check if the batch job is complete, and if t
 import asyncio
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace as dataclasses_replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Literal, Optional, Protocol, Tuple, cast
 
@@ -29,6 +29,7 @@ from litellm.constants import (
 from litellm.repositories.table_repositories import ManagedObjectRepository
 from litellm.repositories.team_repository import TeamRepository
 from litellm.repositories.verification_token_repository import VerificationTokenRepository
+from litellm.utils import get_utc_datetime
 
 if TYPE_CHECKING:
     from prisma import models as prisma_models
@@ -43,11 +44,14 @@ if TYPE_CHECKING:
 
 
 def _error_names_resource(error: Exception, resource_id: str) -> bool:
-    return resource_id in re.findall(r"""[^\s"'`]+""", str(error))
+    tokens: Final[list[str]] = re.findall(r"""[^\s"'`<>(]+""", str(error))
+    return any(token.rstrip(".,:;)") == resource_id for token in tokens)
 
 
 CHECK_BATCH_COST_USER_AGENT = "LiteLLM Proxy/CheckBatchCost"
 RECENT_BATCH_POLL_WINDOW: Final = timedelta(hours=48)
+GIVE_UP_POLLING_AFTER: Final = timedelta(days=2 * MANAGED_OBJECT_STALENESS_CUTOFF_DAYS)
+
 
 PROVIDER_TERMINAL_BATCH_STATUSES: Final[Tuple[str, ...]] = (
     "completed",
@@ -112,6 +116,10 @@ def _team_table(prisma_client: "PrismaClient") -> "TableActions[prisma_models.Li
     return TeamRepository(prisma_client).table
 
 
+def _unique_jobs(jobs: Sequence[ManagedObjectRow]) -> tuple[ManagedObjectRow, ...]:
+    return tuple({job.id: job for job in jobs}.values())
+
+
 class CheckBatchCost:
     def __init__(
         self,
@@ -119,6 +127,7 @@ class CheckBatchCost:
         prisma_client: "PrismaClient",
         llm_router: "Router",
         track_unmanaged_batch_cost: bool = False,
+        clock: Callable[[], datetime] = get_utc_datetime,
     ):
         from litellm.proxy.utils import PrismaClient, ProxyLogging
         from litellm.router import Router
@@ -127,13 +136,14 @@ class CheckBatchCost:
         self.prisma_client: PrismaClient = prisma_client
         self.llm_router: Router = llm_router
         self._track_unmanaged_batch_cost = track_unmanaged_batch_cost
+        self._clock: Final = clock
         self._creator_attribution: Final = ManagedObjectCreatorAttribution(prisma_client, "CheckBatchCost")
         # Cached after the first poll cycle. Once we know the column is absent we skip
         # the guaranteed-failing primary query on every subsequent cycle.
         self._has_batch_processed_column: bool = True
         self.batch_processed_support_confirmed: bool = False
         self._poll_cursor: tuple[datetime, str] | None = None
-        self._poll_before: datetime = datetime.now(timezone.utc)
+        self._poll_before: datetime = clock()
         self._arrival_cursor: tuple[datetime, str] | None = None
         self._arrival_before: datetime = self._poll_before
         self._poll_arrivals: bool = False
@@ -168,289 +178,6 @@ class CheckBatchCost:
             return
         self.batch_processed_support_confirmed = True
 
-    @staticmethod
-    def _get_job_file_object(job: "ManagedObjectRow") -> dict[str, Any]:
-        """The job row's file_object as a dict. The hook write-path stores it
-        as a JSON string, so tolerate one level of string encoding; anything
-        unparseable returns {}."""
-        file_object = getattr(job, "file_object", None)
-        for _ in range(2):
-            if not isinstance(file_object, str):
-                break
-            try:
-                file_object = json.loads(file_object)
-            except ValueError:
-                return {}
-        return file_object if isinstance(file_object, dict) else {}
-
-    @classmethod
-    def _get_job_attribution(cls, job: "ManagedObjectRow") -> dict[str, Any]:
-        """Attribution stashed in file_object.litellm_attribution by routes
-        that register batches directly (the /v1/messages/batches route) —
-        user_api_key (hash), user_api_key_team_id, user_api_key_end_user_id,
-        user_api_key_alias. Rows without the stash return {} and keep the
-        pre-existing behavior."""
-        attribution = cls._get_job_file_object(job).get("litellm_attribution")
-        return attribution if isinstance(attribution, dict) else {}
-
-    async def _claim_job(self, job: "ManagedObjectRow") -> bool:
-        """Atomically claim a row immediately before its spend log is written:
-        every proxy process runs this poller, and billing + flag-flip were
-        previously non-atomic, so concurrent workers could each bill the same
-        batch. The conditional update_many means exactly one worker
-        wins the claim. Called from _track_completed_batch_cost once the
-        results are in hand — claiming any earlier makes the output file
-        deletable and a batch unbillable while it is still being costed.
-        Schemas without the batch_processed column cannot claim atomically
-        and keep the legacy single-worker assumption."""
-        if not self._has_batch_processed_column:
-            return True
-        try:
-            claimed_count = await _managed_object_table(self.prisma_client).update_many(
-                where={"id": job.id, "batch_processed": False},
-                data={"batch_processed": True, "status": "pricing"},
-            )
-        except Exception as claim_err:
-            verbose_proxy_logger.error(
-                f"CheckBatchCost: claim failed for job {job.id}; skipping this cycle: {claim_err}"
-            )
-            return False
-        return claimed_count == 1
-
-    @classmethod
-    def _augment_update_with_owner_key(cls, job: "ManagedObjectRow", update_data: dict[str, Any]) -> dict[str, Any]:
-        """Self-heal the owner_key column (which backs the owner-scoped
-        /v1/messages/batches listing) in the SAME finalization write — no extra
-        query. A row a pre-#335 writer created before the migration backfill, or
-        during a rolling deploy, carries owner_key NULL, and the listing's
-        indexed query needs it. When the column is still NULL and the submitting
-        key hash is recoverable from the attribution stash, fold it into
-        update_data.
-
-        NULL-ONLY and NEVER-OVERWRITE: an existing owner_key is a real value the
-        listing depends on (and that finalization must preserve), so it is left
-        untouched — this only fills a genuine gap, it never changes a set value.
-        Only reached on the modern (batch_processed) schema, which is exactly the
-        schema that has the owner_key column."""
-        if getattr(job, "owner_key", None) is not None:
-            return update_data
-        key_hash = cls._get_job_attribution(job).get("user_api_key")
-        if not isinstance(key_hash, str) or not key_hash:
-            return update_data
-        return {**update_data, "owner_key": key_hash}
-
-    async def _finalize_job(self, job: "ManagedObjectRow", update_data: dict[str, Any]) -> bool:
-        """Write the terminal row state, fenced to the claim this worker
-        holds: a slow ex-owner whose claim was reclaimed must not overwrite
-        the new owner's finalization. Legacy schemas without batch_processed
-        keep the plain unconditional update."""
-        if not self._has_batch_processed_column:
-            # Older schema without batch_processed predates the owner_key column
-            # too, so there is nothing to backfill here — plain update.
-            await _managed_object_table(self.prisma_client).update(where={"id": job.id}, data=update_data)
-            return True
-        update_data = self._augment_update_with_owner_key(job, update_data)
-        finalized_count = await _managed_object_table(self.prisma_client).update_many(
-            where={"id": job.id, "status": "pricing", "batch_processed": True},
-            data=update_data,
-        )
-        if finalized_count != 1:
-            verbose_proxy_logger.warning(
-                f"CheckBatchCost: finalize skipped for job {job.id} — the claim was reclaimed by another worker"
-            )
-            return False
-        return True
-
-    @staticmethod
-    def _batch_cost_call_id(batch_id: str) -> str:
-        """Deterministic, prefixed spend id for a batch — the prefix is what
-        get_spend_logs_id keys on to use it as the SpendLogs request_id."""
-        import uuid as _stdlib_uuid
-
-        from litellm.proxy.spend_tracking.spend_tracking_utils import (
-            BATCH_COST_CALL_ID_PREFIX,
-        )
-
-        return BATCH_COST_CALL_ID_PREFIX + str(
-            _stdlib_uuid.uuid5(_stdlib_uuid.NAMESPACE_URL, f"litellm:batch-cost:{batch_id}")
-        )
-
-    async def _spend_already_recorded(self, batch_id: str, job: Optional["ManagedObjectRow"] = None) -> bool:
-        """True when this batch's spend side effects already ran — a prior
-        worker billed it (then died before finalizing, or lost its claim to
-        reclamation). Spend side effects (spend log AND the key/team/daily
-        counters, which increment independently of the spend log's primary
-        key) must not run twice.
-
-        Two independent signals, either suffices:
-        1. The row-local marker stamped by _mark_spend_recorded — works even
-           with disable_spend_logs, where no SpendLogs row ever exists.
-        2. A SpendLogs row under the deterministic request_id.
-
-        Errors on the SpendLogs lookup return False: with the claim held, the
-        deterministic request_id still dedups the spend LOG on the retry —
-        only the counters ride on this pre-check, and skipping billing on a
-        transient read error would risk never billing at all."""
-        if job is not None and self._get_job_file_object(job).get(SPEND_RECORDED_MARKER_KEY) is True:
-            return True
-        try:
-            existing = await self.prisma_client.db.litellm_spendlogs.find_unique(
-                where={"request_id": self._batch_cost_call_id(batch_id)}
-            )
-            return existing is not None
-        except Exception as lookup_err:
-            verbose_proxy_logger.error(
-                f"CheckBatchCost: spend-already-recorded lookup failed for {batch_id}: {lookup_err}"
-            )
-            return False
-
-    async def _mark_spend_recorded(self, job: "ManagedObjectRow") -> None:
-        """Stamp the billing row the moment spend side effects have run, so
-        the dedup pre-check works without a SpendLogs row (disable_spend_logs
-        deployments). Fenced to the claim this worker holds, matching
-        release/finalize; a slow ex-owner whose claim was reclaimed writes 0
-        rows (that reclaim-vs-active-worker race is the pre-existing accepted
-        residual, covered by the SpendLogs backstop when spend logs are
-        enabled). Best effort: spend was already emitted, so a failed marker
-        write must not release the claim or block finalization. Legacy
-        schemas skip it: without the batch_processed column there is no claim
-        reclamation, so the re-bill scenario the marker guards against cannot
-        occur."""
-        if not self._has_batch_processed_column:
-            return
-        try:
-            stamped = dict(self._get_job_file_object(job))
-            stamped[SPEND_RECORDED_MARKER_KEY] = True
-            await _managed_object_table(self.prisma_client).update_many(
-                where={"id": job.id, "status": "pricing", "batch_processed": True},
-                data={"file_object": json.dumps(stamped)},
-            )
-        except Exception as mark_err:
-            verbose_proxy_logger.critical(
-                f"CheckBatchCost: could not stamp spend-recorded marker on job {job.id}; "
-                f"if this worker dies before finalizing and spend logs are disabled, "
-                f"reclamation may re-bill this batch: {mark_err}"
-            )
-
-    async def _reclaim_abandoned_pricing_claims(self) -> None:
-        """Requeue rows stuck in a pricing claim: a worker that died between
-        claiming and finalizing leaves batch_processed=True,status='pricing',
-        which the primary query excludes forever — the batch would never be
-        billed. Claims older than the reclaim window are conditionally
-        flipped back; if the dead worker DID write spend before dying, the
-        deterministic per-batch litellm_call_id makes the re-priced spend row
-        collide instead of double-billing."""
-        if not self._has_batch_processed_column:
-            return
-        try:
-            cutoff = datetime.now(timezone.utc) - timedelta(seconds=ABANDONED_PRICING_CLAIM_RECLAIM_SECONDS)
-            reclaimed = await _managed_object_table(self.prisma_client).update_many(
-                where={
-                    "file_purpose": "batch",
-                    "status": "pricing",
-                    "batch_processed": True,
-                    "updated_at": {"lt": cutoff},
-                },
-                data={"batch_processed": False, "status": "validating"},
-            )
-            if reclaimed:
-                verbose_proxy_logger.warning(
-                    f"CheckBatchCost: reclaimed {reclaimed} abandoned pricing claim(s) for retry"
-                )
-        except Exception as reclaim_err:
-            verbose_proxy_logger.error(f"CheckBatchCost: abandoned-claim reclaim failed: {reclaim_err}")
-
-    async def _backfill_null_owner_keys(self) -> None:
-        """Self-healing sweep that drains the owner_key IS NULL message-batch
-        slice once per poll cycle, so the read path (owner-scoped
-        /v1/messages/batches listing) needs no key-hash scan at all.
-
-        Sources of a NULL owner_key: a row that predates the migration backfill,
-        and a row a pre-#335 pod writes during a rolling deploy. The per-row
-        _finalize_job fold heals rows the poller finalizes this cycle, but a row
-        an old pod ALREADY finalized (batch_processed=True) is never revisited by
-        the primary query — this sweep is what covers those, so the whole slice
-        drains deterministically with no operator action.
-
-        Idempotent and NEVER-OVERWRITE: it only touches rows still NULL whose
-        attribution yields a key hash (the guard means OpenAI-dialect /v1/batches
-        rows, which carry no attribution, stay NULL and the sweep re-touches
-        nothing once drained). Same double-encoded JSON extraction as the
-        migration backfill. PostgreSQL only — the proxy's sole dialect; gated on
-        the modern schema (owner_key was added after batch_processed, so it is
-        absent wherever that column is) and best-effort via the caller's
-        try/except."""
-        if not self._has_batch_processed_column:
-            return
-        await self.prisma_client.db.execute_raw(
-            """
-            UPDATE "LiteLLM_ManagedObjectTable"
-            SET "owner_key" = CASE WHEN jsonb_typeof("file_object") = 'string'
-               THEN ("file_object" #>> '{}')::jsonb #>> '{litellm_attribution,user_api_key}'
-               ELSE "file_object" #>> '{litellm_attribution,user_api_key}' END
-            WHERE "file_purpose" = 'batch' AND "owner_key" IS NULL
-              AND (CASE WHEN jsonb_typeof("file_object") = 'string'
-                   THEN ("file_object" #>> '{}')::jsonb #>> '{litellm_attribution,user_api_key}'
-                   ELSE "file_object" #>> '{litellm_attribution,user_api_key}' END) IS NOT NULL
-            """
-        )
-
-    @staticmethod
-    def _finalized_file_object(job: "ManagedObjectRow", response: "LiteLLMBatch", spend_recorded: bool = False) -> str:
-        """The provider response JSON with the registration stash re-attached:
-        finalization must not discard litellm_attribution — the upstream
-        ownership check matches on it, so dropping it would 404 key-only
-        callers on their own batch after billing. spend_recorded stamps the
-        row-local dedup marker (also preserved from the stash) so
-        finalization never erases evidence that billing ran."""
-        finalized: dict[str, Any] = json.loads(response.model_dump_json())
-        stash = CheckBatchCost._get_job_file_object(job)
-        for preserved_key in (
-            "litellm_attribution",
-            "model",
-            "mixed_models",
-            "total_records",
-            # The /v1/messages/batches route stashes the CLIENT-facing batch id
-            # here (Bedrock's is the owner-tagged msgbatch_bedrock_* id, which is
-            # NOT recoverable from the finalized provider id/ARN). Preserving it
-            # keeps the owner-scoped LIST able to return an id that still works
-            # against GET /v1/messages/batches/{id} after finalization, and its
-            # presence is the positive marker distinguishing an Anthropic message
-            # batch from an OpenAI-dialect /v1/batches Bedrock job. Additive:
-            # only rows this route created carry the key; every other batch flow
-            # is untouched.
-            "litellm_client_batch_id",
-            SPEND_RECORDED_MARKER_KEY,
-        ):
-            if preserved_key in stash and (preserved_key not in finalized or finalized.get(preserved_key) is None):
-                finalized[preserved_key] = stash.get(preserved_key)
-        if spend_recorded:
-            finalized[SPEND_RECORDED_MARKER_KEY] = True
-        return json.dumps(finalized)
-
-    async def _cleanup_stale_managed_objects(self) -> None:
-        """
-        Mark managed objects older than MANAGED_OBJECT_STALENESS_CUTOFF_DAYS days
-        in non-terminal states as 'stale_expired'. These will never complete and
-        should not be polled.
-        """
-        cutoff: Final = datetime.now(timezone.utc) - timedelta(days=MANAGED_OBJECT_STALENESS_CUTOFF_DAYS)
-        result: Final = await _managed_object_table(self.prisma_client).update_many(
-            where={
-                "file_purpose": "batch",
-                # claim-held rows belong to the reclaim sweep, never stale cleanup
-                # (codex P1 round 3)
-                "status": {"not_in": [*TERMINAL_MANAGED_OBJECT_STATUSES, "pricing"]},
-                "created_at": {"lt": cutoff},
-            },
-            data={"status": "stale_expired"},
-        )
-        if result > 0:
-            verbose_proxy_logger.warning(
-                f"CheckBatchCost: marked {result} stale managed objects "
-                f"(older than {MANAGED_OBJECT_STALENESS_CUTOFF_DAYS} days) as stale_expired"
-            )
-
     async def _fallback_find_jobs(self) -> "Sequence[ManagedObjectRow]":
         """Query batch jobs without the batch_processed filter (for older schemas)."""
         return await self._find_jobs(
@@ -470,20 +197,43 @@ class CheckBatchCost:
         )
 
     async def _find_jobs(self, where: Mapping[str, object]) -> Sequence[ManagedObjectRow]:
-        arrivals: Final = self._poll_arrivals
-        page: Final = await self._find_job_page(where, arrivals=arrivals)
-        self._poll_arrivals = not arrivals if page else arrivals
-        if page:
-            return page
-        return await self._find_job_page(where, arrivals=not arrivals)
+        lead_arrivals: Final = self._poll_arrivals
+        self._poll_arrivals = not lead_arrivals
+        lead_share: Final = MAX_OBJECTS_PER_POLL_CYCLE - MAX_OBJECTS_PER_POLL_CYCLE // 2
+        lead: Final = await self._find_job_page(where, arrivals=lead_arrivals, take=lead_share)
+        trail: Final = await self._find_job_page(
+            where, arrivals=not lead_arrivals, take=MAX_OBJECTS_PER_POLL_CYCLE - len(lead)
+        )
+        spill: Final = (
+            await self._find_job_page(
+                where, arrivals=lead_arrivals, take=MAX_OBJECTS_PER_POLL_CYCLE - len(lead) - len(trail)
+            )
+            if len(lead) == lead_share
+            else ()
+        )
+        return _unique_jobs((*lead, *trail, *spill))
 
-    async def _find_job_page(self, where: Mapping[str, object], *, arrivals: bool) -> Sequence[ManagedObjectRow]:
+    async def _find_job_page(
+        self, where: Mapping[str, object], *, arrivals: bool, take: int
+    ) -> Sequence[ManagedObjectRow]:
+        if take == 0:
+            return ()
+        resumed_mid_lane: Final = (self._arrival_cursor if arrivals else self._poll_cursor) is not None
+        page: Final = await self._find_job_page_from_cursor(where, arrivals=arrivals, take=take)
+        if len(page) == take or not resumed_mid_lane:
+            return page
+        wrapped: Final = await self._find_job_page_from_cursor(where, arrivals=arrivals, take=take - len(page))
+        return _unique_jobs((*page, *wrapped))
+
+    async def _find_job_page_from_cursor(
+        self, where: Mapping[str, object], *, arrivals: bool, take: int
+    ) -> Sequence[ManagedObjectRow]:
         cursor: Final = self._arrival_cursor if arrivals else self._poll_cursor
         if cursor is None:
             if arrivals:
-                self._arrival_before = datetime.now(timezone.utc)
+                self._arrival_before = self._clock()
             else:
-                self._poll_before = datetime.now(timezone.utc) - RECENT_BATCH_POLL_WINDOW
+                self._poll_before = self._clock() - RECENT_BATCH_POLL_WINDOW
         before: Final = self._arrival_before if arrivals else self._poll_before
         page: Final = await _managed_object_table(self.prisma_client).find_many(
             where={
@@ -503,10 +253,10 @@ class CheckBatchCost:
                     else {}
                 ),
             },
-            take=MAX_OBJECTS_PER_POLL_CYCLE,
+            take=take,
             order=[{"created_at": "asc"}, {"id": "asc"}],
         )
-        next_cursor: Final = (page[-1].created_at, page[-1].id) if len(page) == MAX_OBJECTS_PER_POLL_CYCLE else None
+        next_cursor: Final = (page[-1].created_at, page[-1].id) if len(page) == take else None
         if arrivals:
             self._arrival_cursor = next_cursor
         else:
@@ -514,11 +264,47 @@ class CheckBatchCost:
         return page
 
     def _unprocessed_snapshot(self, job: ManagedObjectRow) -> Mapping[str, object]:
-        return {
-            "id": job.id,
-            "updated_at": job.updated_at,
-            **({"batch_processed": False} if self._has_batch_processed_column else {}),
-        }
+        if self._has_batch_processed_column:
+            return {"id": job.id, "batch_processed": False}
+        return {"id": job.id, "updated_at": job.updated_at}
+
+    def _is_past_give_up_age(self, job: ManagedObjectRow) -> bool:
+        return job.created_at < self._clock() - GIVE_UP_POLLING_AFTER
+
+    async def _expire_if_old_and_unfinished(self, job: ManagedObjectRow) -> None:
+        if job.status in TERMINAL_MANAGED_OBJECT_STATUSES or not self._is_past_give_up_age(job):
+            return
+        await self._expire_unfinished(job)
+
+    @staticmethod
+    def _is_completed_with_output_id_pending(response: "LiteLLMBatch") -> bool:
+        from litellm.proxy.openai_files_endpoints.common_utils import (
+            _completed_batch_safe_to_retire,
+        )
+
+        return (
+            response.status in ("completed", "complete")
+            and response.output_file_id is None
+            and not _completed_batch_safe_to_retire(response)
+        )
+
+    async def _expire_unfinished(self, job: ManagedObjectRow) -> None:
+        try:
+            expired: Final = await _managed_object_table(self.prisma_client).update_many(
+                where={
+                    **self._unprocessed_snapshot(job),
+                    "status": {"not_in": list(TERMINAL_MANAGED_OBJECT_STATUSES)},
+                },
+                data={"status": "stale_expired"},
+            )
+        except Exception as db_err:
+            verbose_proxy_logger.error(f"CheckBatchCost: failed to mark stale job {job.id} as stale_expired: {db_err}")
+            return
+        if expired > 0:
+            verbose_proxy_logger.warning(
+                f"CheckBatchCost: job {job.id} is older than {GIVE_UP_POLLING_AFTER.days} days "
+                "and still not finished, so it is marked stale_expired and no longer polled"
+            )
 
     async def _retire_job(self, job: "ManagedObjectRow", reason: str) -> None:
         """
@@ -639,15 +425,21 @@ class CheckBatchCost:
     def _is_output_file_gone_at_provider(error: Exception, output_file_id: Optional[str]) -> bool:
         """A 404 naming the output file means there is nothing to fetch on this or any
         later poll: providers like Vertex AI advertise an output path for every batch,
-        including terminal ones that never wrote it. Any other failure may be
-        transient, so it keeps retrying until the staleness sweep bounds it."""
+        including terminal ones that never wrote it. GCS names a gs:// object without its scheme,
+        and S3 names an s3:// object by its key alone. Any other failure keeps retrying."""
         import openai
 
         from litellm.exceptions import NotFoundError
+        from litellm.llms.base_llm.chat.transformation import BaseLLMException
 
         if not output_file_id:
             return False
-        return isinstance(error, (NotFoundError, openai.NotFoundError)) and _error_names_resource(error, output_file_id)
+        is_not_found: Final = isinstance(error, (NotFoundError, openai.NotFoundError)) or (
+            isinstance(error, BaseLLMException) and error.status_code == 404
+        )
+        object_path: Final = output_file_id.split("://", 1)[-1]
+        names: Final = (output_file_id, object_path, object_path.split("/", 1)[-1])
+        return is_not_found and any(_error_names_resource(error, name) for name in names)
 
     async def _finalize_unbilled_terminal_job(
         self, job: "ManagedObjectRow", response: "LiteLLMBatch"
@@ -1408,20 +1200,6 @@ class CheckBatchCost:
 
         processed_models: list[tuple[str | None, str | None]] = []
 
-        try:
-            # Reclaim FIRST: cleanup running first would stale_expire an
-            # old claim-held row while batch_processed stays True — a state
-            # the delete gate reads as finalized (codex P1 round 3).
-            await self._reclaim_abandoned_pricing_claims()
-            await self._cleanup_stale_managed_objects()
-            # Self-heal any owner_key IS NULL message batches (pre-migration or
-            # rolling-deploy rows) so the listing read path needs no key-hash scan.
-            await self._backfill_null_owner_keys()
-        except Exception as cleanup_err:
-            verbose_proxy_logger.warning(
-                f"CheckBatchCost: stale cleanup failed (poll will continue): {cleanup_err}"
-            )
-
         # Look for all batches that have not yet been processed by CheckBatchCost.
         # self._has_batch_processed_column is cached after the first probe so that
         # older schemas don't pay a guaranteed-failing primary query + warning on
@@ -1463,6 +1241,8 @@ class CheckBatchCost:
             if routing is None:
                 if self._has_unified_id_without_model(job):
                     await self._retire_job(job, "unified object id has no model id")
+                else:
+                    await self._expire_if_old_and_unfinished(job)
                 continue
             model_id, batch_id = routing
 
@@ -1487,6 +1267,14 @@ class CheckBatchCost:
                     prom_logger.record_check_batch_cost_error("provider_retrieval_error")
                 if self._is_batch_gone_at_provider(e, batch_id) and self._batch_deployment_exists(model_id):
                     await self._retire_job(job, f"batch {batch_id} no longer exists at the provider")
+                else:
+                    await self._expire_if_old_and_unfinished(job)
+                continue
+            if self._is_completed_with_output_id_pending(response):
+                verbose_proxy_logger.info(
+                    f"CheckBatchCost: batch {batch_id} is completed but its output file id "
+                    f"has not appeared yet; leaving job {job.id} for the next poll cycle"
+                )
                 continue
 
             ## RETRIEVE THE BATCH JOB OUTPUT FILE
@@ -1638,17 +1426,9 @@ class CheckBatchCost:
                 self._store_batch_line_items_in_background(job, response, model_id, batch_id, billed=True)
 
             elif response.status in PROVIDER_TERMINAL_BATCH_STATUSES:
-                from litellm.proxy.openai_files_endpoints.common_utils import (
-                    _completed_batch_safe_to_retire,
-                )
-
-                if response.status in ("completed", "complete") and not _completed_batch_safe_to_retire(response):
-                    verbose_proxy_logger.info(
-                        f"CheckBatchCost: batch {batch_id} is completed but its output file id "
-                        f"has not appeared yet; leaving job {job.id} for the next poll cycle"
-                    )
-                    continue
                 await self._retire_unbilled_terminal_job(job, response, model_id, batch_id)
+            else:
+                await self._expire_if_old_and_unfinished(job)
 
         # Record polling run metrics (always, even if nothing was processed)
         if prom_logger:
