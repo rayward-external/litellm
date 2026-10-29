@@ -55,7 +55,10 @@ from litellm.integrations.custom_guardrail import (
     without_server_streaming_classification,
 )
 from litellm.integrations.custom_logger import CustomLogger
-from litellm.integrations.otel.model.semconv import PASSTHROUGH_OPERATION_KEY, GenAIOperation  # pyright: ignore[reportUnusedImport]  # same CFG dead-zone as strip_client_guardrail_information below
+from litellm.integrations.otel.model.semconv import (
+    PASSTHROUGH_OPERATION_KEY,  # pyright: ignore[reportUnusedImport]  # same CFG dead-zone as strip_client_guardrail_information below
+    GenAIOperation,
+)
 from litellm.litellm_core_utils.core_helpers import (
     bind_budget_reservation_to_callbacks,
     get_metadata_variable_name_from_kwargs,
