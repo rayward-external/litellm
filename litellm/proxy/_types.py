@@ -456,6 +456,15 @@ class LiteLLMRoutes(enum.Enum):
     anthropic_routes = [
         "/v1/messages",
         "/v1/messages/count_tokens",
+        # Fork-only Message Batches surface (litellm/proxy/anthropic_endpoints/
+        # messages_batches.py). Without these, is_llm_api_route() is False and
+        # every non-admin virtual key gets the admin-only 401 on create, list,
+        # retrieve, results, cancel and delete. Guarded by
+        # tests/unit/proxy/anthropic_endpoints/test_messages_batches_route_auth.py.
+        "/v1/messages/batches",
+        "/v1/messages/batches/{batch_id}",
+        "/v1/messages/batches/{batch_id}/results",
+        "/v1/messages/batches/{batch_id}/cancel",
         "/claude_code_gateway/v1/messages",
         "/claude_code_gateway/v1/messages/count_tokens",
         "/v1/skills",
