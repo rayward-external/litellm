@@ -3827,7 +3827,7 @@ def proxy_exception_status_code(message: str, code: str) -> str:
     if "No healthy deployment available" in message or "No deployments available" in message:
         return "429"
     if RouterErrors.no_deployments_with_tag_routing.value in message:
-        return "401"
+        return "400"
     return code
 
 

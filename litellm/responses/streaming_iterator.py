@@ -2369,6 +2369,25 @@ def _ws_event_error(event: Mapping[str, object]) -> object:
     return response.get("error") if _is_json_object(response) else None
 
 
+# Terminal Responses API events that carry a final `response` object with
+# usage -- the only frames a completed/failed/incomplete turn can be costed
+# from. Maps the wire `type` string to the pydantic event class so each one
+# can be reconstructed and handed to LiteLLMLoggingObj.dispatch_success_handlers,
+# which routes it through _get_assembled_streaming_response's existing
+# ResponseCompletedEvent/ResponseIncompleteEvent/ResponseFailedEvent branch
+# (litellm/litellm_core_utils/litellm_logging.py:3670-3693) for real cost/usage
+# computation -- rather than the raw event-list shape that branch cannot parse.
+RESPONSES_WS_TERMINAL_EVENT_CLASSES: Final[
+    Mapping[str, type[ResponseCompletedEvent | ResponseFailedEvent | ResponseIncompleteEvent]]
+] = MappingProxyType(  # mutable-ok: immediately frozen by MappingProxyType
+    {
+        "response.completed": ResponseCompletedEvent,
+        "response.failed": ResponseFailedEvent,
+        "response.incomplete": ResponseIncompleteEvent,
+    }
+)
+
+
 def _replayable_input_items(items: Sequence[object]) -> object:
     return replayable_responses_input(
         ResponsesAPIRequestUtils.restore_encrypted_content_item_ids_in_input(copy.deepcopy(list(items)))

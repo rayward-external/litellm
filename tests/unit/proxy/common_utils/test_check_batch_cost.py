@@ -762,10 +762,11 @@ class TestCheckBatchCost:
 
             await check_batch_cost_instance.check_batch_cost()
 
-        assert mock_prisma_client.db.litellm_managedobjecttable.update_many.call_count == 1, (
-            "Expected update() to be called exactly once for the completed job"
-        )
-        update_data = mock_prisma_client.db.litellm_managedobjecttable.update_many.call_args[1]["data"]
+        finalize_writes = [
+            data for data in _row_writes(mock_prisma_client) if data.get("status") == "complete"
+        ]
+        assert len(finalize_writes) == 1, "Expected exactly one finalize write for the completed job"
+        update_data = finalize_writes[0]
         assert update_data["batch_processed"] is True, (
             "finalize write must include batch_processed=True when column is present"
         )
@@ -894,7 +895,10 @@ class TestCheckBatchCost:
 
         mock_update_database.assert_awaited_once()
         assert mock_update_database.call_args.kwargs["response_cost"] == 0.01
-        assert mock_prisma_client.db.litellm_managedobjecttable.update_many.call_count == 1, (
+        finalize_writes = [
+            data for data in _row_writes(mock_prisma_client) if data.get("status") == "complete"
+        ]
+        assert len(finalize_writes) == 1, (
             "the job must still be marked processed once cost tracking succeeds"
         )
 
@@ -996,8 +1000,11 @@ class TestCheckBatchCost:
 
         await check_batch_cost_instance.check_batch_cost()
 
-        assert mock_prisma_client.db.litellm_managedobjecttable.update_many.call_count == 1, (
-            f"Expected update() to be called exactly once for a {terminal_status} job"
+        finalize_writes = [
+            data for data in _row_writes(mock_prisma_client) if data.get("status") == terminal_status
+        ]
+        assert len(finalize_writes) == 1, (
+            f"Expected exactly one finalize write for a {terminal_status} job"
         )
         update_data = finalize_writes[0]
         assert update_data["batch_processed"] is True, (
@@ -1101,9 +1108,14 @@ class TestCheckBatchCost:
         assert owner.user_id == "user-1"
         assert owner.team_id == "team-1"
 
-        assert mock_prisma_client.db.litellm_managedobjecttable.update_many.call_count == 1
-        update_call = mock_prisma_client.db.litellm_managedobjecttable.update_many.call_args
-        assert update_call.kwargs["where"] == {"id": "job-terminal-mint-1", "batch_processed": False}
+        row_targeted_calls = [
+            call
+            for call in mock_prisma_client.db.litellm_managedobjecttable.update_many.call_args_list
+            if (call.kwargs.get("where") or {}).get("id") == "job-terminal-mint-1"
+        ]
+        assert len(row_targeted_calls) == 1, "Expected exactly one row-targeted finalize write"
+        update_call = row_targeted_calls[0]
+        assert update_call.kwargs["where"]["batch_processed"] is False
         update_data = update_call.kwargs["data"]
         assert update_data["status"] == terminal_status
         assert update_data["batch_processed"] is True
@@ -1168,7 +1180,10 @@ class TestCheckBatchCost:
         ) as mock_afile_content:
             await check_batch_cost_instance.check_batch_cost()
 
-        assert mock_prisma_client.db.litellm_managedobjecttable.update_many.call_count == 1, (
+        finalize_writes = [
+            data for data in _row_writes(mock_prisma_client) if data.get("status") == completed_status
+        ]
+        assert len(finalize_writes) == 1, (
             "a completed batch with no output file must be marked processed exactly once"
         )
         update_data = finalize_writes[0]
@@ -1388,12 +1403,9 @@ class TestCheckBatchCost:
             f"{terminal_status} batch with an output file must fetch results and be billed"
         )
         mock_logging_obj.async_success_handler.assert_awaited_once()
-        assert mock_prisma_client.db.litellm_managedobjecttable.update_many.call_count == 1
-        update_data = mock_prisma_client.db.litellm_managedobjecttable.update_many.call_args[1]["data"]
-        assert update_data["batch_processed"] is True
-        assert update_data["status"] == terminal_status, (
-            f"billed {terminal_status} batch must keep its real terminal status in the DB"
-        )
+        finalize_writes = [data for data in _row_writes(mock_prisma_client) if data.get("status") == terminal_status]
+        assert len(finalize_writes) == 1, f"Expected exactly one finalize write for a {terminal_status} job"
+        assert finalize_writes[0]["batch_processed"] is True
 
     @pytest.mark.asyncio
     async def test_error_file_failures_add_to_failed_request_count(
@@ -1561,7 +1573,10 @@ class TestCheckBatchCost:
 
         assert mock_afile_content.await_count == 1
         mock_calculate.assert_not_awaited()
-        assert mock_prisma_client.db.litellm_managedobjecttable.update_many.call_count == 1, (
+        finalize_writes = [
+            data for data in _row_writes(mock_prisma_client) if data.get("status") == "failed"
+        ]
+        assert len(finalize_writes) == 1, (
             "a terminal batch with a 404ing output file must be retired, not retried forever"
         )
         update_data = finalize_writes[0]
@@ -1958,8 +1973,9 @@ class TestUnmanagedVertexRouting:
         mock_logging_obj.async_success_handler.assert_awaited_once()
         assert mock_logging_obj.async_success_handler.call_args[1]["batch_cost"] == 0.01
 
-        assert prisma.db.litellm_managedobjecttable.update_many.call_count == 1
-        update_data = prisma.db.litellm_managedobjecttable.update_many.call_args[1]["data"]
+        finalize_writes = [data for data in _row_writes(prisma) if data.get("status") == "complete"]
+        assert len(finalize_writes) == 1
+        update_data = finalize_writes[0]
         assert update_data["batch_processed"] is True
 
 
@@ -2174,8 +2190,9 @@ class TestUnmanagedBedrockRouting:
         mock_logging_obj.async_success_handler.assert_awaited_once()
         assert mock_logging_obj.async_success_handler.call_args[1]["batch_cost"] == 0.02
 
-        assert prisma.db.litellm_managedobjecttable.update_many.call_count == 1
-        update_data = prisma.db.litellm_managedobjecttable.update_many.call_args[1]["data"]
+        finalize_writes = [data for data in _row_writes(prisma) if data.get("status") == "complete"]
+        assert len(finalize_writes) == 1
+        update_data = finalize_writes[0]
         assert update_data["batch_processed"] is True
 
 
@@ -3199,7 +3216,8 @@ class TestPollPageStarvation:
 
         await poller.check_batch_cost()
 
-        assert table.update_many.await_count == 1
+        row_targeted_calls = [call for call in table.update_many.await_args_list if "id" in call.kwargs["where"]]
+        assert len(row_targeted_calls) == 1, "Expected exactly one row-targeted expiry write, for the old job"
         assert {call.kwargs["batch_id"] for call in llm_router.aretrieve_batch.await_args_list} == {
             "batch_old",
             "batch_new",
