@@ -63,11 +63,9 @@ def test_google_genai_provider_stream_iterator_skips_done_sentinel():
     payload = b'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"OK"}]}}]}\n\n'
 
     class DummyResponse:
-        def iter_lines(self):
-            yield payload.decode().rstrip("\n")
-            yield ""
-            yield "data: [DONE]"
-            yield ""
+        def iter_text(self):
+            yield payload.decode()
+            yield "data: [DONE]\n\n"
 
     iterator = GoogleGenAIGenerateContentStreamingIterator(
         response=DummyResponse(),
@@ -87,11 +85,9 @@ async def test_async_google_genai_provider_stream_iterator_skips_done_sentinel()
     payload = b'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"OK"}]}}]}\n\n'
 
     class DummyResponse:
-        async def aiter_lines(self):
-            yield payload.decode().rstrip("\n")
-            yield ""
-            yield "data: [DONE]"
-            yield ""
+        async def aiter_text(self):
+            yield payload.decode()
+            yield "data: [DONE]\n\n"
 
     iterator = AsyncGoogleGenAIGenerateContentStreamingIterator(
         response=DummyResponse(),
