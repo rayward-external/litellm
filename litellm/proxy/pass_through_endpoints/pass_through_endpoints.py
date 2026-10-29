@@ -55,7 +55,7 @@ from litellm.integrations.custom_guardrail import (
     without_server_streaming_classification,
 )
 from litellm.integrations.custom_logger import CustomLogger
-from litellm.integrations.otel.model.semconv import PASSTHROUGH_OPERATION_KEY, GenAIOperation
+from litellm.integrations.otel.model.semconv import PASSTHROUGH_OPERATION_KEY, GenAIOperation  # pyright: ignore[reportUnusedImport]  # same CFG dead-zone as strip_client_guardrail_information below
 from litellm.litellm_core_utils.core_helpers import (
     bind_budget_reservation_to_callbacks,
     get_metadata_variable_name_from_kwargs,
@@ -162,8 +162,8 @@ from .streaming_handler import PassThroughStreamingHandler
 from .success_handler import PassThroughEndpointLogging
 from .upstream_usage_headers import (
     UpstreamReportedUsage,
-    apply_upstream_reported_model,
-    apply_upstream_reported_operation,
+    apply_upstream_reported_model,  # pyright: ignore[reportUnusedImport]  # read via _build_passthrough_failure_request_payload; same CFG dead-zone as strip_client_guardrail_information above
+    apply_upstream_reported_operation,  # pyright: ignore[reportUnusedImport]  # same CFG dead-zone as apply_upstream_reported_model above
     apply_upstream_reported_usage,
 )
 
