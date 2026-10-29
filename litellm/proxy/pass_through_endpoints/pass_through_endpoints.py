@@ -30,6 +30,7 @@ from pydantic import TypeAdapter
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from starlette.routing import BaseRoute, Route
 from starlette.websockets import WebSocketState
+from typing_extensions import ReadOnly
 from websockets.asyncio.client import connect
 from websockets.exceptions import (
     ConnectionClosedError,
@@ -54,6 +55,10 @@ from litellm.integrations.custom_guardrail import (
     without_server_streaming_classification,
 )
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.integrations.otel.model.semconv import (
+    PASSTHROUGH_OPERATION_KEY,  # pyright: ignore[reportUnusedImport]  # same CFG dead-zone as strip_client_guardrail_information below
+    GenAIOperation,
+)
 from litellm.litellm_core_utils.core_helpers import (
     bind_budget_reservation_to_callbacks,
     get_metadata_variable_name_from_kwargs,
@@ -160,7 +165,8 @@ from .streaming_handler import PassThroughStreamingHandler
 from .success_handler import PassThroughEndpointLogging
 from .upstream_usage_headers import (
     UpstreamReportedUsage,
-    apply_upstream_reported_model,  # pyright: ignore[reportUnusedImport]  # called twice in pass_through_request; same basedpyright CFG dead-zone as strip_client_guardrail_information above
+    apply_upstream_reported_model,  # pyright: ignore[reportUnusedImport]  # read via _build_passthrough_failure_request_payload; same CFG dead-zone as strip_client_guardrail_information above
+    apply_upstream_reported_operation,  # pyright: ignore[reportUnusedImport]  # same CFG dead-zone as apply_upstream_reported_model above
     apply_upstream_reported_usage,
 )
 
@@ -181,8 +187,17 @@ def _is_mergeable_client_metadata(key: str, value: object) -> bool:
     return not key.startswith("user_api_key_") and (key != "model_info" or isinstance(value, Mapping))
 
 
+class _RegisteredPassThroughRoute(TypedDict):
+    endpoint_id: ReadOnly[str]
+    path: ReadOnly[str | None]
+    type: ReadOnly[str]
+    methods: ReadOnly[str | bool | list[str] | tuple[str, ...] | Mapping[str, object]]
+    auth: ReadOnly[bool]
+    passthrough_params: ReadOnly[Mapping[str, object]]
+
+
 # Global registry to track registered pass-through routes and prevent memory leaks
-_registered_pass_through_routes: Final[dict[str, dict[str, str | bool | list[str] | Mapping[str, object]]]] = {}
+_registered_pass_through_routes: Final[dict[str, _RegisteredPassThroughRoute]] = {}
 
 
 def get_response_body(response: httpx.Response) -> dict | None:
@@ -1170,6 +1185,7 @@ async def pass_through_request(
     guardrails_config: dict | None = None,
     timeout: float | None = None,
     upstream_headers_filter: Callable[[Mapping[str, str]], Mapping[str, str]] = _unfiltered_headers,
+    operation: GenAIOperation | None = None,
 ):
     """
     Pass through endpoint handler, makes the httpx request for pass-through endpoints and ensures logging hooks are called
@@ -1191,6 +1207,7 @@ async def pass_through_request(
         timeout: Optional per-endpoint timeout in seconds. Falls back to
             general_settings.pass_through_request_timeout, then 600s.
         upstream_headers_filter: Optional last rewrite of the headers sent upstream, after x-pass- expansion
+        operation: Optional GenAI operation the route reports, unless the upstream names its own
     """
     from litellm.exceptions import ModifyResponseException
     from litellm.litellm_core_utils.litellm_logging import Logging
@@ -1414,6 +1431,8 @@ async def pass_through_request(
             call_type="pass_through_endpoint",
         )
         logging_obj.model_call_details["litellm_call_id"] = litellm_call_id
+        if operation is not None:
+            logging_obj.model_call_details[PASSTHROUGH_OPERATION_KEY] = operation
 
         ## PASSTHROUGH MANAGED ID RESOLUTION (INPUT) ##
         # Resolve managed IDs in path, query params, and body back to raw
@@ -1614,6 +1633,7 @@ async def pass_through_request(
                 logging_obj=logging_obj,
                 headers=response.headers,
             )
+            apply_upstream_reported_operation(logging_obj, response.headers)
 
             relay_response: Final = await _log_passthrough_upstream_failure(
                 response=response,
@@ -1707,6 +1727,7 @@ async def pass_through_request(
             logging_obj=logging_obj,
             headers=response.headers,
         )
+        apply_upstream_reported_operation(logging_obj, response.headers)
 
         if _is_streaming_response(response) is True:
             logging_obj.stream = True
@@ -2228,6 +2249,7 @@ def create_pass_through_route(
     config_file_path: str | None = None,
     timeout: float | None = None,
     upstream_headers_filter: Callable[[Mapping[str, str]], Mapping[str, str]] = _unfiltered_headers,
+    operation: GenAIOperation | None = None,
 ):
     # check if target is an adapter.py or a url
     from litellm._uuid import uuid
@@ -2297,7 +2319,7 @@ def create_pass_through_route(
                     status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
                     detail=f"Method {request.method} is not allowed for pass-through endpoint {path}.",
                 )
-            target_params = {
+            target_params: Final[dict[str, object]] = {
                 "target": target,
                 "custom_headers": custom_headers,
                 "forward_headers": _forward_headers,
@@ -2329,7 +2351,9 @@ def create_pass_through_route(
 
             # Ensure custom_headers is a dict. Botocore returns a HeadersDict
             # for SigV4-prepared requests, which is a Mapping but not a dict.
-            headers_dict = dict(param_custom_headers) if isinstance(param_custom_headers, Mapping) else {}
+            headers_dict: Final[dict[str, object]] = (
+                {**param_custom_headers} if isinstance(param_custom_headers, Mapping) else {}
+            )
 
             # Ensure query_params and custom_body are dicts or None
             final_query_params = query_params_data if isinstance(query_params_data, dict) else {}
@@ -2368,6 +2392,7 @@ def create_pass_through_route(
                         guardrails_config=cast(dict | None, param_guardrails),
                         timeout=cast(float | None, param_timeout),
                         upstream_headers_filter=upstream_headers_filter,
+                        operation=operation,
                     )
                 finally:
                     if hasattr(request.state, LITELLM_PASS_THROUGH_CUSTOM_BODY_STATE_KEY):
@@ -3161,9 +3186,7 @@ class SafeRouteAdder:
                 return f"{path}/{{subpath:path}}"
             return None
 
-        def registered_route_methods(
-            route_info: Mapping[str, str | bool | Sequence[str] | Mapping[str, object]],
-        ) -> tuple[tuple[str, str], ...]:
+        def registered_route_methods(route_info: _RegisteredPassThroughRoute) -> tuple[tuple[str, str], ...]:
             starlette_path: Final = registered_route_path(route_info)
             methods: Final = route_info.get("methods")
             if starlette_path is None or not isinstance(methods, (list, tuple)):
@@ -3299,6 +3322,7 @@ class InitPassThroughEndpointHelpers:
                 guardrails=guardrails,
                 config_file_path=config_file_path,
                 timeout=timeout,
+                operation=GenAIOperation.LITELLM_PASSTHROUGH,
             ),
             methods=methods,
             dependencies=dependencies,
@@ -3383,6 +3407,7 @@ class InitPassThroughEndpointHelpers:
                 guardrails=guardrails,
                 config_file_path=config_file_path,
                 timeout=timeout,
+                operation=GenAIOperation.LITELLM_PASSTHROUGH,
             ),
             methods=methods,
             dependencies=dependencies,
@@ -3517,7 +3542,7 @@ class InitPassThroughEndpointHelpers:
         return (comparison_route, *forwarded)
 
     @staticmethod
-    def get_registered_pass_through_route(route: str, method: str | None = None) -> dict[str, Any] | None:
+    def get_registered_pass_through_route(route: str, method: str | None = None) -> _RegisteredPassThroughRoute | None:
         """Get passthrough params for a given route and optionally filter by HTTP method"""
         comparison_route = InitPassThroughEndpointHelpers._route_for_registry_lookup(route)
         for key in _registered_pass_through_routes:

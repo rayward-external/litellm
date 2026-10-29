@@ -34,6 +34,61 @@ ignoreUntil = 2026-11-24
 reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); missed by the 2026-10-25 security sweep for the same reason as GHSA-2g95-wg33-c5x2 above; CVSS 6.1, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
 
 [[IgnoredVulns]]
+id = "GHSA-6627-m3xw-93mp"
+ignoreUntil = 2026-11-26
+reason = "2026-10-29 sync: same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); newly surfaced by this sync's osv-scan against uv.lock's Python 3.10 resolution (filelock 4.1.0); CVSS 5.3, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed, but it shares the fix version and the same unavoidable 3.10 ceiling as the other filelock rows here. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-69hj-f68j-2879"
+ignoreUntil = 2026-11-26
+reason = "2026-10-29 sync: same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); newly surfaced by this sync's osv-scan against uv.lock's Python 3.10 resolution (filelock 4.1.0); CVSS 6.1, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-8mx5-7m5m-r77g"
+ignoreUntil = 2026-11-26
+reason = "2026-10-29 sync: same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); newly surfaced by this sync's osv-scan against uv.lock's Python 3.10 resolution (filelock 4.1.0); CVSS 5.3, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-9c4x-gm8v-wgc4"
+ignoreUntil = 2026-11-26
+reason = "2026-10-29 sync: same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); newly surfaced by this sync's osv-scan against uv.lock's Python 3.10 resolution (filelock 4.1.0); CVSS 6.3, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-9j6q-wvj5-jgjg"
+ignoreUntil = 2026-11-26
+reason = "2026-10-29 sync: same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); newly surfaced by this sync's osv-scan against uv.lock's Python 3.10 resolution (filelock 4.1.0); CVSS 2.5, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-cwqr-hh33-gh44"
+ignoreUntil = 2026-11-26
+reason = "2026-10-29 sync: same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); newly surfaced by this sync's osv-scan against uv.lock's Python 3.10 resolution (filelock 4.1.0); CVSS 5.5, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-fj95-fr6c-h845"
+ignoreUntil = 2026-11-26
+reason = "2026-10-29 sync: same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); newly surfaced by this sync's osv-scan against uv.lock's Python 3.10 resolution (filelock 4.1.0); CVSS 6.1, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-fq56-3cx3-fjxp"
+ignoreUntil = 2026-11-26
+reason = "2026-10-29 sync: same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); newly surfaced by this sync's osv-scan against uv.lock's Python 3.10 resolution (filelock 4.1.0); CVSS 4.7, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-m462-7rxw-wvpg"
+ignoreUntil = 2026-11-26
+reason = "2026-10-29 sync: same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); newly surfaced by this sync's osv-scan against uv.lock's Python 3.10 resolution (filelock 4.1.0); CVSS 5.8, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-rfpc-qcw5-3pc4"
+ignoreUntil = 2026-11-26
+reason = "2026-10-29 sync: same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); newly surfaced by this sync's osv-scan against uv.lock's Python 3.10 resolution (filelock 4.1.0); CVSS 4.7, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-wfhq-q4j2-c37m"
+ignoreUntil = 2026-11-26
+reason = "2026-10-29 sync: same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); newly surfaced by this sync's osv-scan against uv.lock's Python 3.10 resolution (filelock 4.1.0); CVSS 3.3, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
 id = "RUSTSEC-2026-0387"
 ignoreUntil = 2026-11-24
 reason = "crypto-bigint 0.7.6 (fix) is a breaking major for elliptic-curve, which pins crypto-bigint ^0.5 and is itself pinned to ^0.13.x by p256/p384 via jsonwebtoken 11.1.0's rust_crypto feature; no release of this chain supports crypto-bigint 0.7 yet; remove once one does"
@@ -62,6 +117,11 @@ reason = "2026-10-27 sync: block-buffer 0.10.4 (a panic in EagerBuffer/ReadBuffe
 id = "GHSA-gcqx-w48m-w2h4"
 ignoreUntil = 2026-11-27
 reason = "2026-10-28 sync: deepmerge 4.3.1 (a dev-only dependency of the root package.json) is the latest published release and still vulnerable (prototype pollution via a crafted merge target); npm registry lists no newer version. Remove this entry once one exists"
+
+[[IgnoredVulns]]
+id = "GHSA-45c3-73f7-pv4m"
+ignoreUntil = 2026-11-28
+reason = "2026-10-29 sync: dnspython 2.9.0 (PyPI requires_python >=3.11, confirmed against published metadata) is the only fixed release for a DoS via excessive CPU use in dns.name.from_wire_parser() on a crafted DNS message; litellm's requires-python still floors at 3.10 (pyproject.toml), so uv.lock's Python 3.10 resolution stays on the vulnerable 2.8.0 while Python >= 3.11 already resolves to the fixed 2.9.0, same unavoidable shape as the filelock/pillow rows above. Remove once 3.10 is dropped or dnspython ships a patched 2.8.x backport"
 
 [[PackageOverrides]]
 name = "pillow"

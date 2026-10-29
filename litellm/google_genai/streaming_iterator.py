@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Final
 import litellm
 from litellm.constants import STREAM_SSE_DONE_STRING
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
+from litellm.llms.custom_httpx.sse_lines import aiter_sse_lines, iter_sse_lines
 from litellm.proxy.pass_through_endpoints.success_handler import (
     PassThroughEndpointLogging,
 )
@@ -151,9 +152,9 @@ class GoogleGenAIGenerateContentStreamingIterator(BaseGoogleGenAIGenerateContent
         self.model = model
         self.generate_content_provider_config = generate_content_provider_config
         self.litellm_metadata = litellm_metadata
-        # Gemini streamGenerateContent uses SSE line framing; iter_lines keeps
+        # Gemini streamGenerateContent uses SSE line framing; iter_sse_lines keeps
         # large inlineData payloads (e.g. image/jpeg) intact within one event.
-        self.stream_iterator = response.iter_lines()
+        self.stream_iterator = iter_sse_lines(response.iter_text())
 
     def __iter__(self):
         return self
@@ -204,9 +205,9 @@ class AsyncGoogleGenAIGenerateContentStreamingIterator(BaseGoogleGenAIGenerateCo
         self.model = model
         self.generate_content_provider_config = generate_content_provider_config
         self.litellm_metadata = litellm_metadata
-        # Gemini streamGenerateContent uses SSE line framing; aiter_lines keeps
+        # Gemini streamGenerateContent uses SSE line framing; aiter_sse_lines keeps
         # large inlineData payloads (e.g. image/jpeg) intact within one event.
-        self.stream_iterator = response.aiter_lines()
+        self.stream_iterator = aiter_sse_lines(response.aiter_text())
 
     def __aiter__(self):
         return self

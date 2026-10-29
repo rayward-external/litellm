@@ -8,6 +8,7 @@ create leg.
 """
 
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -661,6 +662,7 @@ async def test_reclaim_abandoned_pricing_claims():
 
     instance = CheckBatchCost.__new__(CheckBatchCost)
     instance._has_batch_processed_column = True
+    instance._clock = lambda: datetime.now(timezone.utc)
     update_many = AsyncMock(return_value=2)
     instance.prisma_client = SimpleNamespace(
         db=SimpleNamespace(litellm_managedobjecttable=SimpleNamespace(update_many=update_many))

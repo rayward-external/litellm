@@ -174,7 +174,7 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # the #1135 Scorecard DangerousWorkflowID alert dismissal, plus +3 for the
 # crypto-bigint, rsa and deepmerge REPORTED-no-patch dependency rows, plus +1
 # for the dnspython REPORTED-sandbox-blocked row.
-EXPECTED_NA_ROWS = 59
+EXPECTED_NA_ROWS = 60
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
