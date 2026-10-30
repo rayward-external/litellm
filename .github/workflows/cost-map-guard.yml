@@ -68,6 +68,11 @@ jobs:
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          if ! cargo metadata --no-deps --manifest-path litellm-rust/Cargo.toml --format-version 1 \
+              | python3 -c 'import json, sys; pkgs = json.load(sys.stdin)["packages"]; sys.exit(0 if any(t["name"] == "check-registry" for p in pkgs if p["name"] == "litellm-model-catalog" for t in p["targets"]) else 1)'; then
+            echo "::warning::litellm-model-catalog has no check-registry bin target at this merge base (pre-dates the sync introducing it) -- skipping retroactive validation for this one-time transition"
+            exit 0
+          fi
           git show "${HEAD_SHA}:model_prices_and_context_window.json" > "$RUNNER_TEMP/model_prices_and_context_window.json"
           cargo run --locked --quiet --manifest-path litellm-rust/Cargo.toml -p litellm-model-catalog --bin check-registry \
             -- "$RUNNER_TEMP/model_prices_and_context_window.json"
