@@ -14296,8 +14296,8 @@ async def test_moderations_reraises_proxy_exception_unwrapped():
         pytest.param(Exception("provider down"), "internal_server_error", "500", id="bare_exception"),
         pytest.param(
             ValueError("Not allowed to access model due to tags configuration. Passed model=m and tags=['x']"),
-            "auth_error",
-            "401",
+            "invalid_request_error",
+            "400",
             id="tag_routing_denial",
         ),
     ],

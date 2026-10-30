@@ -850,7 +850,15 @@ class PassThroughEndpointLogging:
         )
 
         if OpenAIPassthroughLoggingHandler.is_openai_responses_item_route(url_route, custom_llm_provider):
-            # Fate 2: priced by nobody.
+            # Fate 2: priced by nobody, but still named -- an unbilled item
+            # route's spend row otherwise records "unknown" instead of the
+            # model that served it.
+            OpenAIPassthroughLoggingHandler._label_unbilled_call(
+                logging_obj,
+                url_route,
+                request_body=request_body,
+                response_body=response_body if isinstance(response_body, dict) else {},
+            )
             return {"result": None, "kwargs": kwargs}
 
         openai_passthrough_logging_handler_result: Final = OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
