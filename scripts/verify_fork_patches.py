@@ -174,7 +174,11 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # the #1135 Scorecard DangerousWorkflowID alert dismissal, plus +3 for the
 # crypto-bigint, rsa and deepmerge REPORTED-no-patch dependency rows, plus +1
 # for the dnspython REPORTED-sandbox-blocked row.
-EXPECTED_NA_ROWS = 60
+# 2026-10-30 sync: +5 -- the mcp_server_manager.py mutable-ok row, the
+# command-r-plus-08-2024 cohere test row, the diskcache osv-scanner.toml row,
+# and both filelock python_version-split pyproject.toml rows flipped to N/A,
+# each superseded by upstream dropping/reshaping the code they tracked.
+EXPECTED_NA_ROWS = 65
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
