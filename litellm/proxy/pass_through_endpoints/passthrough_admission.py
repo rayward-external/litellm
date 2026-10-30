@@ -192,7 +192,7 @@ def _router_model_is_priced(model: str) -> bool:
     if llm_router is None:
         return False
     try:
-        deployments = llm_router.get_model_list(model_name=model) or []
+        deployments = llm_router.registry().deployments(model_name=model) or []
     except Exception:  # noqa: BLE001  # a router lookup error must deny (fail closed), not 500 the request
         return False
     for deployment in deployments:
