@@ -275,7 +275,7 @@ def test_audio_transcription_over_the_file_size_cap_is_rejected_as_a_bad_request
     assert error["param"] == "file"
 
 
-def test_audio_speech_tag_routing_denial_is_typed_as_a_proxy_auth_error(
+def test_audio_speech_tag_routing_denial_is_typed_as_an_invalid_request_error(
     client, auth_as, patched_speech_error, monkeypatch
 ):
     async def _deny(*args, **kwargs):
@@ -284,15 +284,15 @@ def test_audio_speech_tag_routing_denial_is_typed_as_a_proxy_auth_error(
     monkeypatch.setattr(proxy_server, "route_request", _deny)
     with auth_as():
         response = client.post("/v1/audio/speech", json={"model": "tts-1", "input": "Hi", "voice": "alloy"})
-    assert response.status_code == 401
+    assert response.status_code == 400
     error = response.json()["error"]
-    assert (error["type"], error["param"]) == ("auth_error", None)
+    assert (error["type"], error["param"]) == ("invalid_request_error", None)
 
 
 @pytest.mark.parametrize(
     ("failure", "expected_status", "expected_type"),
     [
-        pytest.param(ValueError(_TAG_ROUTING_DENIAL), 401, "auth_error", id="tag_routing_denial"),
+        pytest.param(ValueError(_TAG_ROUTING_DENIAL), 400, "invalid_request_error", id="tag_routing_denial"),
         pytest.param(
             HTTPException(status_code=403, detail="Blocked by the content policy"),
             403,
