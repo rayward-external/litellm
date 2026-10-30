@@ -853,7 +853,7 @@ class PassThroughEndpointLogging:
             # Fate 2: priced by nobody, but still named -- an unbilled item
             # route's spend row otherwise records "unknown" instead of the
             # model that served it.
-            OpenAIPassthroughLoggingHandler._label_unbilled_call(
+            OpenAIPassthroughLoggingHandler.label_unbilled_call(
                 logging_obj,
                 url_route,
                 request_body=request_body,

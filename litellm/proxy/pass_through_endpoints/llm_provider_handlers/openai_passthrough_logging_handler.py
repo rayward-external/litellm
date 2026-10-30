@@ -530,7 +530,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             logging_obj.model_call_details["model"] = model  # rebind-ok: spend rows read the model from here
 
     @staticmethod
-    def _label_unbilled_call(
+    def label_unbilled_call(
         logging_obj: LiteLLMLoggingObj,
         url_route: str,
         request_body: Mapping[str, object],
@@ -807,7 +807,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         is_embeddings = OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route, configured_provider)
 
         if not (is_chat_completions or is_embeddings or is_image_generation or is_image_editing or is_responses):
-            OpenAIPassthroughLoggingHandler._label_unbilled_call(
+            OpenAIPassthroughLoggingHandler.label_unbilled_call(
                 logging_obj,
                 url_route,
                 request_body=_STR_MAPPING.validate_python(request_body),
