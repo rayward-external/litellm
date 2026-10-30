@@ -357,12 +357,20 @@ def test_bedrock_bare_key_priced_under_bedrock_converse_family(monkeypatch, no_r
 # ---------------------------------------------------------------------------
 
 
+class _StubRegistry:
+    def __init__(self, deployments):
+        self._deployments = deployments
+
+    def deployments(self, model_name=None):
+        return self._deployments
+
+
 class _StubRouter:
     def __init__(self, deployments):
         self._deployments = deployments
 
-    def get_model_list(self, model_name=None):
-        return self._deployments
+    def registry(self):
+        return _StubRegistry(self._deployments)
 
 
 def test_router_alias_with_explicit_deployment_cost_is_admitted(monkeypatch):
