@@ -12,6 +12,7 @@ on:
   push:
     branches:
       - main
+      - litellm_internal_staging
   workflow_dispatch:
     inputs:
       ref:
