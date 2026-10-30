@@ -78,7 +78,7 @@ from litellm._logging import verbose_proxy_logger
 from litellm.litellm_core_utils.aws_partition import get_aws_arn_prefix, get_aws_dns_suffix
 from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM
 from litellm.llms.custom_httpx.http_handler import get_async_httpx_client
-from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
 from litellm.types.llms.custom_http import httpxSpecialProvider
@@ -135,7 +135,7 @@ def _find_bedrock_batch_deployment(model: str) -> dict[str, Any] | None:
     if llm_router is None:
         return None
     wanted = {f"{model}-batch", model}
-    for deployment in llm_router.get_model_list() or []:
+    for deployment in llm_router.registry().deployments() or []:
         if deployment.get("model_name") not in wanted:
             continue
         litellm_params = deployment.get("litellm_params") or {}
@@ -152,7 +152,7 @@ def _any_bedrock_batch_deployment() -> dict[str, Any] | None:
     llm_router = _get_llm_router()
     if llm_router is None:
         return None
-    for deployment in llm_router.get_model_list() or []:
+    for deployment in llm_router.registry().deployments() or []:
         litellm_params = deployment.get("litellm_params") or {}
         model_info = deployment.get("model_info") or {}
         if str(litellm_params.get("model", "")).startswith("bedrock/") and model_info.get("mode") == "batch":
@@ -259,8 +259,15 @@ def _owner_tag(user_api_key_dict: UserAPIKeyAuth) -> str:
 
 
 def _is_proxy_admin(user_api_key_dict: UserAPIKeyAuth) -> bool:
+    """Full PROXY_ADMIN only. Every caller uses this to BYPASS ownership
+    (retrieve/results/cancel/delete, the unbilled-delete guard, the workspace-wide
+    listing), so it must not match PROXY_ADMIN_VIEW_ONLY ("proxy_admin_viewer"),
+    which a prefix test did. The batch paths are LLM API routes, so
+    RouteChecks never runs _check_proxy_admin_viewer_access on them, and a
+    read-only admin could then cancel or delete any tenant's batch. A viewer is
+    scoped to its own batches like any other key."""
     role = getattr(user_api_key_dict, "user_role", None)
-    return str(getattr(role, "value", role) or "").startswith("proxy_admin")
+    return str(getattr(role, "value", role) or "") == LitellmUserRoles.PROXY_ADMIN.value
 
 
 def _split_bedrock_batch_id(batch_id: str) -> tuple[str, str | None]:
@@ -596,7 +603,7 @@ def _find_anthropic_deployment_model_id(model: str) -> str | None:
     """
     llm_router = _get_llm_router()
     fallback_any: str | None = None
-    for deployment in (llm_router.get_model_list() or []) if llm_router is not None else []:
+    for deployment in (llm_router.registry().deployments() or []) if llm_router is not None else []:
         litellm_params = deployment.get("litellm_params") or {}
         # Both provider spellings occur in the wild: model: "anthropic/<m>",
         # or model: "<m>" + custom_llm_provider: "anthropic" (this stack).

@@ -456,6 +456,15 @@ class LiteLLMRoutes(enum.Enum):
     anthropic_routes = [
         "/v1/messages",
         "/v1/messages/count_tokens",
+        # Fork-only Message Batches surface (litellm/proxy/anthropic_endpoints/
+        # messages_batches.py). Without these, is_llm_api_route() is False and
+        # every non-admin virtual key gets the admin-only 401 on create, list,
+        # retrieve, results, cancel and delete. Guarded by
+        # tests/unit/proxy/anthropic_endpoints/test_messages_batches_route_auth.py.
+        "/v1/messages/batches",
+        "/v1/messages/batches/{batch_id}",
+        "/v1/messages/batches/{batch_id}/results",
+        "/v1/messages/batches/{batch_id}/cancel",
         "/claude_code_gateway/v1/messages",
         "/claude_code_gateway/v1/messages/count_tokens",
         "/v1/skills",
@@ -2838,6 +2847,10 @@ class ConfigGeneralSettings(LiteLLMPydanticObjectBase):
         None,
         description="If True, stores request messages and responses in spend logs. Default is False.",
     )
+    claude_code_marketplace_auth_required: bool = Field(
+        False,
+        description="If True, GET /claude-code/marketplace.json requires a LiteLLM key in the Authorization or x-litellm-api-key header (?key= is not accepted) and answers 401 with WWW-Authenticate: Bearer without one, and GET /public/skill_hub returns an empty list. Default is False, which serves the enabled plugins to anyone.",
+    )
     disable_requester_ip_address_logging: bool | None = Field(
         None,
         description="If True, new spend log rows store requester_ip_address as null in the column, the metadata and the stored request. The stored request also drops client-IP forwarding headers such as x-forwarded-for, and IP addresses in its other header values and in stored error messages are masked. Guardrails, metrics and callbacks that read the standard logging payload still receive the IP. Default is False.",
@@ -3178,11 +3191,18 @@ from litellm.types.proxy.auth.user_api_key_auth import (
 )
 
 
+class AdminMCPPermissions(LiteLLMPydanticObjectBase):
+    model_config = ConfigDict(frozen=True)
+    tools: tuple[str, ...]
+    action_allowed: bool | None = None
+
+
 class UserInfoResponse(LiteLLMPydanticObjectBase):
     user_id: str | None
     user_info: dict | BaseModel | None
     keys: list
     teams: list
+    admin_mcp_permissions: AdminMCPPermissions | None = None
 
 
 class UserInfoV2Response(LiteLLMPydanticObjectBase):
@@ -3749,6 +3769,7 @@ class SpendLogsMetadata(TypedDict):
     internal_call_origin: InternalCallOrigin | None
     billed_retry_attempt: ReadOnly[NotRequired[bool | None]]
     litellm_roi_estimator: ReadOnly[NotRequired[bool | None]]
+    is_silent_experiment: ReadOnly[NotRequired[bool | None]]
     guardrail_information: list[StandardLoggingGuardrailInformation] | None
     eval_information: Any | None
     status: StandardLoggingPayloadStatus
