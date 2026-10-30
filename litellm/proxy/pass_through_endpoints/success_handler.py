@@ -812,12 +812,11 @@ class PassThroughEndpointLogging:
         )
 
         return (
-            OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url_route)
-            or OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route)
-            or OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url_route)
-            or OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url_route)
-            or OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route)
-            or OpenAIPassthroughLoggingHandler.is_openai_agents_route(url_route)
+            OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url_route, custom_llm_provider)
+            or OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url_route, custom_llm_provider)
+            or OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url_route, custom_llm_provider)
+            or OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route, custom_llm_provider)
+            or OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route, custom_llm_provider)
         )
 
     def _dispatch_openai_passthrough(
