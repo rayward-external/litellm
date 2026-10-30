@@ -404,6 +404,10 @@ CONSUMERS: Final = MappingProxyType(
         "test-unit.yml:ui-unit": Consumer(_ui_files_passed_to_vitest_related, _ui_files_changed_since_merge_base),
         "spend-logs-guard.yml:spend-logs-guard": Consumer(_guard_base_argument_and_checkout, _merge_base_and_tip),
         "cost-map-guard.yml:cost-map-guard": Consumer(_guard_base_argument_and_checkout, _merge_base_and_tip),
+        "required-checks-legacy.yml:lint": Consumer(_gate_base_exported, _merge_base),
+        "required-checks-legacy.yml:frontend-lint": Consumer(
+            _ui_files_queued_for_prettier, _ui_files_changed_since_merge_base
+        ),
     }
 )
 
