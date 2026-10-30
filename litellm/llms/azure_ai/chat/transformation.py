@@ -178,7 +178,7 @@ class AzureAIStudioConfig(OpenAIConfig):
         refuses_undeclared_effort: Final = (
             isinstance(requested_effort, str)
             and requested_effort in REASONING_EFFORT_STRENGTH_ORDER
-            and requested_effort not in declared_reasoning_efforts
+            and requested_effort not in (declared_reasoning_efforts or ())
         )
         if "reasoning_effort" in non_default_params and self._supports_reasoning(model):
             if not refuses_undeclared_effort:

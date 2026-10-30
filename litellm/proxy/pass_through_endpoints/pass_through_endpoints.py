@@ -1180,11 +1180,15 @@ def _unfiltered_headers(headers: Mapping[str, str]) -> Mapping[str, str]:
     return headers
 
 
-def _eu_jev_client_body(custom_llm_provider: str | None, body: Mapping[str, object]) -> Mapping[str, object] | None:
+def _eu_jev_client_body(  # pyright: ignore[reportUnusedFunction]  # called only from pass_through_request, which basedpyright gives up analyzing for complexity
+    custom_llm_provider: str | None, body: Mapping[str, object]
+) -> Mapping[str, object] | None:
     return MappingProxyType(dict(body)) if custom_llm_provider == "eu_jev" else None
 
 
-def _eu_jev_scoped_model_override(eu_jev_client_body: Mapping[str, object] | None) -> Mapping[str, str]:
+def _eu_jev_scoped_model_override(  # pyright: ignore[reportUnusedFunction]  # called only from pass_through_request, which basedpyright gives up analyzing for complexity
+    eu_jev_client_body: Mapping[str, object] | None,
+) -> Mapping[str, str]:
     if eu_jev_client_body is None:
         return MappingProxyType({})
     return MappingProxyType({"model": eu_jev_scoped_model(eu_jev_client_body)})
