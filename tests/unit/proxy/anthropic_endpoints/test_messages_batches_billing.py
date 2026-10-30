@@ -218,8 +218,10 @@ def test_find_anthropic_deployment_model_id(monkeypatch):
             "model_info": {"id": "anthropic-claude-opus-4-8"},
         },
     ]
-    router = SimpleNamespace(get_model_list=lambda: deployments)
-    monkeypatch.setattr(mb, "_get_llm_router", lambda: router)
+    def stub_router(rows):
+        return SimpleNamespace(registry=lambda: SimpleNamespace(deployments=lambda: rows))
+
+    monkeypatch.setattr(mb, "_get_llm_router", lambda: stub_router(deployments))
     assert mb._find_anthropic_deployment_model_id("claude-opus-4-6") == "anthropic-dep-id"
     assert mb._find_anthropic_deployment_model_id("claude-opus-4-8") == "anthropic-claude-opus-4-8"
     # model without its own anthropic deployment -> borrow ANY anthropic
@@ -228,7 +230,7 @@ def test_find_anthropic_deployment_model_id(monkeypatch):
     # no anthropic deployments at all -> None (the "anthropic/<model>" string
     # is unrouteable — registering it would satisfy REQUIRE_BILLING with a row
     # the poller can never price)
-    monkeypatch.setattr(mb, "_get_llm_router", lambda: SimpleNamespace(get_model_list=lambda: []))
+    monkeypatch.setattr(mb, "_get_llm_router", lambda: stub_router([]))
     assert mb._find_anthropic_deployment_model_id("claude-haiku-4-5") is None
 
 
