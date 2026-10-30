@@ -135,7 +135,7 @@ def _find_bedrock_batch_deployment(model: str) -> dict[str, Any] | None:
     if llm_router is None:
         return None
     wanted = {f"{model}-batch", model}
-    for deployment in llm_router.get_model_list() or []:
+    for deployment in llm_router.registry().deployments() or []:
         if deployment.get("model_name") not in wanted:
             continue
         litellm_params = deployment.get("litellm_params") or {}
@@ -152,7 +152,7 @@ def _any_bedrock_batch_deployment() -> dict[str, Any] | None:
     llm_router = _get_llm_router()
     if llm_router is None:
         return None
-    for deployment in llm_router.get_model_list() or []:
+    for deployment in llm_router.registry().deployments() or []:
         litellm_params = deployment.get("litellm_params") or {}
         model_info = deployment.get("model_info") or {}
         if str(litellm_params.get("model", "")).startswith("bedrock/") and model_info.get("mode") == "batch":
@@ -603,7 +603,7 @@ def _find_anthropic_deployment_model_id(model: str) -> str | None:
     """
     llm_router = _get_llm_router()
     fallback_any: str | None = None
-    for deployment in (llm_router.get_model_list() or []) if llm_router is not None else []:
+    for deployment in (llm_router.registry().deployments() or []) if llm_router is not None else []:
         litellm_params = deployment.get("litellm_params") or {}
         # Both provider spellings occur in the wild: model: "anthropic/<m>",
         # or model: "<m>" + custom_llm_provider: "anthropic" (this stack).

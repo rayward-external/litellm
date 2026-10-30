@@ -117,12 +117,20 @@ def test_single_segment_placeholder_still_refuses_multi_segment():
     assert capability is None and match is None
 
 
+class _StubRegistry:
+    def __init__(self, deployments):
+        self._deployments = deployments
+
+    def deployments(self, model_name=None):
+        return self._deployments
+
+
 class _StubRouter:
     def __init__(self, deployments):
         self._deployments = deployments
 
-    def get_model_list(self, model_name=None):
-        return self._deployments
+    def registry(self):
+        return _StubRegistry(self._deployments)
 
 
 def test_greedy_alias_admitted_end_to_end_via_router_pricing(monkeypatch):

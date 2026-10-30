@@ -3067,7 +3067,7 @@ def test_legacy_thinking_enabled_uses_messages_budget_buckets_for_adaptive_chat(
         messages=[{"role": "user", "content": "hello"}],
         optional_params={
             "max_tokens": 32000,
-            "thinking": {"type": "enabled", "budget_tokens": 5000},
+            "thinking": {"type": "enabled", "budget_tokens": 3000},
         },
         litellm_params={},
         headers={},
