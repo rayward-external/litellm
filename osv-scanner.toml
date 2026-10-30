@@ -89,6 +89,36 @@ ignoreUntil = 2026-11-24
 reason = "@azure/msal-node is fixed only in 7.1.0 (published 2026-10-13), but it is dev-only in vscode-extension via @vscode/vsce > @azure/identity, and the latest @azure/identity (4.14.0) still requires msal-node ^6.0.0, so the lock cannot move without forcing a major override; the advisory is in the auth_code flow, which extension packaging does not run; bump and remove this entry once @azure/identity accepts msal-node >= 7.1.0"
 
 [[IgnoredVulns]]
+id = "GHSA-2g95-wg33-c5x2"
+ignoreUntil = 2026-11-24
+reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); missed by the 2026-10-25 security sweep because pip-audit was run against the standalone 3.32.7 package rather than uv.lock's actual Python 3.10 resolution (filelock 4.1.0), which this osv-scan caught; CVSS 4.7, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed, but it shares the fix version and the same unavoidable 3.10 ceiling as the other filelock rows here. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-crv4-6mhj-j5jh"
+ignoreUntil = 2026-11-24
+reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); missed by the 2026-10-25 security sweep for the same reason as GHSA-2g95-wg33-c5x2 above; CVSS 5.3, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-jqc4-5cvw-7w85"
+ignoreUntil = 2026-11-24
+reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); missed by the 2026-10-25 security sweep for the same reason as GHSA-2g95-wg33-c5x2 above; CVSS 6.1, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-fj95-fr6c-h845"
+ignoreUntil = 2026-11-26
+reason = "2026-10-29 sync: same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); newly surfaced by this sync's osv-scan against uv.lock's Python 3.10 resolution (filelock 4.1.0); CVSS 6.1, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-wfhq-q4j2-c37m"
+ignoreUntil = 2026-11-26
+reason = "2026-10-29 sync: same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); newly surfaced by this sync's osv-scan against uv.lock's Python 3.10 resolution (filelock 4.1.0); CVSS 3.3, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-gcqx-w48m-w2h4"
+ignoreUntil = 2026-11-27
+reason = "2026-10-28 sync: deepmerge 4.3.1 (a dev-only dependency of the root package.json) is the latest published release and still vulnerable (prototype pollution via a crafted merge target); npm registry lists no newer version. Remove this entry once one exists"
+
+[[IgnoredVulns]]
 id = "RUSTSEC-2026-0387"
 ignoreUntil = 2026-11-24
 reason = "crypto-bigint 0.7.6 (fix) is a breaking major for elliptic-curve, which pins crypto-bigint ^0.5 and is itself pinned to ^0.13.x by p256/p384 via jsonwebtoken 11.1.0's rust_crypto feature; no release of this chain supports crypto-bigint 0.7 yet; remove once one does"
