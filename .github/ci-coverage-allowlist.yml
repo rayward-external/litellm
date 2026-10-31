@@ -23,6 +23,12 @@ test_paths:
     paths:
       - tests/harness_e2e
   - reason: >-
+      Databricks end-to-end suite: its own module docstring says it needs real Databricks
+      credentials and makes actual API calls, and its module-level pytestmark unconditionally
+      skips every test in CI. The mocked coverage runs in test_databricks_partner_integration.py.
+    paths:
+      - tests/unit/skills/test_databricks_e2e.py
+  - reason: >-
       The Rust/Python parity harness is run manually through its local CLI. Recorded replay,
       fixture generation, and harness checks are intentionally outside pull request CI
     paths:

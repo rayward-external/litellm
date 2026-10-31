@@ -78,6 +78,17 @@ query-filters:
   # validation call as a sanitizer. Confirmed FP on audit of alert #1132.
   - exclude:
       id: py/url-redirection                      # CWE-601
+  # ui/litellm-dashboard/src/lib/wildcard_routes.ts's substituteCapture (byte-identical
+  # to upstream's new 2026-10-31 wildcard-routing module) calls
+  # deploymentPattern.replace("*", ...) with a plain-string search, which the query
+  # flags because String.replace only touches the first match. Its only caller,
+  # routesCapturedIds, gates every invocation on both patterns having exactly one "*"
+  # (namePattern.split("*").length === 2 && deploymentPattern.split("*").length === 2),
+  # so deploymentPattern can never carry a second "*" for this call to miss. Not a
+  # sanitization boundary either: both patterns are admin-authored model_name config,
+  # never untrusted/user input. Confirmed FP on audit of alert #1137.
+  - exclude:
+      id: js/incomplete-sanitization               # CWE-116
 
 paths-ignore:
   - tests

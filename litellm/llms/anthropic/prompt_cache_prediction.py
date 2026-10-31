@@ -11,6 +11,7 @@ from itertools import accumulate, groupby
 from types import MappingProxyType
 from typing import (
     Annotated,
+    ClassVar,
     Final,
     Literal,
     Protocol,
@@ -86,6 +87,10 @@ _DEPLOYMENT_OPTIONS: Final = frozenset(
         "cache_creation_input_token_cost_above_1hr",
     }
 )
+
+
+class _BaselineAnthropicMessagesConfig(AnthropicMessagesConfig):
+    _report_reasoning_drops: ClassVar[bool] = False
 
 
 class _StrictModel(LiteLLMBaseModel):
@@ -668,7 +673,7 @@ def prepare_native_baseline_body(request: Mapping[str, object], model: str) -> M
             TypeAdapter(tuple[str, ...]).validate_python(owned.get("additional_drop_params") or ()),
             dict(options),
         )
-        config: Final = AnthropicMessagesConfig()
+        config: Final = _BaselineAnthropicMessagesConfig()
         body: Final = config.transform_anthropic_messages_request(
             model=resolved_model,
             messages=cast(  # cast-ok: strip_provider_specific_fields_from_anthropic_messages preserves each dict's shape
