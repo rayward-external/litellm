@@ -267,9 +267,11 @@ jobs:
               tests/unit/llms/cometapi
               tests/unit/llms/compactifai
               tests/unit/llms/crusoe
+              tests/unit/skills/test_crusoe.py
               tests/unit/llms/custom_httpx
               tests/unit/llms/dashscope
               tests/unit/llms/databricks
+              tests/unit/skills/test_databricks_e2e.py
               tests/unit/llms/dataforseo
               tests/unit/llms/datarobot
               tests/unit/llms/deepagents
