@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 from dotenv import load_dotenv
 from unittest.mock import AsyncMock, MagicMock, patch
+from litellm.router_api import RoutingContext
 from litellm.router_utils.cooldown_callbacks import router_cooldown_event_callback
 from litellm.router_utils.cooldown_handlers import (
     _should_run_cooldown_logic,
@@ -294,7 +295,7 @@ async def test_should_cooldown_deployment(testing_litellm_router):
     # set current success for deployment to 40
     for _ in range(40):
         increment_deployment_successes_for_current_minute(
-            litellm_router_instance=testing_litellm_router, deployment_id=deployment_id
+            ctx=testing_litellm_router, deployment_id=deployment_id
         )
 
     # now we fail 40 requests in a row
@@ -343,17 +344,19 @@ async def test_should_cooldown_deployment_allowed_fails_set_on_router():
     # Set up allowed_fails for the test deployment
     router.allowed_fails = 100
 
+    ctx = RoutingContext(router)
+
     # should not cooldown when fails are below the allowed limit
     for _ in range(100):
         assert (
             _should_cooldown_deployment(
-                router, "test_deployment", 500, Exception("Test")
+                ctx, "test_deployment", 500, Exception("Test")
             )
             is False
         )
 
     assert (
-        _should_cooldown_deployment(router, "test_deployment", 500, Exception("Test"))
+        _should_cooldown_deployment(ctx, "test_deployment", 500, Exception("Test"))
         is True
     )
 
@@ -382,11 +385,11 @@ def test_increment_deployment_successes_for_current_minute_does_not_write_to_red
 
     # Call the function we're testing
     increment_deployment_successes_for_current_minute(
-        litellm_router_instance=testing_litellm_router, deployment_id="test_deployment"
+        ctx=testing_litellm_router, deployment_id="test_deployment"
     )
 
     increment_deployment_failures_for_current_minute(
-        litellm_router_instance=testing_litellm_router, deployment_id="test_deployment"
+        ctx=testing_litellm_router, deployment_id="test_deployment"
     )
 
     time.sleep(1)
@@ -563,7 +566,7 @@ def test_should_cooldown_deployment_minimum_request_threshold(testing_litellm_ro
     # Simulate only 1 failure (below minimum threshold)
     # This should NOT trigger cooldown even though 100% > 50%
     increment_deployment_failures_for_current_minute(
-        litellm_router_instance=testing_litellm_router, deployment_id=deployment_id
+        ctx=testing_litellm_router, deployment_id=deployment_id
     )
 
     _exception = litellm.exceptions.InternalServerError(
@@ -581,7 +584,7 @@ def test_should_cooldown_deployment_minimum_request_threshold(testing_litellm_ro
     # Now add more failures to reach the minimum threshold
     for _ in range(DEFAULT_FAILURE_THRESHOLD_MINIMUM_REQUESTS - 1):
         increment_deployment_failures_for_current_minute(
-            litellm_router_instance=testing_litellm_router, deployment_id=deployment_id
+            ctx=testing_litellm_router, deployment_id=deployment_id
         )
 
     # Now with enough requests (all failures), it SHOULD trigger cooldown
