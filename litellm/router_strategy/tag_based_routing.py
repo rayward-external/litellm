@@ -12,7 +12,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, Literal, Protocol, TypedDict, overload
+from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn, Protocol, TypedDict, overload
 
 from typing_extensions import ReadOnly
 
@@ -769,6 +769,7 @@ async def get_deployments_for_tag(
             else _request_tags_after_router_consumption(metadata, model),
             metadata,
         )
+        disable_default_fallback: Final = pinned_provider is not None
         match_any: Final = ctx.settings().tag_filtering_match_any
         routing_prefix: Final = ctx.settings().tag_routing_prefix or ""
 

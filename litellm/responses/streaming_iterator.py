@@ -2509,6 +2509,8 @@ class ResponsesWebSocketStreaming:
         custom_llm_provider: str | None = None,
         request_defaults: ResponsesWebSocketRequestDefaults | None = None,
         turn_admission: ResponsesWsTurnAdmission | None = None,
+        responses_api_provider_config: BaseResponsesAPIConfig | None = None,
+        api_base: str | None = None,
         frame_guard: ResponsesWsFrameGuard | None = None,
     ):
         self.websocket = websocket

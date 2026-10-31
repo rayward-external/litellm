@@ -9,7 +9,15 @@ from dataclasses import dataclass, field
 from functools import reduce
 from itertools import accumulate, groupby
 from types import MappingProxyType
-from typing import Annotated, ClassVar, Final, Literal, Protocol, TypeAlias
+from typing import (
+    Annotated,
+    ClassVar,
+    Final,
+    Literal,
+    Protocol,
+    TypeAlias,
+    cast,  # noqa: TID251  # strip_provider_specific_fields_from_anthropic_messages narrows to Sequence[object] generically
+)
 
 import httpx
 from pydantic import ConfigDict, Field, JsonValue, StrictInt, TypeAdapter, ValidationError

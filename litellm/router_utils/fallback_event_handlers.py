@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, cast
 
 import httpx
+from litellm.router_utils.common_utils import filter_team_based_models
 from pydantic import TypeAdapter
 
 import litellm
@@ -24,6 +25,7 @@ from litellm.litellm_core_utils.get_llm_provider_logic import inferred_provider
 from litellm.litellm_core_utils.litellm_logging import Logging, same_attempt_marker
 from litellm.litellm_core_utils.sensitive_data_masker import mask_sensitive_structure
 from litellm.router_deprecated import renamed_router_param
+from litellm.router_strategy.tag_based_routing import get_deployments_for_tag
 from litellm.router_utils.cooldown_handlers import (
     _first_present,  # pyright: ignore[reportPrivateUsage] - shared internal helper, used across router_utils
     cast_exception_status_to_int,
@@ -48,6 +50,7 @@ from litellm.types.router import (
 from litellm.utils import _get_deployment_order
 
 if TYPE_CHECKING:
+    from litellm.router import Router as _Router
     from litellm.router_api import RoutingContext
 
 # Status codes a generic API call's caller-supplied resource id can trigger on its own
@@ -943,7 +946,7 @@ async def run_async_fallback(
         isinstance(error_from_fallbacks, RouterRateLimitError)
         and _is_deterministic_client_error(original_exception)
         and await _request_constraints_emptied_target_order(
-            litellm_router=litellm_router,
+            litellm_router=ctx._router,  # pyright: ignore[reportPrivateUsage]  # fork-only probe needs get_model_list, not exposed on RoutingContext
             original_model_group=original_model_group,
             kwargs=kwargs,
         )

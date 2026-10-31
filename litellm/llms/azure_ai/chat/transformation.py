@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Final, cast
 
 import httpx
 from httpx import Response
+from litellm.router_utils.reasoning_effort_capability import REASONING_EFFORT_STRENGTH_ORDER
 from pydantic import TypeAdapter, ValidationError
 
 import litellm
@@ -34,7 +35,6 @@ from litellm.llms.openai.chat.gpt_reasoning_transformation import (
 from litellm.llms.openai.common_utils import drop_params_from_unprocessable_entity_error
 from litellm.llms.openai.openai import OpenAIChatCompletionResponseIterator, OpenAIConfig
 from litellm.llms.xai.chat.transformation import XAIChatConfig
-from litellm.router_utils.reasoning_effort_capability import REASONING_EFFORT_STRENGTH_ORDER
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.openai import AllMessageValues, PromptCacheBreakpoint
 from litellm.types.router import GenericLiteLLMParams
