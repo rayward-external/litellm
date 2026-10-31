@@ -45,6 +45,8 @@
     "select",
     "settings"
   ],
-  "members_router_family": [],
+  "members_router_family": [
+    "get_model_list"
+  ],
   "router_utils_imports_outside": []
 }
