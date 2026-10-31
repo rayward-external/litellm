@@ -4240,7 +4240,8 @@ class Router(DeprecatedRouterMembers):
                     fallback_trigger: Final[Exception] = (
                         e.original_exception
                         if isinstance(
-                            e.original_exception, (litellm.ContentPolicyViolationError, litellm.ContextWindowExceededError)
+                            e.original_exception,
+                            (litellm.ContentPolicyViolationError, litellm.ContextWindowExceededError),
                         )
                         else e
                     )
