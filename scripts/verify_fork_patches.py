@@ -181,7 +181,10 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-10-30 sync (2): +1 -- the old _translate_legacy_thinking_for_adaptive_model
 # duplicate's row flipped to N/A after the duplicate itself was deleted in favor
 # of the shared AnthropicModelInfo helper (see that row's own text).
-EXPECTED_NA_ROWS = 66
+# 2026-10-31 security sweep: +1 -- the osv-scanner.toml GHSA-qwgh-2vcv-g2f7
+# (block-buffer) row flipped to N/A after a live scan stopped flagging it and
+# the IgnoredVulns entry it described was removed.
+EXPECTED_NA_ROWS = 67
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
