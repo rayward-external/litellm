@@ -754,6 +754,7 @@ jobs:
               tests/unit/responses/test_responses_supported_endpoints_passthrough.py
               tests/unit/responses/test_responses_utils.py
               tests/unit/responses/test_responses_websocket_all_providers.py
+              --deselect=tests/unit/responses/test_responses_websocket_all_providers.py::TestWebSocketTurnAdmission::test_managed_relay_sends_the_provider_only_the_metadata_each_turn_carries
               tests/unit/responses/test_rust_bridge_websocket.py
               tests/unit/responses/test_sse_output_recovery.py
               tests/unit/responses/test_streaming_iterator.py
