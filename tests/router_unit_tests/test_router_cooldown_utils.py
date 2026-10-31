@@ -37,19 +37,19 @@ async def test_router_cooldown_event_callback_no_deployment():
 
     In this scenario it should do nothing
     """
-    # Mock Router instance
-    mock_router = MagicMock()
-    mock_router.get_deployment.return_value = None
+    # Mock RoutingContext
+    mock_ctx = MagicMock()
+    mock_ctx.registry.return_value.deployment.return_value = None
 
     await router_cooldown_event_callback(
-        litellm_router_instance=mock_router,
+        ctx=mock_ctx,
         deployment_id="test-deployment",
         exception_status="429",
         cooldown_time=60.0,
     )
 
-    # Assert that the router's get_deployment method was called
-    mock_router.get_deployment.assert_called_once_with(model_id="test-deployment")
+    # Assert that the registry's deployment lookup was called
+    mock_ctx.registry.return_value.deployment.assert_called_once_with("test-deployment")
 
 
 @pytest.fixture
@@ -441,7 +441,7 @@ def test_should_cooldown_high_traffic_all_fails(mock_failures, mock_successes, r
     mock_successes.return_value = 0
 
     should_cooldown = _should_cooldown_deployment(
-        litellm_router_instance=router,
+        ctx=router,
         deployment="gpt-4--0",
         exception_status=500,
         original_exception=Exception("Test error"),
@@ -464,7 +464,7 @@ def test_no_cooldown_low_traffic(mock_failures, mock_successes, router):
     mock_successes.return_value = 0
 
     should_cooldown = _should_cooldown_deployment(
-        litellm_router_instance=router,
+        ctx=router,
         deployment="gpt-4--0",
         exception_status=500,
         original_exception=Exception("Test error"),
@@ -489,7 +489,7 @@ def test_cooldown_rate_limit(mock_failures, mock_successes, router):
     mock_successes.return_value = 0
 
     should_cooldown = _should_cooldown_deployment(
-        litellm_router_instance=router,
+        ctx=router,
         deployment="gpt-4--0",
         exception_status=429,  # Rate limit error
         original_exception=Exception("Rate limit exceeded"),
@@ -512,7 +512,7 @@ def test_mixed_success_failure(mock_failures, mock_successes, router):
     mock_successes.return_value = 7
 
     should_cooldown = _should_cooldown_deployment(
-        litellm_router_instance=router,
+        ctx=router,
         deployment="gpt-4--0",
         exception_status=500,
         original_exception=Exception("Test error"),
@@ -528,7 +528,7 @@ def test_is_cooldown_required_empty_string_exception_status(testing_litellm_rout
     Test that _is_cooldown_required returns False when exception_status is an empty string
     """
     result = _is_cooldown_required(
-        litellm_router_instance=testing_litellm_router,
+        ctx=testing_litellm_router,
         model_id="test_deployment",
         exception_status="",
     )

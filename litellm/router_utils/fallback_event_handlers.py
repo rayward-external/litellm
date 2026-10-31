@@ -50,7 +50,6 @@ from litellm.types.router import (
 from litellm.utils import _get_deployment_order
 
 if TYPE_CHECKING:
-    from litellm.router import Router as _Router
     from litellm.router_api import RoutingContext
 
 # Status codes a generic API call's caller-supplied resource id can trigger on its own
@@ -946,7 +945,7 @@ async def run_async_fallback(
         isinstance(error_from_fallbacks, RouterRateLimitError)
         and _is_deterministic_client_error(original_exception)
         and await _request_constraints_emptied_target_order(
-            litellm_router=ctx._router,  # pyright: ignore[reportPrivateUsage]  # fork-only probe needs get_model_list, not exposed on RoutingContext
+            ctx=ctx,
             original_model_group=original_model_group,
             kwargs=kwargs,
         )
@@ -969,7 +968,7 @@ def _is_deterministic_client_error(exc: BaseException) -> bool:
 
 async def _request_constraints_emptied_target_order(
     *,
-    litellm_router: "_Router",
+    ctx: "RoutingContext",
     original_model_group: str,
     kwargs: Mapping[str, object],
 ) -> bool:
@@ -1001,7 +1000,7 @@ async def _request_constraints_emptied_target_order(
         else None
     )
     group: Final = (
-        litellm_router.get_model_list(
+        ctx._router.get_model_list(  # pyright: ignore[reportPrivateUsage]  # RoutingContext wraps Router but exposes no public accessor for it; this fork-only structural recheck needs the real instance
             model_name=original_model_group,
             team_id=request_team_id if isinstance(request_team_id, str) else None,
         )
@@ -1033,7 +1032,7 @@ async def _request_constraints_emptied_target_order(
         return True
     try:
         surviving: Final = await get_deployments_for_tag(
-            llm_router_instance=litellm_router,
+            ctx=ctx,
             model=original_model_group,
             healthy_deployments=team_scoped,
             request_kwargs=probe_kwargs,

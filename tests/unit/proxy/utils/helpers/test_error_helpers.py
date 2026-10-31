@@ -295,7 +295,7 @@ def test_handle_exception_on_proxy_labels_a_failure_the_way_route_catch_alls_do(
     "message, expected",
     [
         (f"{RouterErrors.no_deployments_with_provider_budget_routing.value}, try later", ("429", "rate_limit_error")),
-        (f"{RouterErrors.no_deployments_with_tag_routing.value}=['paid']", ("401", "auth_error")),
+        (f"{RouterErrors.no_deployments_with_tag_routing.value}=['paid']", ("400", "invalid_request_error")),
     ],
     ids=["no_deployment_left", "no_deployment_for_tags"],
 )

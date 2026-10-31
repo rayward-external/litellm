@@ -158,7 +158,11 @@ from litellm.types.passthrough_endpoints.pass_through_endpoints import (
     WebSocketSessionMeter,
     WebSocketSessionUsage,
 )
-from litellm.types.utils import TRUSTED_CALLBACK_VARS_FIELD, CallTypes, Usage
+from litellm.types.utils import (
+    TRUSTED_CALLBACK_VARS_FIELD,
+    CallTypes,  # pyright: ignore[reportUnusedImport]  # only referenced inside pass_through_request, which basedpyright gives up analyzing for complexity (see the reportUnusedFunction rows above for this same file)
+    Usage,
+)
 
 from .common_utils import (
     is_cohere_streaming_url,
