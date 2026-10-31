@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace as dataclasses_replace
 from datetime import datetime, timedelta
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, List, Literal, Optional, Protocol, Tuple, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, Optional, Protocol, Tuple, cast
 from pydantic import TypeAdapter, ValidationError
 
 from litellm_enterprise.proxy.common_utils.managed_object_attribution import (
