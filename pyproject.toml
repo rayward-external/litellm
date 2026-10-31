@@ -190,7 +190,7 @@ proxy-runtime = [
     "mangum>=0.17.0,<1.0",
     "azure-ai-contentsafety>=1.0.0,<2.0",
     "azure-storage-file-datalake>=12.20.0,<13.0",
-    "pypdf>=6.21.2,<7.0",
+    "pypdf>=6.21.4,<7.0",
     "llm-sandbox>=0.3.39,<1.0",
     "detect-secrets>=1.5.0,<2.0",
 ]
@@ -311,7 +311,7 @@ benchmarks = [
     "pytest-codspeed==4.3.0",
     "mcp>=2.3.0,<3",
     "a2a-sdk==1.1.0",
-    "pypdf>=6.21.2,<7.0",
+    "pypdf>=6.21.4,<7.0",
 ]
 
 [build-system]
@@ -362,7 +362,7 @@ cache-keys = [
 ]
 constraint-dependencies = [
     "gitpython>=3.2.1",
-    "pyasn1>=0.6.4",
+    "pyasn1>=0.6.5",
     "h2>=4.4.1",
     "tornado>=6.5.8",
     "tornado>=6.6; python_version >= '3.11'",
@@ -386,6 +386,10 @@ exclude-newer = "3 days"
 [tool.uv.exclude-newer-package]
 # TODO: remove after 2026-10-25, once brotli 1.2.1 (CVE-2026-111497) clears the 3-day window
 brotli = "2026-10-22T14:01:00Z"
+# TODO: remove after 2026-10-30, once pyasn1 0.6.5 (GHSA-2qm8-x737-gmw5 and 3 aliases) clears the 3-day window
+pyasn1 = "2026-10-27T06:33:00Z"
+# TODO: remove after 2026-10-31, once pypdf 6.21.4 (GHSA-5849-834g-hvw5 and 2 aliases) clears the 3-day window
+pypdf = "2026-10-28T17:01:00Z"
 
 [tool.uv.sources]
 litellm-proxy-extras = { workspace = true }
