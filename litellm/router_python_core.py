@@ -4307,10 +4307,21 @@ class PythonCore(DeprecatedRouterMembers):
                     else:
                         initial_kwargs["messages"] = messages
                     self._update_kwargs_before_fallbacks(model=model_group, kwargs=initial_kwargs)
+                    # The content-policy and context-window dispatch branches match on the trigger's own type, so
+                    # such an error's MidStreamFallbackError envelope is unwrapped here or the wrong fallback list is consulted.
+                    fallback_trigger: Final[Exception] = (
+                        e.original_exception
+                        if isinstance(
+                            e.original_exception,
+                            (
+                                litellm_exceptions.ContentPolicyViolationError,
+                                litellm_exceptions.ContextWindowExceededError,
+                            ),
+                        )
+                        else e
+                    )
                     fallback_response = await self.async_function_with_fallbacks_common_utils(
-                        e=e.original_exception
-                        if isinstance(e.original_exception, litellm_exceptions.ContextWindowExceededError)
-                        else e,
+                        e=fallback_trigger,
                         disable_fallbacks=fallbacks_disabled_for_request(initial_kwargs),
                         fallbacks=fallbacks,
                         context_window_fallbacks=context_window_fallbacks,

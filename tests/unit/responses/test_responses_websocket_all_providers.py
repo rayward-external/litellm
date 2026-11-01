@@ -2332,6 +2332,7 @@ class TestWebSocketTurnAdmission:
         config.model_in_websocket_url.return_value = True
         config.get_websocket_url.return_value = "wss://api.openai.com/v1/responses"
         config.validate_environment.return_value = {}
+        config.sanitize_input_items.side_effect = lambda input: input
         logging_obj: Final = MagicMock()
         logging_obj.dispatch_success_handlers = AsyncMock()
         logging_obj.copy_for_new_call.return_value = logging_obj
