@@ -1437,6 +1437,27 @@ def _fallback_dispatch_exception(e: Any) -> Exception:
     return e
 
 
+async def _maybe_abandon_refused_stream_source(e: Any, source: Any, log_label: str) -> None:
+    """When a mid-stream error wraps a ContentPolicyViolationError (the refusal /
+    content-filter hold), early-release the source stream the hold abandoned:
+    close its HTTP connection now instead of holding it through the fallback
+    stream (the outer finally re-close is a no-op), and clear any latched
+    terminal event so the abandoned blocked response is never reported as the
+    rescued request's completed response. No-op for other mid-stream errors."""
+    if not isinstance(getattr(e, "original_exception", None), litellm_exceptions.ContentPolicyViolationError):
+        return
+    if hasattr(source, "aclose"):
+        with anyio.CancelScope(shield=True):
+            try:
+                await source.aclose()
+            except BaseException as close_err:  # noqa: BLE001 — shielded cleanup must never raise
+                verbose_router_logger.debug("%s: error closing refused source: %s", log_label, close_err)
+    try:
+        source.completed_response = None
+    except (AttributeError, TypeError):
+        pass
+
+
 # Routers that are still in use, so a price data reload can rebuild the cost-map
 # entries their deployments own. Weak so a router nothing references any more, such
 # as the per-request one built from a caller-supplied user_config, drops out on its
@@ -4446,6 +4467,19 @@ class PythonCore(DeprecatedRouterMembers):
         return None
 
     @staticmethod
+    def _prepare_responses_fallback_item(
+        fallback_item: Any,
+        prepared_hidden_params: Any,
+        partial_usage: "ResponseAPIUsage | None",
+    ) -> None:
+        """Per-item bookkeeping for a Responses-API fallback stream: propagate
+        hidden params and merge the abandoned source's partial usage onto the
+        fallback's terminal event."""
+        PythonCore._apply_fallback_hidden_params_to_item(fallback_item, prepared_hidden_params)
+        if partial_usage is not None:
+            PythonCore._combine_responses_fallback_usage(fallback_item, partial_usage)
+
+    @staticmethod
     def _combine_responses_fallback_usage(
         fallback_item: "BaseLiteLLMOpenAIResponseObject",
         partial_usage: "ResponseAPIUsage",
@@ -4803,6 +4837,7 @@ class PythonCore(DeprecatedRouterMembers):
                 )
                 if response_id_exposed:
                     self._raise_released_stream_error(e, initial_kwargs)
+                await _maybe_abandon_refused_stream_source(e, source_iterator, "stream_with_fallbacks(aresponses)")
                 async with contextlib.aclosing(
                     self._aresponses_fallback_attempt(
                         e, source_iterator, initial_kwargs, wrapper.adopt_fallback_headers, held_lifecycle_events
@@ -5496,6 +5531,18 @@ class PythonCore(DeprecatedRouterMembers):
 
         # 3) merge in metadata, this handles inserting this as either "metadata" or "litellm_metadata"
         kwargs.setdefault(metadata_variable_name, {}).update(metadata_defaults)
+
+    @staticmethod
+    def _copy_request_litellm_params(deployment: dict) -> dict:
+        """
+        Copy provider request params while stripping router-only metadata fields.
+
+        These fields influence deployment selection inside the router, but they
+        are not provider request params and must never be forwarded upstream.
+        """
+        litellm_params = deployment["litellm_params"].copy()
+        litellm_params.pop("order", None)
+        return litellm_params
 
     def _handle_clientside_credential(
         self, deployment: dict, kwargs: dict, function_name: str | None = None
@@ -6272,7 +6319,7 @@ class PythonCore(DeprecatedRouterMembers):
         self._update_kwargs_with_deployment(
             deployment=prompt_management_deployment, kwargs=kwargs, splits_stream_timeout=True
         )
-        data: Final = prompt_management_deployment["litellm_params"].copy()
+        data: Final = self._copy_request_litellm_params(prompt_management_deployment)
 
         litellm_model: Final = data.get("model", None)
 
@@ -6372,7 +6419,7 @@ class PythonCore(DeprecatedRouterMembers):
                 request_kwargs=kwargs,
             )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
 
             model_client: Final = self._get_async_openai_model_client(
                 deployment=deployment,
@@ -6463,7 +6510,7 @@ class PythonCore(DeprecatedRouterMembers):
                 raise
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
 
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
             model_name = data["model"]
 
             model_client: Final = self._get_async_openai_model_client(
@@ -6548,7 +6595,7 @@ class PythonCore(DeprecatedRouterMembers):
             )
 
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
             model_client: Final = self._get_async_openai_model_client(
                 deployment=deployment,
                 kwargs=kwargs,
@@ -6641,7 +6688,7 @@ class PythonCore(DeprecatedRouterMembers):
             )
 
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
             model_client: Final = self._get_async_openai_model_client(
                 deployment=deployment,
                 kwargs=kwargs,
@@ -6700,7 +6747,7 @@ class PythonCore(DeprecatedRouterMembers):
                 request_kwargs=kwargs,
             )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
             model_name = data["model"]
 
             model_client: Final = self._get_async_openai_model_client(
@@ -6753,7 +6800,7 @@ class PythonCore(DeprecatedRouterMembers):
                     request_kwargs=kwargs,
                 )
 
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
             for k, v in self._core_default_litellm_params.items():
                 if k not in kwargs:  # prioritize model-specific params > default router params
                     kwargs[k] = v
@@ -6818,7 +6865,7 @@ class PythonCore(DeprecatedRouterMembers):
             )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs, splits_stream_timeout=True)
 
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
             model_name: Final = data["model"]
 
             model_client: Final = self._get_async_openai_model_client(
@@ -6888,7 +6935,7 @@ class PythonCore(DeprecatedRouterMembers):
             )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs, splits_stream_timeout=True)
 
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
             model_name: Final = data["model"]
 
             model_client: Final = self._get_async_openai_model_client(
@@ -7131,7 +7178,7 @@ class PythonCore(DeprecatedRouterMembers):
                 opens_responses_socket=handler_name == "_aresponses_websocket",
             )
 
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
             model_name: Final = data["model"]
             self.total_calls[model_name] += 1
 
@@ -7908,7 +7955,7 @@ class PythonCore(DeprecatedRouterMembers):
                 splits_stream_timeout=handler_name in _STREAM_TIMEOUT_AWARE_GENERIC_HANDLERS,
             )
 
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
             model_name: Final = data["model"]
 
             self.total_calls[model_name] += 1
@@ -7971,7 +8018,7 @@ class PythonCore(DeprecatedRouterMembers):
                     request_kwargs=kwargs,
                 )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
             model_name = data["model"]
             batch_error: Final = embedding_batch_too_large_error(
                 deployment=_OPAQUE_VALUE_ADAPTER.validate_python(deployment),
@@ -8061,7 +8108,7 @@ class PythonCore(DeprecatedRouterMembers):
                     request_kwargs=kwargs,
                 )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
             model_name = data["model"]
             batch_error: Final = embedding_batch_too_large_error(
                 deployment=_OPAQUE_VALUE_ADAPTER.validate_python(deployment),
@@ -8154,7 +8201,7 @@ class PythonCore(DeprecatedRouterMembers):
                     kwargs=kwargs_copy,
                     function_name="acreate_file",
                 )
-                data: Final = deployment["litellm_params"].copy()
+                data: Final = self._copy_request_litellm_params(deployment)
                 model_name: Final = data["model"]
 
                 model_client: Final = self._get_async_openai_model_client(
@@ -8283,7 +8330,7 @@ class PythonCore(DeprecatedRouterMembers):
                 specific_deployment=kwargs.pop("specific_deployment", None),
                 request_kwargs=kwargs,
             )
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
             model_name: Final = data["model"]
             self._update_kwargs_with_deployment(
                 deployment=deployment,
@@ -8383,7 +8430,7 @@ class PythonCore(DeprecatedRouterMembers):
                     request_kwargs=kwargs,
                 )
 
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
             model_name: Final = data["model"]
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs, function_name="_acreate_batch")
 
@@ -8461,7 +8508,7 @@ class PythonCore(DeprecatedRouterMembers):
                     from litellm.litellm_core_utils.core_helpers import safe_deep_copy
 
                     model: Final = model_name["litellm_params"].get("model")
-                    data: Final = model_name["litellm_params"].copy()
+                    data: Final = self._copy_request_litellm_params(model_name)
                     custom_llm_provider = data.get("custom_llm_provider")
                     if model is None:
                         raise Exception(f"Model not found in litellm_params for deployment: {model_name}")
@@ -8582,7 +8629,7 @@ class PythonCore(DeprecatedRouterMembers):
             )
 
             selected_deployment_id: Final = (deployment.get("model_info") or {}).get("id")
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
             resolved_credentials: Final = self._core_get_deployment_credentials_with_provider(
                 model_id=selected_deployment_id or model
             )
@@ -8694,7 +8741,7 @@ class PythonCore(DeprecatedRouterMembers):
                 request_kwargs=kwargs,
             )
             kwargs["model"] = deployment["litellm_params"]["model"]
-            data: Final = deployment["litellm_params"].copy()
+            data: Final = self._copy_request_litellm_params(deployment)
             self._update_kwargs_with_deployment(
                 deployment=deployment,
                 kwargs=kwargs,
