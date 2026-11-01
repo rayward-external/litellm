@@ -792,7 +792,7 @@ class PassThroughEndpointLogging:
                 return True
         return False
 
-    def _is_supported_openai_endpoint(self, url_route: str, custom_llm_provider: str | None = None) -> bool:
+    def _is_supported_openai_endpoint(self, url_route: str) -> bool:
         """Check if the OpenAI endpoint is supported by the passthrough logging handler.
 
         The Responses API route is included because
@@ -812,11 +812,11 @@ class PassThroughEndpointLogging:
         )
 
         return (
-            OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url_route, custom_llm_provider)
-            or OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url_route, custom_llm_provider)
-            or OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url_route, custom_llm_provider)
-            or OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route, custom_llm_provider)
-            or OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route, custom_llm_provider)
+            OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url_route)
+            or OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url_route)
+            or OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url_route)
+            or OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route)
+            or OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route)
             or OpenAIPassthroughLoggingHandler.is_openai_agents_route(url_route)
         )
 
