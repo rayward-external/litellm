@@ -1,22 +1,30 @@
+from dataclasses import dataclass
+import asyncio
 import json
+import logging
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, Final, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 
 import litellm
+from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.token_counter import high_detail_image_token_upper_bound
 from litellm.proxy.pass_through_endpoints.llm_provider_handlers.openai_passthrough_logging_handler import (
     OpenAIPassthroughLoggingHandler,
     count_relayed_prompt_tokens,
 )
+from litellm.proxy._types import SpendLogsPayload
 from litellm.proxy.pass_through_endpoints.success_handler import (
     PassThroughEndpointLogging,
 )
+from litellm.proxy.pass_through_endpoints.streaming_handler import PassThroughStreamingHandler
 from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
 from litellm.types.passthrough_endpoints.pass_through_endpoints import (
     EndpointType,
@@ -253,10 +261,7 @@ class TestOpenAIPassthroughLoggingHandler:
             # Deployment ids may contain dots/dashes.
             "https://my-resource.openai.azure.com/openai/deployments/gpt-4.1-mini/chat/completions?api-version=2024-10-21",
         ):
-            assert (
-                OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url)
-                is True
-            ), url
+            assert OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url) is True, url
 
         # The `/v1/` form keeps working.
         assert (
@@ -271,10 +276,7 @@ class TestOpenAIPassthroughLoggingHandler:
             "https://my-resource.openai.azure.com/openai/deployments/text-embedding-3-small/embeddings?api-version=2024-02-01",
             "https://my-resource.openai.azure.com/openai/deployments/dall-e-3/images/generations?api-version=2024-02-01",
         ):
-            assert (
-                OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url)
-                is False
-            ), url
+            assert OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url) is False, url
 
     def test_is_openai_image_generation_route_classic_azure_deployment_path(self):
         """Classic Azure DALL-E / gpt-image calls are shaped
@@ -289,10 +291,7 @@ class TestOpenAIPassthroughLoggingHandler:
             # Deployment ids may contain dots/dashes.
             "https://my-resource.openai.azure.com/openai/deployments/dall-e-3.0/images/generations?api-version=2024-02-01",
         ):
-            assert (
-                OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url)
-                is True
-            ), url
+            assert OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url) is True, url
 
         # The `/v1/` form keeps working.
         assert (
@@ -307,10 +306,7 @@ class TestOpenAIPassthroughLoggingHandler:
             "https://my-resource.openai.azure.com/openai/deployments/dall-e-3/images/edits?api-version=2024-02-01",
             "https://my-resource.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-02-01",
         ):
-            assert (
-                OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url)
-                is False
-            ), url
+            assert OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url) is False, url
 
     def test_is_openai_image_editing_route_classic_azure_deployment_path(self):
         """Classic Azure image *edits* have the same shape defect as
@@ -320,10 +316,7 @@ class TestOpenAIPassthroughLoggingHandler:
             "https://my-resource.openai.azure.com/openai/deployments/gpt-image-1/images/edits?api-version=2025-04-01",
             "https://my-resource.cognitiveservices.azure.com/openai/deployments/gpt-image-1/images/edits?api-version=2025-04-01",
         ):
-            assert (
-                OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url)
-                is True
-            ), url
+            assert OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url) is True, url
 
         # The `/v1/` form keeps working.
         assert (
@@ -349,7 +342,9 @@ class TestOpenAIPassthroughLoggingHandler:
         no `model`, and an image response body echoes none), so the model must
         be resolved from the deployment segment or the call still records $0.
         """
-        url = "https://my-resource.openai.azure.com/openai/deployments/dall-e-3/images/generations?api-version=2024-02-01"
+        url = (
+            "https://my-resource.openai.azure.com/openai/deployments/dall-e-3/images/generations?api-version=2024-02-01"
+        )
         response_body = {
             "created": 1700000000,
             "data": [{"url": "https://example.com/generated.png"}],
@@ -394,9 +389,7 @@ class TestOpenAIPassthroughLoggingHandler:
             "https://my-resource.openai.azure.com/openai/responses?api-version=preview",
             "https://my-resource.openai.azure.com/openai/v1/responses",
         ):
-            assert (
-                OpenAIPassthroughLoggingHandler.is_openai_responses_route(url) is True
-            ), url
+            assert OpenAIPassthroughLoggingHandler.is_openai_responses_route(url) is True, url
 
         # Newly rejected: partial-word segments, unrelated nesting — and item
         # routes. Item responses ECHO the original usage block, so costing them
@@ -410,9 +403,7 @@ class TestOpenAIPassthroughLoggingHandler:
             "https://api.openai.com/v1/responses/resp_123/cancel",
             "https://api.openai.com/v1/responses/resp_123/input_items",
         ):
-            assert (
-                OpenAIPassthroughLoggingHandler.is_openai_responses_route(url) is False
-            ), url
+            assert OpenAIPassthroughLoggingHandler.is_openai_responses_route(url) is False, url
 
     def test_is_openai_chat_completions_route_rejects_lookalike_hosts(self):
         """Host matching is suffix-based, not substring-based."""
@@ -421,10 +412,7 @@ class TestOpenAIPassthroughLoggingHandler:
             "https://cognitiveservices.azure.com.attacker.example/v1/chat/completions",
             "https://api.openai.com.attacker.example/v1/chat/completions",
         ):
-            assert (
-                OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url)
-                is False
-            ), url
+            assert OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url) is False, url
 
     @patch("litellm.completion_cost")
     @patch("litellm.litellm_core_utils.litellm_logging.get_standard_logging_object_payload")
@@ -1232,7 +1220,6 @@ class TestOpenAIPassthroughLoggingHandler:
             "isn't being used and we're back in the bug."
         )
 
-
     def test_is_openai_embeddings_route(self):
         """Test OpenAI embeddings route detection.
 
@@ -1242,10 +1229,7 @@ class TestOpenAIPassthroughLoggingHandler:
         """
         # Positive cases
         assert (
-            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
-                "https://api.openai.com/v1/embeddings"
-            )
-            is True
+            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route("https://api.openai.com/v1/embeddings") is True
         )
         assert (
             OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
@@ -1266,8 +1250,7 @@ class TestOpenAIPassthroughLoggingHandler:
             is True
         )
         assert (
-            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route("https://openai.azure.com/v1/embeddings")
-            is True
+            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route("https://openai.azure.com/v1/embeddings") is True
         )
         assert (
             OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
@@ -1278,15 +1261,11 @@ class TestOpenAIPassthroughLoggingHandler:
 
         # Negative cases — other endpoints and non-OpenAI hosts
         assert (
-            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
-                "https://api.openai.com/v1/chat/completions"
-            )
+            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route("https://api.openai.com/v1/chat/completions")
             is False
         )
         assert (
-            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
-                "https://api.anthropic.com/v1/embeddings"
-            )
+            OpenAIPassthroughLoggingHandler.is_openai_embeddings_route("https://api.anthropic.com/v1/embeddings")
             is False
         )
         assert OpenAIPassthroughLoggingHandler.is_openai_embeddings_route("") is False
@@ -1316,18 +1295,14 @@ class TestOpenAIPassthroughLoggingHandler:
         embeddings_response_body = {
             "object": "list",
             "model": "text-embedding-3-small",
-            "data": [
-                {"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3]}
-            ],
+            "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3]}],
             "usage": {
                 "prompt_tokens": prompt_tokens,
                 "total_tokens": prompt_tokens,
             },
         }
 
-        mock_httpx_response = self._create_mock_httpx_response(
-            embeddings_response_body
-        )
+        mock_httpx_response = self._create_mock_httpx_response(embeddings_response_body)
         mock_logging_obj = self._create_mock_logging_obj()
 
         result = OpenAIPassthroughLoggingHandler.openai_passthrough_handler(
@@ -1345,18 +1320,13 @@ class TestOpenAIPassthroughLoggingHandler:
             custom_llm_provider="openai",
         )
 
-        expected_cost = (
-            litellm.model_cost["text-embedding-3-small"]["input_cost_per_token"]
-            * prompt_tokens
-        )
+        expected_cost = litellm.model_cost["text-embedding-3-small"]["input_cost_per_token"] * prompt_tokens
         assert expected_cost > 0, "test fixture model must have non-zero pricing"
 
         assert result is not None
         assert result["kwargs"]["response_cost"] == pytest.approx(expected_cost)
         assert result["kwargs"]["model"] == "text-embedding-3-small"
-        assert mock_logging_obj.model_call_details["response_cost"] == pytest.approx(
-            expected_cost
-        )
+        assert mock_logging_obj.model_call_details["response_cost"] == pytest.approx(expected_cost)
 
         # The response object must be an EmbeddingResponse carrying the usage,
         # with the cost pinned in _hidden_params so downstream logging does not
@@ -1367,9 +1337,7 @@ class TestOpenAIPassthroughLoggingHandler:
         assert isinstance(embedding_response, EmbeddingResponse)
         assert embedding_response.usage.prompt_tokens == prompt_tokens
         assert embedding_response.usage.completion_tokens == 0
-        assert embedding_response._hidden_params["response_cost"] == pytest.approx(
-            expected_cost
-        )
+        assert embedding_response._hidden_params["response_cost"] == pytest.approx(expected_cost)
 
     def test_responses_api_streaming_cost_tracking(self):
         """Regression test: streamed Responses API calls must not record $0.
@@ -1418,13 +1386,11 @@ class TestOpenAIPassthroughLoggingHandler:
         # `_convert_raw_bytes_to_str_lines` splits on newlines.
         all_chunks = [
             "event: response.created",
-            "data: "
-            + json.dumps({"type": "response.created", "response": {"id": "resp_abc123"}}),
+            "data: " + json.dumps({"type": "response.created", "response": {"id": "resp_abc123"}}),
             "event: response.output_text.delta",
             "data: " + json.dumps({"type": "response.output_text.delta", "delta": "Hello!"}),
             "event: response.completed",
-            "data: "
-            + json.dumps({"type": "response.completed", "response": completed_response}),
+            "data: " + json.dumps({"type": "response.completed", "response": completed_response}),
             "data: [DONE]",
         ]
 
@@ -1452,15 +1418,12 @@ class TestOpenAIPassthroughLoggingHandler:
         # returns None, so the handler returns `{"result": None, "kwargs": {}}`
         # and there is no response_cost at all.
         assert result["kwargs"].get("response_cost") == pytest.approx(expected_cost)
-        assert mock_logging_obj.model_call_details["response_cost"] == pytest.approx(
-            expected_cost
-        )
+        assert mock_logging_obj.model_call_details["response_cost"] == pytest.approx(expected_cost)
 
         from litellm.types.llms.openai import ResponsesAPIResponse
 
         assert isinstance(result["result"], ResponsesAPIResponse), (
-            "streamed Responses calls must reassemble into a "
-            "ResponsesAPIResponse via the shared Responses costing path"
+            "streamed Responses calls must reassemble into a ResponsesAPIResponse via the shared Responses costing path"
         )
 
     def test_responses_streaming_detection_leaves_chat_streams_alone(self):
@@ -1490,12 +1453,7 @@ class TestOpenAIPassthroughLoggingHandler:
             "data: [DONE]",
         ]
 
-        assert (
-            OpenAIPassthroughLoggingHandler._extract_responses_api_completed_response(
-                all_chunks=chat_chunks
-            )
-            is None
-        )
+        assert OpenAIPassthroughLoggingHandler._extract_responses_api_completed_response(all_chunks=chat_chunks) is None
 
         # And a Responses stream IS detected, returning the completed
         # `response` object (not the event envelope).
@@ -1509,10 +1467,8 @@ class TestOpenAIPassthroughLoggingHandler:
                 }
             ),
         ]
-        detected = (
-            OpenAIPassthroughLoggingHandler._extract_responses_api_completed_response(
-                all_chunks=responses_chunks
-            )
+        detected = OpenAIPassthroughLoggingHandler._extract_responses_api_completed_response(
+            all_chunks=responses_chunks
         )
         assert detected is not None
         assert detected["id"] == "resp_1"
@@ -2281,10 +2237,7 @@ class TestOpenAIPassthroughResponsesStreamingSpendLog:
 
     def _expected_spend(self) -> float:
         rates = litellm.model_cost[self.MODEL_MAP_KEY]
-        return (
-            self.INPUT_TOKENS * rates["input_cost_per_token"]
-            + self.OUTPUT_TOKENS * rates["output_cost_per_token"]
-        )
+        return self.INPUT_TOKENS * rates["input_cost_per_token"] + self.OUTPUT_TOKENS * rates["output_cost_per_token"]
 
     def _responses_stream_chunks(self) -> List[str]:
         """Usage arrives only on the terminal `response.completed` event, nested under
@@ -3044,9 +2997,7 @@ class TestOpenAIPassthroughDecisionsSpendLog:
     ):
         decisions_rates: Final = litellm.model_cost[DECISIONS_MODEL]
 
-        spend_log_row: Final = await self._spend_row(
-            "POST", url_route, {**DECISIONS_REQUEST, "model": requested_model}
-        )
+        spend_log_row: Final = await self._spend_row("POST", url_route, {**DECISIONS_REQUEST, "model": requested_model})
 
         assert spend_log_row["prompt_tokens"] == DECISIONS_INPUT_TOKENS
         assert spend_log_row["completion_tokens"] == DECISIONS_OUTPUT_TOKENS

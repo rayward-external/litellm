@@ -16,9 +16,11 @@ def test_get_model_list_from_model_alias_should_not_iterate_for_non_alias_lookup
         ],
         model_group_alias={"alias-1": "gpt-5.5"},
     )
-    router.model_group_alias = NoItemsAliasDict(
-        {f"alias-{idx}": "gpt-5.5" for idx in range(200)}
-    )
+    # Set the registry's own storage directly: `router.model_group_alias = ...`
+    # goes through the settings-assignment pipeline, which defensively copies
+    # the dict (calling .items()) to detach it from the caller's object --
+    # that copy is unrelated to what this test checks, the per-lookup fast path.
+    router._core_model_group_alias = NoItemsAliasDict({f"alias-{idx}": "gpt-5.5" for idx in range(200)})
 
     model_alias_list = router.get_model_list_from_model_alias(model_name="gpt-5-mini")
     assert model_alias_list == []
@@ -38,9 +40,7 @@ def test_map_team_model_should_not_iterate_aliases_for_non_alias_team_model_name
         ],
         model_group_alias={"alias-1": "gpt-5.5"},
     )
-    router.model_group_alias = NoItemsAliasDict(
-        {f"alias-{idx}": "gpt-5.5" for idx in range(200)}
-    )
+    router._core_model_group_alias = NoItemsAliasDict({f"alias-{idx}": "gpt-5.5" for idx in range(200)})
 
     # map_team_model should return the public name unchanged (not the internal UUID name)
     # so the router can find all sibling deployments via team_id filtering
