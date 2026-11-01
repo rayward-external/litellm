@@ -1702,9 +1702,9 @@ async def pass_through_request(
             else:
                 logging_url = str(url) + "?" + requested_query_params_str
 
-        outgoing_body: Final = cast(
+        outgoing_body: Final = cast(  # cast-ok: json  # pyright: ignore[reportUnusedVariable]  # used below
             "Mapping[str, object] | None", _parsed_body
-        )  # cast-ok: json  # pyright: ignore[reportUnusedVariable]  # used below
+        )
         upstream_body: Final = _with_anthropic_user_id(outgoing_body, client_user_id)  # pyright: ignore[reportUnusedVariable]  # used below
         logging_obj.pre_call(
             input=[{"role": "user", "content": safe_dumps(_parsed_body)}],
