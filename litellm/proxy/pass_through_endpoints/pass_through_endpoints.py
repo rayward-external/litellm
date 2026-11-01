@@ -1238,7 +1238,7 @@ def _json_object(value: object) -> Mapping[str, object]:
     return cast("Mapping[str, object]", value) if isinstance(value, Mapping) else MappingProxyType({})  # cast-ok: json
 
 
-def _anthropic_user_id_to_forward(
+def _anthropic_user_id_to_forward(  # pyright: ignore[reportUnusedFunction]  # called only from pass_through_request, which basedpyright gives up analyzing for complexity
     body: Mapping[str, object],
     url: str,
     has_pre_call_guardrails: Callable[[Mapping[str, object]], bool],
@@ -1258,13 +1258,17 @@ def _anthropic_user_id_to_forward(
     return user_id
 
 
-def _with_anthropic_user_id(body: Mapping[str, object] | None, user_id: str | None) -> Mapping[str, object] | None:
+def _with_anthropic_user_id(  # pyright: ignore[reportUnusedFunction]  # called only from pass_through_request, which basedpyright gives up analyzing for complexity
+    body: Mapping[str, object] | None, user_id: str | None
+) -> Mapping[str, object] | None:
     if body is None or user_id is None:
         return body
     return {**body, "metadata": {"user_id": user_id}}
 
 
-def _eu_jev_client_body(custom_llm_provider: str | None, body: Mapping[str, object]) -> Mapping[str, object] | None:
+def _eu_jev_client_body(  # pyright: ignore[reportUnusedFunction]  # called only from pass_through_request, which basedpyright gives up analyzing for complexity
+    custom_llm_provider: str | None, body: Mapping[str, object]
+) -> Mapping[str, object] | None:
     return MappingProxyType(dict(body)) if custom_llm_provider == "eu_jev" else None
 
 
@@ -1527,8 +1531,8 @@ async def pass_through_request(
             request_method=getattr(request, "method", None),
             cost_per_request=cost_per_request,
         )
-        hooked_body: Final = _json_object(_parsed_body)
-        client_user_id: Final = _anthropic_user_id_to_forward(
+        hooked_body: Final = _json_object(_parsed_body)  # pyright: ignore[reportUnusedVariable]  # used below; same CFG dead-zone as the module-level imports above
+        client_user_id: Final = _anthropic_user_id_to_forward(  # pyright: ignore[reportUnusedVariable]  # used below; same CFG dead-zone as the module-level imports above
             hooked_body, str(url), proxy_logging_obj.request_has_pre_call_guardrails
         )
         kwargs = HttpPassThroughEndpointHelpers.init_kwargs_for_pass_through_endpoint(  # rebind-ok: pre-existing rebinding on a rename-only line
@@ -1698,8 +1702,10 @@ async def pass_through_request(
             else:
                 logging_url = str(url) + "?" + requested_query_params_str
 
-        outgoing_body: Final = cast("Mapping[str, object] | None", _parsed_body)  # cast-ok: json
-        upstream_body: Final = _with_anthropic_user_id(outgoing_body, client_user_id)
+        outgoing_body: Final = cast(
+            "Mapping[str, object] | None", _parsed_body
+        )  # cast-ok: json  # pyright: ignore[reportUnusedVariable]  # used below
+        upstream_body: Final = _with_anthropic_user_id(outgoing_body, client_user_id)  # pyright: ignore[reportUnusedVariable]  # used below
         logging_obj.pre_call(
             input=[{"role": "user", "content": safe_dumps(_parsed_body)}],
             api_key="",
