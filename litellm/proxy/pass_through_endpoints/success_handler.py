@@ -792,33 +792,12 @@ class PassThroughEndpointLogging:
                 return True
         return False
 
-    def _is_supported_openai_endpoint(self, url_route: str, custom_llm_provider: str | None = None) -> bool:
-        """Check if the OpenAI endpoint is supported by the passthrough logging handler.
-
-        The Responses API route is included because
-        `openai_passthrough_handler` has a dedicated `elif is_responses:`
-        branch that knows how to extract usage + cost from the
-        Responses-API on-the-wire shape. Without including it here, the
-        outer dispatch filters Responses calls out before reaching the
-        handler — the inner branch is then unreachable and Responses
-        calls land in `LiteLLM_SpendLogs` with zero tokens / zero spend.
-
-        The embeddings route is included for the same reason: pass-through
-        embeddings bill upstream against our credentials, so omitting them
-        from this allow-list records $0 against the calling virtual key.
-        """
+    def _is_supported_openai_endpoint(self, url_route: str) -> bool:
         from .llm_provider_handlers.openai_passthrough_logging_handler import (
             OpenAIPassthroughLoggingHandler,
         )
 
-        return (
-            OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url_route, custom_llm_provider)
-            or OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url_route, custom_llm_provider)
-            or OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url_route, custom_llm_provider)
-            or OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route, custom_llm_provider)
-            or OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route, custom_llm_provider)
-            or OpenAIPassthroughLoggingHandler.is_openai_agents_route(url_route)
-        )
+        return OpenAIPassthroughLoggingHandler.handles_route(url_route)
 
     def _dispatch_openai_passthrough(
         self,
