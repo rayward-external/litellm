@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 import litellm
 from litellm._logging import verbose_proxy_logger
+from litellm.litellm_core_utils.hidden_params import set_hidden_param
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.litellm_logging import (
     get_standard_logging_object_payload,
@@ -55,7 +56,7 @@ from litellm.types.utils import (
     StandardPassThroughResponseObject,
     Usage,
 )
-from litellm.utils import ModelResponse, TextCompletionResponse
+from litellm.utils import ModelResponse, TextCompletionResponse, convert_to_model_response_object
 
 # Hostname/URL classification for OpenAI-compatible APIs lives in
 # `pass_through_endpoints.common_utils` so the streaming path
@@ -816,7 +817,12 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         is_chat_completions = OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(
             url_route, configured_provider
         )
-        is_responses: Final = responses_billing != "unbilled"
+        is_embeddings = OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route, configured_provider)
+        is_image_generation = OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(
+            url_route, configured_provider
+        )
+        is_image_editing = OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url_route, configured_provider)
+        is_responses: Final = OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route, configured_provider)
         is_decisions: Final = (
             httpx_response.request.method == "POST"
             and OpenAIPassthroughLoggingHandler.is_openai_decisions_route(url_route)
@@ -917,7 +923,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 # Calculate cost using LiteLLM's cost calculator
                 response_cost = litellm.completion_cost(
                     completion_response=litellm_model_response,
-                    model=model,
+                    model=cost_model,
                     custom_llm_provider=custom_llm_provider,
                 )
             elif is_embeddings:
@@ -928,7 +934,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 )
                 response_cost = OpenAIPassthroughLoggingHandler._calculate_embeddings_cost(
                     litellm_model_response=litellm_model_response,
-                    model=model,
+                    model=cost_model,
                     custom_llm_provider=custom_llm_provider,
                 )
                 set_hidden_param(litellm_model_response, "response_cost", response_cost)
@@ -971,7 +977,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                     litellm_model_response,
                     response_cost,
                 ) = OpenAIPassthroughLoggingHandler._build_responses_api_response_and_cost(
-                    model=model,
+                    model=cost_model,
                     httpx_response=httpx_response,
                     logging_obj=logging_obj,
                     custom_llm_provider=custom_llm_provider,

@@ -10846,7 +10846,9 @@ class PythonCore(DeprecatedRouterMembers):
             # of half-working detection.
             patterns = []
         if patterns and isinstance(model_group, str):
-            content_policy_fallbacks = initial_kwargs.get("content_policy_fallbacks", self._core_content_policy_fallbacks)
+            content_policy_fallbacks = initial_kwargs.get(
+                "content_policy_fallbacks", self._core_content_policy_fallbacks
+            )
             if content_policy_fallbacks and self._get_fallback_model_group_for_lookup_groups(
                 fallbacks=content_policy_fallbacks,
                 lookup_groups=fallback_lookup_groups(initial_kwargs, model_group),
@@ -14122,7 +14124,10 @@ class PythonCore(DeprecatedRouterMembers):
                     metadata_variable_name=metadata_variable_name,
                     request_deployments=request_deployments,
                 )
-            except (ValueError, litellm_exceptions.BadRequestError):  # tag routing sends this request to none of the rest
+            except (
+                ValueError,
+                litellm_exceptions.BadRequestError,
+            ):  # tag routing sends this request to none of the rest
                 break
             picked_identities = frozenset(id(deployment) for deployment in picked)
             rest = tuple(deployment for deployment in remaining if id(deployment) not in picked_identities)
