@@ -684,17 +684,13 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             else ResponseFunctionWebSearch.model_validate(web_search_call)
         )
         output_index: Final = self._get_or_assign_tool_output_index(call_id)
-        self._queue_output_item_added(
-            output_index,
-            BaseLiteLLMOpenAIResponseObject(
-                **{
-                    "id": item.id,
-                    "type": item.type,
-                    "status": "in_progress",
-                    "action": None,
-                }
-            ),
-        )
+        added_item_kwargs: Final = {
+            "id": item.id,
+            "type": item.type,
+            "status": "in_progress",
+            "action": None,
+        }
+        self._queue_output_item_added(output_index, BaseLiteLLMOpenAIResponseObject(**added_item_kwargs))
         progress_events: Final = (
             _WEB_SEARCH_PROGRESS_EVENTS[:1] if item.status == "in_progress" else _WEB_SEARCH_PROGRESS_EVENTS
         )

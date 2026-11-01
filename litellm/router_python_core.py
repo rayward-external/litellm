@@ -285,6 +285,11 @@ from litellm.router_strategy.lowest_tpm_rpm import LowestTPMLoggingHandler
 from litellm.router_strategy.lowest_tpm_rpm_v2 import LowestTPMLoggingHandler_v2, PrefetchedUsage
 from litellm.router_strategy.simple_shuffle import simple_shuffle
 from litellm.router_strategy.tag_based_routing import (
+    ORIGINAL_REQUEST_TAGS_KEY,
+    ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY,
+    PIN_TAG_PREFIX,
+    _pinned_provider_from_kwargs,
+    _raise_no_deployments_for_tags,
     baggage_stamp_for_serving_deployment,
     get_deployments_for_tag,
     get_routing_tags_from_request_kwargs,
@@ -429,6 +434,7 @@ from litellm.types.llms.openai import (
     AllMessageValues,
     ChatCompletionToolParam,
     FileTypes,
+    HttpxBinaryResponseContent,
     OpenAIFileObject,
     OpenAIFilesPurpose,
 )
@@ -1192,6 +1198,243 @@ class FallbackAwareAnthropicMessagesStream:
 
 class RoutingArgs(enum.Enum):
     ttl = 60  # 1min (RPM/TPM expire key)
+
+
+def _completion_matches_refusal_patterns(response: ModelResponse) -> bool:
+    """Return True if a successful (non-content_filter) completion is a model-level
+    refusal that should be treated like a content-policy violation, so the router's
+    content_policy_fallbacks can route it to an alternate deployment.
+
+    OFF by default: only active when LITELLM_REFUSAL_FALLBACK_PATTERNS is set to a
+    JSON array of case-insensitive regex patterns, e.g.
+    `["i'?m sorry.*cannot assist", "i cannot help with"]`. A JSON array (not a
+    comma-separated string) is used so a pattern may itself contain commas -- natural
+    refusals ("I'm sorry, but ...") and quantifiers ({1,3}) both use commas. This
+    lets a benign prompt that a model *declines* (HTTP 200, finish_reason=stop) fail
+    over to a different provider, which a content-filter finish_reason cannot express.
+    Empty/unset env => inert (vanilla behavior). A malformed regex is skipped, never
+    raised, so it can't turn a successful completion into a request failure.
+    """
+    patterns = _get_refusal_fallback_patterns()
+    if not patterns:
+        return False
+
+    # StreamingChoices has no `.message`; getattr keeps this total for either choice
+    # type without a type: ignore.
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        return False
+    content = getattr(getattr(choices[0], "message", None), "content", None)
+    if not content or not isinstance(content, str):
+        return False
+
+    return _text_matches_refusal_patterns(content, patterns)
+
+
+def _get_refusal_fallback_patterns() -> list[str]:
+    """Parse LITELLM_REFUSAL_FALLBACK_PATTERNS into a list of regex strings.
+    Empty/unset env => [] (feature inert). A non-JSON value is tolerated as a
+    single pattern rather than raising."""
+    import json
+    import os
+
+    raw = os.environ.get("LITELLM_REFUSAL_FALLBACK_PATTERNS", "").strip()
+    if not raw:
+        return []
+
+    try:
+        patterns = json.loads(raw)
+    except (ValueError, TypeError):
+        patterns = [raw]
+    if not isinstance(patterns, list):
+        patterns = [raw]
+    return [p for p in patterns if isinstance(p, str) and p.strip()]
+
+
+def _text_matches_refusal_patterns(text: str, patterns: list[str]) -> bool:
+    """A malformed regex is skipped, never raised, so it can't turn a successful
+    completion into a request failure."""
+    for pattern in patterns:
+        try:
+            if re.search(pattern, text, re.IGNORECASE):
+                return True
+        except re.error:
+            continue
+    return False
+
+
+_REFUSAL_STREAM_HOLD_CHARS_DEFAULT = 400
+
+
+def _refusal_stream_hold_chars() -> int:
+    """Max chars of streamed text held back while a refusal is ruled out.
+    Overridable via LITELLM_REFUSAL_FALLBACK_STREAM_HOLD_CHARS; 0 disables the
+    stream hold (streamed refusals then pass through unrescued)."""
+    import os
+
+    raw = os.environ.get("LITELLM_REFUSAL_FALLBACK_STREAM_HOLD_CHARS", "").strip()
+    if not raw:
+        return _REFUSAL_STREAM_HOLD_CHARS_DEFAULT
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _REFUSAL_STREAM_HOLD_CHARS_DEFAULT
+
+
+class _RefusalStreamHold:
+    """Holds back the head of a streaming response until a model-level refusal
+    can be ruled out, so content_policy_fallbacks can replace the stream before
+    the client has seen any refusal text (same idea as Bedrock Guardrails'
+    synchronous stream-processing mode).
+
+    Once `hold_chars` of text accumulate with no pattern match -- or a tool-call
+    delta arrives (refusals are plain text) -- all buffered chunks are flushed
+    and the rest of the stream passes through unchecked, so long responses only
+    pay the hold cost on their head. On a match, raises MidStreamFallbackError
+    wrapping a ContentPolicyViolationError with is_pre_first_chunk=True:
+    nothing has been yielded yet, so the router reruns the original messages
+    against the content-policy fallback group and streams a clean answer.
+
+    Async-only: wired into _acompletion_streaming_iterator (the proxy path). The
+    sync handler re-invokes the primary without exception-type dispatch, so a
+    deterministic refusal there would retry the primary in an unbounded loop."""
+
+    def __init__(self, patterns: list[str], hold_chars: int, model: str):
+        self.patterns = patterns
+        self.hold_chars = hold_chars
+        self.model = model
+        self.active = bool(patterns) and hold_chars > 0
+        self._held: list[Any] = []
+        self._text = ""
+        # Reasoning deltas can't contain the client-visible refusal text but must
+        # still advance the hold window, otherwise a reasoning model's whole
+        # thinking phase (and thus its entire response) would be buffered.
+        self._reasoning_len = 0
+
+    def process(self, item: Any) -> list[Any]:
+        """Return the chunks safe to emit for this stream item (possibly []).
+        Raises MidStreamFallbackError when the held text matches a pattern."""
+        if not self.active:
+            return [item]
+        self._held.append(item)
+        delta_text, reasoning_len, saw_tool_call = self._delta_state(item)
+        self._reasoning_len += reasoning_len
+        if delta_text:
+            self._text += delta_text
+            if _text_matches_refusal_patterns(self._text, self.patterns):
+                self._raise_refusal()
+        if self._is_blocked_terminal(item):
+            self._raise_refusal()
+        if saw_tool_call or len(self._text) + self._reasoning_len >= self.hold_chars:
+            return self._release()
+        return []
+
+    def flush(self) -> list[Any]:
+        """End of stream: a short completion held to the end never matched."""
+        if not self.active:
+            return []
+        return self._release()
+
+    def _release(self) -> list[Any]:
+        self.active = False
+        held, self._held = self._held, []
+        return held
+
+    @staticmethod
+    def _delta_state(item: Any) -> tuple[str, int, bool]:
+        """(matchable text, reasoning char count, saw tool/function call) for one
+        stream item. delta.refusal (OpenAI structured-output refusals) counts as
+        matchable text alongside delta.content."""
+        choices = getattr(item, "choices", None) or []
+        if not choices:
+            return "", 0, False
+        delta = getattr(choices[0], "delta", None)
+        content = getattr(delta, "content", None)
+        refusal = getattr(delta, "refusal", None)
+        reasoning = getattr(delta, "reasoning_content", None)
+        text = (content if isinstance(content, str) else "") + (refusal if isinstance(refusal, str) else "")
+        saw_tool_call = bool(getattr(delta, "tool_calls", None)) or bool(getattr(delta, "function_call", None))
+        return text, len(reasoning) if isinstance(reasoning, str) else 0, saw_tool_call
+
+    @staticmethod
+    def _is_blocked_terminal(item: Any) -> bool:
+        """Hook for stream shapes whose provider expresses a content-policy block
+        as a terminal EVENT rather than an exception (Responses API). The chat
+        completions path has no such event -- finish_reason=content_filter mid-
+        stream surfaces through the non-streaming bridge or provider errors."""
+        return False
+
+    def _raise_refusal(self) -> "NoReturn":
+        from litellm.exceptions import MidStreamFallbackError
+
+        message = "Streamed response matched a refusal fallback pattern."
+        raise MidStreamFallbackError(
+            message=message,
+            model=self.model,
+            llm_provider="",
+            original_exception=litellm_exceptions.ContentPolicyViolationError(
+                message=message,
+                model=self.model,
+                llm_provider="",
+            ),
+            generated_content="",
+            is_pre_first_chunk=True,
+        )
+
+
+class _ResponsesRefusalStreamHold(_RefusalStreamHold):
+    """Refusal stream hold for the Responses API event stream. Two triggers:
+
+    1. Refusal TEXT: `response.output_text.delta` / `response.refusal.delta`
+       deltas accumulate as matchable text (same patterns as chat).
+    2. Blocked TERMINAL event: a `response.incomplete` whose
+       `incomplete_details.reason == "content_filter"` (Azure's jailbreak /
+       content filter kills the stream with HTTP 200 + this event, never an
+       exception) -- while chunks are still held, treat it exactly like a
+       content-policy violation so the fallback group re-serves the request.
+
+    Reasoning-summary deltas advance the hold window without being matchable;
+    function-call argument deltas release immediately (refusals are text).
+    ResponsesAPIStreamEvents is a str-Enum, so `event.type` compares directly
+    against the literal event strings."""
+
+    @staticmethod
+    def _delta_state(item: Any) -> "tuple[str, int, bool]":
+        event_type = getattr(item, "type", None)
+        if event_type in ("response.output_text.delta", "response.refusal.delta"):
+            delta = getattr(item, "delta", None)
+            return (delta if isinstance(delta, str) else ""), 0, False
+        if event_type == "response.reasoning_summary_text.delta":
+            delta = getattr(item, "delta", None)
+            return "", len(delta) if isinstance(delta, str) else 0, False
+        if event_type in (
+            "response.function_call_arguments.delta",
+            "response.function_call_arguments.done",
+        ):
+            return "", 0, True
+        return "", 0, False
+
+    @staticmethod
+    def _is_blocked_terminal(item: Any) -> bool:
+        if getattr(item, "type", None) != "response.incomplete":
+            return False
+        response_obj = getattr(item, "response", None)
+        details = getattr(response_obj, "incomplete_details", None)
+        reason = getattr(details, "reason", None)
+        if reason is None and isinstance(details, dict):
+            reason = details.get("reason")
+        return reason == "content_filter"
+
+
+def _fallback_dispatch_exception(e: Any) -> Exception:
+    """Fallback selection dispatches on isinstance(e, ...): unwrap a
+    MidStreamFallbackError carrying a ContentPolicyViolationError (the refusal /
+    content-filter stream hold) so it reaches content_policy_fallbacks instead
+    of generic fallbacks."""
+    original = getattr(e, "original_exception", None)
+    if isinstance(original, litellm_exceptions.ContentPolicyViolationError):
+        return original
+    return e
 
 
 # Routers that are still in use, so a price data reload can rebuild the cost-map
@@ -3729,6 +3972,19 @@ class PythonCore(DeprecatedRouterMembers):
             self._update_kwargs_before_fallbacks(model=model, kwargs=kwargs)
             start_time: Final = time.time()
             is_prompt_management_model: Final = self._is_prompt_management_model(model)
+            if is_prompt_management_model:
+                # HARD PROVIDER-PIN vs PROMPT-MANAGEMENT: prompt management can resolve to a
+                # different, potentially cross-provider deployment, erasing the trusted pin
+                # signal before the deployment chokepoint ever sees it. Refuse a pinned
+                # request to a prompt-managed model here, at the entry, before that happens.
+                pinned_provider = _pinned_provider_from_kwargs(kwargs, "metadata") or _pinned_provider_from_kwargs(
+                    kwargs, "litellm_metadata"
+                )
+                if pinned_provider is not None:
+                    _raise_no_deployments_for_tags(
+                        model=(f"pinned provider {pinned_provider} does not support prompt-managed model {model}"),
+                        request_tags=[PIN_TAG_PREFIX + pinned_provider],
+                    )
             if not is_prompt_management_model:
                 controls: Final = per_request_fallback_controls(kwargs)
                 kwargs[MID_STREAM_FALLBACK_CONTROLS_KEY] = controls  # rebind-ok: forwarded to every hop
@@ -3940,9 +4196,13 @@ class PythonCore(DeprecatedRouterMembers):
 
         async def stream_with_fallbacks():
             fallback_response = None  # Track for cleanup in finally
+            refusal_hold = self._refusal_stream_hold_for_call(initial_kwargs)
             try:
                 async for item in _achunks_with_first(model_response, first_chunk):
-                    yield item
+                    for released_item in refusal_hold.process(item):
+                        yield released_item
+                for released_item in refusal_hold.flush():
+                    yield released_item
             except (MidStreamFallbackError, litellm_exceptions.ContextWindowExceededError) as stream_error:
                 e: Final = (
                     _context_window_stream_fallback_error(
@@ -4506,6 +4766,7 @@ class PythonCore(DeprecatedRouterMembers):
         async def stream_with_fallbacks():
             held_lifecycle_events: tuple[object, ...] = ()  # rebind-ok: flushed at first output, dropped on fallback
             response_id_exposed = False  # rebind-ok: set once, before an early-released lifecycle event is yielded
+            refusal_hold = self._refusal_stream_hold_for_call(initial_kwargs, hold_cls=_ResponsesRefusalStreamHold)
             try:
                 async for item in cast(  # cast-ok: response iterators are async streams
                     AsyncIterator[object], source_iterator
@@ -4517,12 +4778,17 @@ class PythonCore(DeprecatedRouterMembers):
                     if not response_id_exposed and _responses_stream_holds_event(item, len(held_lifecycle_events)):
                         held_lifecycle_events = (*held_lifecycle_events, item)
                         continue
-                    for held_event in held_lifecycle_events:
-                        yield held_event
-                    held_lifecycle_events = ()
-                    yield item
+                    released = refusal_hold.process(item)
+                    if released:
+                        for held_event in held_lifecycle_events:
+                            yield held_event
+                        held_lifecycle_events = ()
+                        for released_item in released:
+                            yield released_item
                 for held_event in held_lifecycle_events:
                     yield held_event
+                for released_item in refusal_hold.flush():
+                    yield released_item
             except (MidStreamFallbackError, litellm_exceptions.ContextWindowExceededError) as stream_error:
                 e: Final = (
                     _context_window_stream_fallback_error(
@@ -5120,9 +5386,32 @@ class PythonCore(DeprecatedRouterMembers):
         model_group_alias: str | None = None
         if self._core_get_model_from_alias(model=model):
             model_group_alias = model
-        kwargs.setdefault(metadata_variable_name, {}).update(
-            {"model_group": model, "model_group_alias": model_group_alias}
-        )
+        _metadata = kwargs.setdefault(metadata_variable_name, {})
+        _metadata.update({"model_group": model, "model_group_alias": model_group_alias})
+        # Snapshot the caller's ORIGINAL request tags exactly once, before the
+        # first deployment is selected and before _update_kwargs_with_deployment
+        # merges the selected deployment's own tags into metadata["tags"] for
+        # spend attribution. This hook runs once per request at the model-group
+        # level, ahead of every _update_kwargs_with_deployment call site (see
+        # _acompletion / completion / *_with_fallbacks), so the tags read here are
+        # still exactly what the caller sent -- the pin tag for a pinned request,
+        # nothing for an untagged one.
+        #
+        # OVERWRITE (not setdefault) from the trusted live tags: a client can
+        # smuggle a spoofed ORIGINAL_REQUEST_TAGS_KEY into metadata (it survives
+        # add_litellm_data_to_request), and setdefault would then TRUST it --
+        # re-opening a provider pin (e.g. a /bedrock request carrying
+        # _original_request_tags=["pin:openai"]). Overwriting from
+        # metadata["tags"] -- which the proxy has already reduced to exactly the
+        # pin on a pinned route -- discards any spoofed snapshot. A DEDICATED
+        # sentinel (never the spoofable field itself) gates the capture to the
+        # FIRST invocation, so the snapshot still survives kwargs reuse across
+        # retries/fallbacks and is never overwritten by a leaked deployment tag.
+        # Tag-based routing reads this in preference to the live metadata["tags"]
+        # (see get_deployments_for_tag).
+        if not _metadata.get(ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY):
+            _metadata[ORIGINAL_REQUEST_TAGS_KEY] = list(_metadata.get("tags") or [])
+            _metadata[ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY] = True
 
     def _set_deployment_num_retries_on_exception(self, exception: Exception, deployment: dict) -> None:
         """
@@ -5379,7 +5668,13 @@ class PythonCore(DeprecatedRouterMembers):
             tuple(get_tags_from_request_kwargs(kwargs, metadata_variable_name=metadata_variable_name)),
         )
 
-        ## DEPLOYMENT-LEVEL TAGS
+        ## DEPLOYMENT-LEVEL ATTRIBUTION TAGS (winning-deployment-only)
+        # This same kwargs dict is REUSED across retries/fallbacks. Appending the
+        # selected deployment's tags to whatever is already in metadata["tags"]
+        # would ACCUMULATE every failed attempt's tags, so rebuild the attribution
+        # tag list from the caller's ROUTING_REQUEST_TAGS_METADATA_KEY snapshot
+        # (captured once above, before any deployment merge) plus ONLY this
+        # (winning) deployment's own tags + credential tag.
         deployment_tags: Final = deployment.get("litellm_params", {}).get("tags")
         merged_tags: Final = tags_with_serving_deployment_tags(kwargs[metadata_variable_name], deployment_tags)
         if merged_tags is not None:
@@ -5391,12 +5686,33 @@ class PythonCore(DeprecatedRouterMembers):
 
         ## CREDENTIAL NAME AS TAG
         credential_name: Final = deployment.get("litellm_params", {}).get("litellm_credential_name")
-        if credential_name:
-            credential_tag: Final = f"Credential: {credential_name}"
-            existing_tags = kwargs[metadata_variable_name].get("tags") or []
+        credential_tag: Final = f"Credential: {credential_name}" if credential_name else None
+
+        if deployment_tags:
+            # Rebuilding from the caller's ROUTING_REQUEST_TAGS_METADATA_KEY snapshot (not
+            # the live, possibly previous-attempt-polluted "tags") must still keep
+            # tags_with_serving_deployment_tags' own ordering guarantee -- deployment
+            # tags ahead of baggage-mapped ones -- since guardrail Mode tag-matching
+            # (EnterpriseCustomGuardrailHelper._should_run_if_mode_by_tag) picks the
+            # FIRST matching tag; reusing it here on a caller_baseline-seeded view
+            # keeps that guarantee instead of re-deriving a from-scratch ordering.
+            caller_baseline: Final = kwargs[metadata_variable_name][ROUTING_REQUEST_TAGS_METADATA_KEY]
+            rebuilt_tags: Final = tags_with_serving_deployment_tags(
+                {
+                    "tags": list(caller_baseline),
+                    BAGGAGE_MAPPED_TAGS_METADATA_KEY: kwargs[metadata_variable_name].get(
+                        BAGGAGE_MAPPED_TAGS_METADATA_KEY
+                    ),
+                },
+                deployment_tags,
+            )
+            if rebuilt_tags is not None:
+                kwargs[metadata_variable_name]["tags"] = list(rebuilt_tags)
+
+        if credential_tag:
+            existing_tags: Final = kwargs[metadata_variable_name].get("tags") or []
             if credential_tag not in existing_tags:
-                existing_tags.append(credential_tag)
-            kwargs[metadata_variable_name]["tags"] = existing_tags
+                kwargs[metadata_variable_name]["tags"] = [*existing_tags, credential_tag]
 
         from litellm.llms.github_copilot.per_user_auth import (
             github_copilot_per_user_credential_name,
@@ -6312,7 +6628,7 @@ class PythonCore(DeprecatedRouterMembers):
             )
             raise e
 
-    async def _aspeech(self, model: str, input: str, voice: str | None = None, **kwargs):
+    async def _aspeech(self, model: str, input: str, voice: str | None = None, **kwargs) -> HttpxBinaryResponseContent:
         model_name: Final = model
         try:
             verbose_router_logger.debug("Inside _aspeech()- model: %s", model)
@@ -10506,6 +10822,42 @@ class PythonCore(DeprecatedRouterMembers):
         )
         return has_unattempted_fallback_target(resolved, kwargs)
 
+    def _refusal_stream_hold_for_call(
+        self,
+        initial_kwargs: dict,
+        hold_cls: "type[_RefusalStreamHold]" = _RefusalStreamHold,
+    ) -> _RefusalStreamHold:
+        """Build the refusal stream hold for one streaming call. Armed only when
+        refusal patterns are configured AND the model group has a
+        content_policy_fallbacks entry -- holding delays time-to-first-chunk, so
+        groups with no rescue route must stream untouched. `hold_cls` selects the
+        stream shape (_RefusalStreamHold for chat chunks,
+        _ResponsesRefusalStreamHold for Responses API events)."""
+        patterns = _get_refusal_fallback_patterns()
+        model_group = initial_kwargs.get("model")
+        hold_chars = 0
+        try:
+            n_choices = int(initial_kwargs.get("n") or 1)
+        except (TypeError, ValueError):
+            n_choices = 1
+        if n_choices > 1:
+            # Multi-choice deltas interleave by StreamingChoices.index; a single
+            # accumulated buffer can't match reliably, so stream vanilla instead
+            # of half-working detection.
+            patterns = []
+        if patterns and isinstance(model_group, str):
+            content_policy_fallbacks = initial_kwargs.get("content_policy_fallbacks", self._core_content_policy_fallbacks)
+            if content_policy_fallbacks and self._get_fallback_model_group_for_lookup_groups(
+                fallbacks=content_policy_fallbacks,
+                lookup_groups=fallback_lookup_groups(initial_kwargs, model_group),
+            ):
+                hold_chars = _refusal_stream_hold_chars()
+        return hold_cls(
+            patterns=patterns,
+            hold_chars=hold_chars,
+            model=model_group if isinstance(model_group, str) else "",
+        )
+
     def _should_raise_content_policy_error(self, model: str, response: ModelResponse, kwargs: dict) -> bool:
         """
         Determines if a content policy error should be raised.
@@ -10515,7 +10867,9 @@ class PythonCore(DeprecatedRouterMembers):
         Else, original response is returned.
         """
         if response.choices and len(response.choices) > 0:
-            if response.choices[0].finish_reason != "content_filter":
+            if response.choices[0].finish_reason != "content_filter" and not _completion_matches_refusal_patterns(
+                response
+            ):
                 return False
 
         return self._has_content_policy_fallback(model, kwargs)
@@ -13768,7 +14122,7 @@ class PythonCore(DeprecatedRouterMembers):
                     metadata_variable_name=metadata_variable_name,
                     request_deployments=request_deployments,
                 )
-            except ValueError:  # tag routing sends this request to none of the rest
+            except (ValueError, litellm_exceptions.BadRequestError):  # tag routing sends this request to none of the rest
                 break
             picked_identities = frozenset(id(deployment) for deployment in picked)
             rest = tuple(deployment for deployment in remaining if id(deployment) not in picked_identities)
