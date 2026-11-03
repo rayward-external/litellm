@@ -3707,7 +3707,7 @@ async def _stored_budget_limits(entity_type: Litellm_EntityType, entity_id: str)
     return budget_limits
 
 
-async def _increment_spend_counters_batched(
+async def _increment_spend_counters_batched(  # noqa: C901  # upstream PR #40841 batched reconcile
     token: str | None,
     team_id: str | None,
     user_id: str | None,

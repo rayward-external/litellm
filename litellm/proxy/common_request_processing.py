@@ -40,7 +40,7 @@ from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 from typing_extensions import Never
 
 import litellm

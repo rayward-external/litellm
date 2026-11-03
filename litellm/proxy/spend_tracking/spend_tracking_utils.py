@@ -344,6 +344,7 @@ def _get_spend_logs_metadata(
 
 
 BATCH_COST_REQUEST_ID_SUFFIX: Final = "_batch_cost"
+BATCH_COST_CALL_ID_PREFIX: Final = "batch-cost-"
 
 
 def _cost_row_request_id_suffix(call_type: str, metadata: Mapping[str, object], kwargs: Mapping[str, object]) -> str:
