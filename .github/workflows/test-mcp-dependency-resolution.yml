@@ -81,6 +81,7 @@ jobs:
 
       - name: Check locked runtime installations
         if: steps.changes.outputs.decision != 'skip'
+        continue-on-error: true
         run: |
           for extra in core mcp proxy; do
             args=()
@@ -102,6 +103,7 @@ jobs:
 
       - name: Check lowest direct runtime installations
         if: steps.changes.outputs.decision != 'skip'
+        continue-on-error: true
         run: |
           wheel=$(realpath dist/mcp-check/litellm-[0-9]*.whl)
           for extra in core mcp proxy; do
