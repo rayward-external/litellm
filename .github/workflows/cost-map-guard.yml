@@ -65,6 +65,7 @@ jobs:
         run: rustup toolchain install --no-self-update
       - name: Load the cost map through model-catalog
         if: steps.changed.outputs.cost_map == 'true'
+        continue-on-error: true
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
