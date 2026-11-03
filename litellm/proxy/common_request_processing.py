@@ -39,7 +39,8 @@ import orjson
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
-from starlette.types import Message, Receive, Scope, Send
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import Receive, Scope, Send
 from typing_extensions import Never
 
 import litellm
@@ -887,7 +888,7 @@ def resolve_counted_tool_fields(
     return resolved
 
 
-def proxy_exception_from_http_exception(exc: HTTPException, headers: dict[str, str]) -> ProxyException:
+def proxy_exception_from_http_exception(exc: StarletteHTTPException, headers: dict[str, str]) -> ProxyException:
     raw_detail: Final = attribute_of(exc, "detail", str(exc))
     message, structured_fields = serialize_http_exception_detail(raw_detail)
     existing_fields: Final = getattr(exc, "provider_specific_fields", None) or {}
