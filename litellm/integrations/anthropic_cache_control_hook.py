@@ -870,6 +870,12 @@ class AnthropicCacheControlHook(CustomPromptManagement):
         if not injection_points:
             return model, messages, non_default_params
 
+        request_headers = self._extract_request_headers(non_default_params)
+        default_control = self._resolve_default_cache_control(request_headers)
+        self._strip_prompt_cache_policy_headers(non_default_params)
+        if default_control is None:
+            return model, messages, non_default_params
+
         message_points: Final = tuple(
             cast(CacheControlMessageInjectionPoint, point)
             for point in injection_points

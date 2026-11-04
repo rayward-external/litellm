@@ -4920,6 +4920,7 @@ class ProxyBaseLLMRequestProcessing:
         flush_tail: Callable[[], bytes] | None = None,
         seal_open_frame: Callable[[bytes], str] | None = None,
         answer_status: Callable[[Exception], Exception] | None = None,
+        upstream_stream_monitor: UpstreamStreamMonitor | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         Shared streaming data generator: runs proxy iterator hook, per-chunk hook,
