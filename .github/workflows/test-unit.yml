@@ -452,6 +452,7 @@ jobs:
               tests/pass_through_unit_tests
               tests/unified_google_tests/test_google_genai_proxy_wrapper.py
               tests/unit/rag
+              tests/unit/cookbook
               tests/unit/realtime_api
               tests/unit/rerank_api
               tests/unit/search
