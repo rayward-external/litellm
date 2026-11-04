@@ -375,7 +375,7 @@ _UpstreamSessionKey: TypeAlias = tuple[
     str,
     str,
     str,
-    tuple[MCPTransport, MCPUpstreamProtocol, float, bool, bool, bool],
+    tuple[MCPTransport, MCPUpstreamProtocol, float, bool, bool, bool, bool],
 ]
 
 

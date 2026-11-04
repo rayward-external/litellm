@@ -13,8 +13,10 @@ from litellm.litellm_core_utils.prompt_templates.factory import (
     convert_to_anthropic_image_obj,
 )
 from litellm.litellm_core_utils.prompt_templates.image_handling import (
+    RemoteMedia,
     async_inline_remote_media,
     convert_url_to_base64,
+    inline_every_remote_url,
 )
 from litellm.llms.anthropic.chat.transformation import AnthropicConfig
 from litellm.llms.anthropic.common_utils import (
@@ -107,8 +109,16 @@ class AmazonAnthropicClaudeConfig(AmazonInvokeConfig, AnthropicConfig):
         self._read_configured_max_tokens: Final = read_configured_max_tokens
 
     @classmethod
-    def get_config(cls, *, model: str | None = None) -> dict[str, object]:  # mutable-ok: overrides BaseConfig's dict
-        return {key: value for key, value in super().get_config(model=model).items() if key != "max_tokens"}
+    def get_config(
+        cls, *, model: str | None = None, configured_max_output_tokens: int | None = None
+    ) -> dict[str, object]:  # mutable-ok: overrides BaseConfig's dict
+        return {
+            key: value
+            for key, value in super()
+            .get_config(model=model, configured_max_output_tokens=configured_max_output_tokens)
+            .items()
+            if key != "max_tokens"
+        }
 
     @property
     def custom_llm_provider(self) -> str | None:
@@ -116,6 +126,9 @@ class AmazonAnthropicClaudeConfig(AmazonInvokeConfig, AnthropicConfig):
 
     def should_strip_billing_metadata(self) -> bool:
         return True
+
+    def inlines_remote_media(self, media: RemoteMedia) -> bool:
+        return inline_every_remote_url(media)
 
     def get_supported_openai_params(self, model: str) -> list[str]:
         return AnthropicConfig.get_supported_openai_params(self, model)

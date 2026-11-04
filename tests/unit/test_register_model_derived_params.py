@@ -12,6 +12,21 @@ whichever deployments a process had already registered.
 
 import pytest
 
+# _register_custom_pricing_for_request (the fork-only function these two tests drive)
+# was dropped by the 2026-11-04 upstream sync and not restored: upstream's new
+# per_call_pricing.py feature redesigned per-call custom pricing to be ephemeral
+# (never written to litellm.model_cost), which 9 of upstream's own new tests in
+# tests/unit/test_register_model_custom_pricing.py and test_utils.py now assert,
+# directly conflicting with this function's persist-under-deployment-id behavior.
+# See .github/fork-patches.txt for the full analysis.
+# REMOVAL CONDITION: an owner decision on whether model-hub-visible persistence is
+# still needed and, if so, a deliberate design for it that does not fight
+# per_call_pricing.py's ephemeral contract.
+_PRICING_PERSISTENCE_SUPERSEDED_BY_PER_CALL_PRICING = pytest.mark.skip(
+    reason="_register_custom_pricing_for_request was not restored after the 2026-11-04 sync "
+    "(conflicts with upstream's new ephemeral per_call_pricing.py design); see .github/fork-patches.txt"
+)
+
 
 @pytest.fixture(autouse=True)
 def _restore_model_cost():
@@ -44,6 +59,7 @@ def _register_request_pricing(deployment_id: str) -> None:
     )
 
 
+@_PRICING_PERSISTENCE_SUPERSEDED_BY_PER_CALL_PRICING
 def test_derived_params_are_not_persisted_for_a_deployment_id():
     import litellm
 
@@ -72,6 +88,7 @@ def test_explicit_params_are_still_persisted():
     assert litellm.model_cost["bedrock-claude-pool-2"]["supported_openai_params"] == ["max_tokens", "tools"]
 
 
+@_PRICING_PERSISTENCE_SUPERSEDED_BY_PER_CALL_PRICING
 def test_group_info_is_not_narrowed_by_a_custom_priced_leg():
     import litellm
 
