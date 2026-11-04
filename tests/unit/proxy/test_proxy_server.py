@@ -3667,6 +3667,19 @@ def _receive_until_closed(websocket: WebSocketTestSession) -> None:
         websocket.receive_text()
 
 
+# realtime_websocket_endpoint closes every /v1/realtime connection with code 1008
+# BEFORE accept() on this fork (rayward-internal/llm-gateway-infra#646, no
+# realtime-capable model served here; see .github/fork-patches.txt). This test
+# drives that handler directly and expects the connection to accept and the mocked
+# upstream `websockets.connect` to run, which the refusal block short-circuits.
+# REMOVAL CONDITION: drop this mark together with the refusal block.
+_REALTIME_WS_DISABLED = pytest.mark.skip(
+    reason="Realtime WebSocket mode is disabled on this fork "
+    "(rayward-internal/llm-gateway-infra#646); see .github/fork-patches.txt"
+)
+
+
+@_REALTIME_WS_DISABLED
 @pytest.mark.parametrize(
     ("litellm_params", "expected_upstream_url"),
     (
