@@ -125,3 +125,16 @@ paths-ignore:
   # settings object (which also carries the secure fields) as reaching the
   # plain-text sink.
   - "ui/litellm-dashboard/src/app/(dashboard)/playground/components/chat/usePlaygroundSettings.ts"
+  # js/xss-through-dom FP, re-flagged on every sync that touches these lines
+  # (alerts #1063/#1064/#1066/#1067, all dismissed with the same reasoning):
+  # both files' only DOM sink is `<img src={URL.createObjectURL(file)}>` for a
+  # locally-selected File input, never attacker-controlled text, and an img
+  # src cannot execute script the way innerHTML/document.write sinks can.
+  # CodeQL has no sanitizer model for "blob: URL minted from a local File", so
+  # this recurs under a fresh alert number each time instead of staying
+  # dismissed. FilePreviewCard.tsx is entirely this preview card; the same
+  # sink in compareUI/ was pulled out into its own
+  # UploadedFilePreviewImage.tsx so the rest of CompareUI.tsx (887 lines)
+  # keeps full scanning coverage.
+  - "ui/litellm-dashboard/src/app/(dashboard)/playground/components/chat_ui/FilePreviewCard.tsx"
+  - "ui/litellm-dashboard/src/app/(dashboard)/playground/components/compareUI/UploadedFilePreviewImage.tsx"

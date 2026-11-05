@@ -13,6 +13,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { v4 as uuidv4 } from "uuid";
 import ChatImageUpload from "../chat_ui/ChatImageUpload";
+import UploadedFilePreviewImage from "./UploadedFilePreviewImage";
 import { createChatDisplayMessage, createChatMultimodalMessage } from "../chat_ui/ChatImageUtils";
 import type { TokenUsage } from "@/components/chat_ui/ResponseMetrics";
 import type { MessageType, VectorStoreSearchResponse } from "@/components/chat_ui/types";
@@ -840,8 +841,8 @@ export default function CompareUI({ accessToken, disabledPersonalKeyCreation }: 
                           <FileText className="size-4" aria-label="file-pdf" />
                         </div>
                       ) : (
-                        <img
-                          src={uploadedFilePreviewUrl || ""}
+                        <UploadedFilePreviewImage
+                          src={uploadedFilePreviewUrl}
                           alt={t("playground.compare.attachment.preview")}
                           className="w-10 h-10 rounded-md border border-border object-cover"
                         />
