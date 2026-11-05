@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, cast
 from urllib.parse import urlsplit
 
 import httpx
+from openai.types.responses import ResponseInputItemParam
 from pydantic import TypeAdapter
 
 from litellm._logging import verbose_logger

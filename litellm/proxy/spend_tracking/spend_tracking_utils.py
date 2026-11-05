@@ -347,6 +347,7 @@ def _get_spend_logs_metadata(
     return clean_metadata
 
 
+BATCH_COST_CALL_ID_PREFIX: Final = "batch-cost-"
 JOB_POLL_GUARDRAIL_COST_REQUEST_ID_SUFFIX: Final = "_guardrail_cost"
 
 
