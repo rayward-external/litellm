@@ -49,7 +49,11 @@ COPY ui/litellm-dashboard/vendor/ ./vendor/
 RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline
 
 COPY ui/litellm-dashboard/ ./
-RUN npm run build
+# The UI build has grown past Node's default V8 heap guess inside the buildx
+# container, dying with "JavaScript heap out of memory" (litellm-build-push
+# runs 2026-11-03 through 2026-11-05, three straight). Raise the old-space
+# heap explicitly instead of relying on V8's auto-detection.
+RUN NODE_OPTIONS="--max-old-space-size=4096" npm run build
 
 # Builder stage
 FROM cgr.dev/chainguard/wolfi-base@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7 AS builder

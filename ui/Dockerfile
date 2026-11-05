@@ -22,7 +22,9 @@ RUN --mount=type=cache,target=/root/.npm \
     npm ci --prefer-offline
 
 COPY ui/litellm-dashboard/ ./
-RUN npm run build
+# Same fix as the root Dockerfile's ui-builder stage: Node's default V8 heap
+# guess inside the buildx container is too low for this build now.
+RUN NODE_OPTIONS="--max-old-space-size=4096" npm run build
 
 # ---------- runtime ----------
 FROM nginx:${NGINX_VERSION} AS runtime
