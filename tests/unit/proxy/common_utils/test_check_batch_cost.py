@@ -5221,7 +5221,10 @@ async def test_batch_cost_reaches_configured_success_callbacks(
     initialized: bool,
     claimed: bool,
 ) -> None:
-    from litellm_enterprise.proxy.common_utils.check_batch_cost import CheckBatchCost
+    from litellm_enterprise.proxy.common_utils.check_batch_cost import (
+        CLAIM_LOST,
+        CheckBatchCost,
+    )
 
     import litellm
     from litellm.integrations.custom_logger import CustomLogger
