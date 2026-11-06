@@ -1412,6 +1412,14 @@ def _client_disconnected_response(headers: Mapping[str, str] | None) -> JSONResp
     )
 
 
+def _client_message_of(exc: BaseException) -> str:
+    """The client-facing text the non-streaming path gives an exception that carries ``.message``."""
+    message: Final = attribute_of(exc, "message")
+    if not isinstance(message, str) or not message:
+        return "Error processing stream start"
+    return redact_internal_details_from_client_message(strip_bug_report_notice(message))
+
+
 def sse_error_payload(exc: BaseException) -> tuple[int, Mapping[str, object]]:
     """Build the ProxyException-shaped ``{"error": ...}`` body used in SSE error frames.
 
@@ -1420,7 +1428,7 @@ def sse_error_payload(exc: BaseException) -> tuple[int, Mapping[str, object]]:
     """
     # Preserve status code from HTTPException (e.g. guardrail blocks)
     error_status: Final = error_status_code(exc, status.HTTP_500_INTERNAL_SERVER_ERROR)
-    raw_detail: Final = attribute_of(exc, "detail", "Error processing stream start")
+    raw_detail: Final = attribute_of(exc, "detail", _client_message_of(exc))
     message, structured_fields = serialize_http_exception_detail(raw_detail)
 
     existing_fields: Final = getattr(exc, "provider_specific_fields", None) or {}
