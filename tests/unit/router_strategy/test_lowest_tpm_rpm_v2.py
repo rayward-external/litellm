@@ -769,3 +769,53 @@ def setup_and_teardown():
         if hasattr(litellm, "in_memory_llm_clients_cache"):
             litellm.in_memory_llm_clients_cache.flush_cache()
     yield
+
+
+def _logged_without_model_name(*, deployment_id: str, deployment: str, total_tokens: int) -> dict[str, object]:
+    """A success event whose result could not carry `_hidden_params`, e.g. a plain-dict /v1/messages response."""
+    from tests.unit.create_mock_standard_logging_payload import create_standard_logging_payload
+
+    payload: StandardLoggingPayload = create_standard_logging_payload()
+    payload["model_group"] = "pooled-model"
+    payload["model_id"] = deployment_id
+    payload["total_tokens"] = total_tokens
+    payload["hidden_params"]["litellm_model_name"] = None
+    return {
+        "litellm_params": {
+            "model": deployment,
+            "litellm_metadata": {"deployment": deployment, "model_info": {"id": deployment_id}},
+        },
+        "standard_logging_object": payload,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync_mode", [True, False])
+async def test_usage_without_a_logged_model_name_lands_on_the_key_selection_reads(sync_mode: bool) -> None:
+    cache = DualCache()
+    handler = LowestTPMLoggingHandler(router_cache=cache)
+    deployment = {
+        "model_name": "pooled-model",
+        "litellm_params": {"model": "provider/model-a"},
+        "model_info": {"id": "leg-a"},
+    }
+    kwargs = _logged_without_model_name(deployment_id="leg-a", deployment="provider/model-a", total_tokens=40)
+    if sync_mode:
+        handler.log_success_event(kwargs=kwargs, response_obj={}, start_time=time.time(), end_time=time.time())
+    else:
+        await handler.async_log_success_event(
+            kwargs=kwargs, response_obj={}, start_time=time.time(), end_time=time.time()
+        )
+    tpm_keys, _ = handler.usage_counter_keys([deployment])
+    assert [cache.get_cache(key=key) for key in tpm_keys] == [40]
+    assert [key for key in cache.in_memory_cache.cache_dict if ":None:" in key] == []
+
+
+@pytest.mark.asyncio
+async def test_usage_with_no_deployment_to_key_it_under_is_not_counted() -> None:
+    cache = DualCache()
+    handler = LowestTPMLoggingHandler(router_cache=cache)
+    kwargs = _logged_without_model_name(deployment_id="leg-a", deployment="provider/model-a", total_tokens=40)
+    kwargs["litellm_params"] = {}
+    await handler.async_log_success_event(kwargs=kwargs, response_obj={}, start_time=time.time(), end_time=time.time())
+    assert [key for key in cache.in_memory_cache.cache_dict if ":tpm:" in key] == []
