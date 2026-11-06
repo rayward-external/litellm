@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 
@@ -86,7 +86,7 @@ def usage_counter_model(kwargs: Mapping[str, object], standard_logging_object: S
         return logged
     litellm_params: Final = kwargs.get("litellm_params")
     metadata: Final = (
-        find_deployment_metadata(cast("Mapping[str, object]", litellm_params))
+        find_deployment_metadata(litellm_params)  # pyright: ignore[reportUnknownArgumentType]  # logging kwargs are untyped
         if isinstance(litellm_params, Mapping)
         else None
     )
@@ -287,9 +287,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
             if standard_logging_object is None:
                 raise ValueError("standard_logging_object not passed in.")
             model_group: Final = standard_logging_object.get("model_group")
-            model: Final = usage_counter_model(
-                cast("Mapping[str, object]", kwargs), cast("StandardLoggingPayload", standard_logging_object)
-            )
+            model: Final = usage_counter_model(kwargs, standard_logging_object)  # pyright: ignore[reportUnknownArgumentType]  # keep legacy kwargs untyped
             id = standard_logging_object.get("model_id")
             if model_group is None or id is None or model is None:
                 return
@@ -332,9 +330,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
             if standard_logging_object is None:
                 raise ValueError("standard_logging_object not passed in.")
             model_group: Final = standard_logging_object.get("model_group")
-            model: Final = usage_counter_model(
-                cast("Mapping[str, object]", kwargs), cast("StandardLoggingPayload", standard_logging_object)
-            )
+            model: Final = usage_counter_model(kwargs, standard_logging_object)  # pyright: ignore[reportUnknownArgumentType]  # keep legacy kwargs untyped
             id = standard_logging_object.get("model_id")
             if model_group is None or id is None or model is None:
                 return
