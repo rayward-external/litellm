@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import httpx
 
@@ -85,7 +85,11 @@ def usage_counter_model(kwargs: Mapping[str, object], standard_logging_object: S
     if isinstance(logged, str) and logged:
         return logged
     litellm_params: Final = kwargs.get("litellm_params")
-    metadata: Final = find_deployment_metadata(litellm_params) if isinstance(litellm_params, Mapping) else None
+    metadata: Final = (
+        find_deployment_metadata(cast("Mapping[str, object]", litellm_params))
+        if isinstance(litellm_params, Mapping)
+        else None
+    )
     deployment: Final = metadata.get("deployment") if metadata is not None else None
     return deployment if isinstance(deployment, str) and deployment else None
 
@@ -283,7 +287,9 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
             if standard_logging_object is None:
                 raise ValueError("standard_logging_object not passed in.")
             model_group: Final = standard_logging_object.get("model_group")
-            model: Final = usage_counter_model(kwargs, standard_logging_object)
+            model: Final = usage_counter_model(
+                cast("Mapping[str, object]", kwargs), cast("StandardLoggingPayload", standard_logging_object)
+            )
             id = standard_logging_object.get("model_id")
             if model_group is None or id is None or model is None:
                 return
@@ -315,7 +321,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
             )
 
     @with_service_target("router_usage")
-    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time) -> None:
         if is_batch_retrieve_call_type(kwargs.get("call_type")):
             return
         try:
@@ -326,7 +332,9 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
             if standard_logging_object is None:
                 raise ValueError("standard_logging_object not passed in.")
             model_group: Final = standard_logging_object.get("model_group")
-            model: Final = usage_counter_model(kwargs, standard_logging_object)
+            model: Final = usage_counter_model(
+                cast("Mapping[str, object]", kwargs), cast("StandardLoggingPayload", standard_logging_object)
+            )
             id = standard_logging_object.get("model_id")
             if model_group is None or id is None or model is None:
                 return
