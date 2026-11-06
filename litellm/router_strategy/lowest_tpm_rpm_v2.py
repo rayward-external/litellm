@@ -19,6 +19,7 @@ from litellm.litellm_core_utils.batch_utils import is_batch_retrieve_call_type
 from litellm.litellm_core_utils.core_helpers import get_parent_otel_span_from_kwargs
 from litellm.litellm_core_utils.deployment_pricing import deployment_backend_models
 from litellm.litellm_core_utils.token_counter import embedding_aware_token_count
+from litellm.router_utils.router_callbacks.track_deployment_metrics import find_deployment_metadata
 from litellm.types.router import RouterErrors
 from litellm.types.utils import LiteLLMPydanticObjectBase, StandardLoggingPayload
 from litellm.utils import get_utc_datetime, print_verbose
@@ -71,6 +72,22 @@ class PrefetchedUsage:
     @staticmethod
     def active() -> "PrefetchedUsage | None":
         return _active_prefetched_usage.get()
+
+
+def usage_counter_model(kwargs: Mapping[str, object], standard_logging_object: StandardLoggingPayload) -> str | None:
+    """The deployment model a usage counter is keyed under: the same `litellm_params.model` selection reads.
+
+    A result that cannot carry `_hidden_params` (a plain-dict /v1/messages response) and a stream rebuilt
+    from its chunks log `hidden_params.litellm_model_name = None`; the routed deployment's model is still in
+    the request metadata the router writes before the call.
+    """
+    logged: Final = standard_logging_object["hidden_params"].get("litellm_model_name")
+    if isinstance(logged, str) and logged:
+        return logged
+    litellm_params: Final = kwargs.get("litellm_params")
+    metadata: Final = find_deployment_metadata(litellm_params) if isinstance(litellm_params, Mapping) else None
+    deployment: Final = metadata.get("deployment") if metadata is not None else None
+    return deployment if isinstance(deployment, str) and deployment else None
 
 
 class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
@@ -266,7 +283,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
             if standard_logging_object is None:
                 raise ValueError("standard_logging_object not passed in.")
             model_group: Final = standard_logging_object.get("model_group")
-            model: Final = standard_logging_object["hidden_params"].get("litellm_model_name")
+            model: Final = usage_counter_model(kwargs, standard_logging_object)
             id = standard_logging_object.get("model_id")
             if model_group is None or id is None or model is None:
                 return
@@ -309,9 +326,9 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
             if standard_logging_object is None:
                 raise ValueError("standard_logging_object not passed in.")
             model_group: Final = standard_logging_object.get("model_group")
-            model: Final = standard_logging_object["hidden_params"]["litellm_model_name"]
+            model: Final = usage_counter_model(kwargs, standard_logging_object)
             id = standard_logging_object.get("model_id")
-            if model_group is None or id is None:
+            if model_group is None or id is None or model is None:
                 return
             elif isinstance(id, int):
                 id = str(id)
