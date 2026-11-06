@@ -184,7 +184,10 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-10-31 security sweep: +1 -- the osv-scanner.toml GHSA-qwgh-2vcv-g2f7
 # (block-buffer) row flipped to N/A after a live scan stopped flagging it and
 # the IgnoredVulns entry it described was removed.
-EXPECTED_NA_ROWS = 67
+# 2026-11-06 sync: +1 for the new router_python_core.py SYNC BOUNDARY row,
+# a narrative note about where this sync stopped with no current-state
+# pattern to check.
+EXPECTED_NA_ROWS = 68
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
