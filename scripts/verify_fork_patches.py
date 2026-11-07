@@ -187,7 +187,9 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-11-06 sync: +1 for the new router_python_core.py SYNC BOUNDARY row,
 # a narrative note about where this sync stopped with no current-state
 # pattern to check.
-EXPECTED_NA_ROWS = 68
+# 2026-11-07 maintenance: +1 for the new uv.lock Python 3.10 compatibility
+# ceiling row, a narrative note about why 4 Dependabot alerts stay open.
+EXPECTED_NA_ROWS = 69
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
