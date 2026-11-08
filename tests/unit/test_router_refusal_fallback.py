@@ -29,19 +29,12 @@ from litellm.types.utils import Choices, Message, ModelResponse
 
 
 def _response(content, finish_reason="stop"):
-    return ModelResponse(
-        choices=[Choices(finish_reason=finish_reason, message=Message(content=content))]
-    )
+    return ModelResponse(choices=[Choices(finish_reason=finish_reason, message=Message(content=content))])
 
 
 def test_refusal_matcher_inert_when_env_unset(monkeypatch):
     monkeypatch.delenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", raising=False)
-    assert (
-        _completion_matches_refusal_patterns(
-            _response("I'm sorry, but I cannot assist with that request.")
-        )
-        is False
-    )
+    assert _completion_matches_refusal_patterns(_response("I'm sorry, but I cannot assist with that request.")) is False
 
 
 def test_refusal_matcher_matches_refusal_ignores_normal(monkeypatch):
@@ -49,41 +42,27 @@ def test_refusal_matcher_matches_refusal_ignores_normal(monkeypatch):
         "LITELLM_REFUSAL_FALLBACK_PATTERNS",
         json.dumps([r"i'?m sorry.*cannot assist", "i cannot help with"]),
     )
-    assert _completion_matches_refusal_patterns(
-        _response("I'm sorry, but I cannot assist with that request.")
-    )
-    assert not _completion_matches_refusal_patterns(
-        _response('{"extracted_final_answer":"0.186593","correct":"yes"}')
-    )
+    assert _completion_matches_refusal_patterns(_response("I'm sorry, but I cannot assist with that request."))
+    assert not _completion_matches_refusal_patterns(_response('{"extracted_final_answer":"0.186593","correct":"yes"}'))
     assert not _completion_matches_refusal_patterns(_response(None))
 
 
 def test_refusal_matcher_preserves_commas_inside_regex(monkeypatch):
     """A JSON array means a pattern may contain commas — the comma is a literal in
     the regex, not a separator, so a partial phrase must NOT trigger it."""
-    monkeypatch.setenv(
-        "LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps(["I'm sorry, but I cannot"])
-    )
-    assert _completion_matches_refusal_patterns(
-        _response("I'm sorry, but I cannot assist with that request.")
-    )
+    monkeypatch.setenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps(["I'm sorry, but I cannot"]))
+    assert _completion_matches_refusal_patterns(_response("I'm sorry, but I cannot assist with that request."))
     assert not _completion_matches_refusal_patterns(_response("I'm sorry"))
 
 
 def test_refusal_matcher_malformed_regex_never_raises(monkeypatch):
     """A malformed pattern must be skipped, never escape as a request failure; a
     valid sibling pattern still matches."""
-    monkeypatch.setenv(
-        "LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps(["[", "cannot assist"])
-    )
-    assert _completion_matches_refusal_patterns(
-        _response("I'm sorry, but I cannot assist with that request.")
-    )
+    monkeypatch.setenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps(["[", "cannot assist"]))
+    assert _completion_matches_refusal_patterns(_response("I'm sorry, but I cannot assist with that request."))
     # A non-JSON value is tolerated as a single pattern rather than raising.
     monkeypatch.setenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", "cannot assist")
-    assert _completion_matches_refusal_patterns(
-        _response("...I cannot assist...")
-    )
+    assert _completion_matches_refusal_patterns(_response("...I cannot assist..."))
 
 
 REFUSAL = "I'm sorry, but I cannot assist with that request."
@@ -119,18 +98,12 @@ async def test_refusal_pattern_triggers_content_policy_fallback(monkeypatch, syn
     """End-to-end on `_Driver._blocked`: the same mechanism that already fails
     finish_reason=content_filter over to content_policy_fallbacks now also fires
     on a matching refusal."""
-    monkeypatch.setenv(
-        "LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps([r"i'?m sorry.*cannot assist"])
-    )
+    monkeypatch.setenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps([r"i'?m sorry.*cannot assist"]))
     router = _refusal_router()
     if sync_mode:
-        response = router.completion(
-            model="m", messages=[{"role": "user", "content": "grade this"}]
-        )
+        response = router.completion(model="m", messages=[{"role": "user", "content": "grade this"}])
     else:
-        response = await router.acompletion(
-            model="m", messages=[{"role": "user", "content": "grade this"}]
-        )
+        response = await router.acompletion(model="m", messages=[{"role": "user", "content": "grade this"}])
     assert response.model == "my-fake-model"
 
 
@@ -141,21 +114,15 @@ async def test_refusal_pattern_inert_when_env_unset(monkeypatch, sync_mode):
     monkeypatch.delenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", raising=False)
     router = _refusal_router()
     if sync_mode:
-        response = router.completion(
-            model="m", messages=[{"role": "user", "content": "grade this"}]
-        )
+        response = router.completion(model="m", messages=[{"role": "user", "content": "grade this"}])
     else:
-        response = await router.acompletion(
-            model="m", messages=[{"role": "user", "content": "grade this"}]
-        )
+        response = await router.acompletion(model="m", messages=[{"role": "user", "content": "grade this"}])
     assert response.choices[0].message.content == REFUSAL
 
 
 @pytest.mark.asyncio
 async def test_refusal_pattern_normal_answer_unaffected_when_enabled(monkeypatch):
-    monkeypatch.setenv(
-        "LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps([r"i'?m sorry.*cannot assist"])
-    )
+    monkeypatch.setenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps([r"i'?m sorry.*cannot assist"]))
     router = Router(
         model_list=[
             {
@@ -177,9 +144,7 @@ async def test_refusal_pattern_normal_answer_unaffected_when_enabled(monkeypatch
         ],
         content_policy_fallbacks=[{"m": ["m-fallback"]}],
     )
-    response = await router.acompletion(
-        model="m", messages=[{"role": "user", "content": "grade this"}]
-    )
+    response = await router.acompletion(model="m", messages=[{"role": "user", "content": "grade this"}])
     assert response.choices[0].message.content == "The verdict is correct."
 
 
@@ -209,9 +174,7 @@ async def test_content_filter_finish_reason_still_triggers_fallback_without_env(
         ],
         content_policy_fallbacks=[{"m": ["m-fallback"]}],
     )
-    response = await router.acompletion(
-        model="m", messages=[{"role": "user", "content": "grade this"}]
-    )
+    response = await router.acompletion(model="m", messages=[{"role": "user", "content": "grade this"}])
     assert response.model == "my-fake-model"
 
 
@@ -308,10 +271,7 @@ def test_text_matches_refusal_patterns_direct():
     assert _text_matches_refusal_patterns("I cannot assist", ["cannot assist"]) is True
     assert _text_matches_refusal_patterns("all good here", ["cannot assist"]) is False
     # A malformed regex among the patterns is skipped, not raised.
-    assert (
-        _text_matches_refusal_patterns("I cannot assist", ["[", "cannot assist"])
-        is True
-    )
+    assert _text_matches_refusal_patterns("I cannot assist", ["[", "cannot assist"]) is True
     assert _text_matches_refusal_patterns("I cannot assist", ["["]) is False
 
 
@@ -359,16 +319,14 @@ def test_stream_hold_delta_state_direct():
     from litellm.types.utils import ModelResponseStream
 
     assert _RefusalStreamHold._delta_state(_stream_chunk("hello")) == ("hello", 0, False)
-    assert _RefusalStreamHold._delta_state(
-        _stream_chunk(refusal="I cannot help")
-    ) == ("I cannot help", 0, False)
-    assert _RefusalStreamHold._delta_state(
-        _stream_chunk(reasoning_content="thinking...")
-    ) == ("", len("thinking..."), False)
-    tool_call = {"id": "t1", "type": "function", "function": {"name": "f", "arguments": ""}}
-    text, reasoning_len, saw_tool_call = _RefusalStreamHold._delta_state(
-        _stream_chunk(None, tool_calls=[tool_call])
+    assert _RefusalStreamHold._delta_state(_stream_chunk(refusal="I cannot help")) == ("I cannot help", 0, False)
+    assert _RefusalStreamHold._delta_state(_stream_chunk(reasoning_content="thinking...")) == (
+        "",
+        len("thinking..."),
+        False,
     )
+    tool_call = {"id": "t1", "type": "function", "function": {"name": "f", "arguments": ""}}
+    text, reasoning_len, saw_tool_call = _RefusalStreamHold._delta_state(_stream_chunk(None, tool_calls=[tool_call]))
     assert saw_tool_call is True
     # Empty choices (e.g. a trailing usage-only chunk) must not raise.
     assert _RefusalStreamHold._delta_state(ModelResponseStream(choices=[])) == ("", 0, False)
@@ -400,18 +358,14 @@ def _ev(type_, **kw):
 def _incomplete_event(reason="content_filter"):
     return _ev(
         "response.incomplete",
-        response=SimpleNamespace(
-            incomplete_details=SimpleNamespace(reason=reason), usage=None
-        ),
+        response=SimpleNamespace(incomplete_details=SimpleNamespace(reason=reason), usage=None),
     )
 
 
 def _responses_hold(hold_chars=400):
     from litellm.router import _ResponsesRefusalStreamHold
 
-    return _ResponsesRefusalStreamHold(
-        patterns=["cannot assist"], hold_chars=hold_chars, model="gpt-5.5"
-    )
+    return _ResponsesRefusalStreamHold(patterns=["cannot assist"], hold_chars=hold_chars, model="gpt-5.5")
 
 
 def test_responses_hold_raises_on_content_filter_terminal():
@@ -481,15 +435,32 @@ def test_is_blocked_terminal_direct():
     assert _RefusalStreamHold._is_blocked_terminal(_stream_chunk("x")) is False
 
     assert _ResponsesRefusalStreamHold._is_blocked_terminal(_incomplete_event()) is True
-    assert (
-        _ResponsesRefusalStreamHold._is_blocked_terminal(
-            _incomplete_event(reason="max_output_tokens")
-        )
-        is False
-    )
+    assert _ResponsesRefusalStreamHold._is_blocked_terminal(_incomplete_event(reason="max_output_tokens")) is False
     assert (
         _ResponsesRefusalStreamHold._is_blocked_terminal(
             _ev("response.completed", response=SimpleNamespace(usage=None))
         )
         is False
     )
+
+
+def test_warn_if_refusal_patterns_configured_for_stream(monkeypatch):
+    """The streaming hold is not wired into a live stream yet (see the module docstring), so a
+    streamed refusal is not caught while LITELLM_REFUSAL_FALLBACK_PATTERNS is set. Rather than
+    stay silent about that gap, every streaming call logs a warning while the env var is set."""
+    from litellm.router_rust import refusal_fallback
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "litellm._logging.verbose_router_logger.warning",
+        lambda msg, *args: warnings.append(msg % args if args else msg),
+    )
+
+    monkeypatch.delenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", raising=False)
+    refusal_fallback.warn_if_refusal_patterns_configured_for_stream()
+    assert warnings == []
+
+    monkeypatch.setenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps(["cannot assist"]))
+    refusal_fallback.warn_if_refusal_patterns_configured_for_stream()
+    assert len(warnings) == 1
+    assert "stream=True" in warnings[0]

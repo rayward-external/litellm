@@ -938,6 +938,9 @@ def wrap_chat_stream(  # noqa: C901  # one function per Python wrapper it ports
     """``_acompletion_streaming_iterator``: a mid-stream error before content falls back through the core;
     after content, the provider's error is raised. ``held_slot`` (the deployment's max_parallel_requests
     slot) is released when the stream is exhausted, closed, or falls back."""
+    from litellm.router_rust.refusal_fallback import warn_if_refusal_patterns_configured_for_stream
+
+    warn_if_refusal_patterns_configured_for_stream()
     slot: Final = held_slot if held_slot is not None else contextlib.ExitStack()
     attempt.take_outcome()
 
@@ -1546,7 +1549,9 @@ def wrap_responses_stream(  # noqa: C901  # one function per Python wrapper it p
     from datetime import datetime, timezone
 
     from litellm.responses.streaming_iterator import BaseResponsesAPIStreamingIterator, get_openai_response_types
+    from litellm.router_rust.refusal_fallback import warn_if_refusal_patterns_configured_for_stream
 
+    warn_if_refusal_patterns_configured_for_stream()
     source_iterator: Final = response
     attempt.take_outcome()
     openai_types: Final = get_openai_response_types()

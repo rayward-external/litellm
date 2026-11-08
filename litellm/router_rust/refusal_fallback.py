@@ -78,6 +78,21 @@ def _completion_matches_refusal_patterns(response: ModelResponse) -> bool:
     return _text_matches_refusal_patterns(content, patterns)
 
 
+def warn_if_refusal_patterns_configured_for_stream() -> None:
+    """LITELLM_REFUSAL_FALLBACK_PATTERNS has no effect on a streamed response yet (see the module
+    docstring): the stream hold classes below are ported but not wired into a live stream. Logged
+    on every streaming call while the env var is set, so the gap stays visible instead of silent."""
+    if not _get_refusal_fallback_patterns():
+        return
+    from litellm._logging import verbose_router_logger
+
+    verbose_router_logger.warning(
+        "LITELLM_REFUSAL_FALLBACK_PATTERNS is set but has no effect on streamed responses "
+        "(stream=True): a streamed refusal is not failed over to content_policy_fallbacks. "
+        "Only non-streaming completions are covered."
+    )
+
+
 def _refusal_stream_hold_chars() -> int:
     """Max chars of streamed text held back while a refusal is ruled out.
     Overridable via LITELLM_REFUSAL_FALLBACK_STREAM_HOLD_CHARS; 0 disables the
