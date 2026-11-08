@@ -17,6 +17,7 @@ from openai import AsyncOpenAI
 import litellm
 from litellm import Router
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.litellm_core_utils.routing_common_utils import without_router_only_kwargs
 from litellm.router_utils.prompt_caching_cache import PromptCachingCache
 from litellm.types.router import RouterRateLimitError
 from litellm.utils import get_deployment_order, get_order_filtered_deployments
@@ -95,16 +96,14 @@ class TestGetOrderFilteredDeployments:
         assert len(result) == 2
 
     def test_request_litellm_params_strip_router_only_keys(self):
-        deployment = {
-            "litellm_params": {
-                "model": "azure/gpt-5.4",
-                "api_key": "key",
-                "api_base": "https://example.openai.azure.com/",
-                "order": 1,
-            }
+        litellm_params = {
+            "model": "azure/gpt-5.4",
+            "api_key": "key",
+            "api_base": "https://example.openai.azure.com/",
+            "order": 1,
         }
 
-        params = Router._copy_request_litellm_params(deployment)
+        params = without_router_only_kwargs(litellm_params)
         assert params["model"] == "azure/gpt-5.4"
         assert "order" not in params
 

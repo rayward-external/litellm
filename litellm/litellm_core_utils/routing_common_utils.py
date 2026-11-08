@@ -34,7 +34,11 @@ from litellm.types.utils import (
 _V = TypeVar("_V")
 
 MID_STREAM_CONTINUATION_KWARG: Final = "_mid_stream_continuation"
-ROUTER_ONLY_CALL_KWARGS: Final = frozenset({"silent_model", "include_fallback_errors", MID_STREAM_CONTINUATION_KWARG})
+# "order" ranks a deployment for selection (get_order_filtered_deployments); it is never a provider
+# request param and must never be forwarded upstream.
+ROUTER_ONLY_CALL_KWARGS: Final = frozenset(
+    {"silent_model", "include_fallback_errors", MID_STREAM_CONTINUATION_KWARG, "order"}
+)
 _OBJECT_MAPPING_ADAPTER: Final[TypeAdapter[Mapping[object, object]]] = TypeAdapter(Mapping[object, object])
 _DEPLOYMENT_ROWS_ADAPTER: Final[TypeAdapter[tuple[Mapping[str, object], ...]]] = TypeAdapter(
     tuple[Mapping[str, object], ...]

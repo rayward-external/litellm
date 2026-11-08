@@ -4815,7 +4815,13 @@ def test_get_deployment_model_info_base_model_flow():
             # Verify that get_model_info was called for both base model and model name
             assert mock_get_model_info.call_count == 2
             mock_get_model_info.assert_any_call(model="gpt-3.5-turbo")  # base model call
-            mock_get_model_info.assert_any_call(model="test-model")  # model name call
+            mock_get_model_info.assert_any_call(
+                model="test-model", custom_llm_provider=None
+            )  # model name call -- custom_llm_provider forwarded to disambiguate
+            # bare model names that collide across providers in the bundled cost map
+            # (e.g. "deepseek-v4-pro" matching DeepSeek's own direct-API entry
+            # instead of azure_ai's); None here since "test-custom-model" isn't a
+            # deployment id registered on this router.
 
             # Verify the result contains merged information
             assert result is not None

@@ -83,6 +83,10 @@ if TYPE_CHECKING:
 _MODEL_INFO_ADAPTER: Final = TypeAdapter(Mapping[str, object])
 _LITELLM_PARAMS_ADAPTER: Final = TypeAdapter(Mapping[str, object])
 
+# Marks a _model_info_row() call with no custom_llm_provider to forward at all, distinct from one
+# resolved to None: get_model_info() is called without the keyword at all for the former.
+_NO_PROVIDER: Final = object()
+
 # The key router-core's merge reads as an opaque value (``router-core/src/model_info.rs``).
 _OPAQUE_KEY: Final = "__litellm_python_value__"
 
@@ -592,9 +596,34 @@ class HostModelInfo:
         router-core merges it (``router-core/src/model_info.rs``); this answers its lookups.
         """
         wire: Final = _Wire()
+        deployment: Final = self._core_get_deployment(model_id)
+        custom_llm_provider: Final = deployment.litellm_params.custom_llm_provider if deployment is not None else None
         call: Final = self._core_handle().deployment_model_info(model_id, wire.to_wire(model_name))
-        done: Final = _drive_model_info(call, partial(self._answer_model_info_lookup, wire=wire))
+        answer: Final = partial(
+            self._deployment_model_info_lookup,
+            wire=wire,
+            model_name=model_name,
+            custom_llm_provider=custom_llm_provider,
+        )
+        done: Final = _drive_model_info(call, answer)
         return wire.from_wire(done["info"])  # pyright: ignore[reportReturnType]  # the merged map, as the core builds it
+
+    def _deployment_model_info_lookup(
+        self,
+        step: Mapping[str, object],
+        *,
+        wire: "_Wire",
+        model_name: str,
+        custom_llm_provider: str | None,
+    ) -> object:
+        """``_core_get_deployment_model_info``'s own lookup answer: the deployment's litellm model-name row is
+        asked with this deployment's custom_llm_provider, so a bare name colliding with an unrelated provider's
+        cost-map entry (e.g. "deepseek-v4-pro" matching DeepSeek's own direct-API pricing instead of azure_ai's)
+        resolves to the right one. The base-model row -- a different, user-configured model that need not share
+        this deployment's provider -- and every other lookup kind are answered the ordinary way."""
+        if step["lookup"] == "model_info" and not step["exact"] and wire.from_wire(step["model"]) == model_name:
+            return self._model_info_row(step["model"], wire, step, custom_llm_provider=custom_llm_provider)
+        return self._answer_model_info_lookup(step, wire)
 
     def _answer_model_info_lookup(self, step: Mapping[str, object], wire: "_Wire") -> object:
         """One cost-map lookup of a model-info merge, answered from this process."""
@@ -618,13 +647,20 @@ class HostModelInfo:
             case other:
                 raise ValueError(f"router-core asked an unknown model-info lookup {other!r}")
 
-    def _model_info_row(self, model: object, wire: "_Wire", step: Mapping[str, object]) -> object:
+    def _model_info_row(
+        self, model: object, wire: "_Wire", step: Mapping[str, object], custom_llm_provider: object = _NO_PROVIDER
+    ) -> object:
         """``get_model_info(model=...)`` as a lookup answers it: the row, ``{"failed": True}`` when a
         tolerated lookup raises, and for an exact lookup whether a generalization rule made it."""
         # The base model's own window is read through the process host, as the Python router reads it.
         host: Final = python_host if step["exact"] else self._host
+        get_model_info: Final = host.invoke("get_model_info")
         try:
-            row: Final = host.invoke("get_model_info")(model=model)
+            row: Final = (
+                get_model_info(model=model)
+                if custom_llm_provider is _NO_PROVIDER
+                else get_model_info(model=model, custom_llm_provider=custom_llm_provider)
+            )
         except Exception:  # noqa: BLE001  # get_model_info raises ModelNotMappedError or a bare Exception for an unmapped model
             if step["tolerate"]:
                 return {"failed": True}
