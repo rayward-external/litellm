@@ -250,3 +250,15 @@ class _ResponsesRefusalStreamHold(_RefusalStreamHold):
         if reason is None and isinstance(details, dict):
             reason = details.get("reason")
         return reason == "content_filter"
+
+
+__all__ = [
+    "_REFUSAL_STREAM_HOLD_CHARS_DEFAULT",
+    "_RefusalStreamHold",
+    "_ResponsesRefusalStreamHold",
+    "_completion_matches_refusal_patterns",
+    "_get_refusal_fallback_patterns",
+    "_refusal_stream_hold_chars",
+    "_text_matches_refusal_patterns",
+    "warn_if_refusal_patterns_configured_for_stream",
+]
