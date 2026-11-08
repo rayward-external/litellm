@@ -3683,7 +3683,10 @@ class RustCore(
                         request_deployments=pool,  # pyright: ignore[reportArgumentType]  # deployment dicts
                     )
                 )
-            except (ValueError, litellm_exceptions.BadRequestError):  # tag routing sends this request to none of the rest
+            except (
+                ValueError,
+                litellm_exceptions.BadRequestError,
+            ):  # tag routing sends this request to none of the rest
                 break
             picked_ids = frozenset(
                 id
