@@ -190,7 +190,10 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-11-08 sync: +9 for the router_python_core.py rows, flipped to N/A
 # once upstream deleted that file outright (the rust core is now the only
 # router core), leaving those rows nothing left to grep-check.
-EXPECTED_NA_ROWS = 77
+# 2026-11-08 sync: +1 for the vscode-extension @azure/msal-node override row,
+# flipped to N/A once @vscode/vsce's own @azure/identity dependency bumped its
+# msal-node floor past the override's target.
+EXPECTED_NA_ROWS = 78
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",

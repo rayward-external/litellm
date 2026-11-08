@@ -85,7 +85,6 @@
     "vitest": "^4.1.12"
   },
   "overrides": {
-    "@azure/msal-node": "7.1.0",
     "minimatch": "11.0.2"
   }
 }
