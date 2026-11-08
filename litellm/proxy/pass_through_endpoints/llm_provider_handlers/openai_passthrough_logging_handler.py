@@ -351,6 +351,7 @@ def _build_response_and_cost_for_surface(
 
 
 _STR_MAPPING: Final = TypeAdapter(Mapping[str, object])
+_DECODED_JSON: Final = TypeAdapter(object)
 
 
 class _AgentConfig(BaseModel):
@@ -850,16 +851,11 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             ) = None
             handler_instance = OpenAIPassthroughLoggingHandler()
 
-            # Resolve the pricing provider. A generic pass-through
-            # (`general_settings.pass_through_endpoints`) carries no
-            # `custom_llm_provider` field at all, and defaulting to "openai"
-            # made every non-OpenAI upstream raise "model isn't mapped yet" in
-            # `completion_cost` — swallowed by the except below, so the call was
-            # billed upstream and recorded at $0.
-            custom_llm_provider = resolve_openai_passthrough_provider(
-                model=model,
-                custom_llm_provider=configured_provider,
-                url_route=url_route,
+            logged_custom_llm_provider: Final = _DECODED_JSON.validate_python(
+                logging_obj.model_call_details.get("custom_llm_provider", "openai")
+            )
+            custom_llm_provider: Final = TypeAdapter(str).validate_python(
+                kwargs.get("custom_llm_provider", logged_custom_llm_provider)
             )
             # Fireworks ids arrive bare (`accounts/.../models/...`) while the
             # price map is keyed `fireworks_ai/accounts/...`; normalize so the

@@ -58,6 +58,7 @@ import {
   isDecisionMode,
 } from "@/lib/decisionModels";
 import DecisionModelGarden from "@/components/AIHub/DecisionModelGarden";
+import { DeploymentPricingBreakdown } from "@/components/molecules/models/DeploymentPricingBreakdown";
 import { ModelCustomMetadata } from "./ModelCustomMetadata";
 
 interface ModelHubTableProps {
@@ -820,6 +821,11 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({
                     </p>
                   </div>
                 </div>
+                <DeploymentPricingBreakdown
+                  className="mt-4"
+                  deployments={selectedModel.deployment_pricing}
+                  heading={<p className="font-medium">{t("aiHub.modelHubTable.modelDialog.pricingByDeployment")}</p>}
+                />
               </div>
 
               {/* Capabilities */}
@@ -828,8 +834,6 @@ const ModelHubTable: React.FC<ModelHubTableProps> = ({
                 <div className="flex flex-wrap gap-2">
                   {(() => {
                     const capabilities = getModelCapabilities(selectedModel);
-                    const colors = ["green", "blue", "purple", "orange", "red", "yellow"];
-
                     if (capabilities.length === 0) {
                       return (
                         <p className="text-muted-foreground">{t("aiHub.modelHubTable.modelDialog.noCapabilities")}</p>
