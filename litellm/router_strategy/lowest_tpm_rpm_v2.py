@@ -20,6 +20,7 @@ from litellm.litellm_core_utils.core_helpers import get_parent_otel_span_from_kw
 from litellm.litellm_core_utils.deployment_pricing import deployment_backend_models
 from litellm.litellm_core_utils.token_counter import embedding_aware_token_count
 from litellm.redis.stores.router_usage import ROUTER_USAGE_TARGET
+from litellm.router_utils.router_callbacks.track_deployment_metrics import find_deployment_metadata
 from litellm.types.router import RouterErrors
 from litellm.types.utils import LiteLLMPydanticObjectBase, StandardLoggingPayload
 from litellm.utils import get_utc_datetime, print_verbose
@@ -319,7 +320,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
             )
 
     @with_service_target(ROUTER_USAGE_TARGET)
-    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time) -> None:
         if is_batch_retrieve_call_type(kwargs.get("call_type")):
             return
         try:

@@ -486,13 +486,32 @@ def update_kwargs_with_deployment(
     if baggage_stamp is not None:
         metadata[BAGGAGE_MAPPED_TAGS_METADATA_KEY] = baggage_stamp
 
+    # kwargs is reused across retries/fallbacks, so merging the serving deployment's
+    # tags into the live metadata["tags"] would accumulate every failed attempt's
+    # tags. Rebuild from the caller's ROUTING_REQUEST_TAGS_METADATA_KEY snapshot
+    # (captured once above, before any deployment merge) plus only this deployment's
+    # own tags instead.
+    if deployment_tags:
+        caller_baseline: Final = metadata[ROUTING_REQUEST_TAGS_METADATA_KEY]
+        rebuilt_tags: Final = tags_with_serving_deployment_tags(
+            {
+                "tags": list(caller_baseline),  # pyright: ignore[reportUnknownArgumentType]  # litellm's untyped helpers and request values
+                BAGGAGE_MAPPED_TAGS_METADATA_KEY: metadata.get(BAGGAGE_MAPPED_TAGS_METADATA_KEY),
+            },
+            deployment_tags,
+        )
+        if rebuilt_tags is not None:
+            metadata["tags"] = list(rebuilt_tags)
+
     credential_name: Final = deployment_params.get("litellm_credential_name")
     if credential_name:
         credential_tag: Final = f"Credential: {credential_name}"
         existing_tags: Final = metadata.get("tags") or []  # pyright: ignore[reportUnknownVariableType]  # litellm's untyped helpers and request values
-        if isinstance(existing_tags, list) and credential_tag not in existing_tags:
-            existing_tags.append(credential_tag)  # pyright: ignore[reportUnknownMemberType]  # the request's own tags list
-        metadata["tags"] = existing_tags
+        metadata["tags"] = (
+            [*existing_tags, credential_tag]
+            if isinstance(existing_tags, list) and credential_tag not in existing_tags
+            else existing_tags
+        )
 
     from litellm.llms.github_copilot.per_user_auth import github_copilot_per_user_credential_name
 

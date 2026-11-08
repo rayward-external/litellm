@@ -19,6 +19,7 @@ payload (name + arguments) so we just build the tool definition.
 """
 
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
 from fastapi import HTTPException

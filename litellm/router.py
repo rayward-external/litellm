@@ -21,6 +21,14 @@ from litellm.router_config import RouterConfig, build_router_config
 from litellm.router_core import RouterCore, make_core
 from litellm.router_deprecated import DeprecatedRouterMembers
 from litellm.router_python_host import PythonHost, python_host
+from litellm.router_rust.refusal_fallback import (  # noqa: F401  # re-exported for the fork's refusal-fallback tests/import path
+    _completion_matches_refusal_patterns,
+    _get_refusal_fallback_patterns,
+    _refusal_stream_hold_chars,
+    _RefusalStreamHold,
+    _ResponsesRefusalStreamHold,
+    _text_matches_refusal_patterns,
+)
 from litellm.router_rust.steps.prerouting import as_output_cap, stamped_client_ceiling
 from litellm.router_rust.surface.registry import model_info_is_active_for_environment
 from litellm.types.litellm_params import RoutingStrategyName

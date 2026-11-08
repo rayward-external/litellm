@@ -3657,6 +3657,7 @@ class RustCore(
         """The cooling deployments in ``routable`` that tag routing would send the request to, each
         pick counted along with the picks it falls back to once that one is unavailable, judged
         without recording a tag match on the request."""
+        import litellm.exceptions as litellm_exceptions
         from litellm.litellm_core_utils.core_helpers import get_metadata_variable_name_from_kwargs
         from litellm.router_strategy.tag_based_routing import get_deployments_for_tag
 
@@ -3682,7 +3683,7 @@ class RustCore(
                         request_deployments=pool,  # pyright: ignore[reportArgumentType]  # deployment dicts
                     )
                 )
-            except ValueError:  # tag routing sends this request to none of the rest
+            except (ValueError, litellm_exceptions.BadRequestError):  # tag routing sends this request to none of the rest
                 break
             picked_ids = frozenset(
                 id
@@ -4418,10 +4419,12 @@ class _Driver:
 
     def _blocked(self, response: object, endpoint_name: str) -> str | None:
         """How the provider blocked a served response, the first check of
-        ``_should_raise_content_policy_error`` (a chat response with no choices, or whose first
-        choice was content-filtered) and of ``_should_raise_anthropic_refusal_error`` (a
-        /v1/messages safeguard refusal carrying ``stop_details``)."""
+        ``_should_raise_content_policy_error`` (a chat response with no choices, whose first
+        choice was content-filtered, or whose content matches a configured
+        LITELLM_REFUSAL_FALLBACK_PATTERNS regex) and of ``_should_raise_anthropic_refusal_error``
+        (a /v1/messages safeguard refusal carrying ``stop_details``)."""
         from litellm.llms.anthropic.messages.native.utils import get_safeguard_refusal_stop_details
+        from litellm.router_rust.refusal_fallback import _completion_matches_refusal_patterns
         from litellm.types.utils import ModelResponse
 
         if endpoint_name == "anthropic_messages" and get_safeguard_refusal_stop_details(response) is not None:
@@ -4429,7 +4432,11 @@ class _Driver:
         if self._op not in ("acompletion", "completion") or not isinstance(response, ModelResponse):
             return None
         return (
-            "content_filter" if not response.choices or response.choices[0].finish_reason == "content_filter" else None
+            "content_filter"
+            if not response.choices
+            or response.choices[0].finish_reason == "content_filter"
+            or _completion_matches_refusal_patterns(response)
+            else None
         )
 
     def _blocked_error(self, event: Mapping[str, object]) -> BaseException:
