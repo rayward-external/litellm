@@ -7907,6 +7907,17 @@
         "PluginListItem": {
           "description": "Plugin item in list responses.",
           "properties": {
+            "approved_by": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Approved By"
+            },
             "author": {
               "anyOf": [
                 {
@@ -7939,6 +7950,17 @@
               ],
               "title": "Created At"
             },
+            "created_by": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Created By"
+            },
             "description": {
               "anyOf": [
                 {
@@ -7960,6 +7982,17 @@
                 }
               ],
               "title": "Domain"
+            },
+            "download_count": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Download Count"
             },
             "enabled": {
               "title": "Enabled",
@@ -8024,6 +8057,22 @@
                 }
               ],
               "title": "Namespace"
+            },
+            "published_by": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Published By"
+            },
+            "security_scan_passed": {
+              "default": false,
+              "title": "Security Scan Passed",
+              "type": "boolean"
             },
             "source": {
               "additionalProperties": {
@@ -9808,7 +9857,7 @@
     "paths": {
       "/backend-api/codex/{endpoint}": {
         "get": {
-          "description": "Forward a client's ChatGPT subscription with separate LiteLLM authentication.",
+          "description": "Forward a client's ChatGPT subscription with separate LiteLLM authentication, listing and serving the\nkey's other chat models through LiteLLM.",
           "operationId": "codex_passthrough_route_backend_api_codex__endpoint__get",
           "parameters": [
             {
@@ -9856,7 +9905,7 @@
           ]
         },
         "post": {
-          "description": "Forward a client's ChatGPT subscription with separate LiteLLM authentication.",
+          "description": "Forward a client's ChatGPT subscription with separate LiteLLM authentication, listing and serving the\nkey's other chat models through LiteLLM.",
           "operationId": "codex_passthrough_route_backend_api_codex__endpoint__post",
           "parameters": [
             {
@@ -9899,7 +9948,7 @@
                   }
                 }
               },
-              "description": "Unmodified Codex response or server-sent events"
+              "description": "Codex response, the model catalog with the key's LiteLLM models, or server-sent events"
             },
             "422": {
               "content": {
@@ -16715,6 +16764,22 @@
               "description": "Character budget for each text sent to the guardrail's model. Implemented by guardrail='decision_model'.",
               "title": "Max Input Chars"
             },
+            "mcp_block_behavior": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "tool_result",
+                    "raise"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How to handle guardrail blocks when executing MCP tools for an LLM request. 'raise' propagates the guardrail error to the client. 'tool_result' or None returns the block as a tool result and lets the LLM continue.",
+              "title": "Mcp Block Behavior"
+            },
             "model": {
               "anyOf": [
                 {
@@ -16772,7 +16837,7 @@
                   "type": "null"
                 }
               ],
-              "description": "For /v1/realtime sessions: 'warn' speaks the violation message and continues; 'end_session' speaks the message and closes the connection. For guardrail='mcp_security': 'block' rejects the request; 'alert' only logs a warning.",
+              "description": "For /v1/realtime sessions: 'warn' speaks the violation message and continues; 'end_session' speaks the message and closes the connection. Bedrock Nova Sonic cannot cancel a spoken turn's answer, so a blocked spoken turn always ends its session. For guardrail='mcp_security': 'block' rejects the request; 'alert' only logs a warning.",
               "title": "On Violation"
             },
             "only_scan_new_messages": {
@@ -16848,7 +16913,7 @@
                   "type": "null"
                 }
               ],
-              "description": "The message the bot speaks aloud when a /v1/realtime guardrail fires. Falls back to violation_message_template if not set.",
+              "description": "The message the bot speaks aloud when a /v1/realtime guardrail fires. Falls back to the guardrail's block reason if not set.",
               "title": "Realtime Violation Message"
             },
             "run_in_parallel": {
@@ -19291,6 +19356,22 @@
               "description": "Character budget for each text sent to the guardrail's model. Implemented by guardrail='decision_model'.",
               "title": "Max Input Chars"
             },
+            "mcp_block_behavior": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "tool_result",
+                    "raise"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How to handle guardrail blocks when executing MCP tools for an LLM request. 'raise' propagates the guardrail error to the client. 'tool_result' or None returns the block as a tool result and lets the LLM continue.",
+              "title": "Mcp Block Behavior"
+            },
             "metadata": {
               "anyOf": [
                 {
@@ -19446,7 +19527,7 @@
                   "type": "null"
                 }
               ],
-              "description": "For /v1/realtime sessions: 'warn' speaks the violation message and continues; 'end_session' speaks the message and closes the connection. For guardrail='mcp_security': 'block' rejects the request; 'alert' only logs a warning.",
+              "description": "For /v1/realtime sessions: 'warn' speaks the violation message and continues; 'end_session' speaks the message and closes the connection. Bedrock Nova Sonic cannot cancel a spoken turn's answer, so a blocked spoken turn always ends its session. For guardrail='mcp_security': 'block' rejects the request; 'alert' only logs a warning.",
               "title": "On Violation"
             },
             "only_scan_new_messages": {
@@ -19867,7 +19948,7 @@
                   "type": "null"
                 }
               ],
-              "description": "The message the bot speaks aloud when a /v1/realtime guardrail fires. Falls back to violation_message_template if not set.",
+              "description": "The message the bot speaks aloud when a /v1/realtime guardrail fires. Falls back to the guardrail's block reason if not set.",
               "title": "Realtime Violation Message"
             },
             "rules": {
@@ -36640,6 +36721,11 @@
               "description": "Validation Error"
             }
           },
+          "security": [
+            {
+              "APIKeyHeader": []
+            }
+          ],
           "summary": "Vertex Discovery Proxy Route",
           "tags": [
             "llm_passthrough"
@@ -36679,6 +36765,11 @@
               "description": "Validation Error"
             }
           },
+          "security": [
+            {
+              "APIKeyHeader": []
+            }
+          ],
           "summary": "Vertex Discovery Proxy Route",
           "tags": [
             "llm_passthrough"
@@ -36718,6 +36809,11 @@
               "description": "Validation Error"
             }
           },
+          "security": [
+            {
+              "APIKeyHeader": []
+            }
+          ],
           "summary": "Vertex Discovery Proxy Route",
           "tags": [
             "llm_passthrough"
@@ -36757,6 +36853,11 @@
               "description": "Validation Error"
             }
           },
+          "security": [
+            {
+              "APIKeyHeader": []
+            }
+          ],
           "summary": "Vertex Discovery Proxy Route",
           "tags": [
             "llm_passthrough"
@@ -36796,6 +36897,11 @@
               "description": "Validation Error"
             }
           },
+          "security": [
+            {
+              "APIKeyHeader": []
+            }
+          ],
           "summary": "Vertex Discovery Proxy Route",
           "tags": [
             "llm_passthrough"
@@ -50217,6 +50323,10 @@
               ],
               "title": "Content"
             },
+            "is_error": {
+              "title": "Is Error",
+              "type": "boolean"
+            },
             "role": {
               "const": "tool",
               "title": "Role",
@@ -59731,6 +59841,14 @@
               },
               "title": "Skills",
               "type": "array"
+            },
+            "tags": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Tags",
+              "type": "array"
             }
           },
           "required": [
@@ -60006,6 +60124,17 @@
         },
         "SkillHubSkill": {
           "properties": {
+            "approved_by": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Approved By"
+            },
             "content_url": {
               "anyOf": [
                 {
@@ -60016,6 +60145,29 @@
                 }
               ],
               "title": "Content Url"
+            },
+            "created_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Created At"
+            },
+            "created_by": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Created By"
             },
             "description": {
               "anyOf": [
@@ -60048,7 +60200,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Gateway ZIP downloads, included in proxy-admin catalog listings",
+              "description": "Gateway ZIP downloads, including repeat downloads",
               "title": "Download Count"
             },
             "download_url": {
@@ -60094,6 +60246,22 @@
                 }
               ],
               "title": "Namespace"
+            },
+            "published_by": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Published By"
+            },
+            "security_scan_passed": {
+              "default": false,
+              "title": "Security Scan Passed",
+              "type": "boolean"
             },
             "source": {
               "additionalProperties": {
@@ -60749,6 +60917,66 @@
                 "minimum": 1,
                 "title": "Limit",
                 "type": "integer"
+              }
+            },
+            {
+              "in": "query",
+              "name": "tag",
+              "required": false,
+              "schema": {
+                "default": "",
+                "title": "Tag",
+                "type": "string"
+              }
+            },
+            {
+              "in": "query",
+              "name": "security_scan_passed",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Security Scan Passed"
+              }
+            },
+            {
+              "in": "query",
+              "name": "sort_by",
+              "required": false,
+              "schema": {
+                "default": "name",
+                "enum": [
+                  "name",
+                  "download_count",
+                  "updated_at",
+                  "created_at",
+                  "created_by",
+                  "published_by",
+                  "approved_by",
+                  "security_scan_passed"
+                ],
+                "title": "Sort By",
+                "type": "string"
+              }
+            },
+            {
+              "in": "query",
+              "name": "sort_order",
+              "required": false,
+              "schema": {
+                "default": "asc",
+                "enum": [
+                  "asc",
+                  "desc"
+                ],
+                "title": "Sort Order",
+                "type": "string"
               }
             }
           ],

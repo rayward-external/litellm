@@ -830,3 +830,25 @@ async def test_health_record_failure_cools_down_past_allowed_fails(make_core: Ma
     assert (first, second) == (False, True)
     assert set(cooled_down(core, ["a", "b"])) == {"a"}
     assert core.health().failures_this_minute("a") == 2
+
+
+@pytest.mark.asyncio
+async def test_tag_exhausted_cooldown_info_does_not_raise_bad_request(make_core: MakeCore) -> None:
+    """``RustCore._tag_routable_ids`` (litellm/router_rust/core.py), new in the 2026-11-08 sync's
+    router_python_core.py deletion, lists the cooling deployments tag routing would still send a
+    request to, for ``RouterRateLimitError.cooldown_deployments``. Once every tagged candidate is
+    exhausted, ``get_deployments_for_tag`` raises ``litellm.BadRequestError`` via
+    ``_raise_no_deployments_for_tags`` (litellm/router_strategy/tag_based_routing.py), not
+    ``ValueError`` -- litellm.BadRequestError subclasses openai.BadRequestError. An
+    ``except ValueError`` clause alone misses it, so a fully-cooled tag-routed group escaped as a
+    non-retryable 400 instead of the usual RouterRateLimitError."""
+    core: Final = make_core(
+        model_list=[deployment("g", "d1", tags=["t1"]), deployment("g", "d2", tags=["t2"])],
+        enable_tag_filtering=True,
+    )
+    pool: Final = [deployment("g", "d1", tags=["t1"]), deployment("g", "d2", tags=["t2"])]
+    request: Final = {"model": "g", "messages": [], "metadata": {"tags": ["no-match"]}}
+    result = core._tag_routable_ids(  # pyright: ignore[reportPrivateUsage]  # exercising the method directly
+        group="g", pool=pool, routable=pool, cooled=frozenset({"d1", "d2"}), request=request
+    )
+    assert result == frozenset()

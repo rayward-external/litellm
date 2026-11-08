@@ -4,12 +4,19 @@ A model-level refusal is an HTTP 200 completion with finish_reason=stop and a
 polite decline (e.g. "I'm sorry, but I cannot assist with that request."). Azure's
 content filter never expresses that as finish_reason=content_filter, so without
 this bridge such a refusal cannot fail over. When LITELLM_REFUSAL_FALLBACK_PATTERNS
-is set (a JSON array of regexes), `_should_raise_content_policy_error` treats a
-matching refusal like a content-policy violation so content_policy_fallbacks can
-route it elsewhere.
+is set (a JSON array of regexes), `_Driver._blocked` (litellm/router_rust/core.py)
+treats a matching refusal like a content-policy violation so content_policy_fallbacks
+can route it elsewhere, the same way it already treats finish_reason=content_filter.
 
 The feature is OFF unless the env var is set — these tests assert the vanilla path
 is unchanged when it is absent.
+
+This file only covers the non-streaming path, restored onto `_Driver._blocked`
+after upstream deleted litellm/router_python_core.py (the file this patch used to
+live in). The streaming mid-response hold (`_RefusalStreamHold` /
+`_ResponsesRefusalStreamHold`, litellm/router_rust/refusal_fallback.py) is restored
+and tested here in isolation, but is NOT yet wired into a live stream -- see
+.github/fork-patches.txt for what that follow-up needs.
 """
 
 import json
@@ -17,24 +24,17 @@ import json
 import pytest
 
 import litellm
-from litellm.router import _completion_matches_refusal_patterns
+from litellm.router import Router, _completion_matches_refusal_patterns
 from litellm.types.utils import Choices, Message, ModelResponse
 
 
 def _response(content, finish_reason="stop"):
-    return ModelResponse(
-        choices=[Choices(finish_reason=finish_reason, message=Message(content=content))]
-    )
+    return ModelResponse(choices=[Choices(finish_reason=finish_reason, message=Message(content=content))])
 
 
 def test_refusal_matcher_inert_when_env_unset(monkeypatch):
     monkeypatch.delenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", raising=False)
-    assert (
-        _completion_matches_refusal_patterns(
-            _response("I'm sorry, but I cannot assist with that request.")
-        )
-        is False
-    )
+    assert _completion_matches_refusal_patterns(_response("I'm sorry, but I cannot assist with that request.")) is False
 
 
 def test_refusal_matcher_matches_refusal_ignores_normal(monkeypatch):
@@ -42,178 +42,146 @@ def test_refusal_matcher_matches_refusal_ignores_normal(monkeypatch):
         "LITELLM_REFUSAL_FALLBACK_PATTERNS",
         json.dumps([r"i'?m sorry.*cannot assist", "i cannot help with"]),
     )
-    assert _completion_matches_refusal_patterns(
-        _response("I'm sorry, but I cannot assist with that request.")
-    )
-    assert not _completion_matches_refusal_patterns(
-        _response('{"extracted_final_answer":"0.186593","correct":"yes"}')
-    )
+    assert _completion_matches_refusal_patterns(_response("I'm sorry, but I cannot assist with that request."))
+    assert not _completion_matches_refusal_patterns(_response('{"extracted_final_answer":"0.186593","correct":"yes"}'))
     assert not _completion_matches_refusal_patterns(_response(None))
 
 
 def test_refusal_matcher_preserves_commas_inside_regex(monkeypatch):
     """A JSON array means a pattern may contain commas — the comma is a literal in
     the regex, not a separator, so a partial phrase must NOT trigger it."""
-    monkeypatch.setenv(
-        "LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps(["I'm sorry, but I cannot"])
-    )
-    assert _completion_matches_refusal_patterns(
-        _response("I'm sorry, but I cannot assist with that request.")
-    )
+    monkeypatch.setenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps(["I'm sorry, but I cannot"]))
+    assert _completion_matches_refusal_patterns(_response("I'm sorry, but I cannot assist with that request."))
     assert not _completion_matches_refusal_patterns(_response("I'm sorry"))
 
 
 def test_refusal_matcher_malformed_regex_never_raises(monkeypatch):
     """A malformed pattern must be skipped, never escape as a request failure; a
     valid sibling pattern still matches."""
-    monkeypatch.setenv(
-        "LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps(["[", "cannot assist"])
-    )
-    assert _completion_matches_refusal_patterns(
-        _response("I'm sorry, but I cannot assist with that request.")
-    )
+    monkeypatch.setenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps(["[", "cannot assist"]))
+    assert _completion_matches_refusal_patterns(_response("I'm sorry, but I cannot assist with that request."))
     # A non-JSON value is tolerated as a single pattern rather than raising.
     monkeypatch.setenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", "cannot assist")
-    assert _completion_matches_refusal_patterns(
-        _response("...I cannot assist...")
-    )
+    assert _completion_matches_refusal_patterns(_response("...I cannot assist..."))
 
-
-def _router():
-    return litellm.Router(
-        model_list=[
-            {"model_name": "m", "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "x"}},
-            {"model_name": "m-openai", "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "y"}},
-        ],
-        content_policy_fallbacks=[{"m": ["m-openai"]}],
-    )
-
-
-def test_should_raise_on_refusal_only_when_enabled(monkeypatch):
-    router = _router()
-    refusal = _response("I'm sorry, but I cannot assist with that request.")
-
-    # Vanilla: a stop-refusal is NOT a content-policy error.
-    monkeypatch.delenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", raising=False)
-    assert router._should_raise_content_policy_error("m", refusal, {}) is False
-
-    # Enabled: the matching refusal now raises so content_policy_fallbacks fires.
-    monkeypatch.setenv(
-        "LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps([r"i'?m sorry.*cannot assist"])
-    )
-    assert router._should_raise_content_policy_error("m", refusal, {}) is True
-
-    # A normal answer never trips it, even when enabled.
-    assert (
-        router._should_raise_content_policy_error("m", _response("FINAL=0.186593"), {})
-        is False
-    )
-
-
-def test_content_filter_finish_reason_still_raises_without_env(monkeypatch):
-    """The original content_filter path must keep working with the env unset."""
-    monkeypatch.delenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", raising=False)
-    router = _router()
-    filtered = _response("", finish_reason="content_filter")
-    assert router._should_raise_content_policy_error("m", filtered, {}) is True
-
-
-# ---------------------------------------------------------------------------
-# Streaming: the refusal bridge must also cover stream=True. The head of the
-# stream is held back until a refusal is ruled out, so a streamed refusal is
-# replaced by the fallback stream and the client never sees the refusal text.
-# ---------------------------------------------------------------------------
 
 REFUSAL = "I'm sorry, but I cannot assist with that request."
 
 
-def _streaming_router(primary_response, fallback_response="FINAL=42"):
-    return litellm.Router(
+def _refusal_router(fallback_response="This works!"):
+    return Router(
         model_list=[
             {
                 "model_name": "m",
                 "litellm_params": {
-                    "model": "openai/gpt-4o-mini",
-                    "api_key": "x",
-                    "mock_response": primary_response,
+                    "model": "anthropic/claude-sonnet-4-5-20250929",
+                    "api_key": "",
+                    "mock_response": _response(REFUSAL),
                 },
             },
             {
-                "model_name": "m-openai",
+                "model_name": "m-fallback",
                 "litellm_params": {
-                    "model": "openai/gpt-4o-mini",
-                    "api_key": "y",
+                    "model": "openai/my-fake-model",
+                    "api_key": "",
                     "mock_response": fallback_response,
                 },
             },
         ],
-        content_policy_fallbacks=[{"m": ["m-openai"]}],
+        content_policy_fallbacks=[{"m": ["m-fallback"]}],
     )
 
 
-async def _collect_stream_text(stream) -> str:
-    text = ""
-    async for chunk in stream:
-        choices = getattr(chunk, "choices", None) or []
-        if not choices:
-            continue
-        content = getattr(getattr(choices[0], "delta", None), "content", None)
-        if isinstance(content, str):
-            text += content
-    return text
-
-
+@pytest.mark.parametrize("sync_mode", [True, False])
 @pytest.mark.asyncio
-async def test_streaming_refusal_fails_over_when_enabled(monkeypatch):
-    monkeypatch.setenv(
-        "LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps([r"i'?m sorry.*cannot assist"])
-    )
-    router = _streaming_router(REFUSAL)
-    stream = await router.acompletion(
-        model="m", messages=[{"role": "user", "content": "grade this"}], stream=True
-    )
-    text = await _collect_stream_text(stream)
-    assert "cannot assist" not in text.lower()
-    assert text == "FINAL=42"
+async def test_refusal_pattern_triggers_content_policy_fallback(monkeypatch, sync_mode):
+    """End-to-end on `_Driver._blocked`: the same mechanism that already fails
+    finish_reason=content_filter over to content_policy_fallbacks now also fires
+    on a matching refusal."""
+    monkeypatch.setenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps([r"i'?m sorry.*cannot assist"]))
+    router = _refusal_router()
+    if sync_mode:
+        response = router.completion(model="m", messages=[{"role": "user", "content": "grade this"}])
+    else:
+        response = await router.acompletion(model="m", messages=[{"role": "user", "content": "grade this"}])
+    assert response.model == "my-fake-model"
 
 
+@pytest.mark.parametrize("sync_mode", [True, False])
 @pytest.mark.asyncio
-async def test_streaming_refusal_passthrough_when_env_unset(monkeypatch):
-    """Vanilla behavior with the env unset: the refusal streams through."""
+async def test_refusal_pattern_inert_when_env_unset(monkeypatch, sync_mode):
+    """Vanilla behavior with the env unset: the refusal is returned unchanged."""
     monkeypatch.delenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", raising=False)
-    router = _streaming_router(REFUSAL)
-    stream = await router.acompletion(
-        model="m", messages=[{"role": "user", "content": "grade this"}], stream=True
-    )
-    assert await _collect_stream_text(stream) == REFUSAL
+    router = _refusal_router()
+    if sync_mode:
+        response = router.completion(model="m", messages=[{"role": "user", "content": "grade this"}])
+    else:
+        response = await router.acompletion(model="m", messages=[{"role": "user", "content": "grade this"}])
+    assert response.choices[0].message.content == REFUSAL
 
 
 @pytest.mark.asyncio
-async def test_streaming_normal_answer_unaffected_when_enabled(monkeypatch):
-    monkeypatch.setenv(
-        "LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps([r"i'?m sorry.*cannot assist"])
+async def test_refusal_pattern_normal_answer_unaffected_when_enabled(monkeypatch):
+    monkeypatch.setenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps([r"i'?m sorry.*cannot assist"]))
+    router = Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "anthropic/claude-sonnet-4-5-20250929",
+                    "api_key": "",
+                    "mock_response": "The verdict is correct.",
+                },
+            },
+            {
+                "model_name": "m-fallback",
+                "litellm_params": {
+                    "model": "openai/my-fake-model",
+                    "api_key": "",
+                    "mock_response": "Should not have called this.",
+                },
+            },
+        ],
+        content_policy_fallbacks=[{"m": ["m-fallback"]}],
     )
-    router = _streaming_router("The verdict is correct.")
-    stream = await router.acompletion(
-        model="m", messages=[{"role": "user", "content": "grade this"}], stream=True
-    )
-    assert await _collect_stream_text(stream) == "The verdict is correct."
+    response = await router.acompletion(model="m", messages=[{"role": "user", "content": "grade this"}])
+    assert response.choices[0].message.content == "The verdict is correct."
 
 
-def test_stream_hold_disabled_without_content_policy_fallback(monkeypatch):
-    """Holding delays TTFB, so it must only arm for model groups that actually
-    have a content_policy_fallbacks entry (and only when patterns are set)."""
-    monkeypatch.setenv(
-        "LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps(["cannot assist"])
-    )
-    router = _streaming_router(REFUSAL)
-    armed = router._refusal_stream_hold_for_call({"model": "m"})
-    assert armed.active is True
-    unarmed = router._refusal_stream_hold_for_call({"model": "no-fallback-group"})
-    assert unarmed.active is False
-
+@pytest.mark.asyncio
+async def test_content_filter_finish_reason_still_triggers_fallback_without_env(monkeypatch):
+    """The original content_filter path on `_Driver._blocked` must keep working
+    with LITELLM_REFUSAL_FALLBACK_PATTERNS unset."""
     monkeypatch.delenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", raising=False)
-    assert router._refusal_stream_hold_for_call({"model": "m"}).active is False
+    router = Router(
+        model_list=[
+            {
+                "model_name": "m",
+                "litellm_params": {
+                    "model": "anthropic/claude-sonnet-4-5-20250929",
+                    "api_key": "",
+                    "mock_response": _response("", finish_reason="content_filter"),
+                },
+            },
+            {
+                "model_name": "m-fallback",
+                "litellm_params": {
+                    "model": "openai/my-fake-model",
+                    "api_key": "",
+                    "mock_response": "This works!",
+                },
+            },
+        ],
+        content_policy_fallbacks=[{"m": ["m-fallback"]}],
+    )
+    response = await router.acompletion(model="m", messages=[{"role": "user", "content": "grade this"}])
+    assert response.model == "my-fake-model"
+
+
+# ---------------------------------------------------------------------------
+# Stream hold mechanics, tested in isolation (NOT YET wired into a live stream
+# -- see the module docstring and .github/fork-patches.txt).
+# ---------------------------------------------------------------------------
 
 
 def _stream_chunk(content=None, tool_calls=None, reasoning_content=None, refusal=None):
@@ -265,28 +233,14 @@ def test_stream_hold_reasoning_deltas_advance_the_window():
 
 def test_stream_hold_matches_openai_refusal_delta():
     """OpenAI structured-output refusals arrive in delta.refusal, not content."""
-    import pytest as _pytest
-
     from litellm.exceptions import MidStreamFallbackError
     from litellm.router import _RefusalStreamHold
 
     hold = _RefusalStreamHold(patterns=["cannot assist"], hold_chars=400, model="m")
-    with _pytest.raises(MidStreamFallbackError) as exc:
+    with pytest.raises(MidStreamFallbackError) as exc:
         hold.process(_stream_chunk(refusal="I cannot assist with that."))
     assert isinstance(exc.value.original_exception, litellm.ContentPolicyViolationError)
     assert exc.value.is_pre_first_chunk is True
-
-
-def test_stream_hold_disarmed_for_multi_choice_requests(monkeypatch):
-    """n>1 interleaves choice deltas; a single buffer can't match reliably, so
-    the hold must stay off and the stream must pass through vanilla."""
-    monkeypatch.setenv(
-        "LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps(["cannot assist"])
-    )
-    router = _streaming_router(REFUSAL)
-    assert router._refusal_stream_hold_for_call({"model": "m", "n": 2}).active is False
-    assert router._refusal_stream_hold_for_call({"model": "m", "n": 1}).active is True
-    assert router._refusal_stream_hold_for_call({"model": "m"}).active is True
 
 
 def test_get_refusal_fallback_patterns_direct(monkeypatch):
@@ -317,10 +271,7 @@ def test_text_matches_refusal_patterns_direct():
     assert _text_matches_refusal_patterns("I cannot assist", ["cannot assist"]) is True
     assert _text_matches_refusal_patterns("all good here", ["cannot assist"]) is False
     # A malformed regex among the patterns is skipped, not raised.
-    assert (
-        _text_matches_refusal_patterns("I cannot assist", ["[", "cannot assist"])
-        is True
-    )
+    assert _text_matches_refusal_patterns("I cannot assist", ["[", "cannot assist"]) is True
     assert _text_matches_refusal_patterns("I cannot assist", ["["]) is False
 
 
@@ -368,16 +319,14 @@ def test_stream_hold_delta_state_direct():
     from litellm.types.utils import ModelResponseStream
 
     assert _RefusalStreamHold._delta_state(_stream_chunk("hello")) == ("hello", 0, False)
-    assert _RefusalStreamHold._delta_state(
-        _stream_chunk(refusal="I cannot help")
-    ) == ("I cannot help", 0, False)
-    assert _RefusalStreamHold._delta_state(
-        _stream_chunk(reasoning_content="thinking...")
-    ) == ("", len("thinking..."), False)
-    tool_call = {"id": "t1", "type": "function", "function": {"name": "f", "arguments": ""}}
-    text, reasoning_len, saw_tool_call = _RefusalStreamHold._delta_state(
-        _stream_chunk(None, tool_calls=[tool_call])
+    assert _RefusalStreamHold._delta_state(_stream_chunk(refusal="I cannot help")) == ("I cannot help", 0, False)
+    assert _RefusalStreamHold._delta_state(_stream_chunk(reasoning_content="thinking...")) == (
+        "",
+        len("thinking..."),
+        False,
     )
+    tool_call = {"id": "t1", "type": "function", "function": {"name": "f", "arguments": ""}}
+    text, reasoning_len, saw_tool_call = _RefusalStreamHold._delta_state(_stream_chunk(None, tool_calls=[tool_call]))
     assert saw_tool_call is True
     # Empty choices (e.g. a trailing usage-only chunk) must not raise.
     assert _RefusalStreamHold._delta_state(ModelResponseStream(choices=[])) == ("", 0, False)
@@ -396,9 +345,7 @@ def test_stream_hold_raise_refusal_direct():
 
 
 # ---------------------------------------------------------------------------
-# Responses API streaming: the hold must also cover /v1/responses streams,
-# where Azure expresses a content-filter block as a terminal
-# `response.incomplete` EVENT (HTTP 200), never an exception.
+# Responses API streaming hold mechanics, also tested in isolation only.
 # ---------------------------------------------------------------------------
 
 from types import SimpleNamespace
@@ -411,18 +358,14 @@ def _ev(type_, **kw):
 def _incomplete_event(reason="content_filter"):
     return _ev(
         "response.incomplete",
-        response=SimpleNamespace(
-            incomplete_details=SimpleNamespace(reason=reason), usage=None
-        ),
+        response=SimpleNamespace(incomplete_details=SimpleNamespace(reason=reason), usage=None),
     )
 
 
 def _responses_hold(hold_chars=400):
     from litellm.router import _ResponsesRefusalStreamHold
 
-    return _ResponsesRefusalStreamHold(
-        patterns=["cannot assist"], hold_chars=hold_chars, model="gpt-5.5"
-    )
+    return _ResponsesRefusalStreamHold(patterns=["cannot assist"], hold_chars=hold_chars, model="gpt-5.5")
 
 
 def test_responses_hold_raises_on_content_filter_terminal():
@@ -464,109 +407,6 @@ def test_responses_hold_releases_on_reasoning_window_and_tool_calls():
     assert hold.active is False
 
 
-def test_responses_hold_inert_when_env_unset(monkeypatch):
-    monkeypatch.delenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", raising=False)
-    router = _streaming_router("x")
-    from litellm.router import _ResponsesRefusalStreamHold
-
-    hold = router._refusal_stream_hold_for_call(
-        {"model": "m"}, hold_cls=_ResponsesRefusalStreamHold
-    )
-    assert hold.active is False
-    ev = _incomplete_event()
-    assert hold.process(ev) == [ev]  # passthrough, no raise
-
-
-@pytest.mark.asyncio
-async def test_responses_streaming_content_filter_fails_over(monkeypatch):
-    """Full _aresponses_streaming_iterator path: a held content-filter stream is
-    replaced by the fallback stream; no source event leaks to the client."""
-    monkeypatch.setenv(
-        "LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps(["cannot assist"])
-    )
-    router = _streaming_router("unused")
-
-    class FakeSource:
-        completed_response = None
-
-        def __aiter__(self):
-            return self._gen()
-
-        async def _gen(self):
-            yield _ev("response.created", response=SimpleNamespace())
-            yield _ev("response.output_text.delta", delta="I'm sorry, but I ")
-            yield _incomplete_event()
-
-        async def aclose(self):
-            self.closed = True
-
-    rescue_events = [
-        _ev("response.output_text.delta", delta='{"correct":"yes"}'),
-        _ev("response.completed", response=SimpleNamespace(usage=None)),
-    ]
-
-    class FakeFallback:
-        def __aiter__(self):
-            return self._gen()
-
-        async def _gen(self):
-            for e in rescue_events:
-                yield e
-
-        async def aclose(self):
-            pass
-
-    captured = {}
-
-    async def fake_common_utils(**kwargs):
-        captured["e"] = kwargs["e"]
-        return FakeFallback()
-
-    monkeypatch.setattr(
-        router, "async_function_with_fallbacks_common_utils", fake_common_utils
-    )
-
-    wrapper = await router._aresponses_streaming_iterator(
-        response=FakeSource(),
-        initial_kwargs={"model": "m", "input": "judge this"},
-    )
-    seen = [item async for item in wrapper]
-    assert seen == rescue_events  # only fallback events; nothing from the source
-    assert isinstance(captured["e"], litellm.ContentPolicyViolationError)
-
-
-@pytest.mark.asyncio
-async def test_responses_streaming_normal_stream_passes_through(monkeypatch):
-    monkeypatch.setenv(
-        "LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps(["cannot assist"])
-    )
-    router = _streaming_router("unused")
-
-    events = [
-        _ev("response.created", response=SimpleNamespace()),
-        _ev("response.output_text.delta", delta='{"extracted_final_answer":"0.186593"}'),
-        _ev("response.completed", response=SimpleNamespace(usage=None)),
-    ]
-
-    class FakeSource:
-        completed_response = None
-
-        def __aiter__(self):
-            return self._gen()
-
-        async def _gen(self):
-            for e in events:
-                yield e
-
-        async def aclose(self):
-            pass
-
-    wrapper = await router._aresponses_streaming_iterator(
-        response=FakeSource(), initial_kwargs={"model": "m", "input": "judge this"}
-    )
-    assert [item async for item in wrapper] == events
-
-
 def test_responses_hold_blocked_terminal_with_dict_details_and_enum_type():
     """incomplete_details may arrive dict-shaped, and event.type may be the
     str-Enum member rather than a plain string — both must trigger."""
@@ -587,58 +427,6 @@ def test_responses_hold_blocked_terminal_with_dict_details_and_enum_type():
         hold.process(_ev(ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA, delta="I cannot assist."))
 
 
-@pytest.mark.asyncio
-async def test_responses_failover_closes_source_and_reports_fallback_terminal(monkeypatch):
-    """The abandoned source is closed early, and completed_response reflects the
-    FALLBACK's terminal (never the source's swallowed content-filter incomplete) —
-    even when the fallback stream ends without a terminal event."""
-    monkeypatch.setenv(
-        "LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps(["cannot assist"])
-    )
-    router = _streaming_router("unused")
-
-    class FakeSource:
-        completed_response = None
-        closed = False
-
-        def __aiter__(self):
-            return self._gen()
-
-        async def _gen(self):
-            yield _ev("response.output_text.delta", delta="x")
-            self.completed_response = _incomplete_event()  # latched like the real iterator
-            yield self.completed_response
-
-        async def aclose(self):
-            self.closed = True
-
-    class TerminalLessFallback:
-        def __aiter__(self):
-            return self._gen()
-
-        async def _gen(self):
-            yield _ev("response.output_text.delta", delta="rescued")
-
-        async def aclose(self):
-            pass
-
-    async def fake_common_utils(**kwargs):
-        return TerminalLessFallback()
-
-    monkeypatch.setattr(
-        router, "async_function_with_fallbacks_common_utils", fake_common_utils
-    )
-    source = FakeSource()
-    wrapper = await router._aresponses_streaming_iterator(
-        response=source, initial_kwargs={"model": "m", "input": "judge this"}
-    )
-    seen = [item async for item in wrapper]
-    assert [getattr(i, "delta", None) for i in seen] == ["rescued"]
-    assert source.closed is True
-    # The blocked source terminal must NOT be reported as the completed response.
-    assert wrapper.completed_response is None
-
-
 def test_is_blocked_terminal_direct():
     """Direct coverage of the _is_blocked_terminal hook on both classes."""
     from litellm.router import _RefusalStreamHold, _ResponsesRefusalStreamHold
@@ -647,12 +435,7 @@ def test_is_blocked_terminal_direct():
     assert _RefusalStreamHold._is_blocked_terminal(_stream_chunk("x")) is False
 
     assert _ResponsesRefusalStreamHold._is_blocked_terminal(_incomplete_event()) is True
-    assert (
-        _ResponsesRefusalStreamHold._is_blocked_terminal(
-            _incomplete_event(reason="max_output_tokens")
-        )
-        is False
-    )
+    assert _ResponsesRefusalStreamHold._is_blocked_terminal(_incomplete_event(reason="max_output_tokens")) is False
     assert (
         _ResponsesRefusalStreamHold._is_blocked_terminal(
             _ev("response.completed", response=SimpleNamespace(usage=None))
@@ -661,73 +444,23 @@ def test_is_blocked_terminal_direct():
     )
 
 
-def test_fallback_dispatch_exception_unwraps_only_cpv():
-    from litellm.exceptions import MidStreamFallbackError
-    from litellm.router import _fallback_dispatch_exception
+def test_warn_if_refusal_patterns_configured_for_stream(monkeypatch):
+    """The streaming hold is not wired into a live stream yet (see the module docstring), so a
+    streamed refusal is not caught while LITELLM_REFUSAL_FALLBACK_PATTERNS is set. Rather than
+    stay silent about that gap, every streaming call logs a warning while the env var is set."""
+    from litellm.router_rust import refusal_fallback
 
-    cpv = litellm.ContentPolicyViolationError(message="m", model="m", llm_provider="")
-    wrapped = MidStreamFallbackError(
-        message="m", model="m", llm_provider="", original_exception=cpv
-    )
-    assert _fallback_dispatch_exception(wrapped) is cpv
-
-    plain = MidStreamFallbackError(
-        message="m", model="m", llm_provider="", original_exception=ValueError("x")
-    )
-    assert _fallback_dispatch_exception(plain) is plain
-
-
-def _mid_stream_error(original):
-    from litellm.exceptions import MidStreamFallbackError
-
-    return MidStreamFallbackError(
-        message="m", model="m", llm_provider="", original_exception=original
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "litellm._logging.verbose_router_logger.warning",
+        lambda msg, *args: warnings.append(msg % args if args else msg),
     )
 
+    monkeypatch.delenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", raising=False)
+    refusal_fallback.warn_if_refusal_patterns_configured_for_stream()
+    assert warnings == []
 
-@pytest.mark.asyncio
-async def test_maybe_abandon_refused_stream_source_closes_and_clears_latch():
-    from litellm.router import _maybe_abandon_refused_stream_source
-
-    cpv = litellm.ContentPolicyViolationError(message="m", model="m", llm_provider="")
-
-    class Src:
-        closed = False
-        completed_response = "latched-blocked-terminal"
-
-        async def aclose(self):
-            self.closed = True
-
-    src = Src()
-    await _maybe_abandon_refused_stream_source(_mid_stream_error(cpv), src, "test")
-    assert src.closed is True
-    assert src.completed_response is None
-
-    # Non-CPV mid-stream errors (429/5xx) leave the source untouched.
-    other = Src()
-    await _maybe_abandon_refused_stream_source(_mid_stream_error(ValueError("x")), other, "test")
-    assert other.closed is False
-    assert other.completed_response == "latched-blocked-terminal"
-
-    # aclose raising must never propagate.
-    class Angry:
-        completed_response = "x"
-
-        async def aclose(self):
-            raise RuntimeError("boom")
-
-    angry = Angry()
-    await _maybe_abandon_refused_stream_source(_mid_stream_error(cpv), angry, "test")
-    assert angry.completed_response is None
-
-
-def test_prepare_responses_fallback_item_combines_partial_usage():
-    from litellm.router import Router
-    from litellm.types.llms.openai import ResponseAPIUsage, ResponseCompletedEvent
-
-    usage = ResponseAPIUsage(input_tokens=3, output_tokens=4, total_tokens=7)
-    # A plain event with no response/usage passes through untouched.
-    plain = _ev("response.output_text.delta", delta="x")
-    Router._prepare_responses_fallback_item(plain, None, usage)
-    Router._prepare_responses_fallback_item(plain, None, None)
-    assert plain.delta == "x"
+    monkeypatch.setenv("LITELLM_REFUSAL_FALLBACK_PATTERNS", json.dumps(["cannot assist"]))
+    refusal_fallback.warn_if_refusal_patterns_configured_for_stream()
+    assert len(warnings) == 1
+    assert "stream=True" in warnings[0]

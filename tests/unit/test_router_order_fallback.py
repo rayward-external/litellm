@@ -17,6 +17,7 @@ from openai import AsyncOpenAI
 import litellm
 from litellm import Router
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.litellm_core_utils.routing_common_utils import without_router_only_kwargs
 from litellm.router_utils.prompt_caching_cache import PromptCachingCache
 from litellm.types.router import RouterRateLimitError
 from litellm.utils import get_deployment_order, get_order_filtered_deployments
@@ -95,16 +96,14 @@ class TestGetOrderFilteredDeployments:
         assert len(result) == 2
 
     def test_request_litellm_params_strip_router_only_keys(self):
-        deployment = {
-            "litellm_params": {
-                "model": "azure/gpt-5.4",
-                "api_key": "key",
-                "api_base": "https://example.openai.azure.com/",
-                "order": 1,
-            }
+        litellm_params = {
+            "model": "azure/gpt-5.4",
+            "api_key": "key",
+            "api_base": "https://example.openai.azure.com/",
+            "order": 1,
         }
 
-        params = Router._copy_request_litellm_params(deployment)
+        params = without_router_only_kwargs(litellm_params)
         assert params["model"] == "azure/gpt-5.4"
         assert "order" not in params
 
@@ -576,34 +575,6 @@ async def test_router_order_fallback_retries_keep_target_order():
 
 
 @pytest.mark.asyncio
-async def test_generic_api_call_strips_target_order_from_provider_kwargs():
-    captured: Final = {}
-
-    async def _fake_provider(**provider_kwargs):
-        captured.update(provider_kwargs)
-        return "ok"
-
-    router = Router(
-        model_list=[
-            {
-                "model_name": "test-model",
-                "litellm_params": {"model": "gpt-4o", "api_key": "key", "order": 2},
-                "model_info": {"id": "2"},
-            },
-        ],
-    )
-    response = await router._ageneric_api_call_with_fallbacks_helper(
-        model="test-model",
-        original_generic_function=_fake_provider,
-        _target_order=2,
-        messages=[{"role": "user", "content": "hi"}],
-    )
-    assert response == "ok"
-    assert captured["model"] == "gpt-4o"
-    assert "_target_order" not in captured
-
-
-@pytest.mark.asyncio
 async def test_text_completion_order_fallback_hop_does_not_send_target_order_upstream():
     upstream_bodies: Final[list[dict]] = []
 
@@ -805,24 +776,6 @@ async def test_responses_order_fallback_hop_keeps_the_encrypted_reasoning_the_sa
         _responses_history_with_order_1_reasoning(),
         _responses_history_with_order_1_reasoning(),
     ]
-
-
-def test_fallback_hop_reads_the_deployment_that_just_failed_from_the_metadata_bucket_it_writes():
-    router: Final = _two_openai_orders_on_one_encryption_boundary_router()
-    order_2: Final = router.get_deployment(model_id="openai-order-2").model_dump(exclude_none=True)
-    hop_input: Final = _responses_history_with_order_1_reasoning()
-    hop_kwargs: Final = {
-        "model": "gpt-6-astra",
-        "input": hop_input,
-        "fallback_depth": 1,
-        "metadata": {"model_info": {"id": "openai-order-1"}},
-        "litellm_metadata": {"previous_models": [{"deployment_id": None}]},
-    }
-
-    router._update_kwargs_with_deployment(deployment=order_2, kwargs=hop_kwargs)
-
-    assert hop_input == _responses_history_with_order_1_reasoning()
-    assert hop_kwargs["metadata"]["model_info"]["id"] == "openai-order-2"
 
 
 def test_check_non_standard_fallback_format():

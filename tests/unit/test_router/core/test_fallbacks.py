@@ -924,3 +924,24 @@ def test_sync_completion_falls_back_like_async(make_core: MakeCore, host: Script
 
     assert host.deployments_called("completion") == ["a", "b"]
     assert headers(response)["x-litellm-attempted-fallbacks"] == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_tags_do_not_accumulate_across_deployments(make_core: MakeCore, host: ScriptedHost) -> None:
+    """Deployment-level attribution tags, winning-deployment-only (rayward fork patch), on
+    ``update_kwargs_with_deployment`` (litellm/router_rust/invoke/shaping.py), restored after the
+    2026-11-08 sync's router_python_core.py deletion dropped it. The request's kwargs dict is
+    reused across retries/fallbacks, so merging each serving deployment's own tags into the live
+    ``metadata["tags"]`` would accumulate every failed attempt's tags onto the one that finally
+    succeeds, instead of carrying only the serving deployment's tags on each attempt."""
+    core = build(
+        make_core,
+        model_list=[deployment("a", "a", tags=["ta"]), deployment("b", "b", tags=["tb"])],
+        fallbacks=[{"a": ["b"]}],
+    )
+    host.answer("openai/a", rate_limit())
+
+    await complete(core)
+
+    calls = host.calls_to("acompletion")
+    assert [call.kwargs["metadata"]["tags"] for call in calls] == [["ta"], ["tb"]]
