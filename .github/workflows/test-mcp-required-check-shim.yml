@@ -6,14 +6,13 @@ on:
   pull_request:
     branches:
       - main
-      - litellm_internal_staging
       - litellm_oss_staging
       - "litellm_**"
 
 # Upstream's 2026-09-19 "ci(mcp): consolidate integration tests into shared
 # workflow" (8f3562ed9c) removed .github/workflows/test-mcp.yml, folding its
 # tests/mcp_tests coverage into test-unit.yml's mcp-integration shard. But
-# litellm_internal_staging's branch protection still lists that workflow's
+# main's branch protection still lists that workflow's
 # bare job name ("test") as a required status check, which can now never
 # report on any PR -> every PR is permanently blocked from merging ("1 of 55
 # required status checks are expected"). This shim reproduces only the job
@@ -21,7 +20,7 @@ on:
 # test-unit.yml's mcp-integration shard, which already runs via the normal
 # test matrix. Same pattern as proxy-legacy-required-check-shim.yml and
 # server-root-path-required-check-shim.yml.
-# REMOVAL CONDITION: remove once an admin updates litellm_internal_staging's
+# REMOVAL CONDITION: remove once an admin updates main's
 # required status checks (Settings > Branches) to drop this obsolete context.
 jobs:
   test:

@@ -10,7 +10,7 @@ on:
       upstream_ref:
         description: 'Upstream BerriAI/litellm ref (branch name or commit SHA) to merge in'
         required: true
-        default: 'litellm_internal_staging'
+        default: 'main'
 
 jobs:
   sync:
@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-          ref: litellm_internal_staging
+          ref: main
 
       - name: Configure git identity
         run: |
@@ -38,7 +38,7 @@ jobs:
 
       - name: Merge upstream (-X theirs)
         run: |
-          git checkout -b "$SYNC_BRANCH" origin/litellm_internal_staging
+          git checkout -b "$SYNC_BRANCH" origin/main
           git merge -X theirs FETCH_HEAD -m "chore: sync upstream $(date -u +%Y-%m-%d)"
 
       - name: Restore fork-only patches dropped by the merge

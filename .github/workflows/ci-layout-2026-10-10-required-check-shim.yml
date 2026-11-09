@@ -6,7 +6,6 @@ on:
   pull_request:
     branches:
       - main
-      - litellm_internal_staging
       - litellm_oss_staging
       - "litellm_**"
 
@@ -18,7 +17,7 @@ on:
 # checks into the same matrix as bare "<name>" jobs (continuing the fold-in
 # proxy-legacy-required-check-shim.yml already describes). It also deleted the
 # whole lint-budget-ratchet system (scripts/budget_ratchet_check.py and friends)
-# and renamed the docs job from "documentation" to "docs". litellm_internal_staging's
+# and renamed the docs job from "documentation" to "docs". main's
 # branch protection still lists the old names below as required status checks,
 # which can now never report on any PR -> every PR is permanently blocked from
 # merging ("25 of 54 required status checks are expected", caught merging the
@@ -41,7 +40,7 @@ on:
 #   - every other "<name> / Run tests" below -> test-unit.yml's bare "<name>"
 #     shard (same job, the reusable-workflow call was just inlined)
 #
-# REMOVAL CONDITION: remove once an admin updates litellm_internal_staging's
+# REMOVAL CONDITION: remove once an admin updates main's
 # required status checks (Settings > Branches) to drop these obsolete contexts
 # (renaming each "<name> / Run tests" entry to its bare "<name>" counterpart
 # where one now exists for real, and dropping "budget-ratchet", "documentation",
