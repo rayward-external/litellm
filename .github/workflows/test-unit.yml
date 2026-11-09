@@ -83,7 +83,7 @@ jobs:
         if: steps.changes.outputs.decision != 'skip' && steps.rust-bridge-cache.outputs.cache-hit != 'true'
         uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a
         with:
-          version: "v0.0.0-failopen-probe"
+          version: "v0.18.0"
 
       - name: Build editable Rust bridge
         if: steps.changes.outputs.decision != 'skip' && steps.rust-bridge-cache.outputs.cache-hit != 'true'
