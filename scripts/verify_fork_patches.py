@@ -193,7 +193,7 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-11-08 sync: +1 for the vscode-extension @azure/msal-node override row,
 # flipped to N/A once @vscode/vsce's own @azure/identity dependency bumped its
 # msal-node floor past the override's target.
-EXPECTED_NA_ROWS = 78
+EXPECTED_NA_ROWS = 79
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
