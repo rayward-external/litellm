@@ -8,6 +8,7 @@ import urllib.parse
 from collections.abc import Callable, Mapping
 from typing import (
     TYPE_CHECKING,
+    ClassVar,
     Final,
     cast,  # noqa: TID251  # the GetAsyncInvoke response JSON matches this TypedDict's shape by construction
     get_args,
@@ -45,6 +46,7 @@ from ..base_aws_llm import (
     run_aws_signing,
 )
 from ..common_utils import BedrockError, split_bedrock_region_path
+from ..web_identity_session_policy import BEDROCK_EMBEDDING_SESSION_POLICY, WebIdentitySessionPolicy
 from .amazon_nova_transformation import AmazonNovaEmbeddingConfig
 from .amazon_titan_g1_transformation import AmazonTitanG1Config
 from .amazon_titan_multimodal_transformation import (
@@ -83,6 +85,8 @@ def _without_region_path(model: str) -> str:
 
 
 class BedrockEmbedding(BaseAWSLLM):
+    _web_identity_session_policy: ClassVar[WebIdentitySessionPolicy] = BEDROCK_EMBEDDING_SESSION_POLICY
+
     @overload
     def _load_credentials(
         self,
