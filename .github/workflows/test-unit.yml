@@ -1055,7 +1055,7 @@ jobs:
             uv run --no-sync python -c "import importlib.metadata; import litellm.rust_bridge._native; print(importlib.metadata.version('litellm'))"
           fi
           uv run --no-sync python -c 'import os, sys; print(sys.version); assert f"{sys.version_info.major}.{sys.version_info.minor}" == os.environ["UV_PYTHON"]'
-          uv pip install --python .venv/bin/python --require-hashes -r .github/scripts/unit-test-tzdata-requirements.txt
+          uv pip install --no-config --python .venv/bin/python --require-hashes -r .github/scripts/unit-test-tzdata-requirements.txt
           uv run --no-sync python -c 'from zoneinfo import ZoneInfo; ZoneInfo("US/Eastern")'
 
       - name: Check schema.prisma against the merge base
