@@ -6,7 +6,6 @@ on:
   pull_request:
     branches:
       - main
-      - litellm_internal_staging
       - litellm_oss_staging
       - "litellm_**"
 
@@ -17,14 +16,14 @@ on:
 # and schema more thoroughly (see ci_cd/cost_map_guard.py: JSON parses, the
 # schema file is regenerated and byte-compared, and the cost map is validated
 # against it) plus enforces the cost-map-sync-bot branch/author rules. But
-# litellm_internal_staging's branch protection still lists the old workflow's
+# main's branch protection still lists the old workflow's
 # job name (validate-model-prices-json) as a required status check, which can
 # now never report on any PR -> every PR is permanently blocked from merging
 # ("... required status checks are expected"). This shim reproduces only the
 # job name so the required check can report; same pattern as
 # server-root-path-required-check-shim.yml and
 # proxy-legacy-required-check-shim.yml.
-# REMOVAL CONDITION: remove once an admin updates litellm_internal_staging's
+# REMOVAL CONDITION: remove once an admin updates main's
 # required status checks (Settings > Branches) to drop this obsolete context
 # (or to require cost-map-guard's own check instead).
 jobs:

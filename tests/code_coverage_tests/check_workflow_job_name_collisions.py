@@ -78,7 +78,7 @@ LOCAL_CALL_PREFIX: Final = "./"
 
 # RAYWARD FORK PATCH: required-checks-complement-*.yml workflows intentionally
 # publish the same job `name:` as the real, path-filtered workflow they complement
-# (see those files' own header comments), so litellm_internal_staging's branch
+# (see those files' own header comments), so main's branch
 # protection can require one context without deadlocking PRs that never touch the
 # filtered paths. Each pair is provably mutually exclusive: pull_request
 # `paths`/`paths-ignore` partition every commit into exactly one runner, an
@@ -86,7 +86,7 @@ LOCAL_CALL_PREFIX: Final = "./"
 # deliberately blind to trigger conditions (see module docstring), so without this
 # allowlist it flags a working, path-partitioned pair as an ambiguous duplicate.
 # REMOVAL CONDITION: drop a name once its real workflow's required check is no
-# longer required by litellm_internal_staging's branch protection (making the
+# longer required by main's branch protection (making the
 # complement unnecessary), or once this checker understands path-trigger
 # partitioning well enough to verify the invariant instead of trusting this list.
 INTENTIONAL_COMPLEMENT_NAMES: Final[frozenset[str]] = frozenset(

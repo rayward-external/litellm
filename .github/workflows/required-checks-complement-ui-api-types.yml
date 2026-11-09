@@ -1,5 +1,5 @@
 # Shim for the required status check "Verify schema.d.ts matches the proxy
-# OpenAPI spec" on litellm_internal_staging's branch protection.
+# OpenAPI spec" on main's branch protection.
 #
 # That name used to be a standalone path-filtered workflow
 # (.github/workflows/check-ui-api-types.yml), with this file as its
@@ -26,7 +26,7 @@
 # Mirrors the infra repo's required-checks-complement.yml (llm-gateway-infra
 # PR #261).
 #
-# REMOVAL CONDITION: remove once an admin updates litellm_internal_staging's
+# REMOVAL CONDITION: remove once an admin updates main's
 # required status checks (Settings > Branches) to require "ui-api-types"
 # instead of "Verify schema.d.ts matches the proxy OpenAPI spec".
 name: required-checks-complement-ui-api-types

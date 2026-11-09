@@ -4,7 +4,7 @@ on:
   pull_request:
     types: [closed]
     branches:
-      - litellm_internal_staging
+      - main
 
 permissions:
   contents: read
@@ -17,7 +17,7 @@ jobs:
     env:
       TARGET_REPO: rayward-internal/llm-gateway-infra
       EVENT_TYPE: litellm-main-merged
-      SOURCE_REF: refs/heads/litellm_internal_staging
+      SOURCE_REF: refs/heads/main
       SOURCE_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
       SOURCE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       SOURCE_REPO: ${{ github.repository }}

@@ -20,7 +20,6 @@ on:
   push:
     branches:
       - main
-      - litellm_internal_staging
       - litellm_oss_staging
       - "litellm_**"
     # A -X theirs upstream sync lands on these branches as a PUSH (often a
@@ -31,7 +30,6 @@ on:
   pull_request:
     branches:
       - main
-      - litellm_internal_staging
       - litellm_oss_staging
       - "litellm_**"
     # Deliberately NO paths filter: the whole point is catching a patch that

@@ -3,7 +3,7 @@
 This repository is **`rayward-external/litellm`**, a private fork of `BerriAI/litellm`.
 
 - **Open every pull request against `rayward-external/litellm`**, targeting its own
-  default branch (`litellm_internal_staging`). **Never open a PR against
+  default branch (`main`). **Never open a PR against
   `BerriAI/litellm`.**
 - Contributing a patch upstream is a **publishing decision only the repo owner makes**.
   It puts the owner's GitHub identity and this fork on a public third-party project and

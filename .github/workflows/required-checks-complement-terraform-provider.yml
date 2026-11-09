@@ -1,6 +1,6 @@
 # Complement to the path-filtered "Terraform Provider" workflow
 # (.github/workflows/test-terraform-provider.yml), so its check names can be
-# REQUIRED by branch protection on litellm_internal_staging without deadlocking
+# REQUIRED by branch protection on main without deadlocking
 # PRs that don't touch those paths (e.g. a Python-only fix under litellm/llms/**,
 # where the real workflow never fires and a required context would wait forever).
 #
@@ -24,8 +24,6 @@ on:
   pull_request:
     branches:
       - main
-      - litellm_internal_staging
-      - litellm_oss_staging
       - "litellm_**"
     paths-ignore:
       - "terraform/provider/**"
