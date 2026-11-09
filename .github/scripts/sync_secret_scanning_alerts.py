@@ -100,6 +100,8 @@ def main() -> int:
     triage = load_triage(Path(args.triage))
     gh = GitHub(token, args.repo)
 
+    if args.dry_run:
+        print("DRY RUN — nothing applied; this run is not an alert inventory")
     resolved = reopened = 0
     untriaged: list[str] = []
     for a in list_alerts(gh, "open"):
@@ -135,6 +137,12 @@ def main() -> int:
             if not args.dry_run:
                 gh.patch(a["number"], {"state": "open"}, kind="secret-scanning")
             reopened += 1
+            n = a["number"]
+            locs = locations(gh, n)
+            untriaged.append(
+                f"SECRET UNTRIAGED #{n} {a.get('secret_type')} {', '.join(locs[:3])} "
+                f"validity={a.get('validity') or 'unknown'} (reopened)"
+            )
 
     verb = "would " if args.dry_run else ""
     print(f"\n{verb}resolve {resolved}, {verb}reopen {reopened}, untriaged {len(untriaged)}")

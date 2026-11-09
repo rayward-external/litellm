@@ -1,4 +1,7 @@
 name: Security alert sync
+# A dry run is titled "(dry run)" so it can never be mistaken for an applied
+# result: the security sweep reads only runs without that suffix.
+run-name: ${{ inputs.dry_run && 'Security alert sync (dry run)' || 'Security alert sync' }}
 
 # Fork-only. The fork's maintenance agent cannot read Dependabot or
 # secret-scanning alerts (its app token has no permission for either, its

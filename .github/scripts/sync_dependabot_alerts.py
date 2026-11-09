@@ -268,6 +268,8 @@ def main() -> int:
     today = dt.datetime.now(dt.timezone.utc).date()
     gh = GitHub(token, args.repo)
 
+    if args.dry_run:
+        print("DRY RUN — nothing applied; this run is not an alert inventory")
     dismissed = reopened = 0
     uncovered: list[dict] = []
     for a in sorted(gh.alerts(), key=lambda a: a["number"]):
