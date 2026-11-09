@@ -1058,8 +1058,12 @@ jobs:
           # ubuntu-26.04 runner images no longer ship the legacy tz alias links
           # (US/Eastern etc. live in tzdata-legacy), and no locked Linux dependency
           # installs the tzdata wheel, so ZoneInfo("US/Eastern") fails. Install the
-          # uv.lock-pinned tzdata wheel so zoneinfo falls back to it.
-          uv pip install --python .venv/bin/python "tzdata==2026.2"
+          # uv.lock-pinned tzdata wheel so zoneinfo falls back to it. `uv pip install`
+          # does not read uv.lock hashes, so pin the locked SHA-256s explicitly;
+          # --no-config keeps pyproject's unpinned constraint-dependencies out of
+          # --require-hashes mode (tzdata has no dependencies).
+          printf '%s\n' 'tzdata==2026.2 --hash=sha256:bbe9af844f658da81a5f95019480da3a89415801f6cc966806612cc7169bffe7 --hash=sha256:9173fde7d80d9018e02a662e168e5a2d04f87c41ea174b139fbef642eda62d10' > "$RUNNER_TEMP/tzdata-requirements.txt"
+          uv pip install --python .venv/bin/python --no-config --no-deps --require-hashes -r "$RUNNER_TEMP/tzdata-requirements.txt"
           uv run --no-sync python -c 'from zoneinfo import ZoneInfo; ZoneInfo("US/Eastern")'
 
       - name: Check schema.prisma against the merge base
