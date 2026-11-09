@@ -42,6 +42,12 @@ on:
       - .github/scripts/sync_dependabot_alerts.py
       - .github/scripts/sync_secret_scanning_alerts.py
       - .github/workflows/security-alert-sync.yml
+  pull_request:
+    paths:
+      - .github/scripts/sync_dependabot_alerts.py
+      - .github/scripts/sync_secret_scanning_alerts.py
+      - .github/scripts/test_sync_alerts.py
+      - .github/workflows/security-alert-sync.yml
   workflow_dispatch:
     inputs:
       dry_run:
@@ -52,7 +58,8 @@ on:
 permissions: {}
 
 concurrency:
-  group: security-alert-sync
+  # PR self-tests must not queue behind (or cancel) a real sync.
+  group: security-alert-sync-${{ github.event_name == 'pull_request' && github.ref || 'sync' }}
   cancel-in-progress: false
 
 jobs:
@@ -76,7 +83,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # Every run tests the scripts first, so a broken change never writes
+      # alert state; on a pull request this is the only step that runs.
+      - name: Self-test the sync scripts
+        id: selftest
+        run: python3 .github/scripts/test_sync_alerts.py
+
       - name: Sync osv-scanner.toml triage to Dependabot alerts
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.SECURITY_ALERTS_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run }}
@@ -86,7 +100,10 @@ jobs:
           python3 .github/scripts/sync_dependabot_alerts.py "${args[@]}"
 
       - name: Sync secret-scanning-triage.toml to secret-scanning alerts
-        if: ${{ !cancelled() }}
+        # !cancelled() lets this run after the Dependabot step reports uncovered
+        # alerts, so it must name the self-test explicitly: a failed self-test
+        # never reaches a step holding the write token.
+        if: ${{ !cancelled() && steps.selftest.outcome == 'success' && github.event_name != 'pull_request' }}
         env:
           GH_TOKEN: ${{ secrets.SECURITY_ALERTS_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run }}
