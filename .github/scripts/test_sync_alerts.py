@@ -138,6 +138,8 @@ class Base(unittest.TestCase):
         )
         dep.osv_aliases = lambda vid: {"RUSTSEC-2099-0001": ["GHSA-rust-rust-rust"]}.get(vid, [])
         os.environ["GH_TOKEN"] = "test"
+        # Never append fixture inventories to the real Actions job summary.
+        self.saved_summary = os.environ.pop("GITHUB_STEP_SUMMARY", None)
 
     def tearDown(self):
         dep.GitHub, sec.GitHub, dep.osv_aliases, sys.argv[:], token = self.saved
@@ -145,6 +147,8 @@ class Base(unittest.TestCase):
             os.environ.pop("GH_TOKEN", None)
         else:
             os.environ["GH_TOKEN"] = token
+        if self.saved_summary is not None:
+            os.environ["GITHUB_STEP_SUMMARY"] = self.saved_summary
         self.tmp.cleanup()
 
     def run_dep(self, fake, *extra):
