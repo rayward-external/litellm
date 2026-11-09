@@ -105,7 +105,11 @@ def main() -> int:
     resolved = reopened = 0
     untriaged: list[str] = []
     for a in list_alerts(gh, "open"):
-        n, kind, validity = a["number"], a.get("secret_type"), a.get("validity") or "unknown"
+        n, kind, validity = (
+            a["number"],
+            a.get("secret_type"),
+            a.get("validity") or "unknown",
+        )
         locs = locations(gh, n)
         entry = triage.get(n)
         where = ", ".join(locs[:3]) + (f" (+{len(locs) - 3} more)" if len(locs) > 3 else "")
@@ -123,7 +127,11 @@ def main() -> int:
             if not args.dry_run:
                 gh.patch(
                     n,
-                    {"state": "resolved", "resolution": entry["resolution"], "resolution_comment": comment},
+                    {
+                        "state": "resolved",
+                        "resolution": entry["resolution"],
+                        "resolution_comment": comment,
+                    },
                     kind="secret-scanning",
                 )
             resolved += 1
@@ -132,8 +140,15 @@ def main() -> int:
 
     for a in list_alerts(gh, "resolved"):
         mine = (a.get("resolution_comment") or "").startswith(MARKER)
-        if mine and a["number"] not in triage:
-            print(f"reopen  #{a['number']} {a.get('secret_type')}: its triage entry was removed")
+        validity = a.get("validity") or "unknown"
+        # Reopen our own resolution when its entry is gone, AND when GitHub has
+        # since validated the secret as ACTIVE: a fixture judgement never
+        # outlives evidence that the credential is live.
+        why = "its triage entry was removed" if a["number"] not in triage else None
+        if validity == "active":
+            why = "GitHub now reports the secret ACTIVE: rotate it"
+        if mine and why:
+            print(f"reopen  #{a['number']} {a.get('secret_type')}: {why}")
             if not args.dry_run:
                 gh.patch(a["number"], {"state": "open"}, kind="secret-scanning")
             reopened += 1
@@ -141,7 +156,7 @@ def main() -> int:
             locs = locations(gh, n)
             untriaged.append(
                 f"SECRET UNTRIAGED #{n} {a.get('secret_type')} {', '.join(locs[:3])} "
-                f"validity={a.get('validity') or 'unknown'} (reopened)"
+                f"validity={validity} (reopened: {why})"
             )
 
     verb = "would " if args.dry_run else ""
