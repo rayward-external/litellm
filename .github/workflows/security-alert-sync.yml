@@ -1,0 +1,93 @@
+name: Security alert sync
+
+# Fork-only. The fork's maintenance agent cannot read Dependabot or
+# secret-scanning alerts (its app token has no permission for either, its
+# egress proxy refuses secret-scanning, and the Actions GITHUB_TOKEN cannot
+# read them), so it triages through files under review and this job applies
+# them to GitHub. It is the ONLY writer of either alert kind:
+#
+#   * Dependabot (.github/scripts/sync_dependabot_alerts.py): an alert covered
+#     by an unexpired osv-scanner.toml entry is dismissed as tolerable_risk
+#     with the entry's reason; its own dismissals are reopened once the entry
+#     is removed or expires; uncovered alerts are listed as UNCOVERED.
+#   * Secret scanning (.github/scripts/sync_secret_scanning_alerts.py): an
+#     alert listed in .github/secret-scanning-triage.toml (a confirmed
+#     fixture) is resolved with the entry's resolution; removing the entry
+#     reopens it; unlisted alerts are listed as SECRET UNTRIAGED. Secret values
+#     are never fetched or printed (this repository's logs are public).
+#
+# Either list being non-empty fails the run. The daily security sweep reads
+# this job's latest run as its GitHub-side ground truth and dispatches it
+# after merging a triage change.
+#
+# Needs repo secret SECURITY_ALERTS_TOKEN: a fine-grained token scoped to this
+# repository with "Dependabot alerts" and "Secret scanning alerts" set to
+# Read and write.
+
+on:
+  schedule:
+    - cron: "37 1 * * *"
+  push:
+    branches:
+      - main
+    paths:
+      - osv-scanner.toml
+      - .github/secret-scanning-triage.toml
+      - "**/uv.lock"
+      - "**/package-lock.json"
+      - "**/Cargo.lock"
+      - .github/scripts/sync_dependabot_alerts.py
+      - .github/scripts/sync_secret_scanning_alerts.py
+      - .github/workflows/security-alert-sync.yml
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print the plan without dismissing, resolving or reopening anything"
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: security-alert-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: security-alert-sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            api.osv.dev:443
+            github.com:443
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Sync osv-scanner.toml triage to Dependabot alerts
+        env:
+          GH_TOKEN: ${{ secrets.SECURITY_ALERTS_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=(--repo "$GITHUB_REPOSITORY")
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          python3 .github/scripts/sync_dependabot_alerts.py "${args[@]}"
+
+      - name: Sync secret-scanning-triage.toml to secret-scanning alerts
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.SECURITY_ALERTS_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=(--repo "$GITHUB_REPOSITORY")
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          python3 .github/scripts/sync_secret_scanning_alerts.py "${args[@]}"

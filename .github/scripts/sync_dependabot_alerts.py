@@ -83,6 +83,31 @@ def as_date(value: object) -> dt.date | None:
     return dt.date.fromisoformat(str(value)[:10])
 
 
+def osv_aliases(vuln_id: str) -> list[str]:
+    """GHSA/CVE aliases of an OSV id (e.g. RUSTSEC-*, PYSEC-*) from osv.dev."""
+    req = urllib.request.Request(f"https://api.osv.dev/v1/vulns/{vuln_id}")
+    req.add_header("User-Agent", "dependabot-alert-sync")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return list(json.loads(resp.read()).get("aliases", []))
+
+
+def expand_aliases(ignored: dict[str, Entry]) -> None:
+    """Dependabot alerts carry only GHSA/CVE ids, so an entry keyed by another
+    OSV id (RUSTSEC-*, PYSEC-*, GO-*) must also answer to its aliases. On a
+    lookup failure the entry keeps only its own id: its alerts then stay
+    UNCOVERED (fail-safe), never wrongly dismissed."""
+    for vuln_id, entry in list(ignored.items()):
+        if vuln_id.startswith(("GHSA-", "CVE-")):
+            continue
+        try:
+            aliases = osv_aliases(vuln_id)
+        except (OSError, ValueError) as err:
+            print(f"::warning::could not resolve aliases for {vuln_id}: {err}")
+            continue
+        for alias in aliases:
+            ignored.setdefault(alias, entry)
+
+
 def load_config(path: Path) -> tuple[dict[str, Entry], list[Override]]:
     data = tomllib.loads(path.read_text())
     ignored: dict[str, Entry] = {}
@@ -205,8 +230,8 @@ class GitHub:
             detail = err.read().decode(errors="replace")[:300]
             raise SystemExit(f"GitHub {method} {url} -> HTTP {err.code}: {detail}") from err
 
-    def alerts(self) -> list[dict]:
-        url = f"{API}/repos/{self.repo}/dependabot/alerts?state=open,dismissed&per_page=100"
+    def paginate(self, path: str) -> list[dict]:
+        url = f"{API}/repos/{self.repo}/{path}"
         out: list[dict] = []
         while url:
             page, link = self._call("GET", url)
@@ -215,8 +240,11 @@ class GitHub:
             url = m.group(1) if m else ""
         return out
 
-    def patch(self, number: int, body: dict) -> None:
-        self._call("PATCH", f"{API}/repos/{self.repo}/dependabot/alerts/{number}", body)
+    def alerts(self) -> list[dict]:
+        return self.paginate("dependabot/alerts?state=open,dismissed&per_page=100")
+
+    def patch(self, number: int, body: dict, kind: str = "dependabot") -> None:
+        self._call("PATCH", f"{API}/repos/{self.repo}/{kind}/alerts/{number}", body)
 
 
 def main() -> int:
@@ -230,12 +258,13 @@ def main() -> int:
     token = os.environ.get("GH_TOKEN", "")
     if not token:
         print(
-            "::error::GH_TOKEN is empty: set the DEPENDABOT_ALERTS_TOKEN repo secret "
-            "(fine-grained token, Dependabot alerts: read and write, this repo only)."
+            "::error::GH_TOKEN is empty: set the SECURITY_ALERTS_TOKEN repo secret "
+            "(fine-grained token, this repo only, Dependabot alerts + Secret scanning alerts: read and write)."
         )
         return 2
     root = Path(args.root)
     ignored, overrides = load_config(root / args.config)
+    expand_aliases(ignored)
     today = dt.datetime.now(dt.timezone.utc).date()
     gh = GitHub(token, args.repo)
 
