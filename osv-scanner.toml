@@ -134,7 +134,7 @@ reason = "paste (transitive dep of the litellm-rust OCR/token-counter crates) is
 [[IgnoredVulns]]
 id = "RUSTSEC-2023-0071"
 ignoreUntil = 2026-11-28
-reason = "rsa 0.9.10 (transitive dep of jsonwebtoken 11.1.0, the litellm-gateway-ui crate's JWT handling) has no fixed release for the Marvin Attack timing sidechannel; rechecked 2026-10-31, crates.io still lists only the 0.10.0-rc.19 release candidate, no stable release; remove this entry once a stable patched release exists"
+reason = "rsa 0.9.10 (transitive dep of jsonwebtoken 11.1.0, the litellm-gateway-ui crate's JWT handling) has no usable fixed release for the Marvin Attack timing sidechannel; rechecked 2026-11-09, rsa now ships a stable 0.10.0, but jsonwebtoken 11.1.0 (still the latest release) pins `rsa = \"^0.9.6\"` in its own manifest, so `cargo update -p rsa --precise 0.10.0` fails resolution; remove this entry once jsonwebtoken itself releases a version depending on rsa >=0.10"
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0440"
