@@ -41,7 +41,7 @@ GENERIC_TYPES = (
     "http_basic_authentication_header",
     "http_bearer_authentication_header",
     "mongodb_connection_string",
-    "mysql_connection_string",
+    "mysql_connection_url",
     "postgres_connection_string",
     "openssh_private_key",
     "pgp_private_key",
