@@ -37,81 +37,6 @@ effectiveUntil = 2027-02-01
 reason = "pillow 13.0.0 requires Python >= 3.11, so the Python 3.10 resolution of the ci and dev groups and of the mlflow extra stays on 12.3.0; 3.11+ is on 13.0.0; pillow has never shipped an older-major release after the next major (no 10.x after 11.0.0, no 11.x after 12.0.0), so 13.x is the only fix line; extended to 2027-02-01 with maintainer approval, same date as every other Python 3.10 entry; remove once 3.10 is dropped"
 
 [[IgnoredVulns]]
-id = "GHSA-v4x8-3wr5-3wq8"
-ignoreUntil = 2026-11-20
-reason = "filelock ReadWriteLock advisory, which no package in the lock takes (litellm and huggingface_hub, filelock's only dependents, use just FileLock and SoftFileLock); fixed only in 4.2.1, and filelock 4.1.1+ needs Python >= 3.11; litellm's own filelock<4.0 cap keeps every Python on 3.32.7 until it is lifted for 3.11+ (#48635, #48802); remove once that lands and 3.10 is dropped"
-
-[[IgnoredVulns]]
-id = "GHSA-567q-5qvw-pf92"
-ignoreUntil = 2026-11-20
-reason = "Windows-only local DoS (CVSS 2.5) in filelock soft locks; litellm never takes SoftFileLock, but huggingface_hub falls back to it in the Hugging Face cache when the filesystem has no flock, which litellm reaches only to download the Kimi K3 tokenizer for Bedrock token counting, and the attack needs another local user who can write that cache; fixed only in 4.2.1, and filelock 4.1.1+ needs Python >= 3.11; litellm's own filelock<4.0 cap keeps every Python on 3.32.7 until it is lifted for 3.11+ (#48635, #48802); remove once that lands and 3.10 is dropped"
-
-[[IgnoredVulns]]
-id = "GHSA-9vhv-jxww-xfm5"
-ignoreUntil = 2026-11-20
-reason = "Windows-only local DoS (CVSS 3.3) in filelock ReadWriteLock, which no package in the lock takes (litellm and huggingface_hub, filelock's only dependents, use just FileLock and SoftFileLock); fixed only in 4.2.1, and filelock 4.1.1+ needs Python >= 3.11; litellm's own filelock<4.0 cap keeps every Python on 3.32.7 until it is lifted for 3.11+ (#48635, #48802); remove once that lands and 3.10 is dropped"
-
-[[IgnoredVulns]]
-id = "GHSA-6627-m3xw-93mp"
-ignoreUntil = 2026-11-20
-reason = "filelock StrictSoftFileLock claim directories ignore the lock mode, which no package in the lock takes (litellm and huggingface_hub, filelock's only dependents, use just FileLock and SoftFileLock); fixed only in 4.2.1, and filelock 4.1.1+ needs Python >= 3.11; litellm's own filelock<4.0 cap keeps every Python on 3.32.7 until it is lifted for 3.11+ (#48635, #48802); remove once that lands and 3.10 is dropped"
-
-[[IgnoredVulns]]
-id = "GHSA-9c4x-gm8v-wgc4"
-ignoreUntil = 2026-11-20
-reason = "filelock StrictSoftFileLock and SoftReadWriteLock adopt another user's protocol directory, which no package in the lock takes (litellm and huggingface_hub, filelock's only dependents, use just FileLock and SoftFileLock); fixed only in 4.2.1, and filelock 4.1.1+ needs Python >= 3.11; litellm's own filelock<4.0 cap keeps every Python on 3.32.7 until it is lifted for 3.11+ (#48635, #48802); remove once that lands and 3.10 is dropped"
-
-[[IgnoredVulns]]
-id = "GHSA-9j6q-wvj5-jgjg"
-ignoreUntil = 2026-11-20
-reason = "filelock SoftFileLock symlink swap leaks whether a path exists; litellm never takes SoftFileLock, but huggingface_hub falls back to it in the Hugging Face cache when the filesystem has no flock, which litellm reaches only to download the Kimi K3 tokenizer for Bedrock token counting, and the attack needs another local user who can write that cache; fixed only in 4.2.1, and filelock 4.1.1+ needs Python >= 3.11; litellm's own filelock<4.0 cap keeps every Python on 3.32.7 until it is lifted for 3.11+ (#48635, #48802); remove once that lands and 3.10 is dropped"
-
-[[IgnoredVulns]]
-id = "GHSA-cwqr-hh33-gh44"
-ignoreUntil = 2026-11-20
-reason = "filelock ReadWriteLock stalls on a crafted lock database, which no package in the lock takes (litellm and huggingface_hub, filelock's only dependents, use just FileLock and SoftFileLock); fixed only in 4.2.1, and filelock 4.1.1+ needs Python >= 3.11; litellm's own filelock<4.0 cap keeps every Python on 3.32.7 until it is lifted for 3.11+ (#48635, #48802); remove once that lands and 3.10 is dropped"
-
-[[IgnoredVulns]]
-id = "GHSA-fq56-3cx3-fjxp"
-ignoreUntil = 2026-11-20
-reason = "filelock SoftFileLock stale-lock break removes a live lock on a reused inode; litellm never takes SoftFileLock, but huggingface_hub falls back to it in the Hugging Face cache when the filesystem has no flock, which litellm reaches only to download the Kimi K3 tokenizer for Bedrock token counting, and the attack needs another local user who can write that cache; fixed only in 4.2.1, and filelock 4.1.1+ needs Python >= 3.11; litellm's own filelock<4.0 cap keeps every Python on 3.32.7 until it is lifted for 3.11+ (#48635, #48802); remove once that lands and 3.10 is dropped"
-
-[[IgnoredVulns]]
-id = "GHSA-m462-7rxw-wvpg"
-ignoreUntil = 2026-11-20
-reason = "filelock StrictSoftFileLock follows a symlink swapped in at <path>.filelock, which no package in the lock takes (litellm and huggingface_hub, filelock's only dependents, use just FileLock and SoftFileLock); fixed only in 4.2.1, and filelock 4.1.1+ needs Python >= 3.11; litellm's own filelock<4.0 cap keeps every Python on 3.32.7 until it is lifted for 3.11+ (#48635, #48802); remove once that lands and 3.10 is dropped"
-
-[[IgnoredVulns]]
-id = "GHSA-rfpc-qcw5-3pc4"
-ignoreUntil = 2026-11-20
-reason = "filelock SoftFileLock removes a live holder's marker when another user forges its PID; litellm never takes SoftFileLock, but huggingface_hub falls back to it in the Hugging Face cache when the filesystem has no flock, which litellm reaches only to download the Kimi K3 tokenizer for Bedrock token counting, and the attack needs another local user who can write that cache; fixed only in 4.2.1, and filelock 4.1.1+ needs Python >= 3.11; litellm's own filelock<4.0 cap keeps every Python on 3.32.7 until it is lifted for 3.11+ (#48635, #48802); remove once that lands and 3.10 is dropped"
-
-[[IgnoredVulns]]
-id = "GHSA-2g95-wg33-c5x2"
-ignoreUntil = 2026-11-24
-reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); missed by the 2026-10-25 security sweep because pip-audit was run against the standalone 3.32.7 package rather than uv.lock's actual Python 3.10 resolution (filelock 4.1.0), which this osv-scan caught; CVSS 4.7, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed, but it shares the fix version and the same unavoidable 3.10 ceiling as the other filelock rows here. Remove once 3.10 is dropped or a 3.x fix ships"
-
-[[IgnoredVulns]]
-id = "GHSA-crv4-6mhj-j5jh"
-ignoreUntil = 2026-11-24
-reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); missed by the 2026-10-25 security sweep for the same reason as GHSA-2g95-wg33-c5x2 above; CVSS 5.3, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
-
-[[IgnoredVulns]]
-id = "GHSA-jqc4-5cvw-7w85"
-ignoreUntil = 2026-11-24
-reason = "same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); missed by the 2026-10-25 security sweep for the same reason as GHSA-2g95-wg33-c5x2 above; CVSS 6.1, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
-
-[[IgnoredVulns]]
-id = "GHSA-fj95-fr6c-h845"
-ignoreUntil = 2026-11-26
-reason = "2026-10-29 sync: same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); newly surfaced by this sync's osv-scan against uv.lock's Python 3.10 resolution (filelock 4.1.0); CVSS 6.1, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
-
-[[IgnoredVulns]]
-id = "GHSA-wfhq-q4j2-c37m"
-ignoreUntil = 2026-11-26
-reason = "2026-10-29 sync: same partial filelock 4.2.1 fix as GHSA-v4x8-3wr5-3wq8 (Python >= 3.11 only, see that row); newly surfaced by this sync's osv-scan against uv.lock's Python 3.10 resolution (filelock 4.1.0); CVSS 3.3, fixed in 4.2.1; advisory page unreachable from this session so the specific flaw is unconfirmed. Remove once 3.10 is dropped or a 3.x fix ships"
-
-[[IgnoredVulns]]
 id = "GHSA-gcqx-w48m-w2h4"
 ignoreUntil = 2026-11-27
 reason = "2026-10-28 sync: deepmerge 4.3.1 (a dev-only dependency of the root package.json) is the latest published release and still vulnerable (prototype pollution via a crafted merge target); npm registry lists no newer version. Remove this entry once one exists"
@@ -145,3 +70,8 @@ reason = "astral-tokio-tar 0.6.4 is pulled in only by testcontainers 0.27.3 (via
 id = "RUSTSEC-2026-0441"
 ignoreUntil = 2026-12-04
 reason = "pin-utils 0.1.1 is an unmaintained crate (repository archived 2026-10-01; informational, no CVE) pulled in by aws-smithy-http 0.64.1, aws-smithy-runtime 1.16.0 and aws-smithy-types 1.8.1, which the AWS SDK crates in litellm-rust use for S3, KMS, STS and Secrets Manager. It is a thin pin! macro helper with no network or parsing surface; no pin-utils release is fixed because the project is archived. Newer aws-smithy releases (http 0.64.3, runtime 1.16.2, types 1.9.1) no longer list pin-utils as a dependency, so a lockfile refresh of those three crates should drop it; remove this entry once the lockfile no longer contains pin-utils"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0459"
+ignoreUntil = 2027-02-08
+reason = "libsqlite3-sys 0.37.0 (via rusqlite's bundled feature in litellm-cache-disk) bundles a SQLite build before 3.54.0 that can leak uninitialized page-cache memory when a database is opened alongside a sibling -wal file of a different page size (CVE-2026-119375, local attacker who can plant that -wal file). Fixed in libsqlite3-sys 0.39.0, shipped only with rusqlite 0.41, but raising rusqlite past 0.40 requires libsqlite3-sys >=0.38, which collides with the workspace's optional, never-enabled sqlx-sqlite dependency (pulled into Cargo.lock by the sqlx `migrate` feature): sqlx-sqlite 0.9.0 caps libsqlite3-sys at <0.38.0, and Cargo's single `links = \"sqlite3\"` rule enforces that cap project-wide even though no crate activates sqlx's sqlite feature. Remove once sqlx-sqlite raises its own libsqlite3-sys requirement past 0.38, or rusqlite backports the fix to a 0.39.x/0.40.x line still capped below 0.38"

@@ -193,7 +193,13 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-11-08 sync: +1 for the vscode-extension @azure/msal-node override row,
 # flipped to N/A once @vscode/vsce's own @azure/identity dependency bumped its
 # msal-node floor past the override's target.
-EXPECTED_NA_ROWS = 79
+# 2026-11-10 sweep: +4. +1 new osv-scanner.toml cleanup row (removing 15
+# unused filelock IgnoredVulns entries has no single greppable pattern of its
+# own); +3 for the GHSA-567q-5qvw-pf92, GHSA-9vhv-jxww-xfm5 and
+# GHSA-2g95-wg33-c5x2 rows, flipped to N/A because that same cleanup removed
+# the IgnoredVulns entries they asserted (filelock's python >= 3.11
+# resolution is already past the 4.2.1 fix those entries were waiting on).
+EXPECTED_NA_ROWS = 83
 
 REQUIRED_PINNED_DOCKERFILES = (
     "Dockerfile",
