@@ -344,10 +344,15 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
             if standard_logging_object is None:
                 raise ValueError("standard_logging_object not passed in.")
             model_group: Final = standard_logging_object.get("model_group")
-            model: Final = standard_logging_object["hidden_params"]["litellm_model_name"]
+            model: Final = usage_counter_model(kwargs, standard_logging_object)  # pyright: ignore[reportUnknownArgumentType]  # keep legacy kwargs untyped
             model_id: Final = standard_logging_object.get("model_id")
             total_tokens: Final = standard_logging_object.get("total_tokens")
-            if model_group is None or not isinstance(model_id, (str, int)) or not isinstance(total_tokens, int):
+            if (
+                model_group is None
+                or model is None
+                or not isinstance(model_id, (str, int))
+                or not isinstance(total_tokens, int)
+            ):
                 return
             counted_tokens: Final = get_counted_usage_tokens(
                 _SUCCESS_KWARGS_ADAPTER.validate_python(kwargs).get("litellm_params") or {},
@@ -355,7 +360,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
             )
             await self.async_increment_tpm(
                 deployment_id=str(model_id),
-                deployment_name=model if isinstance(model, str) else None,
+                deployment_name=model,
                 tokens=total_tokens if counted_tokens is None else max(0, total_tokens - counted_tokens),
                 parent_otel_span=get_parent_otel_span_from_kwargs(kwargs),
             )
