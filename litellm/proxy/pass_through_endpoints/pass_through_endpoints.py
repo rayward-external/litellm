@@ -175,7 +175,11 @@ from litellm.types.passthrough_endpoints.pass_through_endpoints import (
 )
 from litellm.types.proxy.auth.user_api_key_auth import COMMITTED_BUDGET_SPEND_PARAM
 from litellm.types.proxy.carried_budget_state import CommittedBudgetSpend
-from litellm.types.utils import TRUSTED_CALLBACK_VARS_FIELD, CallTypes, Usage
+from litellm.types.utils import (
+    TRUSTED_CALLBACK_VARS_FIELD,
+    CallTypes,  # pyright: ignore[reportUnusedImport]  # used only inside pass_through_request, which basedpyright gives up analyzing for complexity
+    Usage,
+)
 
 from .common_utils import (
     is_cohere_streaming_url,

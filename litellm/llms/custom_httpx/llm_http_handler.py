@@ -7451,6 +7451,8 @@ class BaseLLMHTTPHandler:
                     request_defaults=request_defaults,
                     turn_admission=_ws_turn_admission,
                     turn_usage_recorder=turn_usage_recorder,
+                    responses_api_provider_config=responses_api_provider_config,
+                    api_base=api_base,
                     frame_guard=frame_guard,
                 )
                 return await streaming.bidirectional_forward()

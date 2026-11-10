@@ -2589,6 +2589,8 @@ class ResponsesWebSocketStreaming:
         request_defaults: ResponsesWebSocketRequestDefaults | None = None,
         turn_admission: ResponsesWsTurnAdmission | None = None,
         turn_usage_recorder: ResponsesWsTurnUsageRecorder | None = None,
+        responses_api_provider_config: BaseResponsesAPIConfig | None = None,
+        api_base: str | None = None,
         frame_guard: ResponsesWsFrameGuard | None = None,
     ):
         self.websocket = websocket
