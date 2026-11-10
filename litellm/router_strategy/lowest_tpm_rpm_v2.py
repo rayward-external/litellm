@@ -23,7 +23,10 @@ from litellm.litellm_core_utils.core_helpers import get_parent_otel_span_from_kw
 from litellm.litellm_core_utils.deployment_pricing import deployment_backend_models
 from litellm.litellm_core_utils.token_counter import embedding_aware_token_count
 from litellm.redis.stores.router_usage import ROUTER_USAGE_TARGET
-from litellm.router_utils.router_callbacks.track_deployment_metrics import get_counted_usage_tokens
+from litellm.router_utils.router_callbacks.track_deployment_metrics import (
+    find_deployment_metadata,
+    get_counted_usage_tokens,
+)
 from litellm.types.router import RouterErrors
 from litellm.types.utils import LiteLLMPydanticObjectBase, StandardLoggingPayload
 from litellm.utils import get_utc_datetime, print_verbose
