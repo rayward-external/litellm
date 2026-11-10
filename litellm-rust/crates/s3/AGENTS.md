@@ -1,3 +1,3 @@
-`litellm-s3` builds `aws-sdk-s3` clients that send through `litellm_http::Client`, and owns the S3 concepts the SDK lacks, such as the `s3://bucket/key` URI. It reads no environment and picks no credentials: the host passes the region, the endpoint and a credentials provider, usually `litellm_auth_aws::AwsCredentialsProvider`
+`litellm-s3` builds `aws-sdk-s3` clients that send through `litellm_http::Client`, and owns the S3 concepts the SDK lacks, such as the `s3://bucket/key` URI. `config` reads no environment and picks no credentials: the host passes the region, the endpoint and a credentials provider, usually `litellm_auth_aws::AwsCredentialsProvider`. `environment_config` instead resolves region, endpoint and credentials from the environment and shared config files, the way boto3's default `s3` client does
 
 Operation policy such as retries, timeouts and checksum settings stays with the caller, which adjusts the returned config builder
