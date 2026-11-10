@@ -3,16 +3,8 @@ import contextlib
 import json
 import logging
 import math
-from collections.abc import (
-    AsyncGenerator,
-    AsyncIterable,
-    AsyncIterator,
-    Awaitable,
-    Callable,
-    Coroutine,
-    Mapping,
-    Sequence,
-)
+import time
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -75,7 +67,6 @@ from litellm.litellm_core_utils.bug_report import (
     strip_bug_report_notice,
 )
 from litellm.litellm_core_utils.core_helpers import (
-    attribute_or_none,
     finite_cost,
     get_or_create_metadata_bucket,
     has_attributes,
@@ -83,7 +74,6 @@ from litellm.litellm_core_utils.core_helpers import (
     is_expected_client_error,
     proxy_request_headers,
     redact_nested_match_and_regex_keys,
-    require_attributes,
     stream_cost_injection_requested,
 )
 from litellm.litellm_core_utils.dd_tracing import NullTracer, tracer
@@ -829,10 +819,6 @@ _UPSTREAM_RESPONSE: Final = TypeAdapter(
 
 class _ReadsHeaderValues(Protocol):
     def get(self, key: str, default: str = "") -> str: ...
-
-
-class _NativeLoggingRelease(Protocol):
-    def release(self, success: bool, /) -> object: ...
 
 
 def _as_header_reader(headers: _ReadsHeaderValues) -> _ReadsHeaderValues:
@@ -4640,11 +4626,6 @@ class ProxyBaseLLMRequestProcessing:
         Extracted as a static method so tests can exercise the production
         gating logic directly rather than reimplementing the finally block.
         """
-        if getattr(logging_obj, "call_type", None) in ("ocr", "aocr"):
-            pending: Final = attribute_or_none(logging_obj, "_native_pending_logging")
-            if pending is not None:
-                logging_obj._native_pending_logging = None  # rebind-ok: consume the native OCR release signal once
-                require_attributes(pending, _NativeLoggingRelease, "release").release(not exception_raised)
         _enqueue_fn: Final = getattr(logging_obj, "enqueue_deferred_logging", None)
         if _enqueue_fn is None:
             return
@@ -5140,6 +5121,15 @@ class ProxyBaseLLMRequestProcessing:
     _finalize_streaming_generator_cleanup = finalize_streaming_generator_cleanup
 
     @staticmethod
+    def record_first_chunk_overhead(
+        logging_obj: LiteLLMLoggingObj | None, chunk_received_at: float, is_provider_output: bool = True
+    ) -> None:
+        """The proxy's own work on a chunk; the logging object keeps the first one for the stamped overhead.
+        A keepalive ping carries no provider output, so it is never that first chunk."""
+        if logging_obj is not None and is_provider_output:
+            logging_obj.set_first_chunk_overhead(time.perf_counter() - chunk_received_at)
+
+    @staticmethod
     async def async_streaming_data_generator(
         response: object,
         user_api_key_dict: UserAPIKeyAuth,
@@ -5202,12 +5192,12 @@ class ProxyBaseLLMRequestProcessing:
             ),
             request_data=request_data,
         )
-        release_stream_failure: Final = _ClientStreamFailureReport.hold_while_streaming(
-            stream_logging_obj if isinstance(stream_logging_obj, LiteLLMLoggingObj) else None
-        )
+        timing_sink: Final = stream_logging_obj if isinstance(stream_logging_obj, LiteLLMLoggingObj) else None
+        release_stream_failure: Final = _ClientStreamFailureReport.hold_while_streaming(timing_sink)
         try:
             str_so_far = ""
             async for chunk in guarded_stream:
+                chunk_received_at = time.perf_counter()
                 # ``.format(chunk)`` was previously evaluated for every chunk
                 # regardless of log level; gate it behind the level check.
                 if debug_enabled:
@@ -5248,6 +5238,9 @@ class ProxyBaseLLMRequestProcessing:
                 delivered_chunk = delivered_chunk or chunk != STREAM_SSE_KEEPALIVE_PING_BYTES
                 serialized = serialize_chunk(chunk)
                 recent_tail = advance_sse_tail(recent_tail, serialized)
+                ProxyBaseLLMRequestProcessing.record_first_chunk_overhead(
+                    timing_sink, chunk_received_at, is_provider_output=chunk != STREAM_SSE_KEEPALIVE_PING_BYTES
+                )
                 yield serialized
             held_tail: Final = flush_tail() if flush_tail is not None else b""
             if held_tail:
