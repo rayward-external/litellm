@@ -567,13 +567,15 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
     @staticmethod
     def stream_may_settle_background_response(url_route: str, request_body: Mapping[str, object]) -> bool:
+        """Only the original create-and-stream-to-completion call (``sub_route == ()``) ever
+        claims settlement here. A streamed resume (``GET .../{id}?stream=true``) is always a
+        GET, and ``_build_passthrough_logging_result`` deliberately never bills a non-POST
+        stream as a replay -- claiming the one-time settlement for it would spend that claim
+        on a $0 log and leave the response permanently unbillable by any later poll.
+        """
         sub_route: Final = _responses_sub_route(urlparse(url_route).path)
         creates_in_background: Final = sub_route == () and request_body.get("background") is True
-        resumes_a_response: Final = sub_route is not None and len(sub_route) == 1
-        return (
-            OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route)
-            or OpenAIPassthroughLoggingHandler.is_openai_responses_item_route(url_route)
-        ) and (creates_in_background or resumes_a_response)
+        return OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route) and creates_in_background
 
     @staticmethod
     def background_response_settled_by_stream(all_chunks: Sequence[str]) -> str | None:

@@ -198,13 +198,12 @@ jobs:
       # vendored node engine) that osv-scan cannot see. osv-scan stays the fast
       # source-level gate; this is the customer's-eye-view backstop. Credential-
       # free OSS, run as a pinned, checksum-verified binary; no GitHub Action
-      # dependency and no vendor SaaS callout.
-      # continue-on-error: the pinned wolfi-base digest (Dockerfile) now carries
-      # newly-disclosed HIGH CVEs in libcrypto3/libssl3/busybox that grype's feed
-      # picked up today; the digest and our apk set are byte-identical to the
-      # 2026-08-19 sync that passed this same scan, so this is upstream's base
-      # image aging past a fresh CVE disclosure, not a regression from this PR.
-      # See fork-patches.txt.
+      # dependency and no vendor SaaS callout. No continue-on-error here by
+      # design: a fixable HIGH/CRITICAL must fail this job, never be waved
+      # through silently. If a future wolfi-base digest bump lands a
+      # newly-disclosed, not-yet-fixable HIGH CVE, --only-fixed already
+      # excludes it from --fail-on high; a genuine failure means a FIXED
+      # package is available and the digest pin should be bumped.
       - name: Scan image for fixable HIGH/CRITICAL CVEs
         if: matrix.check == 'scan'
         env:

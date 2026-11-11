@@ -2896,10 +2896,14 @@ class TestOpenAIPassthroughResponsesSubRouteBilling:
         raw_bytes: list[bytes],
         litellm_call_id: str,
         passthrough_logging: PassThroughEndpointLogging,
+        method: str = "POST",
     ) -> _LoggedCall:
         recorder: Final = _SpendRowRecorder()
         logging_obj: Final = self._recorded_logging_obj(recorder, litellm_call_id, stream=True)
         logging_obj.model_call_details["custom_llm_provider"] = "openai"
+        logging_obj.model_call_details["passthrough_logging_payload"] = PassthroughStandardLoggingPayload(
+            url=f"{RESPONSES_URL}{sub_route}", request_body=request_body, request_method=method
+        )
 
         await PassThroughStreamingHandler.route_streaming_logging_to_handler(
             litellm_logging_obj=logging_obj,
@@ -3143,6 +3147,7 @@ class TestOpenAIPassthroughResponsesSubRouteBilling:
             _completed_stream_bytes(finished),
             "a9e5d3c7-2b8f-4146-8d0a-f3b6e1c4d295",
             passthrough_logging,
+            method="GET",
         )
 
         assert retrieve.spend_row["spend"] > 0
@@ -3150,6 +3155,37 @@ class TestOpenAIPassthroughResponsesSubRouteBilling:
         assert not resumed_stream.spend_row["spend"]
         assert not resumed_stream.spend_row["total_tokens"]
         assert resumed_stream.spend_row["request_id"] != retrieve.spend_row["request_id"]
+
+    @pytest.mark.asyncio
+    async def test_a_resumed_stream_before_any_retrieve_leaves_the_charge_to_its_next_retrieve(
+        self, local_model_cost_map
+    ):
+        """A resumed stream (``GET .../{id}?stream=true``) never bills: non-POST streams are
+        always a $0 replay. If it still claimed the one-time settlement, the response would
+        never be billable by anything -- not this stream, not any later poll."""
+        passthrough_logging: Final = _settling_passthrough_logging(_SettlementTable())
+        finished: Final = _stored_response("completed", True, RESPONSES_USAGE)
+
+        resumed_stream: Final = await self._streamed_call(
+            f"/{STORED_RESPONSE_ID}?stream=true",
+            {},
+            _completed_stream_bytes(finished),
+            "b6f1a9e2-7c4d-4a3e-9b58-2d6f8e1c0a73",
+            passthrough_logging,
+            method="GET",
+        )
+        retrieve: Final = await self._logged_call(
+            "GET",
+            f"/{STORED_RESPONSE_ID}",
+            {},
+            finished,
+            "e8c2b5a7-4f19-4d8e-8a6c-f3b9d2e7c541",
+            passthrough_logging=passthrough_logging,
+        )
+
+        assert not resumed_stream.spend_row["spend"]
+        assert retrieve.spend_row["spend"] > 0
+        assert retrieve.spend_row["total_tokens"] > 0
 
     @pytest.mark.asyncio
     async def test_a_resumed_stream_that_fails_after_it_finished_leaves_the_charge_to_its_next_retrieve(
