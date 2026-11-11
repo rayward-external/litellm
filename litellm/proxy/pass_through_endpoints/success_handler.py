@@ -95,6 +95,7 @@ def _finishes_despite_cancellation_when_finalizing(
 
     return handle
 
+
 # Usage shapes understood by the generic fallback, in probe order. Each entry is
 # (container key, prompt-token field, completion-token field); a `None` container
 # means the fields sit at the top level of the response body.
