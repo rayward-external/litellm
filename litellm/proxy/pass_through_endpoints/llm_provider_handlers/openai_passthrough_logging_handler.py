@@ -6,7 +6,7 @@ Handles cost tracking and logging for OpenAI passthrough endpoints, specifically
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Final, Literal, TypeAlias
+from typing import Final, Literal, TypeAlias, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -1307,6 +1307,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
             # Preserve existing litellm_params to maintain metadata tags
             existing_litellm_params = litellm_logging_obj.model_call_details.get("litellm_params", {}) or {}
+            litellm_params_for_logging: Final[dict[str, object]] = existing_litellm_params.copy()
 
             # Prepare kwargs for logging
             kwargs = {
@@ -1316,7 +1317,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 "custom_llm_provider": custom_llm_provider,
                 "call_type": litellm_logging_obj.call_type,
                 "messages": litellm_logging_obj.model_call_details.get("messages"),
-                "litellm_params": existing_litellm_params.copy(),
+                "litellm_params": litellm_params_for_logging,
             }
 
             # Extract user information for tracking
@@ -1328,9 +1329,12 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                     passthrough_logging_payload=passthrough_logging_payload,
                 )
                 if user:
-                    kwargs["litellm_params"].setdefault("proxy_server_request", {}).setdefault("body", {})["user"] = (
-                        user
+                    proxy_server_request: Final = cast(
+                        dict[str, object],
+                        litellm_params_for_logging.setdefault("proxy_server_request", {}),
                     )
+                    body: Final = cast(dict[str, object], proxy_server_request.setdefault("body", {}))
+                    body["user"] = user
 
             # Attach the payload to kwargs so the success handler adopts it;
             # its later rebuild runs on a copy whose Responses usage was
