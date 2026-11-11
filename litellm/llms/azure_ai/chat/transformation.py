@@ -9,7 +9,7 @@ from httpx import Response
 from pydantic import TypeAdapter, ValidationError
 
 import litellm
-from litellm._logging import verbose_logger
+from litellm._logging import WarningLogger, verbose_logger
 from litellm.integrations.anthropic_cache_control_hook import (
     AnthropicCacheControlHook,
     declared_prompt_cache_breakpoint,
@@ -226,6 +226,7 @@ class AzureAIStudioConfig(OpenAIConfig):
         drop_params: bool,
         *,
         declared_reasoning_efforts: Collection[str] | None = None,
+        reasoning_drop_logger: WarningLogger = verbose_logger,
     ) -> dict[str, object]:  # mutable-ok: OpenAIConfig.map_openai_params signature
         if azureAIGPT5Config.is_model_gpt_5_model(model):
             return azureAIGPT5Config.map_openai_params(
@@ -240,6 +241,8 @@ class AzureAIStudioConfig(OpenAIConfig):
             optional_params=optional_params,
             model=model,
             drop_params=drop_params,
+            declared_reasoning_efforts=declared_reasoning_efforts,
+            reasoning_drop_logger=reasoning_drop_logger,
         )
         # super().map_openai_params() (OpenAIConfig) dispatches, for any model
         # name that isn't OpenAI's own o-series/gpt-5/gpt-audio pattern, to

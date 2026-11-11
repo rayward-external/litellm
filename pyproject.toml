@@ -277,6 +277,7 @@ proxy-dev = [
 ]
 ci = [
     "psutil==7.2.2",
+    "tzdata==2026.2",
     # These are lazily imported at call sites; keep them out of core deps to
     # avoid bloating the base SDK install (google-generativeai pulls grpcio +
     # protobuf, Pillow is a compiled C extension).
@@ -367,6 +368,7 @@ exclude = [
 concurrent-builds = 1
 cache-keys = [
     { file = "pyproject.toml" },
+    { env = "MATURIN_PEP517_ARGS" },
     { file = "rust-toolchain.toml" },
     { file = ".cargo/config.toml" },
     { file = "litellm-rust/Cargo.lock" },

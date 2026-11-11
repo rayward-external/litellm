@@ -113,6 +113,7 @@ COPY --from=ui-builder /ui/out/. litellm/proxy/_experimental/out/
 RUN sed -i 's/\r$//' docker/build_admin_ui.sh && chmod +x docker/build_admin_ui.sh && ./docker/build_admin_ui.sh
 
 # Install project and workspace packages (fast - deps already cached)
+ARG MATURIN_PEP517_ARGS=""
 RUN uv build --package litellm-proxy --wheel --out-dir /wheels
 RUN uv sync --frozen --no-install-package litellm-proxy --no-default-groups --no-editable \
     --extra proxy \
@@ -130,8 +131,12 @@ RUN HOME=/opt/prisma XDG_CACHE_HOME=/opt/prisma/.cache PRISMA_BINARY_CACHE_DIR=/
     npm_config_cache=/root/.npm \
     prisma generate --schema=./schema.prisma
 
-RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh && \
-    sed -i 's/\r$//' docker/prod_entrypoint.sh && chmod +x docker/prod_entrypoint.sh
+RUN sed -i 's/\r$//' docker-entrypoint.sh && chmod +x docker-entrypoint.sh
+
+RUN mkdir -p /var/lib/litellm/ui /var/lib/litellm/assets && \
+    cp -r litellm/proxy/_experimental/out/. /var/lib/litellm/ui/ && \
+    cp litellm/proxy/logo.png /var/lib/litellm/assets/logo.png && \
+    touch /var/lib/litellm/ui/.litellm_ui_ready
 
 FROM cgr.dev/chainguard/wolfi-base@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7 AS liteadmin-builder
 COPY --from=uvbin /uv /usr/local/bin/uv
@@ -157,32 +162,36 @@ USER root
 # https://github.com/BerriAI/litellm/issues/33518
 RUN echo "https://packages.wolfi.dev/os" >> /etc/apk/repositories
 
-# node (without npm) is required by the prisma CLI at runtime
-RUN apk add --no-cache bash openssl libssl3 tzdata libatomic nodejs python-3.13 libsndfile libevent
+RUN for i in 1 2 3; do \
+      apk add --no-cache bash openssl libssl3 tzdata nodejs python-3.13 libsndfile libatomic libevent nginx && break; \
+      [ "$i" = 3 ] && { echo "apk add failed after 3 retries" >&2; exit 1; }; \
+      sleep 5; \
+    done
 COPY --from=pgbouncer-builder /usr/local/bin/pgbouncer /usr/local/bin/pgbouncer
 
 WORKDIR /app
+
 ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONPATH="/app" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HOME=/app \
+    LITELLM_NON_ROOT=true \
+    LITELLM_PRISMA_CLIENT_PREBAKED=true \
     PRISMA_BINARY_CACHE_DIR=/opt/prisma/binaries \
     PRISMA_CLI_PATH=/opt/prisma/binaries/node_modules/.bin/prisma \
     PRISMA_CLI_QUERY_ENGINE_TYPE=binary \
-    PRISMA_OFFLINE_MODE=true \
-    LITELLM_PRISMA_CLIENT_PREBAKED=true
-# LITELLM_PRISMA_CLIENT_PREBAKED skips litellm/proxy/prisma_migration.py's own
-# `prisma generate` at runtime: the client below is already generated from this
-# same schema.prisma. Regenerating is not just redundant, it always fails as a
-# non-root uid — prisma-python's generate() unconditionally re-copies
-# schema.prisma into the installed package and chmod's the copy, and chmod
-# requires owning the file, which no arbitrary runtime uid does for a file
-# baked at build time (#37692 made that failure fatal instead of log-only).
+    PRISMA_SKIP_POSTINSTALL_GENERATE=1 \
+    PRISMA_HIDE_UPDATE_MESSAGE=1 \
+    PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1 \
+    PRISMA_OFFLINE_MODE=true
 
 # Copy only what runtime needs. The application is installed inside the venv;
 # the rest of the builder's /app is source and build metadata that must not
 # ship (manifest-scanning tools attribute everything in it to this image).
-# entrypoint.sh invokes litellm/proxy/prisma_migration.py by source path.
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=liteadmin-builder /opt/liteadmin /opt/liteadmin
-COPY --from=builder /app/docker /app/docker
+COPY --from=builder /app/docker-entrypoint.sh /app/docker-entrypoint.sh
 COPY --from=builder /app/schema.prisma /app/schema.prisma
 COPY --from=builder /app/litellm/proxy/prisma_migration.py /app/litellm/proxy/prisma_migration.py
 # enterprise/ is imported by source path at runtime (proxy_cli puts the
@@ -190,21 +199,33 @@ COPY --from=builder /app/litellm/proxy/prisma_migration.py /app/litellm/proxy/pr
 # enterprise.enterprise_hooks from it)
 COPY --from=builder /app/enterprise /app/enterprise
 COPY --from=builder /app/litellm-proxy-extras /app/litellm-proxy-extras
-# Prisma CLI + engines are baked under /opt/prisma, a fixed path every
-# runtime uid can read and that no cache volume mount shadows. The paths are
-# pinned via PRISMA_BINARY_CACHE_DIR / PRISMA_CLI_PATH and recorded into the
-# generated client at build time, so `prisma migrate deploy` on a fresh
-# database needs no npm and no network access (#33650, #24554).
+COPY --from=builder /app/gateway /app/gateway
+COPY --from=builder /app/backend /app/backend
+COPY --from=builder /app/migrations /app/migrations
 COPY --from=builder /opt/prisma /opt/prisma
+COPY --from=builder /var/lib/litellm /var/lib/litellm
+COPY ui/nginx.conf /etc/nginx/nginx.conf
+COPY ui/docker-entrypoint.d/40-litellm-runtime-config.sh /app/ui/docker-entrypoint.d/40-litellm-runtime-config.sh
 
-RUN find /app/.venv -type f -path "*/tornado/test/*" -delete && \
-    find /app/.venv -type d -path "*/tornado/test" -delete && \
+RUN find /app/.venv -depth -type d -path "*/tornado/test" -exec rm -rf {} + && \
+    mkdir -p /app/.cache /var/run/litellm && \
+    chown -R 65532:0 /app /var/lib/litellm /var/run/litellm && \
+    chmod -R g=u,g+w /app/.cache /var/lib/litellm /var/run/litellm && \
+    PRISMA_PATH="$(python -c 'import os, prisma; print(os.path.dirname(prisma.__file__))')" && \
+    PROXY_EXTRAS_PATH="$(python -c 'import os, litellm_proxy_extras; print(os.path.dirname(litellm_proxy_extras.__file__))')" && \
+    chmod -R g=u,g+w "$PRISMA_PATH" "$PROXY_EXTRAS_PATH" && \
     chmod -R a+rX /opt/prisma && \
     test -x /opt/prisma/binaries/node_modules/.bin/prisma && \
     test -f /opt/prisma/binaries/node_modules/prisma/build/index.js && \
-    python -c "from prisma.client import BINARY_PATHS; paths = list(BINARY_PATHS.query_engine.values()); assert paths and all(p.startswith('/opt/prisma/') for p in paths), paths"
+    ls /opt/prisma/binaries/node_modules/@prisma/engines/query-engine-* >/dev/null && \
+    python -c "from prisma.client import BINARY_PATHS; paths = list(BINARY_PATHS.query_engine.values()); assert paths and all(p.startswith('/opt/prisma/') for p in paths), paths" && \
+    python -c "from litellm.rust_bridge import _native" && \
+    python -c "import gateway.launch, backend.main"
 
-EXPOSE 4000/tcp
+USER 65532:65532
 
-ENTRYPOINT ["docker/prod_entrypoint.sh"]
-CMD ["--port", "4000"]
+RUN nginx -t
+
+EXPOSE 4000/tcp 4001/tcp 3000/tcp
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
