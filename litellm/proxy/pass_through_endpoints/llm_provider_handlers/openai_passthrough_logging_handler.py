@@ -350,6 +350,8 @@ def _build_response_and_cost_for_surface(
             litellm_model_response._hidden_params = {}
         litellm_model_response._hidden_params["response_cost"] = response_cost
 
+    return litellm_model_response, response_cost
+
 
 ResponsesCallBilling: TypeAlias = Literal["unbilled", "billed", "background_settlement"]
 
@@ -525,9 +527,13 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
 
     @staticmethod
     def openai_responses_call_billing(
-        method: str, url_route: str, response_body: Mapping[str, object], settled_before: bool = False
+        method: str,
+        url_route: str,
+        response_body: Mapping[str, object],
+        settled_before: bool = False,
+        custom_llm_provider: str | None = None,
     ) -> ResponsesCallBilling:
-        if not OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route):
+        if not OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route, custom_llm_provider):
             return "unbilled"
         match (method, _responses_sub_route(urlparse(url_route).path)):
             case ("POST", ("input_tokens",)) | ("GET", (_, "input_items")) | ("DELETE", (_,)):
@@ -565,6 +571,10 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
     @staticmethod
     def is_openai_agents_route(url_route: str) -> bool:
         return is_openai_compatible_url(url_route) and is_openai_agents_api_path(urlparse(url_route).path)
+
+    @staticmethod
+    def is_openai_decisions_route(url_route: str) -> bool:
+        return is_openai_compatible_url(url_route) and urlparse(url_route).path.rstrip("/").endswith("/v1/decisions")
 
     @staticmethod
     def _unbilled_call_model(
@@ -825,12 +835,30 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         """
         Handle OpenAI passthrough logging with cost tracking for chat completions, image generation, image editing, embeddings, and responses API.
         """
-        is_chat_completions: Final = OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(url_route)
-        is_embeddings: Final = OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(url_route)
-        is_image_generation: Final = OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(url_route)
-        is_image_editing: Final = OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(url_route)
+        # `custom_llm_provider` arrives only through **kwargs now (upstream's
+        # signature dropped the explicit parameter); read it before the route
+        # checks below so an OpenAI-compatible upstream on a non-OpenAI host
+        # (Fireworks, Groq, Together, ...) still widens scope the same way
+        # `_in_openai_scope`/`is_openai_wire_compatible_route` intend.
+        configured_provider: Final = kwargs.get("custom_llm_provider")
+        is_chat_completions: Final = OpenAIPassthroughLoggingHandler.is_openai_chat_completions_route(
+            url_route, configured_provider
+        )
+        is_embeddings: Final = OpenAIPassthroughLoggingHandler.is_openai_embeddings_route(
+            url_route, configured_provider
+        )
+        is_image_generation: Final = OpenAIPassthroughLoggingHandler.is_openai_image_generation_route(
+            url_route, configured_provider
+        )
+        is_image_editing: Final = OpenAIPassthroughLoggingHandler.is_openai_image_editing_route(
+            url_route, configured_provider
+        )
         responses_billing: Final = OpenAIPassthroughLoggingHandler.openai_responses_call_billing(
-            httpx_response.request.method, url_route, response_body, background_response_settled_before
+            httpx_response.request.method,
+            url_route,
+            response_body,
+            background_response_settled_before,
+            configured_provider,
         )
         is_responses: Final = responses_billing != "unbilled"
         is_decisions: Final = (
@@ -918,7 +946,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             # billed upstream and recorded at $0.
             custom_llm_provider = resolve_openai_passthrough_provider(
                 model=model,
-                custom_llm_provider=kwargs.get("custom_llm_provider"),
+                custom_llm_provider=configured_provider,
                 url_route=url_route,
             )
             # Fireworks ids arrive bare (`accounts/.../models/...`) while the
@@ -1151,7 +1179,13 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 litellm_logging_obj, _STR_MAPPING.validate_python(request_body), all_chunks
             )
         try:
-            is_responses: Final = OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route)
+            # Resolve BEFORE the route check below: an OpenAI-compatible
+            # upstream on a non-OpenAI host (Fireworks, Groq, Together, ...)
+            # only widens `_in_openai_scope` when a provider is passed in.
+            configured_provider: Final = litellm_logging_obj.model_call_details.get("custom_llm_provider")
+            is_responses: Final = OpenAIPassthroughLoggingHandler.is_openai_responses_route(
+                url_route, configured_provider
+            )
             parsed_terminal_response: Final = (
                 OpenAIResponsesAPIConfig.parse_terminal_response_from_stream_chunks(all_chunks=all_chunks)
                 if is_responses
@@ -1173,7 +1207,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             handler_instance: Final = handler
             custom_llm_provider: Final = resolve_openai_passthrough_provider(
                 model=model,
-                custom_llm_provider=litellm_logging_obj.model_call_details.get("custom_llm_provider"),
+                custom_llm_provider=configured_provider,
                 url_route=url_route,
             )
             cost_model: Final = normalize_fireworks_model_id(model) or model

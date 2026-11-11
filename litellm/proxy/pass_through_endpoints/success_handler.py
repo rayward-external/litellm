@@ -454,8 +454,9 @@ class PassThroughEndpointLogging:
                 end_time=end_time,
                 cache_hit=cache_hit,
                 request_body=request_body,
+                custom_llm_provider=custom_llm_provider,
+                kwargs=kwargs,
                 background_response_settled_before=background_response_settled_before,
-                **kwargs,
             )
             standard_logging_response_object = openai_dispatch_result["result"]  # rebind-ok: elif-chain
             kwargs = openai_dispatch_result["kwargs"]  # rebind-ok: elif-chain contract
