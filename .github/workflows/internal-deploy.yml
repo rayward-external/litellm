@@ -165,7 +165,7 @@ jobs:
           # Buildx produces a manifest digest (sha256:...) we capture below.
           docker buildx build \
             --platform linux/amd64 \
-            --file docker/Dockerfile.non_root \
+            --file Dockerfile \
             --tag "${IMAGE_REF_SHA}" \
             --tag "${IMAGE_REF_LATEST}" \
             --provenance=false \

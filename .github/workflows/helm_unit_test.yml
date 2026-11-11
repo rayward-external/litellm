@@ -41,7 +41,7 @@ jobs:
 
       - name: Run unit tests
         run: |
-          for chart in helm/litellm-helm helm/litellm; do
+          for chart in helm/litellm; do
             declared="$(grep -h '^suite:' "$chart"/tests/*.yaml | wc -l | tr -d '[:space:]')"
             output="$(mktemp)"
             helm unittest -f 'tests/*.yaml' "$chart" | tee "$output"

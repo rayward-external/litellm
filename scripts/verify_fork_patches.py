@@ -199,15 +199,9 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # GHSA-2g95-wg33-c5x2 rows, flipped to N/A because that same cleanup removed
 # the IgnoredVulns entries they asserted (filelock's python >= 3.11
 # resolution is already past the 4.2.1 fix those entries were waiting on).
-EXPECTED_NA_ROWS = 85
+EXPECTED_NA_ROWS = 95
 
-REQUIRED_PINNED_DOCKERFILES = (
-    "Dockerfile",
-    "backend/Dockerfile",
-    "gateway/Dockerfile",
-    "migrations/Dockerfile",
-    "docker/Dockerfile.database",
-)
+REQUIRED_PINNED_DOCKERFILES = ("Dockerfile",)
 
 # Stage name -> the ARG that upstream's un-patched `FROM $VAR` would have used.
 # `docker/Dockerfile.database`'s runtime stage is the reason this map exists at
@@ -235,29 +229,13 @@ STAGE_TO_ARG = {
 # stage -- exactly the stage rayward-internal/llm-gateway-infra#694 calls out,
 # the one that would have built clean and died at run time -- exited 0.
 #
-# 24 pins across 6 files (grown from the original 18/6 by the 2026-10-04
-# sync's liteadmin-builder and docker/Dockerfile.non_root's builder+runtime;
-# deploy/lens/Dockerfile's own 3-stage entry was later removed outright when
-# upstream's #45529 deleted that file, and the 2026-10-17 security sweep's
-# three new `rust-native` pins -- backend/, gateway/, migrations/Dockerfile,
-# alerts #1127-#1129 -- replace that same count). The original 18 is a
-# SUPERSET of the "all 9 literal digests" the manifest's 2026-09-02 quarantine
-# row counts: that 9 is the wolfi-base subset #239 re-synced for the glibc
-# break (builder+runtime in the four wolfi files, plus Dockerfile.database's
-# runtime). The other 9 are the six `uvbin` (ghcr.io/astral-sh/uv) and three
-# `ui-builder` (node) pins, which drift and revert exactly the same way -- the
-# node ui-builder pins are the ones that were actually found stale.
+# The 2026-11-11 sync's upstream Docker consolidation deleted every other
+# pinned Dockerfile (backend/, gateway/, migrations/, docker/Dockerfile.database,
+# docker/Dockerfile.non_root) back into this single root Dockerfile, and
+# deploy/lens/Dockerfile's own entry was removed outright on the 2026-10-10
+# sync the same way. Only the root Dockerfile's 5 stages remain to pin.
 EXPECTED_LITERAL_PIN_STAGES = {
     "Dockerfile": ("uvbin", "ui-builder", "builder", "runtime", "liteadmin-builder"),
-    "backend/Dockerfile": ("uvbin", "rust-native", "builder", "runtime"),
-    "gateway/Dockerfile": ("uvbin", "rust-native", "builder", "runtime"),
-    "migrations/Dockerfile": ("uvbin", "rust-native", "builder", "runtime"),
-    # builder is still vanilla `FROM $LITELLM_BUILD_IMAGE` here.
-    "docker/Dockerfile.database": ("uvbin", "ui-builder", "runtime"),
-    "docker/Dockerfile.non_root": ("uvbin", "ui-builder", "builder", "runtime"),
-    # deploy/lens/Dockerfile's entry was removed on the 2026-10-10 sync:
-    # upstream's #45529 "connect LiteLLM to the independent Lens service"
-    # refactor deleted the file outright, so there are no stages left to pin.
 }
 
 _ARG_PIN_RE = re.compile(

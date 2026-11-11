@@ -25,13 +25,6 @@ updates:
     open-pull-requests-limit: 10
 
   - package-ecosystem: "pip"
-    directory: "/cookbook/litellm-ollama-docker-image"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-
-  - package-ecosystem: "pip"
     directory: "/cookbook/livekit_agent_sdk"
     schedule:
       interval: "weekly"
@@ -107,11 +100,3 @@ updates:
       semver-major-days: 14
     open-pull-requests-limit: 5
 
-  - package-ecosystem: "docker"
-    directory: "/ui"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-      semver-major-days: 14
-    open-pull-requests-limit: 5

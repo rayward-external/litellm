@@ -194,7 +194,7 @@ def _missing_required_anthropic_field(
 
 @router.post(
     "/v1/messages",
-    tags=["[beta] Anthropic `/v1/messages`"],
+    tags=["Anthropic `/v1/messages`"],
     dependencies=[Depends(user_api_key_auth)],
 )
 async def anthropic_response(
@@ -385,7 +385,7 @@ def _provider_context_management(response: TokenCountResponse) -> Mapping[str, o
 
 @router.post(
     "/v1/messages/count_tokens",
-    tags=["[beta] Anthropic Messages Token Counting"],
+    tags=["Anthropic Messages Token Counting"],
     dependencies=[Depends(user_api_key_auth)],
 )
 async def count_tokens(
