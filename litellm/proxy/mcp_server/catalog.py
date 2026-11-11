@@ -1217,13 +1217,13 @@ async def list_gateway_catalog(
                 return page.model_copy(
                     update={"meta": {key: value for key, value in page_meta.items() if key != SERVER_OUTCOMES_META_KEY}}
                 )
-            except Exception as error:
-                outcome: Final = classify_list_exception(error)
+            except Exception as fetch_error:
+                outcome: Final = classify_list_exception(fetch_error)
                 challenge_rejected_credential(server, outcome, allowed)
                 if cursor is not None:
                     raise MCPError(
                         code=INVALID_PARAMS, message="Upstream continuation failed; start a fresh listing"
-                    ) from error
+                    ) from fetch_error
                 return combine_optional_catalog(
                     request,
                     (),

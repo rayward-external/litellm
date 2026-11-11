@@ -241,7 +241,6 @@ class AzureAIStudioConfig(OpenAIConfig):
             optional_params=optional_params,
             model=model,
             drop_params=drop_params,
-            declared_reasoning_efforts=declared_reasoning_efforts,
             reasoning_drop_logger=reasoning_drop_logger,
         )
         # super().map_openai_params() (OpenAIConfig) dispatches, for any model
