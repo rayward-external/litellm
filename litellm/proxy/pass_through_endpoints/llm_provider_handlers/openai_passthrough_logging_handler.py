@@ -6,7 +6,7 @@ Handles cost tracking and logging for OpenAI passthrough endpoints, specifically
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Final, Literal, TypeAlias, cast
+from typing import Final, Literal, TypeAlias
 from urllib.parse import urlparse
 
 import httpx
@@ -1329,11 +1329,14 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                     passthrough_logging_payload=passthrough_logging_payload,
                 )
                 if user:
-                    proxy_server_request: Final = cast(
-                        dict[str, object],
-                        litellm_params_for_logging.setdefault("proxy_server_request", {}),
+                    proxy_server_request_raw = litellm_params_for_logging.get("proxy_server_request")
+                    proxy_server_request: Final[dict[str, object]] = (
+                        proxy_server_request_raw if isinstance(proxy_server_request_raw, dict) else {}
                     )
-                    body: Final = cast(dict[str, object], proxy_server_request.setdefault("body", {}))
+                    litellm_params_for_logging["proxy_server_request"] = proxy_server_request
+                    body_raw = proxy_server_request.get("body")
+                    body: Final[dict[str, object]] = body_raw if isinstance(body_raw, dict) else {}
+                    proxy_server_request["body"] = body
                     body["user"] = user
 
             # Attach the payload to kwargs so the success handler adopts it;
