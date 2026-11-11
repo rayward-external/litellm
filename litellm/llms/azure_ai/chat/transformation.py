@@ -235,6 +235,7 @@ class AzureAIStudioConfig(OpenAIConfig):
                 model=model,
                 drop_params=drop_params,
                 declared_reasoning_efforts=declared_reasoning_efforts,
+                reasoning_drop_logger=reasoning_drop_logger,
             )
         optional_params = super().map_openai_params(
             non_default_params=non_default_params,
