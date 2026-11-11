@@ -48,13 +48,13 @@ reason = "crypto-bigint 0.7.6 (fix) is a breaking major for elliptic-curve, whic
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0449"
-ignoreUntil = 2026-11-13
-reason = "unsafe-libyaml 0.2.11 (transitive dep of serde_yaml_ng, present byte-identical in upstream's own Cargo.lock) is unmaintained with no patched or unaffected version published (RUSTSEC advisory lists both as empty); remove this entry once one exists"
+ignoreUntil = 2027-02-09
+reason = "unsafe-libyaml 0.2.11 (transitive dep of serde_yaml_ng, present byte-identical in upstream's own Cargo.lock) is unmaintained with no patched or unaffected version published; rechecked 2026-11-11 against the advisory's own patched/unaffected version lists, both still empty, and the crate's registry index still lists 0.2.11 as the newest release. Remove this entry once one exists"
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0436"
-ignoreUntil = 2026-11-14
-reason = "paste (transitive dep of the litellm-rust OCR/token-counter crates) is unmaintained with no fixed release; remove this entry once one exists"
+ignoreUntil = 2027-02-09
+reason = "paste (transitive dep of the litellm-rust OCR/token-counter crates) is unmaintained with no fixed release; rechecked 2026-11-11 against the advisory's own patched version list, still empty, and the crate's registry index lists 1.0.15 as the newest release with no fix ever published for this informational unmaintained-status advisory. Remove this entry once one exists"
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2023-0071"
