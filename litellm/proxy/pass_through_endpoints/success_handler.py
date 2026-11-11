@@ -730,7 +730,10 @@ class PassThroughEndpointLogging:
                         httpx_response.request.method, url_route, _RESPONSE_BODY.validate_python(response_body)
                     )
                     if isinstance(response_body, dict)
-                    and OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route)
+                    and (
+                        OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route)
+                        or OpenAIPassthroughLoggingHandler.is_openai_responses_item_route(url_route)
+                    )
                     else None
                 )
                 background_response_settled_before: Final = await self.background_response_settled_before(
@@ -931,14 +934,18 @@ class PassThroughEndpointLogging:
         request_body: dict,
         custom_llm_provider: str | None,
         kwargs: dict,
+        background_response_settled_before: bool = False,
     ) -> PassThroughEndpointLoggingTypedDict:
         """Three distinct fates on a recognised OpenAI route, and collapsing
         any two of them has already caused a money bug in each direction:
           1. supported billable endpoint -> the OpenAI handler;
-          2. a Responses ITEM route -> priced by NOBODY. Its body echoes the
-             original usage block, and `POST .../{id}/cancel` slips past the
-             generic pricer's method gate — falling through re-billed the
-             full generation on every poll;
+          2. a Responses ITEM route that is not settling a background call ->
+             priced by NOBODY. Its body echoes the original usage block, and
+             `POST .../{id}/cancel` slips past the generic pricer's method
+             gate — falling through re-billed the full generation on every
+             poll. A poll or cancel that DOES settle a background call is the
+             one item-route case that must still reach the OpenAI handler
+             below, exactly once, the moment it finishes;
           3. anything else -> the generic pricer. Blanket-unpricing this
              bucket instead regressed billable provider-less POSTs
              (`/v1/completions` on an OpenAI host) from priced to $0.
@@ -947,7 +954,20 @@ class PassThroughEndpointLogging:
             OpenAIPassthroughLoggingHandler,
         )
 
-        if OpenAIPassthroughLoggingHandler.is_openai_responses_item_route(url_route, custom_llm_provider):
+        is_unbilled_responses_item_route: Final = (
+            OpenAIPassthroughLoggingHandler.is_openai_responses_item_route(url_route, custom_llm_provider)
+            and OpenAIPassthroughLoggingHandler.openai_responses_call_billing(
+                httpx_response.request.method,
+                url_route,
+                response_body if isinstance(response_body, dict) else {},
+                background_response_settled_before,
+                custom_llm_provider,
+            )
+            == "unbilled"
+        )
+        if is_unbilled_responses_item_route or OpenAIPassthroughLoggingHandler.is_openai_decisions_item_route(
+            url_route
+        ):
             # Fate 2: priced by nobody, but still named -- an unbilled item
             # route's spend row otherwise records "unknown" instead of the
             # model that served it.
@@ -970,6 +990,7 @@ class PassThroughEndpointLogging:
             cache_hit=cache_hit,
             request_body=request_body,
             custom_llm_provider=custom_llm_provider,
+            background_response_settled_before=background_response_settled_before,
             **kwargs,
         )
         if openai_passthrough_logging_handler_result["result"] is not None:
