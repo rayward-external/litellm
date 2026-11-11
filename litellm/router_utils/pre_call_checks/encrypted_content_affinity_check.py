@@ -567,7 +567,7 @@ class EncryptedContentAffinityCheck(CustomLogger):
                 metadata_variable_name=get_metadata_variable_name_from_kwargs(request_kwargs),
                 request_deployments=self.ctx.registry().deployments(model) or pinned,  # pyright: ignore[reportArgumentType]  # deployment dicts
             )
-        except ValueError:
+        except BadRequestError:
             return ()
         kept_identities: Final = frozenset(map(id, kept))
         return tuple(deployment for deployment in pinned if id(deployment) in kept_identities)
