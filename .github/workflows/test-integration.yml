@@ -119,7 +119,7 @@ jobs:
       - name: Install the Rust gateway
         if: matrix.suite == 'management' || matrix.suite == 'management-replica'
         timeout-minutes: 15
-        working-directory: packaging/litellm-proxy
+        working-directory: litellm/packaging/litellm-proxy
         env:
           CARGO_INCREMENTAL: "0"
         run: |
