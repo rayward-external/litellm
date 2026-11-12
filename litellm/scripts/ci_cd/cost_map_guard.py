@@ -268,7 +268,7 @@ def _resolve_one_of(
     """
     found: Final = tuple((path, text) for path in paths if (text := read_git("show", f"{revision}:{path}")) is not None)
     if len(found) > 1:
-        names = ", ".join(path for path, _ in found)
+        names: Final = ", ".join(path for path, _ in found)
         return "", f"{revision} has more than one copy of the same file ({names}); remove every copy but the real one"
     return (found[0][1], None) if found else ("", None)
 
@@ -325,11 +325,14 @@ def main(argv: Sequence[str]) -> int:
     if isinstance(merged, MergeFailed):
         print(f"cost map guard failed: git merge-tree into {args.target} failed: {merged.stderr}")
         return 1
-    base_snapshot, base_errors = snapshot(args.base)
+    # base_errors is deliberately not a failure: the merge base is outside the pull
+    # request's control (an earlier sync or merge may have left it with two copies of
+    # a file), and failing on it would lock out the very PR that comes along to clean
+    # it up. head/merged ambiguity is still the PR's own doing, so it still fails.
+    base_snapshot, _base_errors = snapshot(args.base)
     head_snapshot, head_errors = snapshot(args.head)
     merged_snapshot, merged_errors = (None, ()) if merged is None else snapshot(merged)
     failures: Final = (
-        *base_errors,
         *head_errors,
         *merged_errors,
         *guard_failures(base_snapshot, head_snapshot, merged_snapshot, changed, bot),
