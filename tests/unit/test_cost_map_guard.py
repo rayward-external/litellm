@@ -117,9 +117,7 @@ def test_evaluation_and_decisions_rows_with_zero_or_missing_output_price_pass(mo
 
 
 def test_chat_rows_with_output_price_pass() -> None:
-    head: Final = _snapshot(
-        {**BASE_MAP, "openrouter/chat-with-output": _entry(output_cost_per_token=4.2e-08)}
-    )
+    head: Final = _snapshot({**BASE_MAP, "openrouter/chat-with-output": _entry(output_cost_per_token=4.2e-08)})
     assert _failures(head) == ()
 
 
@@ -274,6 +272,26 @@ def test_a_decoy_pins_file_at_another_candidate_path_is_rejected() -> None:
     _snap, errors = guard.snapshot("head", read_git=read_git)
     assert len(errors) == 1
     assert "more than one copy of the same file" in errors[0]
+
+
+def test_a_base_only_decoy_does_not_hide_head_deleting_the_real_pins_file() -> None:
+    decoy_path: Final = next(path for path in guard.PINS_PATHS if path != guard.PINS_PATH)
+    cost_map: Final = _serialize(BASE_MAP)
+    base_files: Final = {
+        guard.PINS_PATH: PINS,
+        decoy_path: PINS,
+        guard.COST_MAP_PATH: cost_map,
+        guard.BACKUP_PATH: cost_map,
+    }
+
+    def read_git(_operation: str, blob: str) -> str | None:
+        revision, path = blob.split(":", 1)
+        return base_files.get(path) if revision == "base" else None
+
+    base, base_errors = guard.snapshot("base", read_git=read_git)
+    assert len(base_errors) == 1
+    merged: Final = _snapshot(BASE_MAP, pins="")
+    assert guard.guard_failures(base, merged, merged, (guard.PINS_PATH, decoy_path), bot=False) == (MISSING_PINS,)
 
 
 def test_a_single_real_path_resolves_with_no_errors() -> None:
@@ -546,7 +564,9 @@ def test_main_tells_a_conflicting_pr_to_merge_the_base_branch_in(tmp_path: Path)
     head: Final = _commit(tmp_path, {**BASE_MAP, "openrouter/b": _entry(4e-06)}, "pr reprices b differently")
     result: Final = _run_guard(tmp_path, merge_base, head, "litellm_fix_pricing", target=target)
     assert result.returncode == 1, result.stdout + result.stderr
-    conflict_line: Final = "- the pull request does not merge cleanly into its base branch; merge the base branch in first"
+    conflict_line: Final = (
+        "- the pull request does not merge cleanly into its base branch; merge the base branch in first"
+    )
     assert conflict_line in result.stdout.splitlines()
 
 
@@ -564,8 +584,6 @@ def test_main_lets_only_a_human_opened_pr_change_the_pins(tmp_path: Path, author
     subprocess.run(("git", "init", "-q", str(tmp_path)), check=True)
     base: Final = _commit(tmp_path, BASE_MAP, "base", pins=PINS)
     head: Final = _commit(tmp_path, NO_VISION_MAP, "lower the flag and drop its pin", pins=NO_PINS)
-    result: Final = _run_guard(
-        tmp_path, base, head, "litellm_azure_ai_mai_image_2_5_pro", author_type=author_type
-    )
+    result: Final = _run_guard(tmp_path, base, head, "litellm_azure_ai_mai_image_2_5_pro", author_type=author_type)
     assert result.returncode == expected_code, result.stdout + result.stderr
     assert (f"- {BOT_AUTHOR_PIN_FAILURE}" in result.stdout.splitlines()) == (author_type == "Bot")
