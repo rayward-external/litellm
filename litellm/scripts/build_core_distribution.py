@@ -56,15 +56,28 @@ def stage_core_distribution(source: Path, destination: Path, *, package: str = "
     def ignored_sources(directory: str, names: list[str]) -> set[str]:
         workspace_sources: Final = (
             {
-                "enterprise", "proxy-extras", "packaging", "rust", "cli", "scripts", "runtime",
-                "schema.prisma", "ui", "vscode-extension", "deploy",
+                "enterprise",
+                "proxy-extras",
+                "packaging",
+                "rust",
+                "cli",
+                "scripts",
+                "runtime",
+                "schema.prisma",
+                "ui",
+                "vscode-extension",
+                "deploy",
             }
             if Path(directory) == source / "litellm"
             else set()
         )
-        return workspace_sources | {name for name in names if Path(directory) / name in ignored} | shutil.ignore_patterns(
-            "__pycache__", ".pytest_cache", ".ruff_cache", "target", ".git", "*.so", "*.pyd"
-        )(directory, names)
+        return (
+            workspace_sources
+            | {name for name in names if Path(directory) / name in ignored}
+            | shutil.ignore_patterns("__pycache__", ".pytest_cache", ".ruff_cache", "target", ".git", "*.so", "*.pyd")(
+                directory, names
+            )
+        )
 
     destination.mkdir(parents=True, exist_ok=True)
     for name, path in ((name, source / name) for name in SOURCES if package == "litellm-core" or name != "litellm"):

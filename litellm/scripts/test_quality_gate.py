@@ -118,7 +118,9 @@ def base_counts(ref: str, repo_root: Path = REPO_ROOT, checker: Path = CHECKER) 
         # Teardown must never raise, or it masks the real error when the body failed.
         subprocess.run(
             ["git", "worktree", "remove", "--force", str(worktree)],
-            cwd=repo_root, capture_output=True, text=True,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
         )
         shutil.rmtree(parent, ignore_errors=True)
 
@@ -138,15 +140,10 @@ def parse_changed_lines(diff_text: str) -> Mapping[str, frozenset[int]]:
     [preamble, path, body, path, body, ...], so each file's hunks are already
     grouped with it."""
     parts: Final = _FILE_HEADER.split(diff_text)
-    return MappingProxyType({
-        path: _hunk_lines(body)
-        for path, body in zip(parts[1::2], parts[2::2])
-    })
+    return MappingProxyType({path: _hunk_lines(body) for path, body in zip(parts[1::2], parts[2::2])})
 
 
-def introduced(
-    violations: Sequence[Violation], changed: Mapping[str, frozenset[int]]
-) -> tuple[Violation, ...]:
+def introduced(violations: Sequence[Violation], changed: Mapping[str, frozenset[int]]) -> tuple[Violation, ...]:
     return tuple(v for v in violations if v.line in changed.get(v.file, frozenset()))
 
 

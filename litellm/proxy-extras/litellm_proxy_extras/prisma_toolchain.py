@@ -85,9 +85,7 @@ def _timeout_from_env(env_var: str, default: float) -> float:
     try:
         seconds = float(raw)
     except ValueError:
-        logger.warning(
-            "%s=%r is not a number, falling back to %ss", env_var, raw, default
-        )
+        logger.warning("%s=%r is not a number, falling back to %ss", env_var, raw, default)
         return default
     if not math.isfinite(seconds) or seconds <= 0:
         logger.warning(
@@ -102,9 +100,7 @@ def _timeout_from_env(env_var: str, default: float) -> float:
 
 def prisma_command_timeout() -> float:
     """Seconds any single Prisma command may run for."""
-    return _timeout_from_env(
-        PRISMA_COMMAND_TIMEOUT_ENV_VAR, DEFAULT_PRISMA_COMMAND_TIMEOUT
-    )
+    return _timeout_from_env(PRISMA_COMMAND_TIMEOUT_ENV_VAR, DEFAULT_PRISMA_COMMAND_TIMEOUT)
 
 
 def migration_lock_timeout() -> float:
@@ -113,17 +109,13 @@ def migration_lock_timeout() -> float:
 
 def prisma_bootstrap_timeout() -> float:
     """Seconds the one-time Node toolchain install may run for."""
-    return _timeout_from_env(
-        PRISMA_BOOTSTRAP_TIMEOUT_ENV_VAR, DEFAULT_PRISMA_BOOTSTRAP_TIMEOUT
-    )
+    return _timeout_from_env(PRISMA_BOOTSTRAP_TIMEOUT_ENV_VAR, DEFAULT_PRISMA_BOOTSTRAP_TIMEOUT)
 
 
 def prisma_migrate_deploy_timeout() -> float:
     """Seconds one ``prisma migrate deploy`` may run for, however many migrations are pending."""
     if os.getenv(PRISMA_MIGRATE_DEPLOY_TIMEOUT_ENV_VAR) is not None:
-        return _timeout_from_env(
-            PRISMA_MIGRATE_DEPLOY_TIMEOUT_ENV_VAR, DEFAULT_PRISMA_MIGRATE_DEPLOY_TIMEOUT
-        )
+        return _timeout_from_env(PRISMA_MIGRATE_DEPLOY_TIMEOUT_ENV_VAR, DEFAULT_PRISMA_MIGRATE_DEPLOY_TIMEOUT)
     return max(DEFAULT_PRISMA_MIGRATE_DEPLOY_TIMEOUT, prisma_command_timeout())
 
 
@@ -140,9 +132,7 @@ def nodeenv_cache_dir() -> Optional[Path]:
     try:
         return Path.home() / ".cache" / "prisma-python" / "nodeenv"
     except RuntimeError:
-        logger.warning(
-            "No resolvable home directory, cannot locate the Prisma nodeenv cache"
-        )
+        logger.warning("No resolvable home directory, cannot locate the Prisma nodeenv cache")
         return None
 
 
@@ -169,8 +159,7 @@ def heal_incomplete_nodeenv_cache() -> bool:
         logger.warning("Could not inspect the Node toolchain at %s: %s", cache_dir, e)
         return False
     logger.warning(
-        "Node toolchain at %s has no %s, so a previous install was interrupted. "
-        "Removing it so it can be reinstalled.",
+        "Node toolchain at %s has no %s, so a previous install was interrupted. Removing it so it can be reinstalled.",
         cache_dir,
         node_binary_path(cache_dir).name,
     )
@@ -247,9 +236,7 @@ def run_prisma(
     return subprocess.CompletedProcess(process.args, process.returncode, out, err)
 
 
-def ensure_prisma_toolchain(
-    prisma_command: str, prisma_env: dict[str, str]
-) -> ToolchainBootstrap:
+def ensure_prisma_toolchain(prisma_command: str, prisma_env: dict[str, str]) -> ToolchainBootstrap:
     """Install whatever the Prisma CLI needs to run, under its own timeout.
 
     Never raises. A toolchain that cannot be prepared is reported so the

@@ -73,9 +73,7 @@ def main() -> int:
     previous: Final = (
         canonical.stdout
         if canonical.returncode == 0
-        else subprocess.run(
-            ("git", "show", f"{base}:schema.prisma"), capture_output=True, text=True, check=True
-        ).stdout
+        else subprocess.run(("git", "show", f"{base}:schema.prisma"), capture_output=True, text=True, check=True).stdout
     )
     changes: Final = check_breaking_changes(
         parse_model_fields(previous), parse_model_fields(Path("litellm/schema.prisma").read_text())

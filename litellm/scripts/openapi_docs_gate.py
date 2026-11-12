@@ -112,8 +112,16 @@ def _install_base_native(worktree: Path, repo_root: Path) -> None:
     }
     _run(
         [
-            "uv", "pip", "install", "--python", sys.executable, "--no-deps",
-            "--target", str(worktree.parent / "native-install"), "--editable", str(worktree),
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "--no-deps",
+            "--target",
+            str(worktree.parent / "native-install"),
+            "--editable",
+            str(worktree),
         ],
         cwd=worktree,
         env=env,
@@ -136,7 +144,9 @@ def base_counts(ref: str, repo_root: Path = REPO_ROOT, checker: Path = CHECKER) 
         # Teardown must never raise, or it masks the real error when the body failed.
         subprocess.run(
             ["git", "worktree", "remove", "--force", str(worktree)],
-            cwd=repo_root, capture_output=True, text=True,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
         )
         shutil.rmtree(parent, ignore_errors=True)
 

@@ -113,12 +113,7 @@ def _file_failures(
         *(
             failure
             for key, entry in head_map.items()
-            if (
-                failure := _evaluation_output_price_failure(
-                    key, entry, evaluation_output_price_sources
-                )
-            )
-            is not None
+            if (failure := _evaluation_output_price_failure(key, entry, evaluation_output_price_sources)) is not None
         ),
     )
 
@@ -244,9 +239,7 @@ def guard_failures(
     if isinstance(head_map, str):
         return (head_map,)
     return (
-        *_file_failures(
-            head, head_map, evaluation_output_price_sources=evaluation_output_price_sources
-        ),
+        *_file_failures(head, head_map, evaluation_output_price_sources=evaluation_output_price_sources),
         *_merged_pin_failures(base, merged),
         *(_bot_failures(base, head_map, changed_files) if bot else ()),
     )

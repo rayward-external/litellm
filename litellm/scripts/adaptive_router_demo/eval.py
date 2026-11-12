@@ -86,10 +86,7 @@ EVAL_CASES: List[EvalCase] = [
     # writing
     EvalCase(
         category="writing",
-        prompt=(
-            "Write a short, polite email declining a meeting request because of "
-            "a scheduling conflict."
-        ),
+        prompt=("Write a short, polite email declining a meeting request because of a scheduling conflict."),
         ideal=(
             "A professional email that: (1) thanks the sender for the invitation, "
             "(2) clearly declines, (3) mentions a scheduling conflict as the reason, "
@@ -177,9 +174,7 @@ async def evaluate(
     async with httpx.AsyncClient() as client:
         for i, case in enumerate(EVAL_CASES, 1):
             print(f"\n[{i}/{len(EVAL_CASES)}] category={case.category}")
-            print(
-                f"  prompt   : {case.prompt[:80]}{'…' if len(case.prompt) > 80 else ''}"
-            )
+            print(f"  prompt   : {case.prompt[:80]}{'…' if len(case.prompt) > 80 else ''}")
 
             session_id = f"eval-{uuid.uuid4()}"
 
@@ -199,9 +194,7 @@ async def evaluate(
                 continue
 
             print(f"  model    : {chosen or router}")
-            print(
-                f"  response : {response[:120].replace(chr(10), ' ')}{'…' if len(response) > 120 else ''}"
-            )
+            print(f"  response : {response[:120].replace(chr(10), ' ')}{'…' if len(response) > 120 else ''}")
 
             # Judge the real response.
             judge_msgs = [
@@ -260,7 +253,7 @@ async def evaluate(
                 print(f"  WARNING: bandit update failed: {exc}", file=sys.stderr)
 
     total = passed + failed
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Results: {passed}/{total} passed  ({failed} failed)")
     if passed == total:
         print("All test cases passed — the adaptive router is working well!")
@@ -275,17 +268,11 @@ async def evaluate(
 # Entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="Evaluate the adaptive router with LLM-as-judge."
-    )
+    ap = argparse.ArgumentParser(description="Evaluate the adaptive router with LLM-as-judge.")
     ap.add_argument("--proxy-url", default="http://localhost:4000")
     ap.add_argument("--api-key", required=True, help="proxy API key")
-    ap.add_argument(
-        "--router", default="smart-cheap-router", help="adaptive router model name"
-    )
-    ap.add_argument(
-        "--judge-model", default="smart", help="model name for the judge (via proxy)"
-    )
+    ap.add_argument("--router", default="smart-cheap-router", help="adaptive router model name")
+    ap.add_argument("--judge-model", default="smart", help="model name for the judge (via proxy)")
     args = ap.parse_args()
 
     asyncio.run(evaluate(args.proxy_url, args.api_key, args.router, args.judge_model))

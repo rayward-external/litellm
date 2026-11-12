@@ -59,8 +59,7 @@ def _slot_count() -> int:
         return int(raw)
     except ValueError:
         print(
-            f"gate_slot_lock: ignoring non-integer {SLOT_COUNT_ENV}={raw!r}; "
-            f"using {DEFAULT_SLOT_COUNT} slots",
+            f"gate_slot_lock: ignoring non-integer {SLOT_COUNT_ENV}={raw!r}; using {DEFAULT_SLOT_COUNT} slots",
             file=sys.stderr,
         )
         return DEFAULT_SLOT_COUNT
@@ -81,8 +80,7 @@ def _try_slot(directory: Path, index: int) -> IO[bytes] | None:
 
 def _wait_for_slot(directory: Path, count: int) -> IO[bytes]:
     print(
-        f"gate_slot_lock: all {count} machine-wide slots are busy; queueing "
-        f"(set {SLOT_COUNT_ENV}=0 to disable)",
+        f"gate_slot_lock: all {count} machine-wide slots are busy; queueing (set {SLOT_COUNT_ENV}=0 to disable)",
         file=sys.stderr,
         flush=True,
     )

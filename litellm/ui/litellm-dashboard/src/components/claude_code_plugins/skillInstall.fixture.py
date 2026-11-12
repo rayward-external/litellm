@@ -89,15 +89,21 @@ def run(command: str, fail: bool) -> None:
         curl_args: Final = cast(Sequence[str], curl["args"])  # cast-ok: fixture records argv
         installed: Final = root / "installed" / "SKILL.md"
         temporary: Final = Path(curl_args[curl_args.index("--output") + 1]).parent
-        sys.stdout.write(json.dumps({
-            "status": os.waitstatus_to_exitcode(status),
-            "header": curl["header"],
-            "installArgs": npx["args"] if npx else None,
-            "telemetry": cast(Environment, npx["env"]).get("DISABLE_TELEMETRY") if npx else None,  # cast-ok: own env
-            "secretLeaked": secret in json.dumps((output.decode(), curl_args, curl["env"], npx)),
-            "retained": installed.read_text() if installed.exists() else None,
-            "temporaryRemoved": not temporary.exists(),
-        }))
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "status": os.waitstatus_to_exitcode(status),
+                    "header": curl["header"],
+                    "installArgs": npx["args"] if npx else None,
+                    "telemetry": cast(Environment, npx["env"]).get("DISABLE_TELEMETRY")
+                    if npx
+                    else None,  # cast-ok: own env
+                    "secretLeaked": secret in json.dumps((output.decode(), curl_args, curl["env"], npx)),
+                    "retained": installed.read_text() if installed.exists() else None,
+                    "temporaryRemoved": not temporary.exists(),
+                }
+            )
+        )
         marker: Final = temporary / ".skill-install-fixture"
         if marker.exists() and marker.read_text() == str(root):
             shutil.rmtree(temporary)

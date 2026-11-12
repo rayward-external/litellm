@@ -192,9 +192,7 @@ async def _drive_one_session(
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--proxy-url", default="http://localhost:4000")
-    ap.add_argument(
-        "--api-key", required=True, help="proxy key with /v1/chat/completions perms"
-    )
+    ap.add_argument("--api-key", required=True, help="proxy key with /v1/chat/completions perms")
     ap.add_argument("--router", default="smart-cheap-router")
     ap.add_argument("--rounds", type=int, default=100)
     ap.add_argument(
@@ -235,9 +233,7 @@ async def main() -> None:
             if chosen:
                 counts[(rt, chosen)] = counts.get((rt, chosen), 0) + 1
             if (i + 1) % 10 == 0:
-                summary = ", ".join(
-                    f"{rt}/{m}={n}" for (rt, m), n in sorted(counts.items())
-                )
+                summary = ", ".join(f"{rt}/{m}={n}" for (rt, m), n in sorted(counts.items()))
                 print(f"  round {i + 1}/{args.rounds}  picks: {summary}")
             await asyncio.sleep(args.rate)
 

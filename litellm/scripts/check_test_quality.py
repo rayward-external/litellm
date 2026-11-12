@@ -161,10 +161,19 @@ SUPPRESSION_RE: Final = re.compile(r"#\s*test-quality-ok(?::\s*(?P<reason>.*))?"
 
 PYTEST_ASSERTION_HELPERS: Final = frozenset(("raises", "warns", "deprecated_call", "fail"))
 
-MOCK_INSPECTION_ATTRIBUTES: Final = frozenset((
-    "called", "call_args", "call_args_list", "call_count", "mock_calls",
-    "await_args", "await_args_list", "await_count", "awaited",
-))
+MOCK_INSPECTION_ATTRIBUTES: Final = frozenset(
+    (
+        "called",
+        "call_args",
+        "call_args_list",
+        "call_count",
+        "mock_calls",
+        "await_args",
+        "await_args_list",
+        "await_count",
+        "awaited",
+    )
+)
 MOCK_ASSERTION_PREFIX: Final = "assert_"
 
 PATCH_MEMBERS: Final = frozenset(("object", "dict", "multiple"))
@@ -178,9 +187,22 @@ SDK_MODULE: Final = "litellm"
 SUBPROCESS_SPAWNS: Final = frozenset(("run", "Popen", "check_output", "check_call", "call"))
 INTERPRETER_ISOLATION_FLAGS: Final = frozenset(("-I", "-P"))
 
-RULE_CODES: Final = frozenset((
-    "TQ000", "TQ001", "TQ002", "TQ003", "TQ004", "TQ005", "TQ006", "TQ007", "TQ009", "TQ010", "TQ011", "TQ012",
-))
+RULE_CODES: Final = frozenset(
+    (
+        "TQ000",
+        "TQ001",
+        "TQ002",
+        "TQ003",
+        "TQ004",
+        "TQ005",
+        "TQ006",
+        "TQ007",
+        "TQ009",
+        "TQ010",
+        "TQ011",
+        "TQ012",
+    )
+)
 
 INTEGRATION_ROOT: Final = ("tests", "integration")
 INTEGRATION_HARNESS: Final = "_support"
@@ -190,18 +212,25 @@ ZERO_ARGUMENT_PROCESS_CONTROLS: Final = frozenset(("kill", "terminate", "suspend
 SIGNAL_METHOD: Final = "send_signal"
 BIND_METHOD: Final = "bind"
 PORT_READBACK: Final = "getsockname"
-CLOCK_READERS: Final = frozenset((
-    "time.monotonic", "time.perf_counter", "time.time",
-    "time.monotonic_ns", "time.perf_counter_ns", "time.time_ns",
-    "monotonic", "perf_counter", "monotonic_ns", "perf_counter_ns",
-))
+CLOCK_READERS: Final = frozenset(
+    (
+        "time.monotonic",
+        "time.perf_counter",
+        "time.time",
+        "time.monotonic_ns",
+        "time.perf_counter_ns",
+        "time.time_ns",
+        "monotonic",
+        "perf_counter",
+        "monotonic_ns",
+        "perf_counter_ns",
+    )
+)
 ELAPSED_NAME_RE: Final = re.compile(r"elapsed|duration|latenc", re.IGNORECASE)
 DURATION_READER: Final = "total_seconds"
 DURATION_FOLDS: Final = frozenset(("max", "min", "sum", "abs", "round", "float"))
 
-CREDENTIAL_NAME_RE: Final = re.compile(
-    r"(?:API_KEY|_KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|ACCESS_KEY_ID)$"
-)
+CREDENTIAL_NAME_RE: Final = re.compile(r"(?:API_KEY|_KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|DATABASE_URL|ACCESS_KEY_ID)$")
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -245,10 +274,7 @@ def _is_collectible_class(node: ast.ClassDef) -> bool:
     """pytest collects `Test`-prefixed classes that define no constructor."""
     if not node.name.startswith(TEST_CLASS_PREFIX):
         return False
-    return not any(
-        isinstance(child, ast.FunctionDef) and child.name == "__init__"
-        for child in node.body
-    )
+    return not any(isinstance(child, ast.FunctionDef) and child.name == "__init__" for child in node.body)
 
 
 def iter_test_functions(tree: ast.Module) -> Iterator[FunctionNode]:
@@ -290,9 +316,7 @@ def iter_assertions(function: FunctionNode) -> Iterator[ast.stmt | ast.Call]:
     for node in ast.walk(function):
         if isinstance(node, ast.Assert):
             yield node
-        elif isinstance(node, ast.Call) and (
-            _is_pytest_assertion_call(node) or _is_assertion_helper_call(node)
-        ):
+        elif isinstance(node, ast.Call) and (_is_pytest_assertion_call(node) or _is_assertion_helper_call(node)):
             yield node
 
 
@@ -337,11 +361,9 @@ def _call_targets(function: FunctionNode) -> frozenset[CallTarget]:
 
 
 def _functions_in(body: Iterable[ast.stmt]) -> Mapping[str, FunctionNode]:
-    return MappingProxyType({
-        node.name: node
-        for node in body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    })
+    return MappingProxyType(
+        {node.name: node for node in body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    )
 
 
 def build_scopes(tree: ast.Module) -> Mapping[FunctionNode, Scope]:
@@ -355,14 +377,12 @@ def build_scopes(tree: ast.Module) -> Mapping[FunctionNode, Scope]:
         for node in tree.body
         if isinstance(node, ast.ClassDef)
     )
-    return MappingProxyType({
-        **{function: module_scope for function in module_level.values()},
-        **{
-            function: scope
-            for node, scope in class_scopes
-            for function in scope.methods.values()
-        },
-    })
+    return MappingProxyType(
+        {
+            **{function: module_scope for function in module_level.values()},
+            **{function: scope for node, scope in class_scopes for function in scope.methods.values()},
+        }
+    )
 
 
 def _reaches_assertion(
@@ -385,9 +405,7 @@ def _reaches_assertion(
     )
 
 
-def asserts_through_helpers(
-    function: FunctionNode, scopes: Mapping[FunctionNode, Scope]
-) -> bool:
+def asserts_through_helpers(function: FunctionNode, scopes: Mapping[FunctionNode, Scope]) -> bool:
     """Whether the test reaches an assertion through a function defined in this
     module, followed transitively. Extracting the assertions into a shared helper is
     good factoring rather than a test that pins nothing, so following one is what
@@ -413,8 +431,7 @@ def _is_patch_installer(dotted: str) -> bool:
 
 def _installs_patch(function: FunctionNode) -> bool:
     decorators: Final = tuple(
-        _dotted_name(d.func) if isinstance(d, ast.Call) else _dotted_name(d)
-        for d in function.decorator_list
+        _dotted_name(d.func) if isinstance(d, ast.Call) else _dotted_name(d) for d in function.decorator_list
     )
     if any(name and _is_patch_installer(name) for name in decorators):
         return True
@@ -432,10 +449,7 @@ def _only_inspects_a_mock(node: ast.stmt | ast.Call) -> bool:
         return isinstance(func, ast.Attribute) and func.attr.startswith(MOCK_ASSERTION_PREFIX)
     return any(
         isinstance(child, ast.Attribute)
-        and (
-            child.attr in MOCK_INSPECTION_ATTRIBUTES
-            or child.attr.startswith(MOCK_ASSERTION_PREFIX)
-        )
+        and (child.attr in MOCK_INSPECTION_ATTRIBUTES or child.attr.startswith(MOCK_ASSERTION_PREFIX))
         for child in ast.walk(node)
     )
 
@@ -489,8 +503,10 @@ def _environ_subscript_targets(target: ast.expr) -> Iterator[ast.Subscript]:
 def iter_environ_violations(path: Path, tree: ast.Module) -> Iterator[Violation]:
     for node in ast.walk(tree):
         targets: Final = (
-            node.targets if isinstance(node, ast.Assign)
-            else (node.target,) if isinstance(node, (ast.AugAssign, ast.AnnAssign))
+            node.targets
+            if isinstance(node, ast.Assign)
+            else (node.target,)
+            if isinstance(node, (ast.AugAssign, ast.AnnAssign))
             else ()
         )
         for target in targets:
@@ -516,8 +532,10 @@ def _litellm_attribute_targets(target: ast.expr) -> Iterator[ast.Attribute]:
 def iter_global_mutation_violations(path: Path, tree: ast.Module) -> Iterator[Violation]:
     for node in ast.walk(tree):
         targets: Final = (
-            node.targets if isinstance(node, ast.Assign)
-            else (node.target,) if isinstance(node, (ast.AugAssign, ast.AnnAssign))
+            node.targets
+            if isinstance(node, ast.Assign)
+            else (node.target,)
+            if isinstance(node, (ast.AugAssign, ast.AnnAssign))
             else ()
         )
         for target in targets:
@@ -550,14 +568,16 @@ def _environ_keys(node: ast.AST) -> Iterator[str]:
 
 
 def _credential_bindings(tree: ast.Module) -> Mapping[str, str]:
-    return MappingProxyType({
-        target.id: key
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        for key in tuple(k for k in _environ_keys(node.value) if CREDENTIAL_NAME_RE.search(k))[:1]
-        for target in node.targets
-        if isinstance(target, ast.Name)
-    })
+    return MappingProxyType(
+        {
+            target.id: key
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            for key in tuple(k for k in _environ_keys(node.value) if CREDENTIAL_NAME_RE.search(k))[:1]
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+    )
 
 
 def _absence_operands(test: ast.expr) -> Iterator[ast.expr]:
@@ -585,20 +605,14 @@ def _is_compared_to_none(node: ast.Compare) -> bool:
 
 def _gating_credential(test: ast.expr, bindings: Mapping[str, str]) -> str | None:
     return next(
-        (
-            credential
-            for operand in _absence_operands(test)
-            for credential in _named_credentials(operand, bindings)
-        ),
+        (credential for operand in _absence_operands(test) for credential in _named_credentials(operand, bindings)),
         None,
     )
 
 
 def _named_credentials(node: ast.expr, bindings: Mapping[str, str]) -> Iterator[str]:
     yield from (key for key in _environ_keys(node) if CREDENTIAL_NAME_RE.search(key))
-    yield from (
-        bindings[inner.id] for inner in ast.walk(node) if isinstance(inner, ast.Name) and inner.id in bindings
-    )
+    yield from (bindings[inner.id] for inner in ast.walk(node) if isinstance(inner, ast.Name) and inner.id in bindings)
 
 
 def iter_credential_skip_violations(path: Path, tree: ast.Module) -> Iterator[Violation]:
@@ -671,13 +685,15 @@ def _saves_sdk_attributes_in_loop(node: ast.For) -> bool:
 
 
 def _module_constants(tree: ast.Module) -> Mapping[str, ast.expr]:
-    return MappingProxyType({
-        target.id: node.value
-        for node in tree.body
-        if isinstance(node, ast.Assign)
-        for target in node.targets
-        if isinstance(target, ast.Name)
-    })
+    return MappingProxyType(
+        {
+            target.id: node.value
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+    )
 
 
 def _string_members(node: ast.expr) -> Iterator[tuple[str, int]]:
@@ -739,7 +755,7 @@ def iter_child_interpreter_violations(path: Path, tree: ast.Module) -> Iterator[
 def is_integration_test_path(path: Path) -> bool:
     parts: Final = path.parts
     return any(
-        parts[index:index + 2] == INTEGRATION_ROOT and parts[index + 2] != INTEGRATION_HARNESS
+        parts[index : index + 2] == INTEGRATION_ROOT and parts[index + 2] != INTEGRATION_HARNESS
         for index in range(len(parts) - 2)
     )
 
@@ -888,7 +904,7 @@ def iter_wall_clock_bound_violations(path: Path, tree: ast.Module) -> Iterator[V
 
 def is_integration_tree_path(path: Path) -> bool:
     parts: Final = path.parts
-    return any(parts[index:index + 2] == INTEGRATION_ROOT for index in range(len(parts) - 1))
+    return any(parts[index : index + 2] == INTEGRATION_ROOT for index in range(len(parts) - 1))
 
 
 def _calls_in_scope(node: ast.AST, scope: ast.AST) -> Iterator[tuple[ast.Call, ast.AST]]:

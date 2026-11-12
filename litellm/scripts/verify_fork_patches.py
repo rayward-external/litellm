@@ -297,10 +297,13 @@ def dockerfile_pin_failures(rows: list[Row], repo_root: str = REPO_ROOT) -> list
     missing_from_manifest = [f for f in REQUIRED_PINNED_DOCKERFILES if f not in named]
     if missing_from_manifest:
         found.append(
-            (None, f"manifest names no patch row for {missing_from_manifest}, so the pin "
-            f"check would not cover them. Either the row was dropped by an upstream "
-            f"sync (restore it) or the file was renamed (update the row and "
-            f"REQUIRED_PINNED_DOCKERFILES).")
+            (
+                None,
+                f"manifest names no patch row for {missing_from_manifest}, so the pin "
+                f"check would not cover them. Either the row was dropped by an upstream "
+                f"sync (restore it) or the file was renamed (update the row and "
+                f"REQUIRED_PINNED_DOCKERFILES).",
+            )
         )
 
     pinned_stages_seen: dict[str, set[str]] = {}
@@ -309,9 +312,7 @@ def dockerfile_pin_failures(rows: list[Row], repo_root: str = REPO_ROOT) -> list
         full_path = os.path.join(repo_root, rel_path)
         if not os.path.isfile(full_path):
             if rel_path in REQUIRED_PINNED_DOCKERFILES or rel_path in EXPECTED_LITERAL_PIN_STAGES:
-                found.append(
-                    (rel_path, f"{rel_path}: required pinned Dockerfile does not exist")
-                )
+                found.append((rel_path, f"{rel_path}: required pinned Dockerfile does not exist"))
             continue
         with open(full_path, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
@@ -330,10 +331,13 @@ def dockerfile_pin_failures(rows: list[Row], repo_root: str = REPO_ROOT) -> list
             if len(set(refs.values())) > 1:
                 rendered = ", ".join(f"{n}={r}" for n, r in sorted(refs.items()))
                 found.append(
-                    (rel_path, f"{rel_path}: ARG defaults for `{name}` disagree ({rendered}). "
-                    f"A base-image bump appears to have been applied to only some of "
-                    f"them, so whichever literal FROM tracks the un-bumped ARG is now "
-                    f"pinned to a different image than the rest of the build.")
+                    (
+                        rel_path,
+                        f"{rel_path}: ARG defaults for `{name}` disagree ({rendered}). "
+                        f"A base-image bump appears to have been applied to only some of "
+                        f"them, so whichever literal FROM tracks the un-bumped ARG is now "
+                        f"pinned to a different image than the rest of the build.",
+                    )
                 )
 
         for m in _FROM_PIN_RE.finditer(text):
@@ -351,26 +355,32 @@ def dockerfile_pin_failures(rows: list[Row], repo_root: str = REPO_ROOT) -> list
             if expected_arg and expected_arg in args:
                 if ref != args[expected_arg]:
                     found.append(
-                        (rel_path, f"{rel_path}: stage `{stage}` pins\n"
-                        f"        {ref}\n"
-                        f"    but {expected_arg} defaults to\n"
-                        f"        {args[expected_arg]}\n"
-                        f"    The literal FROM pin has DRIFTED from the ARG default it "
-                        f"shadows. A literal pin is not a variable reference, so an "
-                        f"upstream ARG bump leaves it behind with nothing comparing the "
-                        f"two -- the exact failure that made this image unbuildable "
-                        f"2026-08-30 -> 2026-09-02. Set the FROM to the ARG's value; do "
-                        f"NOT change the ARG, and do NOT revert the pin to "
-                        f"`FROM ${expected_arg}` (see .github/fork-patches.txt).")
+                        (
+                            rel_path,
+                            f"{rel_path}: stage `{stage}` pins\n"
+                            f"        {ref}\n"
+                            f"    but {expected_arg} defaults to\n"
+                            f"        {args[expected_arg]}\n"
+                            f"    The literal FROM pin has DRIFTED from the ARG default it "
+                            f"shadows. A literal pin is not a variable reference, so an "
+                            f"upstream ARG bump leaves it behind with nothing comparing the "
+                            f"two -- the exact failure that made this image unbuildable "
+                            f"2026-08-30 -> 2026-09-02. Set the FROM to the ARG's value; do "
+                            f"NOT change the ARG, and do NOT revert the pin to "
+                            f"`FROM ${expected_arg}` (see .github/fork-patches.txt).",
+                        )
                     )
                 continue
 
             if expected_arg:
                 found.append(
-                    (rel_path, f"{rel_path}: stage `{stage}` is literally pinned but the file "
-                    f"declares no `ARG {expected_arg}=...@sha256:...` to compare it "
-                    f"against. The ARG was renamed or dropped, which leaves this pin "
-                    f"tracking nothing.")
+                    (
+                        rel_path,
+                        f"{rel_path}: stage `{stage}` is literally pinned but the file "
+                        f"declares no `ARG {expected_arg}=...@sha256:...` to compare it "
+                        f"against. The ARG was renamed or dropped, which leaves this pin "
+                        f"tracking nothing.",
+                    )
                 )
                 continue
 
@@ -382,12 +392,15 @@ def dockerfile_pin_failures(rows: list[Row], repo_root: str = REPO_ROOT) -> list
             if ref not in set(candidates.values()):
                 rendered = ", ".join(f"{n}={r}" for n, r in sorted(candidates.items()))
                 found.append(
-                    (rel_path, f"{rel_path}: stage `{stage or '<unnamed>'}` pins\n"
-                    f"        {ref}\n"
-                    f"    which matches none of this file's ARG defaults for that "
-                    f"image ({rendered}).\n"
-                    f"    Set the FROM to the ARG's value. Do not revert the literal "
-                    f"pin -- it is a deliberate fork patch.")
+                    (
+                        rel_path,
+                        f"{rel_path}: stage `{stage or '<unnamed>'}` pins\n"
+                        f"        {ref}\n"
+                        f"    which matches none of this file's ARG defaults for that "
+                        f"image ({rendered}).\n"
+                        f"    Set the FROM to the ARG's value. Do not revert the literal "
+                        f"pin -- it is a deliberate fork patch.",
+                    )
                 )
 
     # Per-STAGE anti-vacuity. Every stage the fork deliberately pins must still
@@ -526,9 +539,7 @@ def main() -> int:
             ratchet_skipped += 1
             for f in row.files:
                 if not os.path.isfile(os.path.join(REPO_ROOT, f)):
-                    missing_files.append(
-                        f"line {row.line_no}: ratchet-log file missing: {f}"
-                    )
+                    missing_files.append(f"line {row.line_no}: ratchet-log file missing: {f}")
             continue
 
         checked += 1
@@ -546,10 +557,7 @@ def main() -> int:
                 break
 
         if not any_file_exists:
-            missing_files.append(
-                f"line {row.line_no}: none of {row.files} exist "
-                f"(patch: {row.description[:100]!r}...)"
-            )
+            missing_files.append(f"line {row.line_no}: none of {row.files} exist (patch: {row.description[:100]!r}...)")
             continue
 
         if not found:

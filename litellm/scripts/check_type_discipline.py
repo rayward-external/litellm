@@ -1034,9 +1034,7 @@ def _comprehension_owners(tree: ast.AST, ok_lines: frozenset[int]) -> Mapping[in
     silences a multi-line enclosing one and a violation sharing its only line
     can still be suppressed.
     """
-    violating: Final = tuple(
-        n for n in ast.walk(tree) if isinstance(n, COMPREHENSION_NODES) and _violates(n)
-    )
+    violating: Final = tuple(n for n in ast.walk(tree) if isinstance(n, COMPREHENSION_NODES) and _violates(n))
 
     def nesting_key(node: ast.expr) -> tuple[int, int]:
         return (len(_span(node)), (node.end_col_offset or node.col_offset) - node.col_offset)
@@ -1092,18 +1090,14 @@ def apply_suppressions(
     kept = tuple(
         v
         for v in raw
-        if not any(
-            v.line in suppressions.get(ok.token, frozenset()) and v.code in ok.codes
-            for ok in OK_SUPPRESSIONS
-        )
+        if not any(v.line in suppressions.get(ok.token, frozenset()) and v.code in ok.codes for ok in OK_SUPPRESSIONS)
     )
     unused = (
         Violation(
             path,
             line,
             "LIT013",
-            f"`# {ok.token}` suppresses nothing: no "
-            f"{'/'.join(sorted(ok.codes))} violation on this line, so delete it",
+            f"`# {ok.token}` suppresses nothing: no {'/'.join(sorted(ok.codes))} violation on this line, so delete it",
         )
         for ok in OK_SUPPRESSIONS
         for line in sorted(suppressions.get(ok.token, frozenset()))
@@ -1130,9 +1124,7 @@ def check_file(path: Path) -> tuple[Violation, ...]:
     except SyntaxError as exc:
         return (*violations, Violation(path, exc.lineno or 0, "LIT000", f"syntax error: {exc.msg}"))
 
-    comprehension_violations: Final = tuple(
-        iter_comprehension_violations(path, tree, suppressions["comprehension-ok"])
-    )
+    comprehension_violations: Final = tuple(iter_comprehension_violations(path, tree, suppressions["comprehension-ok"]))
 
     return (
         *violations,

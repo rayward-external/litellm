@@ -45,13 +45,9 @@ class MutmutResults(NamedTuple):
 
 
 def get_survivors() -> MutmutResults:
-    proc = subprocess.run(
-        [*MUTMUT_INVOCATION, "results"], capture_output=True, text=True, check=False
-    )
+    proc = subprocess.run([*MUTMUT_INVOCATION, "results"], capture_output=True, text=True, check=False)
     verdicts = tuple(
-        m.groups()
-        for line in proc.stdout.splitlines()
-        if (m := re.match(r"\s*(\S+):\s*(\S.*?)\s*$", line))
+        m.groups() for line in proc.stdout.splitlines() if (m := re.match(r"\s*(\S+):\s*(\S.*?)\s*$", line))
     )
     return MutmutResults(
         survivors=tuple(name for name, verdict in verdicts if verdict == "survived"),
@@ -85,9 +81,7 @@ def parse_mutant_name(name: str) -> tuple[str, str, str]:
 
 
 def function_anchor(module_path: str, function_name: str) -> str:
-    return re.sub(r"[^a-z0-9_-]+", "-", f"{module_path}-{function_name}".lower()).strip(
-        "-"
-    )
+    return re.sub(r"[^a-z0-9_-]+", "-", f"{module_path}-{function_name}".lower()).strip("-")
 
 
 def module_to_file(module_path: str) -> Path | None:
@@ -95,9 +89,7 @@ def module_to_file(module_path: str) -> Path | None:
     return candidate if candidate.exists() else None
 
 
-def find_function_in_file(
-    file_path: Path, function_name: str
-) -> tuple[int, int, str, list[int]] | None:
+def find_function_in_file(file_path: Path, function_name: str) -> tuple[int, int, str, list[int]] | None:
     """Find a top-level or nested function by name; returns the first match.
 
     Returns ``(start_line, end_line, source, all_match_lines)`` or ``None``.
@@ -113,8 +105,7 @@ def find_function_in_file(
     matches = [
         node
         for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == function_name
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name
     ]
     if not matches:
         return None
@@ -143,9 +134,7 @@ def _indent_of(line: str) -> str:
     return line[: len(line) - len(line.lstrip())]
 
 
-def render_meta_style_mutant(
-    module_path: str, function_name: str, mutant_num: str
-) -> str | None:
+def render_meta_style_mutant(module_path: str, function_name: str, mutant_num: str) -> str | None:
     """Render the mutated function with `# MUTANT START`/`# MUTANT END` delimiters.
 
     Reads `mutants/<module>.py` (the trampoline file mutmut emits), finds
@@ -321,8 +310,7 @@ def render(config: dict, results: MutmutResults, stats: dict | None) -> str:
     for (module_path, function_name), items in by_function.items():
         anchor = function_anchor(module_path, function_name)
         out.append(
-            f"- [`{function_name}`](#{anchor}) — {len(items)} mutant"
-            f"{'s' if len(items) != 1 else ''} ({module_path})"
+            f"- [`{function_name}`](#{anchor}) — {len(items)} mutant{'s' if len(items) != 1 else ''} ({module_path})"
         )
     out.append("")
 
@@ -372,14 +360,9 @@ def render(config: dict, results: MutmutResults, stats: dict | None) -> str:
         for i, (mutant_name, mutant_num) in enumerate(items, 1):
             out.append(f"#### Mutation {i} of {len(items)} — `{mutant_name}`")
             out.append("")
-            meta_style = render_meta_style_mutant(
-                module_path, function_name, mutant_num
-            )
+            meta_style = render_meta_style_mutant(module_path, function_name, mutant_num)
             if meta_style is not None:
-                out.append(
-                    "Mutated function (the bug is delimited by "
-                    "`# MUTANT START` / `# MUTANT END`):"
-                )
+                out.append("Mutated function (the bug is delimited by `# MUTANT START` / `# MUTANT END`):")
                 out.append("")
                 out.append("```python")
                 out.append(meta_style)
@@ -421,7 +404,8 @@ def render(config: dict, results: MutmutResults, stats: dict | None) -> str:
 
     out.append("## Task")
     out.append("")
-    out.append(dedent("""\
+    out.append(
+        dedent("""\
             For each surviving mutant listed above, write a new test in the
             existing test file (matching its conventions, fixtures, and naming
             style) that:
@@ -434,7 +418,8 @@ def render(config: dict, results: MutmutResults, stats: dict | None) -> str:
             which mutant numbers in the test name or docstring.
 
             Do not modify the source file. Only add tests.
-            """).strip())
+            """).strip()
+    )
     out.append("")
 
     return "\n".join(out)
@@ -462,8 +447,7 @@ def main() -> int:
     )
     if not results.survivors and not clean_sweep_is_provable(stats):
         print(
-            "error: nothing was shown to have been killed, so the report cannot say "
-            "anything about the suite",
+            "error: nothing was shown to have been killed, so the report cannot say anything about the suite",
             file=sys.stderr,
         )
         return 1

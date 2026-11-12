@@ -107,6 +107,7 @@ class Violation(NamedTuple):
     line: int
     rule: str
 
+
 ANY_CAPS: Final[Mapping[str, int]] = MappingProxyType({"reportAny": 6150, "reportExplicitAny": 1440})
 
 
@@ -139,7 +140,9 @@ def parse_basedpyright_violations(payload: str, root: Path = REPO_ROOT) -> list[
         rel = _to_relative(diag.get("file", ""), root)
         if rel is None:
             continue
-        violations.append(Violation(rel, diag.get("range", {}).get("start", {}).get("line", 0) + 1, diag.get("rule") or UNCODED))
+        violations.append(
+            Violation(rel, diag.get("range", {}).get("start", {}).get("line", 0) + 1, diag.get("rule") or UNCODED)
+        )
     return violations
 
 
@@ -203,9 +206,7 @@ def typecheck_env_commands(env_dir: Path = TYPECHECK_ENV_DIR) -> tuple[tuple[str
 
 
 def _run_provision_step(cmd: tuple[str, ...], env: Mapping[str, str]) -> int:
-    proc = subprocess.run(
-        list(cmd), cwd=REPO_ROOT, env=dict(env), capture_output=True, text=True
-    )
+    proc = subprocess.run(list(cmd), cwd=REPO_ROOT, env=dict(env), capture_output=True, text=True)
     if proc.returncode != 0:
         sys.stderr.write(proc.stdout)
         sys.stderr.write(proc.stderr)
@@ -228,10 +229,7 @@ def ensure_typecheck_env(
     env: Final = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(env_dir)}
     for cmd in typecheck_env_commands(env_dir):
         if run(cmd, env) != 0:
-            raise SystemExit(
-                f"could not provision the type-check environment at {env_dir}: "
-                f"`{' '.join(cmd)}` failed"
-            )
+            raise SystemExit(f"could not provision the type-check environment at {env_dir}: `{' '.join(cmd)}` failed")
     return env_dir
 
 
