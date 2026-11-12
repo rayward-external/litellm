@@ -81,6 +81,19 @@ test_paths:
       - tests/integration/sandbox/test_e2b_sandbox.py
       - tests/integration/test_oci_integration.py
       - tests/integration/test_oci_proxy_integration.py
+  - reason: >-
+      False negative in assert_ci_coverage.py's own ignore-token extraction, not an actual gap:
+      the responses-caching-types shard in test-unit.yml names this file directly and runs it,
+      but also carries this fork's --deselect of one specific test within it
+      (TestWebSocketTurnAdmission::test_managed_relay_sends_the_provider_only_the_metadata_each_turn_carries).
+      TEST_TOKEN_RE strips the "::"-qualified test name down to the bare file path when scanning
+      the --deselect argument, so the file lands in both the included and ignored token sets and
+      covers_test() reports it as uncovered even though pytest collects and runs every other test
+      in it. test_openapi_compliance.py's own per-test --deselects (test-unit.yml) don't trip this
+      because that file is also named directly in interactions-spec-canary.yml, a second, clean
+      reference with no deselect to poison it; this file has no such second reference.
+    paths:
+      - tests/unit/responses/test_responses_websocket_all_providers.py
 
 dockerfiles:
   - reason: >-

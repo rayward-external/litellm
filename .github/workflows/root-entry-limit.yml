@@ -17,7 +17,11 @@ jobs:
           persist-credentials: false
       - name: Check root entry count
         env:
-          MAX_ROOT_ENTRIES: 15
+          # Upstream's own clean root is 14 tracked entries (+.git = 15); this fork
+          # carries 2 more at root that tooling requires there (CLAUDE.md for Claude
+          # Code's project-instructions discovery, pyrightconfig.json for basedpyright's
+          # auto-discovery), raising the ceiling to 17. See .github/fork-patches.txt.
+          MAX_ROOT_ENTRIES: 17
         run: |
           count=$(find . -mindepth 1 -maxdepth 1 -printf '.\n' | wc -l)
           echo "Root has $count entries. Maximum is $MAX_ROOT_ENTRIES."

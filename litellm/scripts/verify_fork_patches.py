@@ -199,7 +199,7 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # GHSA-2g95-wg33-c5x2 rows, flipped to N/A because that same cleanup removed
 # the IgnoredVulns entries they asserted (filelock's python >= 3.11
 # resolution is already past the 4.2.1 fix those entries were waiting on).
-EXPECTED_NA_ROWS = 101
+EXPECTED_NA_ROWS = 102
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
