@@ -277,11 +277,12 @@ def test_a_decoy_pins_file_at_another_candidate_path_is_rejected() -> None:
 
 
 def test_a_single_real_path_resolves_with_no_errors() -> None:
+    cost_map: Final = _serialize(BASE_MAP)
+    files: Final = {guard.PINS_PATH: PINS, guard.COST_MAP_PATH: cost_map, guard.BACKUP_PATH: cost_map}
+
     def read_git(_operation: str, blob: str) -> str | None:
         _revision, path = blob.split(":", 1)
-        return {guard.PINS_PATH: PINS, guard.COST_MAP_PATH: _serialize(BASE_MAP), guard.BACKUP_PATH: _serialize(BASE_MAP)}.get(
-            path
-        )
+        return files.get(path)
 
     snap, errors = guard.snapshot("head", read_git=read_git)
     assert errors == ()
