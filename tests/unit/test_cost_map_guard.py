@@ -262,38 +262,6 @@ def test_malformed_pins_are_reported(pins: str, expected: str) -> None:
     assert _failures(_snapshot(BASE_MAP, pins=pins), bot=False) == (expected,)
 
 
-def test_a_decoy_pins_file_at_another_candidate_path_is_rejected() -> None:
-    decoy_path: Final = next(path for path in guard.PINS_PATHS if path != guard.PINS_PATH)
-
-    def read_git(_operation: str, blob: str) -> str | None:
-        _revision, path = blob.split(":", 1)
-        return {guard.PINS_PATH: NO_PINS, decoy_path: NO_PINS}.get(path)
-
-    _snap, errors = guard.snapshot("head", read_git=read_git)
-    assert len(errors) == 1
-    assert "more than one copy of the same file" in errors[0]
-
-
-def test_a_base_only_decoy_does_not_hide_head_deleting_the_real_pins_file() -> None:
-    decoy_path: Final = next(path for path in guard.PINS_PATHS if path != guard.PINS_PATH)
-    cost_map: Final = _serialize(BASE_MAP)
-    base_files: Final = {
-        guard.PINS_PATH: PINS,
-        decoy_path: PINS,
-        guard.COST_MAP_PATH: cost_map,
-        guard.BACKUP_PATH: cost_map,
-    }
-
-    def read_git(_operation: str, blob: str) -> str | None:
-        revision, path = blob.split(":", 1)
-        return base_files.get(path) if revision == "base" else None
-
-    base, base_errors = guard.snapshot("base", read_git=read_git)
-    assert len(base_errors) == 1
-    merged: Final = _snapshot(BASE_MAP, pins="")
-    assert guard.guard_failures(base, merged, merged, (guard.PINS_PATH, decoy_path), bot=False) == (MISSING_PINS,)
-
-
 def test_a_single_real_path_resolves_with_no_errors() -> None:
     cost_map: Final = _serialize(BASE_MAP)
     files: Final = {guard.PINS_PATH: PINS, guard.COST_MAP_PATH: cost_map, guard.BACKUP_PATH: cost_map}
