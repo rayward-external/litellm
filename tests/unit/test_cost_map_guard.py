@@ -371,8 +371,9 @@ def test_relocated_pins_keep_the_same_validation(pins_path: str, pins: str) -> N
     def read_git(_operation: str, blob: str) -> str | None:
         return blobs.get(blob)
 
-    base: Final = guard.snapshot("base", read_git=read_git)
-    head: Final = guard.snapshot("head", read_git=read_git)
+    base, base_errors = guard.snapshot("base", read_git=read_git)
+    head, head_errors = guard.snapshot("head", read_git=read_git)
+    assert base_errors == () and head_errors == ()
     assert base == _snapshot(BASE_MAP, pins=PINS)
     assert head == _snapshot(BASE_MAP, pins=pins)
     failures: Final = _failures(head, changed_files=(guard.PINS_PATH, pins_path), bot=False, base=base)
@@ -400,6 +401,19 @@ def test_main_reads_cost_maps_in_both_repository_layouts(
     head: Final = _git_commit(tmp_path, "update cost map layout")
     result: Final = _run_guard(tmp_path, base, head, "litellm_fix_pricing")
     assert result.returncode == (0 if content.strip().startswith("{") else 1), result.stdout + result.stderr
+
+
+def test_a_decoy_pins_file_at_another_candidate_path_is_rejected(tmp_path: Path) -> None:
+    subprocess.run(("git", "init", "-q", str(tmp_path)), check=True)
+    base: Final = _commit(tmp_path, BASE_MAP, "base")
+    decoy_path: Final = next(path for path in guard.PINS_PATHS if path != guard.PINS_PATH)
+    decoy: Final = tmp_path / decoy_path
+    decoy.parent.mkdir(parents=True, exist_ok=True)
+    decoy.write_text(NO_PINS)
+    head: Final = _git_commit(tmp_path, "add a decoy pins file alongside the real one")
+    result: Final = _run_guard(tmp_path, base, head, "litellm_fix_pricing")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "more than one copy of the same file" in result.stdout + result.stderr
 
 
 def _commit(repo: Path, cost_map: dict[str, object], message: str, pins: str | None = None) -> str:

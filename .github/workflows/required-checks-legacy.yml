@@ -139,7 +139,7 @@ jobs:
       - name: Run Ruff linting (test tree)
         if: steps.changes.outputs.decision != 'skip'
         run: |
-          uv run --no-sync ruff check --config ruff-tests.toml tests
+          uv run --no-sync ruff check --config .github/linters/ruff-tests.toml tests
 
       - name: Check strict ruff rules (delta vs merge-base counts)
         if: steps.changes.outputs.decision != 'skip'

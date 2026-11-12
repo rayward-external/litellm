@@ -257,12 +257,27 @@ def _git(*args: str) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
-def snapshot(revision: str, *, read_git: Callable[[str, str], str | None] = _git) -> Snapshot:
-    return Snapshot(
-        next((text for path in COST_MAP_PATHS if (text := read_git("show", f"{revision}:{path}")) is not None), ""),
-        read_git("show", f"{revision}:{BACKUP_PATH}") or "",
-        next((text for path in PINS_PATHS if (text := read_git("show", f"{revision}:{path}")) is not None), ""),
-    )
+def _resolve_one_of(
+    revision: str, paths: Sequence[str], read_git: Callable[[str, str], str | None]
+) -> tuple[str, str | None]:
+    """Read whichever of `paths` exists in `revision`; fail if more than one does.
+
+    A PR could otherwise shadow the real cost map, backup, or pins file by adding a
+    decoy at an earlier candidate path that does not exist on the base branch yet,
+    since picking the first match alone would silently validate the decoy instead.
+    """
+    found: Final = tuple((path, text) for path in paths if (text := read_git("show", f"{revision}:{path}")) is not None)
+    if len(found) > 1:
+        names = ", ".join(path for path, _ in found)
+        return "", f"{revision} has more than one copy of the same file ({names}); remove every copy but the real one"
+    return (found[0][1], None) if found else ("", None)
+
+
+def snapshot(revision: str, *, read_git: Callable[[str, str], str | None] = _git) -> tuple[Snapshot, tuple[str, ...]]:
+    cost_map, cost_map_error = _resolve_one_of(revision, COST_MAP_PATHS, read_git)
+    pins, pins_error = _resolve_one_of(revision, PINS_PATHS, read_git)
+    errors: Final = tuple(error for error in (cost_map_error, pins_error) if error is not None)
+    return Snapshot(cost_map, read_git("show", f"{revision}:{BACKUP_PATH}") or "", pins), errors
 
 
 def merged_tree(merge_base: str, target: str, head: str) -> str | MergeFailed | None:
@@ -310,10 +325,14 @@ def main(argv: Sequence[str]) -> int:
     if isinstance(merged, MergeFailed):
         print(f"cost map guard failed: git merge-tree into {args.target} failed: {merged.stderr}")
         return 1
+    base_snapshot, base_errors = snapshot(args.base)
+    head_snapshot, head_errors = snapshot(args.head)
+    merged_snapshot, merged_errors = (None, ()) if merged is None else snapshot(merged)
     failures: Final = (
-        *guard_failures(
-            snapshot(args.base), snapshot(args.head), None if merged is None else snapshot(merged), changed, bot
-        ),
+        *base_errors,
+        *head_errors,
+        *merged_errors,
+        *guard_failures(base_snapshot, head_snapshot, merged_snapshot, changed, bot),
         *pin_author_failures(args.head_ref, os.environ.get(AUTHOR_TYPE_ENV, ""), changed),
     )
     contract: Final = contract_for(bot, changed)
