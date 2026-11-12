@@ -112,7 +112,7 @@ Phase 2 -- digest pins must not be STALE, not merely present:
   out of the comparison.
 
 Usage:
-    python3 scripts/verify_fork_patches.py
+    python3 litellm/scripts/verify_fork_patches.py
 
 Exit status: 0 if every current-assertion row's pattern was found, every
 referenced file exists, and every literal digest pin still equals the ARG
@@ -125,7 +125,7 @@ import os
 import re
 import sys
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 
 # --- Phase 2: literal digest pin vs ARG default ------------------------------
@@ -199,9 +199,9 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # GHSA-2g95-wg33-c5x2 rows, flipped to N/A because that same cleanup removed
 # the IgnoredVulns entries they asserted (filelock's python >= 3.11
 # resolution is already past the 4.2.1 fix those entries were waiting on).
-EXPECTED_NA_ROWS = 95
+EXPECTED_NA_ROWS = 101
 
-REQUIRED_PINNED_DOCKERFILES = ("Dockerfile",)
+REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
 # Stage name -> the ARG that upstream's un-patched `FROM $VAR` would have used.
 # `docker/Dockerfile.database`'s runtime stage is the reason this map exists at
@@ -235,7 +235,7 @@ STAGE_TO_ARG = {
 # deploy/lens/Dockerfile's own entry was removed outright on the 2026-10-10
 # sync the same way. Only the root Dockerfile's 5 stages remain to pin.
 EXPECTED_LITERAL_PIN_STAGES = {
-    "Dockerfile": ("uvbin", "ui-builder", "builder", "runtime", "liteadmin-builder"),
+    "litellm/deploy/docker/Dockerfile": ("uvbin", "ui-builder", "builder", "runtime", "liteadmin-builder"),
 }
 
 _ARG_PIN_RE = re.compile(

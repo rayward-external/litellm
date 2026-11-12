@@ -32,6 +32,12 @@ _EMPTY: Final[Mapping[str, object]] = MappingProxyType({})
 
 
 class GeminiPassthroughLoggingHandler:
+    # A `_handle_logging_gemini_collected_chunks` used to live here with no caller:
+    # streamed Gemini passthrough is already costed via VertexPassthroughLoggingHandler
+    # (streaming_handler.py routes EndpointType.GEMINI through the same branch as
+    # EndpointType.VERTEX_AI). Re-adding it recreates dead code; see
+    # .github/fork-patches.txt.
+
     @staticmethod
     def gemini_passthrough_handler(
         httpx_response: httpx.Response,
@@ -229,58 +235,6 @@ class GeminiPassthroughLoggingHandler:
                 batch_id=batch.id,
                 unified_object_id=unified_object_id,
             ),
-        }
-
-    @staticmethod
-    def _handle_logging_gemini_collected_chunks(
-        litellm_logging_obj: LiteLLMLoggingObj,
-        passthrough_success_handler_obj: PassThroughEndpointLogging,
-        url_route: str,
-        request_body: dict,
-        endpoint_type: EndpointType,
-        start_time: datetime,
-        all_chunks: list[str],
-        model: str | None,
-        end_time: datetime,
-    ) -> PassThroughEndpointLoggingTypedDict:
-        """
-        Takes raw chunks from Gemini passthrough endpoint and logs them in litellm callbacks
-
-        - Builds complete response from chunks
-        - Creates standard logging object
-        - Logs in litellm callbacks
-        """
-        kwargs: dict[str, object] = {}
-        model = model or GeminiPassthroughLoggingHandler.extract_model_from_url(url_route)
-        complete_streaming_response: Final = GeminiPassthroughLoggingHandler._build_complete_streaming_response(
-            all_chunks=all_chunks,
-            litellm_logging_obj=litellm_logging_obj,
-            model=model,
-            url_route=url_route,
-        )
-
-        if complete_streaming_response is None:
-            verbose_proxy_logger.error(
-                "Unable to build complete streaming response for Gemini passthrough endpoint, not logging..."
-            )
-            return {
-                "result": None,
-                "kwargs": kwargs,
-            }
-
-        kwargs = GeminiPassthroughLoggingHandler._create_gemini_response_logging_payload_for_generate_content(
-            litellm_model_response=complete_streaming_response,
-            model=model,
-            kwargs=kwargs,
-            start_time=start_time,
-            end_time=end_time,
-            logging_obj=litellm_logging_obj,
-            custom_llm_provider="gemini",
-        )
-
-        return {
-            "result": complete_streaming_response,
-            "kwargs": kwargs,
         }
 
     @staticmethod

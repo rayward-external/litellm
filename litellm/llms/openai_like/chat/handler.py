@@ -6,7 +6,10 @@ For handling OpenAI-like chat completions, like IBM WatsonX, etc.
 
 import json
 from collections.abc import Callable
-from typing import Final
+from typing import (
+    Final,
+    cast,  # noqa: TID251  # is_async defaults False, so this call always returns the sync list branch
+)
 
 import httpx
 from pydantic import TypeAdapter
