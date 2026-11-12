@@ -62,7 +62,9 @@ updates:
       default-days: 7
 
   - package-ecosystem: "docker"
-    directory: "/"
+    directories:
+      - "/litellm/deploy/docker"
+      - "/litellm/rust/crates/gateway"
     schedule:
       interval: "weekly"
     cooldown:
