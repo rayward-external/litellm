@@ -127,7 +127,7 @@ jobs:
 
       - name: Check MCP operation boundary
         if: steps.changes.outputs.decision != 'skip'
-        run: uv run --no-sync python scripts/check_mcp_operation_boundary.py
+        run: uv run --no-sync python litellm/scripts/check_mcp_operation_boundary.py
 
       - name: Run Ruff linting
         if: steps.changes.outputs.decision != 'skip'
@@ -146,21 +146,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          uv run --no-sync python scripts/ruff_strict_gate.py --base "$GATE_BASE_SHA"
+          uv run --no-sync python litellm/scripts/ruff_strict_gate.py --base "$GATE_BASE_SHA"
 
       - name: Check type discipline (mutable collections / casts / type guards / kwargs / unexplained suppressions, delta vs merge-base counts)
         if: steps.changes.outputs.decision != 'skip'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          uv run --no-sync python scripts/type_discipline_gate.py --base "$GATE_BASE_SHA"
+          uv run --no-sync python litellm/scripts/type_discipline_gate.py --base "$GATE_BASE_SHA"
 
       - name: Check test quality (zero-assert / mock-echo tests, sys.path.insert, raw env writes, litellm global mutation, credential-gated skips, conftest snapshot inventory, delta vs merge-base counts)
         if: steps.changes.outputs.decision != 'skip'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          uv run --no-sync python scripts/test_quality_gate.py --base "$GATE_BASE_SHA"
+          uv run --no-sync python litellm/scripts/test_quality_gate.py --base "$GATE_BASE_SHA"
 
       - name: Print OpenAI version
         if: steps.changes.outputs.decision != 'skip'
@@ -172,7 +172,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          uv run --no-sync python scripts/type_check_gate.py --base "$GATE_BASE_SHA"
+          uv run --no-sync python litellm/scripts/type_check_gate.py --base "$GATE_BASE_SHA"
 
       - name: Check tests/e2e basedpyright (zero errors)
         if: steps.changes.outputs.decision != 'skip'
@@ -217,7 +217,7 @@ jobs:
     timeout-minutes: 8
     defaults:
       run:
-        working-directory: ui/litellm-dashboard
+        working-directory: litellm/ui/litellm-dashboard
 
     steps:
       - name: Checkout repository
@@ -262,9 +262,9 @@ jobs:
         if: steps.changed.outputs.has_files == 'true'
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version-file: ui/litellm-dashboard/.nvmrc
+          node-version-file: litellm/ui/litellm-dashboard/.nvmrc
           cache: "npm"
-          cache-dependency-path: ui/litellm-dashboard/package-lock.json
+          cache-dependency-path: litellm/ui/litellm-dashboard/package-lock.json
 
       - name: Install dependencies
         if: steps.changed.outputs.has_files == 'true'
