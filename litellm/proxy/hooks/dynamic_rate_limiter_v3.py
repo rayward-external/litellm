@@ -34,10 +34,12 @@ from litellm.proxy.hooks.parallel_request_limiter_v3 import (  # noqa: F401  # l
     RateLimitResponse,
     RateLimitStatus,
     _PROXY_MaxParallelRequestsHandler_v3,  # pyright: ignore[reportPrivateUsage,reportUnusedImport]  # backwards-compatible package export
+    _call_id_from_callback_kwargs,  # pyright: ignore[reportPrivateUsage]  # same owning-call lookup the regular limiter uses
     _socket_turn_tpm_windows,  # pyright: ignore[reportPrivateUsage]  # same per-turn TPM window the regular limiter checks
     borrowing_team_model_limits,
     claim_request_stash_for_data,
     get_or_create_request_stash,
+    get_request_stash_for_call,
 )
 from litellm.proxy.hooks.rate_limiter_utils import (
     convert_priority_to_percent,
@@ -901,8 +903,11 @@ class _PROXY_DynamicRateLimitHandlerV3(CustomLogger):
             else:
                 priority_key = f"{model_group}:default_pool"
 
+            owning_stash: Final = get_request_stash_for_call(_call_id_from_callback_kwargs(kwargs))
             team_model_tokens: Final = _team_model_token_increment(
-                get_or_create_request_stash().borrowing_team_model_limit, total_tokens, self.v3_limiter.window_size
+                owning_stash.borrowing_team_model_limit if owning_stash is not None else None,
+                total_tokens,
+                self.v3_limiter.window_size,
             )
             pipeline_operations: Final = (
                 model_tokens,

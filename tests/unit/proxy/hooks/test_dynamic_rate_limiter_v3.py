@@ -24,6 +24,7 @@ from litellm.proxy.hooks.dynamic_rate_limiter_v3 import (
 )
 from litellm.proxy.hooks.parallel_request_limiter_v3 import (
     PROXY_MaxParallelRequestsHandler_v3,
+    claim_request_stash_for_data,
 )
 from litellm.redis.stores.rate_limits import RateLimitScope
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
@@ -1862,14 +1863,19 @@ async def _admit_then_settle(handler: PROXY_DynamicRateLimitHandlerV3, auth: Use
     await _settle_tokens(handler, tokens)
 
 
-async def _settle_tokens(handler: PROXY_DynamicRateLimitHandlerV3, tokens: int, response: object | None = None) -> None:
+async def _settle_tokens(
+    handler: PROXY_DynamicRateLimitHandlerV3,
+    tokens: int,
+    response: object | None = None,
+    litellm_call_id: str | None = None,
+) -> None:
+    kwargs: Final = {
+        "litellm_params": {"metadata": {"model_group": "shared-model"}},
+        "standard_logging_object": {"metadata": {"user_api_key_team_id": "team-a", "user_api_key_auth_metadata": {}}},
+        **({"litellm_call_id": litellm_call_id} if litellm_call_id is not None else {}),
+    }
     await handler.async_log_success_event(
-        kwargs={
-            "litellm_params": {"metadata": {"model_group": "shared-model"}},
-            "standard_logging_object": {
-                "metadata": {"user_api_key_team_id": "team-a", "user_api_key_auth_metadata": {}}
-            },
-        },
+        kwargs=kwargs,
         response_obj=response
         if response is not None
         else litellm.ModelResponse(usage=litellm.Usage(prompt_tokens=tokens, completion_tokens=0, total_tokens=tokens)),
@@ -2019,6 +2025,16 @@ async def test_another_teams_usage_does_not_count_against_a_teams_limit(monkeypa
     handler = _borrowing_handler(monkeypatch, borrows=True)
     await _admit_then_settle(handler, _team_key("team-b"), 150)
     await _check(handler, _team_key("team-a"), saturation=0.9)
+
+
+@pytest.mark.asyncio
+async def test_a_nested_calls_tokens_do_not_count_against_the_outer_calls_team_limit(monkeypatch: pytest.MonkeyPatch):
+    handler = _borrowing_handler(monkeypatch, borrows=True)
+    auth: Final = _team_key()
+    await _check(handler, auth, saturation=0.0)
+    claim_request_stash_for_data({"litellm_call_id": "outer-call"})
+    await _settle_tokens(handler, 150, litellm_call_id="judge-call")
+    await _check(handler, auth, saturation=0.9)
 
 
 @pytest.mark.asyncio
