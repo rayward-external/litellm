@@ -3888,7 +3888,6 @@ export const enrichPolicyTemplateStream = async (
   const decoder = new TextDecoder();
   let buffer = "";
 
-  // eslint-disable-next-line no-constant-condition -- stream read loop
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;

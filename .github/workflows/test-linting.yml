@@ -325,6 +325,11 @@ jobs:
 
       - name: Lint changed files (prettier + eslint)
         if: steps.changed.outputs.has_files == 'true'
+        env:
+          # A sync PR that renames the whole dashboard tree makes git diff list every
+          # file in it as changed, so this list can run into the thousands; Node's
+          # default heap guess doesn't fit that, same shape as the UI build's own fix.
+          NODE_OPTIONS: "--max-old-space-size=4096"
         run: |
           prettier_files=()
           eslint_files=()
@@ -345,6 +350,8 @@ jobs:
 
       - name: Check lint budgets
         if: ${{ !cancelled() && steps.changed.outputs.has_files == 'true' }}
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
         run: |
           npx eslint . -f json -o "$RUNNER_TEMP/lint-report.json" || true
           node scripts/check-lint-budgets.mjs "$RUNNER_TEMP/lint-report.json" eslint-budgets.json
