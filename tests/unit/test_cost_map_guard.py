@@ -416,6 +416,20 @@ def test_a_decoy_pins_file_at_another_candidate_path_is_rejected(tmp_path: Path)
     assert "more than one copy of the same file" in result.stdout + result.stderr
 
 
+def test_a_base_only_decoy_does_not_hide_head_deleting_the_real_pins_file(tmp_path: Path) -> None:
+    subprocess.run(("git", "init", "-q", str(tmp_path)), check=True)
+    decoy_path: Final = next(path for path in guard.PINS_PATHS if path != guard.PINS_PATH)
+    (tmp_path / decoy_path).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / decoy_path).write_text(NO_PINS)
+    base: Final = _commit(tmp_path, BASE_MAP, "base, with a leftover decoy pins file")
+    (tmp_path / guard.PINS_PATH).unlink()
+    (tmp_path / decoy_path).unlink()
+    head: Final = _git_commit(tmp_path, "delete the pins file entirely")
+    result: Final = _run_guard(tmp_path, base, head, "litellm_fix_pricing")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert f"{guard.PINS_PATH} is missing; restore it" in result.stdout + result.stderr
+
+
 def _commit(repo: Path, cost_map: dict[str, object], message: str, pins: str | None = None) -> str:
     text = _serialize(cost_map)
     pins_file = repo / guard.PINS_PATH

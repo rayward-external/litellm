@@ -262,7 +262,10 @@ def _resolve_one_of(
     found: Final = tuple((path, text) for path in paths if (text := read_git("show", f"{revision}:{path}")) is not None)
     if len(found) > 1:
         names: Final = ", ".join(path for path, _ in found)
-        return "", f"{revision} has more than one copy of the same file ({names}); remove every copy but the real one"
+        error: Final = (
+            f"{revision} has more than one copy of the same file ({names}); remove every copy but the real one"
+        )
+        return found[0][1], error
     return (found[0][1], None) if found else ("", None)
 
 
