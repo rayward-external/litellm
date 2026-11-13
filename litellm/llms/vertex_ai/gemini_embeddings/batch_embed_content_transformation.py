@@ -15,6 +15,7 @@ from typing import (
 from pydantic import ConfigDict, Field, TypeAdapter, ValidationError
 
 from litellm.exceptions import BadRequestError
+from litellm.llms.base_llm.embedding.transformation import extra_body_fields
 from litellm.llms.vertex_ai.common_utils import GEMINI_FILES_API_URI_PREFIX, gemini_video_metadata_from_openai
 from litellm.types.llms.base import LiteLLMBaseModel
 from litellm.types.llms.vertex_ai import (
@@ -419,6 +420,7 @@ def transform_openai_input_gemini_content(
     gemini_model_name: Final = f"models/{model}"
 
     gemini_params: Final = _filter_embed_params(optional_params)
+    extra_body: Final = extra_body_fields(optional_params)
 
     input_list: Final = _top_level_elements(input)
     requests: Final[list[EmbedContentRequest]] = []
@@ -437,7 +439,11 @@ def transform_openai_input_gemini_content(
             content=ContentType(parts=parts),
             **gemini_params,
         )
-        requests.append(request)
+        requests.append(
+            cast(  # cast-ok: extra_body carries raw Gemini fields the TypedDict does not list
+                EmbedContentRequest, {**extra_body, **request}
+            )
+        )
 
     return VertexAIBatchEmbeddingsRequestBody(requests=requests)
 
@@ -477,6 +483,7 @@ def transform_openai_input_gemini_embed_content(
         parts.append(_build_part_for_input(element, resolved_files=resolved_files, drop_params=drop_params))
 
     request_body: Final[dict] = {
+        **extra_body_fields(optional_params),
         "content": ContentType(parts=parts),
         **gemini_params,
     }
