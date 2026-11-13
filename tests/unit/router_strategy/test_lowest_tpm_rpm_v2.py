@@ -22,6 +22,7 @@ from PIL import Image
 import litellm
 from litellm import Router
 from litellm._logging import verbose_logger
+from litellm.caching.caching import DualCache
 from litellm.redis.stores.connection import connect
 from litellm.redis.stores.router_usage import RouterUsageStore, UsageCounter
 from litellm.router_strategy.lowest_tpm_rpm_v2 import (
