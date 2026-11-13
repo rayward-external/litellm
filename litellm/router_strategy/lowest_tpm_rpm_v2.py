@@ -26,7 +26,10 @@ from litellm.redis.stores.router_usage import (
     RouterUsage,
     UsageCounter,
 )
-from litellm.router_utils.router_callbacks.track_deployment_metrics import get_counted_usage_tokens
+from litellm.router_utils.router_callbacks.track_deployment_metrics import (
+    find_deployment_metadata,
+    get_counted_usage_tokens,
+)
 from litellm.types.router import RouterErrors
 from litellm.types.utils import LiteLLMPydanticObjectBase, StandardLoggingPayload
 from litellm.utils import get_utc_datetime, print_verbose

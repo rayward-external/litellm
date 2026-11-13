@@ -89,6 +89,14 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Fork: sccache is only a compiler cache, so a failed download builds uncached (.github/fork-patches.txt).
+      - name: Set up sccache
+        id: sccache
+        continue-on-error: true
+        uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a
+        with:
+          version: "v0.18.0"
+
       - name: Build uncached when sccache setup failed
         if: steps.sccache.outcome != 'success'
         run: echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
