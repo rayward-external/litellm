@@ -301,7 +301,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
             if standard_logging_object is None:
                 raise ValueError("standard_logging_object not passed in.")
             model_group: Final = standard_logging_object.get("model_group")
-            model: Final[object] = standard_logging_object["hidden_params"].get("litellm_model_name")
+            model: Final = usage_counter_model(kwargs, standard_logging_object)  # pyright: ignore[reportUnknownArgumentType]  # keep legacy kwargs untyped
             id: object = standard_logging_object.get("model_id")
             if model_group is None or id is None or model is None:
                 return

@@ -22,7 +22,6 @@ from PIL import Image
 import litellm
 from litellm import Router
 from litellm._logging import verbose_logger
-from litellm.caching.caching import DualCache
 from litellm.redis.stores.connection import connect
 from litellm.redis.stores.router_usage import RouterUsageStore, UsageCounter
 from litellm.router_strategy.lowest_tpm_rpm_v2 import (
@@ -799,13 +798,8 @@ def _logged_without_model_name(*, deployment_id: str, deployment: str, total_tok
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sync_mode", [True, False])
 async def test_usage_without_a_logged_model_name_lands_on_the_key_selection_reads(sync_mode: bool) -> None:
-    cache = DualCache()
-    handler = LowestTPMLoggingHandler(router_cache=cache)
-    deployment = {
-        "model_name": "pooled-model",
-        "litellm_params": {"model": "provider/model-a"},
-        "model_info": {"id": "leg-a"},
-    }
+    usage = _memory_usage()
+    handler = LowestTPMLoggingHandler(usage=usage)
     kwargs = _logged_without_model_name(deployment_id="leg-a", deployment="provider/model-a", total_tokens=40)
     if sync_mode:
         handler.log_success_event(kwargs=kwargs, response_obj={}, start_time=time.time(), end_time=time.time())
@@ -813,16 +807,20 @@ async def test_usage_without_a_logged_model_name_lands_on_the_key_selection_read
         await handler.async_log_success_event(
             kwargs=kwargs, response_obj={}, start_time=time.time(), end_time=time.time()
         )
-    tpm_keys, _ = handler.usage_counter_keys([deployment])
-    assert [cache.get_cache(key=key) for key in tpm_keys] == [40]
-    assert [key for key in cache.in_memory_cache.cache_dict if ":None:" in key] == []
+    current_minute = get_utc_datetime().strftime("%H-%M")
+    tpm_counter = UsageCounter.for_deployment("leg-a", "provider/model-a", "tpm", current_minute)
+    assert usage.get_local(tpm_counter) == 40
+    none_counter = UsageCounter.for_deployment("leg-a", "None", "tpm", current_minute)
+    assert usage.get_local(none_counter) is None
 
 
 @pytest.mark.asyncio
 async def test_usage_with_no_deployment_to_key_it_under_is_not_counted() -> None:
-    cache = DualCache()
-    handler = LowestTPMLoggingHandler(router_cache=cache)
+    usage = _memory_usage()
+    handler = LowestTPMLoggingHandler(usage=usage)
     kwargs = _logged_without_model_name(deployment_id="leg-a", deployment="provider/model-a", total_tokens=40)
     kwargs["litellm_params"] = {}
     await handler.async_log_success_event(kwargs=kwargs, response_obj={}, start_time=time.time(), end_time=time.time())
-    assert [key for key in cache.in_memory_cache.cache_dict if ":tpm:" in key] == []
+    current_minute = get_utc_datetime().strftime("%H-%M")
+    tpm_counter = UsageCounter.for_deployment("leg-a", "provider/model-a", "tpm", current_minute)
+    assert usage.get_local(tpm_counter) is None
