@@ -28,6 +28,11 @@ id = "GHSA-45c3-73f7-pv4m"
 ignoreUntil = 2027-02-01
 reason = "dnspython 2.9.0 (published 2026-10-09) is the only fix and requires Python >= 3.11, so the Python 3.10 resolution stays on 2.8.0 while 3.11+ locks 2.9.0; the advisory is CPU use in dns.name.from_wire_parser and litellm only reaches dnspython through pydantic EmailStr, which never does DNS lookups; remove this entry once 3.10 is dropped or a 3.10-compatible fix ships"
 
+[[IgnoredVulns]]
+id = "GHSA-mmhr-3c5m-f64f"
+ignoreUntil = 2027-02-01
+reason = "soupsieve 4.0.0 (the only fix) requires Python >= 3.11.5, so the universal lock stays on 2.10, which already fixes the sibling advisory GHSA-4j63-6c4x-wfg4; litellm reaches soupsieve only through beautifulsoup4's HTML parsing of provider responses and docs tooling, never on attacker-controlled CSS selectors; remove this entry once 3.10 is dropped or a 3.10-compatible fix ships"
+
 [[PackageOverrides]]
 name = "pillow"
 version = "12.3.0"
