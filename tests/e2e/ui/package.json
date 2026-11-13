@@ -13,5 +13,9 @@
     "@playwright/test": "1.58.1",
     "@types/node": "20.19.37",
     "typescript": "5.9.3"
+  },
+  "overrides": {
+    "hono": "4.13.18",
+    "@hono/node-server": "2.1.8"
   }
 }
