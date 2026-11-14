@@ -29,9 +29,29 @@ ignoreUntil = 2027-02-01
 reason = "dnspython 2.9.0 (published 2026-10-09) is the only fix and requires Python >= 3.11, so the Python 3.10 resolution stays on 2.8.0 while 3.11+ locks 2.9.0; the advisory is CPU use in dns.name.from_wire_parser and litellm only reaches dnspython through pydantic EmailStr, which never does DNS lookups; remove this entry once 3.10 is dropped or a 3.10-compatible fix ships"
 
 [[IgnoredVulns]]
+id = "GHSA-vvf4-9x63-8xvv"
+ignoreUntil = 2027-02-01
+reason = "dnspython 2.9.2 is the only fix and requires Python >= 3.11, so the Python 3.10 resolution stays on 2.8.0 while 3.11+ now locks 2.9.2; the advisory is excessive memory/CPU use parsing a crafted WKS record in dns.rdata.from_text zone-file parsing, and litellm only reaches dnspython through pydantic EmailStr, which never parses zone files; remove this entry once 3.10 is dropped or a 3.10-compatible fix ships"
+
+[[IgnoredVulns]]
+id = "GHSA-5cjw-f85j-cv6r"
+ignoreUntil = 2027-02-01
+reason = "tornado 6.6.1 (published 2026-11-09) is the only fix and requires Python >= 3.11, so the Python 3.10 resolution stays on 6.5.10 while 3.11+ now locks 6.6.1; litellm starts no tornado server or client, since semantic-router and aurelio-sdk only declare it and tenacity and sentry-sdk import it only to wrap tornado code when it is present, so tornado's RedirectHandler open-redirect detection is never reached; remove this entry once 3.10 is dropped"
+
+[[IgnoredVulns]]
 id = "GHSA-mmhr-3c5m-f64f"
 ignoreUntil = 2027-02-01
-reason = "soupsieve 4.0.0 (the only fix) requires Python >= 3.11.5, so the universal lock stays on 2.10, which already fixes the sibling advisory GHSA-4j63-6c4x-wfg4; litellm reaches soupsieve only through beautifulsoup4's HTML parsing of provider responses and docs tooling, never on attacker-controlled CSS selectors; remove this entry once 3.10 is dropped or a 3.10-compatible fix ships"
+reason = "soupsieve 4.0.0 is the only fix and requires Python >= 3.11.5, so the Python < 3.11.5 resolution stays on 2.10 while 3.11.5+ locks 4.1; the advisory is polynomial-time CPU exhaustion matching a descendant-combinator selector against deeply nested HTML, and beautifulsoup4 (the only thing that pulls in soupsieve) lives solely in the dev-only ci group, which the shipped proxy image never installs; its one caller (tests/code_coverage_tests/bedrock_pricing.py) only parses AWS's own public pricing page, never attacker-controlled HTML; remove this entry once Python < 3.11.5 is dropped"
+
+[[IgnoredVulns]]
+id = "GHSA-7g44-g9rc-x53w"
+ignoreUntil = 2027-02-01
+reason = "soupsieve 3.0.2 is the only fix and requires Python >= 3.11.5, so the Python < 3.11.5 resolution stays on 2.10 while 3.11.5+ locks 4.1; the advisory is uncontrolled RecursionError from unbounded nesting of :is()/:not()/:where()/:has() in a CSS selector, and beautifulsoup4 (the only thing that pulls in soupsieve) lives solely in the dev-only ci group, which the shipped proxy image never installs; its one caller (tests/code_coverage_tests/bedrock_pricing.py) only parses AWS's own public pricing page, never attacker-controlled HTML or selectors; remove this entry once Python < 3.11.5 is dropped"
+
+[[IgnoredVulns]]
+id = "GHSA-6655-6qjp-jx7x"
+ignoreUntil = 2027-02-01
+reason = "soupsieve 3.0.2 is the only fix and requires Python >= 3.11.5, so the Python < 3.11.5 resolution stays on 2.10 while 3.11.5+ locks 4.1; the advisory is exponential-backtracking regex CPU exhaustion compiling a crafted digit-escape run in a CSS selector, and beautifulsoup4 (the only thing that pulls in soupsieve) lives solely in the dev-only ci group, which the shipped proxy image never installs; its one caller (tests/code_coverage_tests/bedrock_pricing.py) only parses AWS's own public pricing page, never attacker-controlled HTML or selectors; remove this entry once Python < 3.11.5 is dropped"
 
 [[PackageOverrides]]
 name = "pillow"
