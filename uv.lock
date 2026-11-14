@@ -37,9 +37,10 @@ constraints = [
     { name = "packaging", specifier = ">=24.0" },
     { name = "pyasn1", specifier = ">=0.6.5" },
     { name = "setuptools", specifier = ">=84.1.0" },
-    { name = "soupsieve", specifier = ">=2.8.4" },
+    { name = "soupsieve", specifier = ">=2.10" },
+    { name = "soupsieve", marker = "python_full_version >= '3.11.5'", specifier = ">=4.0" },
     { name = "tornado", specifier = ">=6.5.8" },
-    { name = "tornado", marker = "python_full_version >= '3.11'", specifier = ">=6.6" },
+    { name = "tornado", marker = "python_full_version >= '3.11'", specifier = ">=6.6.1" },
 ]
 overrides = [
     { name = "cryptography", specifier = ">=50.0.0,<51.0" },
@@ -5585,7 +5586,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "litellm-enterprise"
-version = "0.1.84"
+version = "0.1.85"
 source = { editable = "litellm/enterprise" }
 
 [[package]]
@@ -5595,7 +5596,7 @@ source = { editable = "litellm/packaging/litellm-proxy" }
 
 [[package]]
 name = "litellm-proxy-extras"
-version = "0.4.115"
+version = "0.4.116"
 source = { editable = "litellm/proxy-extras" }
 dependencies = [
     { name = "psycopg" },

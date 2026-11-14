@@ -345,6 +345,7 @@ class TestVertexAIPassThroughHandler:
                 custom_headers={"Authorization": f"Bearer {test_token}"},
                 is_streaming_request=False,
                 upstream_headers_filter=mock.ANY,
+                upstream_request_filter=mock.ANY,
             )
 
     @pytest.mark.asyncio
@@ -438,6 +439,7 @@ class TestVertexAIPassThroughHandler:
                 custom_headers={"Authorization": f"Bearer {test_token}"},
                 is_streaming_request=False,
                 upstream_headers_filter=mock.ANY,
+                upstream_request_filter=mock.ANY,
             )
 
     @pytest.mark.parametrize(
@@ -531,6 +533,7 @@ class TestVertexAIPassThroughHandler:
                 custom_headers={"Authorization": f"Bearer {default_credentials}"},
                 is_streaming_request=False,
                 upstream_headers_filter=mock.ANY,
+                upstream_request_filter=mock.ANY,
             )
 
     @pytest.mark.asyncio
