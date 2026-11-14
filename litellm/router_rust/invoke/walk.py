@@ -418,6 +418,10 @@ class FallbackOutcomes:
         ``detail`` is the failure's text as it read then, the cooldowns are read when the pending calls run."""
         self._pending.append(_log_failed_fallbacks(ctx, detail, parent_otel_span))
 
+    def defer(self, call: Coroutine[object, object, None]) -> None:
+        """A host write the walk awaits before it answers its next step, as the logger calls."""
+        self._pending.append(call)
+
     def take_pending(self) -> tuple[Coroutine[object, object, None], ...]:
         pending: Final = tuple(self._pending)
         self._pending.clear()

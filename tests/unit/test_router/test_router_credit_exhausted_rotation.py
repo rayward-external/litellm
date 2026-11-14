@@ -10,6 +10,8 @@ import pytest
 import respx
 
 import litellm
+from litellm.models.credentials import CredentialItem
+from litellm.redis.stores.router_cooldowns import RouterCooldowns
 from litellm.router import Router
 from litellm.types.router import RetryPolicy
 
@@ -220,3 +222,76 @@ async def test_a_bad_request_never_moves_to_a_sibling_key_or_cools_the_leg(
     # The order chain's own fallback (unchanged): no retry within the order, the next order answers.
     assert _calls_by_key(anthropic_upstream) == {SPENT_KEY: 1, FUNDED_KEY: 0, NEXT_ORDER_KEY: 1}
     assert _cooldowns(router) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_shared_credential_name_with_its_own_key_is_not_held_out_with_the_spent_key(
+    anthropic_upstream: respx.Route, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(litellm, "credit_exhausted_cooldown_time", CREDIT_COOLDOWN_SECONDS)
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [
+            CredentialItem(
+                credential_name="shared", credential_values={"api_key": "sk-from-credential"}, credential_info={}
+            )
+        ],
+    )
+    anthropic_upstream.mock(side_effect=_upstream(_anthropic_error(CREDIT_TEXT)))
+    named: Final = {"litellm_params": {"litellm_credential_name": "shared"}}
+    router: Final = Router(
+        model_list=[
+            # Both order-0 legs name the same credential, each overriding its key: only the spent key ran dry.
+            _leg("spent", SPENT_KEY, order=0, weight=1, leg_settings=named),
+            _leg("funded", FUNDED_KEY, order=0, weight=0, leg_settings=named),
+            _leg("next-order", NEXT_ORDER_KEY, order=1, weight=1),
+            _leg("spent-elsewhere", SPENT_KEY, order=0, weight=1, model_name="other-model"),
+        ],
+        num_retries=2,
+        retry_after=0,
+        cooldown_time=ROUTER_COOLDOWN_SECONDS,
+    )
+
+    text: Final = await _chat_text(router, stream=False)
+
+    assert text == "hi"
+    assert _calls_by_key(anthropic_upstream) == {SPENT_KEY: 1, FUNDED_KEY: 1, NEXT_ORDER_KEY: 0}
+    assert _cooldowns(router) == {"spent": CREDIT_COOLDOWN_SECONDS, "spent-elsewhere": CREDIT_COOLDOWN_SECONDS}
+
+
+class _AsyncOnlyStore:
+    """The router's cooldown store with every blocking call refused and recorded."""
+
+    def __init__(self, store: RouterCooldowns) -> None:
+        self._store: Final = store
+        self.blocking_calls: Final[list[str]] = []
+
+    def __getattr__(self, name: str) -> object:
+        if name in {"put", "active_sync", "minimum", "increment_allowed_fails", "snapshot"}:
+            self.blocking_calls.append(name)
+            raise AssertionError(f"blocking cooldown-store call {name} on the async path")
+        return getattr(self._store, name)
+
+
+@pytest.mark.asyncio
+async def test_an_async_request_holds_the_spent_key_out_without_a_blocking_store_call(
+    anthropic_upstream: respx.Route, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(litellm, "credit_exhausted_cooldown_time", CREDIT_COOLDOWN_SECONDS)
+    anthropic_upstream.mock(side_effect=_upstream(_anthropic_error(CREDIT_TEXT)))
+    router: Final = _router()
+    store: Final = _AsyncOnlyStore(router.cooldown_cache.cooldown_store)
+    monkeypatch.setattr(router.cooldown_cache, "cooldown_store", store)
+
+    text: Final = await _chat_text(router, stream=False)
+
+    assert text == "hi"
+    assert store.blocking_calls == []
+    active: Final = await router.cooldown_cache.async_get_active_cooldowns(
+        ["spent", "funded", "next-order", "spent-elsewhere"], parent_otel_span=None
+    )
+    assert {model_id: float(value["cooldown_time"]) for model_id, value in active} == {
+        "spent": CREDIT_COOLDOWN_SECONDS,
+        "spent-elsewhere": CREDIT_COOLDOWN_SECONDS,
+    }
