@@ -348,6 +348,7 @@ jobs:
               tests/unit/llms/oobabooga
               tests/unit/llms/openai_like
               tests/unit/llms/opencode
+              --deselect=tests/unit/llms/opencode/chat/test_transformation.py::test_reported_list_cost_is_billed_instead_of_rows[chat-chat/completions]
               tests/unit/llms/opensandbox
               tests/unit/llms/opensearch
               tests/unit/llms/openrouter

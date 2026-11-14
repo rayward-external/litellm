@@ -94,6 +94,18 @@ test_paths:
       reference with no deselect to poison it; this file has no such second reference.
     paths:
       - tests/unit/responses/test_responses_websocket_all_providers.py
+  - reason: >-
+      Same false negative as the test_responses_websocket_all_providers.py entry above: the
+      llms-providers shard in test-unit.yml includes this file only via its parent directory
+      (tests/unit/llms/opencode), but also carries this fork's 2026-11-14 quarantine --deselect of
+      one specific parametrized test
+      (test_reported_list_cost_is_billed_instead_of_rows[chat-chat/completions]). TEST_TOKEN_RE
+      strips the "[...]"-qualified test name down to the bare file path when scanning the
+      --deselect argument, so the file lands in both the included and ignored token sets and
+      covers_test() reports it as uncovered even though pytest collects and runs every other test
+      in it.
+    paths:
+      - tests/unit/llms/opencode/chat/test_transformation.py
 
 dockerfiles:
   - reason: >-
