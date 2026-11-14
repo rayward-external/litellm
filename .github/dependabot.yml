@@ -24,38 +24,15 @@ updates:
       semver-major-days: 14
     open-pull-requests-limit: 10
 
-  - package-ecosystem: "pip"
-    directory: "/cookbook/livekit_agent_sdk"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-
-  - package-ecosystem: "pip"
-    directory: "/cookbook/anthropic_agent_sdk"
+  - package-ecosystem: "npm"
+    directory: "/litellm/vscode-extension"
     schedule:
       interval: "weekly"
     cooldown:
       default-days: 7
 
   - package-ecosystem: "npm"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-      semver-major-days: 14
-    open-pull-requests-limit: 10
-
-  - package-ecosystem: "npm"
-    directory: "/vscode-extension"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-
-  - package-ecosystem: "npm"
-    directory: "/ui/litellm-dashboard"
+    directory: "/litellm/ui/litellm-dashboard"
     schedule:
       interval: "weekly"
     cooldown:
@@ -71,28 +48,23 @@ updates:
       default-days: 7
 
   - package-ecosystem: "cargo"
-    directory: "/litellm-rust"
+    directory: "/litellm/rust"
     schedule:
       interval: "weekly"
     cooldown:
       default-days: 7
 
   - package-ecosystem: "gomod"
-    directory: "/terraform/provider"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-
-  - package-ecosystem: "gomod"
-    directory: "/cookbook/gollem_go_agent_framework"
+    directory: "/litellm/deploy/terraform/provider"
     schedule:
       interval: "weekly"
     cooldown:
       default-days: 7
 
   - package-ecosystem: "docker"
-    directory: "/"
+    directories:
+      - "/litellm/deploy/docker"
+      - "/litellm/rust/crates/gateway"
     schedule:
       interval: "weekly"
     cooldown:

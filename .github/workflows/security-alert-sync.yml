@@ -34,7 +34,7 @@ on:
     branches:
       - main
     paths:
-      - osv-scanner.toml
+      - .github/osv-scanner.toml
       - .github/secret-scanning-triage.toml
       - "**/uv.lock"
       - "**/package-lock.json"

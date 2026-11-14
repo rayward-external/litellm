@@ -251,7 +251,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--repo", required=True, help="owner/name")
     ap.add_argument("--root", default=".", help="checkout holding the config and lockfiles")
-    ap.add_argument("--config", default="osv-scanner.toml")
+    ap.add_argument("--config", default=".github/osv-scanner.toml")
     ap.add_argument("--dry-run", action="store_true", help="print the plan, change nothing")
     args = ap.parse_args()
 

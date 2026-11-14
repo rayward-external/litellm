@@ -96,11 +96,10 @@ paths-ignore:
   - "**/*.md"
   # Standalone demo pages, not shipped product. Source of the
   # js/clear-text-storage-of-sensitive-data and js/insecure-randomness highs.
-  - "scripts/adaptive_router_demo"
+  - "litellm/scripts/adaptive_router_demo"
   # Example/demo servers and benchmark scripts — not deployed product code.
   # py/reflective-xss and py/regex-injection FPs surfaced from these paths.
-  - "cookbook"
-  - "scripts/benchmark_*"
+  - "litellm/scripts/benchmark_*"
   # litellm/proxy/_experimental/out is upstream's own checked-in Next.js static
   # export (production build output, committed by upstream's own "chore: update
   # Next.js build artifacts" bot), not fork- or hand-authored source. Its chunk
@@ -115,7 +114,7 @@ paths-ignore:
   # for this; there is no server-only alternative that keeps the token usable.
   # CodeQL cannot express "accepted, scoped client-side token cache", and a
   # query-filter exclude cannot be scoped to one file, so the file is ignored.
-  - "ui/litellm-dashboard/src/utils/mcpTokenStore.ts"
+  - "litellm/ui/litellm-dashboard/src/utils/mcpTokenStore.ts"
   # Same FP class as mcpTokenStore.ts above, new in upstream's 2026-10-17
   # playground rewrite: persist()'s `else window.sessionStorage.setItem(key,
   # value)` branch only ever runs for fields storedValues() tags
@@ -124,7 +123,7 @@ paths-ignore:
   # tracking can't follow that per-field discriminant and flags the whole
   # settings object (which also carries the secure fields) as reaching the
   # plain-text sink.
-  - "ui/litellm-dashboard/src/app/(dashboard)/playground/components/chat/usePlaygroundSettings.ts"
+  - "litellm/ui/litellm-dashboard/src/app/(dashboard)/playground/components/chat/usePlaygroundSettings.ts"
   # js/xss-through-dom FP, re-flagged on every sync that touches these lines
   # (alerts #1063/#1064/#1066/#1067, all dismissed with the same reasoning):
   # both files' only DOM sink is `<img src={URL.createObjectURL(file)}>` for a
@@ -136,5 +135,5 @@ paths-ignore:
   # sink in compareUI/ was pulled out into its own
   # UploadedFilePreviewImage.tsx so the rest of CompareUI.tsx (887 lines)
   # keeps full scanning coverage.
-  - "ui/litellm-dashboard/src/app/(dashboard)/playground/components/chat_ui/FilePreviewCard.tsx"
-  - "ui/litellm-dashboard/src/app/(dashboard)/playground/components/compareUI/UploadedFilePreviewImage.tsx"
+  - "litellm/ui/litellm-dashboard/src/app/(dashboard)/playground/components/chat_ui/FilePreviewCard.tsx"
+  - "litellm/ui/litellm-dashboard/src/app/(dashboard)/playground/components/compareUI/UploadedFilePreviewImage.tsx"

@@ -35,4 +35,4 @@ jobs:
       # dashboard root resolves in a checkout and fails in every image we ship.
       - name: Build the dashboard as the shipped images build it
         if: steps.changes.outputs.decision != 'skip'
-        run: docker build --target ui-builder -f Dockerfile .
+        run: docker build --target ui-builder -f litellm/deploy/docker/Dockerfile .
