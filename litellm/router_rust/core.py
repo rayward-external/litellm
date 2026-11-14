@@ -1421,6 +1421,7 @@ class RustCore(
         legacy: Final[dict[str, object]] = {"deployment_stats": {}}  # mutable-ok: the core's own legacy attributes
         self._legacy: Final = legacy
         self._health_view: RustHealth | None = None
+        self._spent_credentials = {}  # the spent-credential holds this process wrote (RustHealthCallbacks)
         self._cache: DualCache = host.routing_cache(config)
         redis: Final = connect(self._cache.redis_cache)
         self._usage: RouterUsage = host.router_usage(redis)
@@ -4446,6 +4447,8 @@ class _Driver:
         # Failures a retry or a later hop raised past the request's first logged failure, which the
         # attempt itself recorded: the failed hop's fallback cooldown leaves them alone.
         self._recorded_blocked: Final[set[int]] = set()  # mutable-ok: filled as the call runs
+        # Every attempt's failure, in order: what a walk left with only spent credentials raises.
+        self._attempt_errors: Final[list[BaseException]] = []  # mutable-ok: filled as the call runs
         self._served: tuple[str | None, Mapping[str, object]] = (None, MappingProxyType({}))
         # The latest attempt's deployment and call, which a blocked response is raised from.
         self._latest_call: tuple[Mapping[str, object], AttemptCall] | None = None
@@ -5022,6 +5025,7 @@ class _Driver:
         stamp_error(self._plan, error, deployment, served)  # pyright: ignore[reportUnknownArgumentType]  # litellm's untyped helpers and request values
         self._core._endpoints.attempt_failed(self._plan, error, deployment, call, str(step.get("model")))  # pyright: ignore[reportPrivateUsage]  # see above
         self._last_error = error
+        self._attempt_errors.append(error)
         level: Final = step.get("fallback_level")
         retry: Final = step.get("retry")
         if isinstance(retry, int) and retry > 0:
@@ -5558,9 +5562,12 @@ class _Driver:
         model: Final = str(self._request.get("model"))
         primary: Final = self._level_errors.get(self._base_level)
         if primary is None:
-            return self._core._failure_error(  # pyright: ignore[reportPrivateUsage]  # see above
+            picked: Final = self._core._failure_error(  # pyright: ignore[reportPrivateUsage]  # see above
                 step, model, self._last_error, request=self._request, has_input=self._has_input(), tags=not self._sync
             )
+            return self._over_spent_credit(picked, model) or picked
+        if (over := self._over_spent_credit(primary, model)) is not None:
+            return over
         if (
             self._base_level == 0
             and self._explains_failure
@@ -5569,6 +5576,54 @@ class _Driver:
         ):
             primary.message += self._explanation(primary, model)  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]  # checked above
         return primary
+
+    def _over_spent_credit(self, error: BaseException, model: str) -> BaseException | None:
+        """What the walk raises instead of ``error`` when it ended with no deployment left only because
+        the ones left are held out on a spent prepaid credit (``CreditBalanceExhaustedError``): the
+        request's latest other attempt error, else its latest credit error, else, when every cooling
+        deployment of the group is spent, a credit error naming the group. Waiting does not help, so
+        "No deployments available, Try again in N seconds" would have the client retry for nothing.
+        None (keep ``error``) for any other error, or when a rate limit is part of it: an attempt of
+        this request was rate limited, or a cooling deployment of the group that is not spent was
+        cooled on a 429."""
+        import litellm.exceptions as litellm_exceptions
+        from litellm.types.router import RouterRateLimitError, RouterRateLimitErrorBasic
+
+        if not isinstance(error, RouterRateLimitError):
+            return None
+        core: Final = self._core
+        group: Final = core.registry().resolve(model)
+        ids: Final = frozenset(core.registry().names(str(group), kind="ids"))
+        cooling: Final = [model_id for model_id in error.cooldown_list if model_id in ids]  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]  # an untyped list of ids
+        spent: Final = core.spent_credential_ids(cooling)  # pyright: ignore[reportUnknownArgumentType]  # see above
+        if not spent:
+            return None
+        credit: Final = litellm_exceptions.CreditBalanceExhaustedError
+        attempts: Final = self._attempt_errors
+        rate_limits: Final = (litellm_exceptions.RateLimitError, RouterRateLimitError, RouterRateLimitErrorBasic)
+        if any(isinstance(a, rate_limits) and not isinstance(a, credit) for a in attempts):
+            return None
+        others: Final = [model_id for model_id in cooling if model_id not in spent]  # pyright: ignore[reportUnknownVariableType]  # see above
+        if others and any(
+            str(value.get("status_code")) == "429"
+            for _, value in core._cooldowns.get_active_cooldowns(others, None)  # pyright: ignore[reportPrivateUsage, reportUnknownArgumentType]  # the driver serves its own core
+        ):
+            return None
+        earlier: Final = next((a for a in reversed(attempts) if not isinstance(a, credit)), None)
+        if earlier is not None:
+            return earlier
+        last_credit: Final = next((a for a in reversed(attempts) if isinstance(a, credit)), None)
+        if last_credit is not None or others:
+            return last_credit
+        return credit(
+            message=(
+                f"CreditBalanceExhaustedError: no deployment of model={model} can serve this request: the provider "
+                "reported the prepaid credit or quota behind each one's credential exhausted. Retrying will not "
+                "help until credit is added."
+            ),
+            model=model,
+            llm_provider="",
+        )
 
     def _hint_level_failure(self, error: BaseException | None, model: str) -> None:
         """A level that reaches its fallback handling on a context-window or content-policy error

@@ -184,6 +184,8 @@ class RustHealthCallbacks:
 
     _handle: "RouterCoreHandle"
     _cooldown_given: object
+    # Deployment id -> when its spent-credential hold ends, as this process wrote it.
+    _spent_credentials: dict[str, float]  # mutable-ok: RustCore's own record, written as holds are taken
 
     def _drive_sync_steps(self, call: "RouterCall[_FailureReportSteps | _SuccessReportSteps]") -> Mapping[str, object]:
         raise NotImplementedError
@@ -328,6 +330,27 @@ class RustHealthCallbacks:
         )
         return hold, (*([deployment_id] if hold > seconds else []), *siblings)
 
+    def _remember_spent(self, deployment_id: str, targets: Sequence[str], hold: float) -> None:
+        """Note that ``deployment_id`` and ``targets`` are held out for ``hold`` seconds on a spent
+        credential, so a walk left with no deployment can tell a spent credential from a rate limit
+        (``spent_credential_ids``). Both cooldown values read 429, so the store cannot. Per process:
+        a hold another process wrote to a shared store is not seen here. No I/O."""
+        import time
+
+        now: Final = time.time()
+        spent: Final = self._spent_credentials
+        for model_id in [model_id for model_id, until in spent.items() if until <= now]:
+            del spent[model_id]
+        for model_id in (deployment_id, *targets):
+            spent[model_id] = max(spent.get(model_id, 0.0), now + hold)
+
+    def spent_credential_ids(self, model_ids: Sequence[str]) -> frozenset[str]:
+        """The ``model_ids`` this process holds out on a spent credential right now. No I/O."""
+        import time
+
+        now: Final = time.time()
+        return frozenset(model_id for model_id in model_ids if self._spent_credentials.get(model_id, 0.0) > now)
+
     def hold_out_spent_credential(self, deployment_id: str, error: object, seconds: float) -> None:
         """Router-core just cooled ``deployment_id`` for ``seconds`` on ``error``. When the error says the
         account behind the deployment's credential has no credit left, waiting does not help and every
@@ -342,6 +365,7 @@ class RustHealthCallbacks:
             if plan is None:
                 return
             hold, targets = plan
+            self._remember_spent(deployment_id, targets, hold)
             cooldowns: Final[CooldownCache] = self.__dict__["_cooldowns"]  # pyright: ignore[reportAny]  # RustCore's own attribute
             for model_id in _shorter_than(hold, targets, cooldowns.get_active_cooldowns(targets, None)):
                 cooldowns.add_deployment_to_cooldown(model_id, error, getattr(error, "status_code", 429), hold)  # pyright: ignore[reportArgumentType]  # _credential_hold admitted only a CreditBalanceExhaustedError
@@ -362,6 +386,7 @@ class RustHealthCallbacks:
             if plan is None:
                 return
             hold, targets = plan
+            self._remember_spent(deployment_id, targets, hold)
             cooldowns: Final[CooldownCache] = self.__dict__["_cooldowns"]  # pyright: ignore[reportAny]  # RustCore's own attribute
             written: Final = _shorter_than(hold, targets, await cooldowns.async_get_active_cooldowns(targets, None))
             value: Final[CooldownCacheValue] = {
