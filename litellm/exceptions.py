@@ -605,6 +605,18 @@ class CallerCredentialRateLimitError(RateLimitError):
     credential, so routers must not cool down the shared deployment."""
 
 
+class CreditBalanceExhaustedError(RateLimitError):
+    """429 raised when the account behind a deployment's credential has no prepaid
+    credit or quota left: Anthropic's 400 (or 402 ``billing_error``) "credit balance
+    is too low", OpenAI's 429 ``insufficient_quota`` / ``credit_balance_exhausted``.
+
+    The request was fine and another credential may serve it, so it is raised as a
+    rate limit: the router retries it on another deployment and cools this one down.
+    Unlike a rate limit, waiting does not help, so the router can hold every
+    deployment that shares the credential out for
+    ``litellm.credit_exhausted_cooldown_time`` seconds."""
+
+
 # sub class of rate limit error - meant to give more granularity for error handling context window exceeded errors
 class ContextWindowExceededError(BadRequestError):
     def __init__(
