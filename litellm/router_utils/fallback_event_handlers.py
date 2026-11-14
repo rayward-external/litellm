@@ -1009,6 +1009,97 @@ async def run_async_fallback(
     raise error_from_fallbacks
 
 
+def _is_deterministic_client_error(exc: BaseException) -> bool:
+    """A 4xx the shared retry policy would not retry: the request itself is bad.
+
+    Delegates to litellm._should_retry so 408 and 409 -- which that policy treats as
+    transient -- are never mistaken for a permanent client error.
+    """
+    if isinstance(exc, (litellm.RateLimitError, RouterRateLimitError, RouterRateLimitErrorBasic)):
+        return False
+    status: Final = getattr(exc, "status_code", None)
+    return isinstance(status, int) and 400 <= status < 500 and not litellm._should_retry(status)
+
+
+async def _request_constraints_emptied_target_order(
+    *,
+    ctx: "RoutingContext",
+    original_model_group: str,
+    kwargs: Mapping[str, object],
+) -> bool:
+    """True only when the last hop's target order was emptied by THIS request's own constraints.
+
+    Re-applies, in selection's own order, the request's team scope
+    (filter_team_based_models, router.py:12842) and then its tag filter to exactly the
+    deployments at the failed hop's target order -- the same candidate set the ladder
+    built with get_model_list(team_id=...) -- on a copy of the request so nothing is
+    stamped twice. If none survives, the level was structurally empty for this request
+    and the selection error carried no information about it. Any OTHER cause of an empty
+    selection -- cooldown, health checks, a filter callback -- leaves at least one of
+    them matching the tags, so this returns False and the selection error surfaces
+    unchanged. A router-wide cooldown_list cannot draw this line: it is populated
+    from every cooled deployment across all model groups (handle_error.py), so an
+    unrelated cooldown would mask the structural case and a callback-emptied level
+    would look structural.
+    """
+    target_order: Final = kwargs.get("_target_order")
+    if not isinstance(target_order, int):
+        return False
+    metadata_for_team: Final = kwargs.get("metadata")
+    litellm_metadata_for_team: Final = kwargs.get("litellm_metadata")
+    request_team_id: Final = (
+        metadata_for_team.get("user_api_key_team_id") if isinstance(metadata_for_team, Mapping) else None
+    ) or (
+        litellm_metadata_for_team.get("user_api_key_team_id")
+        if isinstance(litellm_metadata_for_team, Mapping)
+        else None
+    )
+    group: Final = (
+        ctx._router.get_model_list(  # pyright: ignore[reportPrivateUsage]  # RoutingContext wraps Router but exposes no public accessor for it; this fork-only structural recheck needs the real instance
+            model_name=original_model_group,
+            team_id=request_team_id if isinstance(request_team_id, str) else None,
+        )
+        or ()
+    )
+    at_order: Final = tuple(
+        cast(dict, d)  # cast-ok: router deployments are plain dicts
+        for d in group
+        if _get_deployment_order(d) == target_order
+    )
+    if not at_order:
+        return False
+    metadata_key: Final = get_metadata_variable_name_from_kwargs(kwargs)
+    metadata: Final = kwargs.get(metadata_key)
+    # The tag filter stamps consumed tags into request metadata, so the probe gets its
+    # own copy and the real request is never stamped twice.
+    metadata_copy: Final = dict(metadata if isinstance(metadata, Mapping) else ())  # mutable-ok: callee stamps into it
+    probe_kwargs: Final = (
+        cast(  # cast-ok: the router passes an untyped dict here; this read-only proxy has the same keys
+            dict,
+            MappingProxyType({**kwargs, metadata_key: metadata_copy}),
+        )
+    )
+    team_scoped: Final = filter_team_based_models(
+        cast(list, at_order),  # cast-ok: the function only iterates the sequence
+        probe_kwargs,
+    )
+    if not team_scoped:
+        return True
+    try:
+        surviving: Final = await get_deployments_for_tag(
+            ctx=ctx,
+            model=original_model_group,
+            healthy_deployments=team_scoped,
+            request_kwargs=probe_kwargs,
+            metadata_variable_name=metadata_key,
+            request_deployments=team_scoped,
+        )
+    except litellm.BadRequestError as no_match:
+        # A hard provider pin that matches nothing raises instead of returning an empty pool.
+        return RouterErrors.no_deployments_with_tag_routing.value in str(no_match)
+    return len(surviving) == 0
+
+
 async def log_success_fallback_event(
     original_model_group: str,
     kwargs: dict,  # mutable-ok: the request kwargs the custom loggers receive

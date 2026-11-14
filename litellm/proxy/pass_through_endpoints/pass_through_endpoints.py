@@ -163,6 +163,10 @@ from litellm.proxy.litellm_pre_call_utils import (  # noqa: F401  # legacy modul
     resolve_customer_request_usage,
     strip_client_guardrail_information,
 )
+from litellm.proxy.pass_through_endpoints.passthrough_admission import (
+    PassthroughAdmissionError,
+    enforce_passthrough_admission,
+)
 from litellm.proxy.route_llm_request import ProxyModelNotFoundError
 from litellm.proxy.route_priority import (
     builtin_pass_through_routes_first,
