@@ -4693,6 +4693,9 @@ class _Driver:
         a sync walk with a private loop has one (``cooldown_event_on_own_loop``)."""
         deployment_id: Final = event.get("deployment_id")
         seconds: Final = event.get("cooldown_time")
+        if isinstance(deployment_id, str) and isinstance(seconds, float):
+            # Before the next pick reads the cooldowns: a spent credential leaves with every deployment on it.
+            _ = self._core.hold_out_spent_credential(deployment_id, self._last_error, seconds)
         if self._logged_off_the_loop() or not isinstance(deployment_id, str):
             return
         fire: Final = self._core.cooldown_event_on_own_loop if self._plan.on_its_own_loop else self._core.cooldown_event

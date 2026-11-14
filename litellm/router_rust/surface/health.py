@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Final, Literal
 from litellm.litellm_core_utils.core_helpers import as_str_mapping
 
 if TYPE_CHECKING:
+    from litellm.exceptions import CreditBalanceExhaustedError
     from litellm.router_rust.steps.callbacks import OptionalChecks
     from litellm.router_rust.surface.registry import HostRegistry
     from litellm.router_utils.cooldown_cache import CooldownCache
@@ -100,6 +101,16 @@ def logged_call(op: str, kwargs: Mapping[str, object], started: datetime | None 
         "start_time": started,
         "end_time": ended,
     }
+
+
+def _same_credential(spent: Mapping[str, object], other: Mapping[str, object]) -> bool:
+    """Whether two deployments call with the same credential: the same non-empty
+    ``litellm_credential_name`` or ``api_key``. A deployment with neither reads its provider's
+    environment default, which this cannot tell apart, so it shares with nothing."""
+    return any(
+        isinstance(value := spent.get(field), str) and value != "" and other.get(field) == value
+        for field in ("litellm_credential_name", "api_key")
+    )
 
 
 def _authenticates_per_caller(litellm_params: object) -> bool:
@@ -248,6 +259,65 @@ class RustHealthCallbacks:
                 self.python_cooldown(seconds, configured, error) if isinstance(seconds, float) else None,
             )
         return cooled
+
+    def hold_out_spent_credential(self, deployment_id: str, error: object, seconds: float) -> tuple[str, ...]:
+        """Router-core just cooled ``deployment_id`` for ``seconds`` on ``error``. When the error says the
+        account behind the deployment's credential has no credit left, waiting does not help and every
+        deployment on that credential fails the same way, so hold the deployment and each one sharing its
+        ``api_key`` or ``litellm_credential_name`` out for ``litellm.credit_exhausted_cooldown_time`` (when
+        that is longer than ``seconds``). A cooldown already running longer is kept. Returns the ids written;
+        best effort, so a cooldown it cannot write never fails the request."""
+        from litellm._logging import verbose_router_logger
+        from litellm.exceptions import CreditBalanceExhaustedError
+
+        if not isinstance(error, CreditBalanceExhaustedError):
+            return ()
+        try:
+            return self._hold_out_credential(deployment_id, error, seconds)
+        except Exception as e:  # noqa: BLE001  # as set_cooldown_deployments: the response outranks the cooldown
+            verbose_router_logger.debug("hold_out_spent_credential: not written. Got - %s", e)
+            return ()
+
+    def _hold_out_credential(
+        self, deployment_id: str, error: "CreditBalanceExhaustedError", seconds: float
+    ) -> tuple[str, ...]:
+        import time
+
+        import litellm
+
+        configured: Final[object] = litellm.credit_exhausted_cooldown_time
+        hold: Final = (
+            max(seconds, float(configured))
+            if isinstance(configured, int | float) and not isinstance(configured, bool)
+            else seconds
+        )
+        # RustCore sets these as attributes in its constructor.
+        hosted: Final[HostRegistry] = self.__dict__["_hosted"]  # pyright: ignore[reportAny]  # RustCore's own attribute
+        cooldowns: Final[CooldownCache] = self.__dict__["_cooldowns"]  # pyright: ignore[reportAny]  # see above
+        listed: Final = [
+            (as_str_mapping(d.get("model_info")) or {}, as_str_mapping(d.get("litellm_params")) or {})
+            for d in hosted._core_get_model_list() or []  # pyright: ignore[reportPrivateUsage]  # the host registry's live model list
+        ]
+        spent: Final = next((params for info, params in listed if info.get("id") == deployment_id), None)
+        siblings: Final = (
+            [
+                str(info["id"])
+                for info, params in listed
+                if isinstance(info.get("id"), str) and info["id"] != deployment_id and _same_credential(spent, params)
+            ]
+            if spent is not None
+            else []
+        )
+        targets: Final = ([deployment_id] if hold > seconds else []) + siblings
+        now: Final = time.time()
+        remaining: Final = {
+            model_id: value["timestamp"] + value["cooldown_time"] - now
+            for model_id, value in cooldowns.get_active_cooldowns(targets, None)
+        }
+        written: Final = tuple(model_id for model_id in targets if remaining.get(model_id, 0.0) < hold)
+        for model_id in written:
+            cooldowns.add_deployment_to_cooldown(model_id, error, error.status_code, hold)
+        return written
 
     def per_user_deployment(self, deployment_id: object) -> bool:
         """The failed deployment authenticates per caller (``_should_run_cooldown_logic``), which is
