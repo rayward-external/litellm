@@ -1112,7 +1112,6 @@ LITELLM_EXCEPTION_TYPES: Final = [
     Timeout,
     PermissionDeniedError,
     RateLimitError,
-    CreditBalanceExhaustedError,
     ContextWindowExceededError,
     PaymentRequiredError,
     RejectedRequestError,
