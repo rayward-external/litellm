@@ -5649,6 +5649,7 @@ class ProxyBaseLLMRequestProcessing:
         proxy_logging_obj: ProxyLogging | None = None,
         *,
         release_reservation_if_unbilled: bool = False,
+        ended_by_upstream_idle: bool = False,
     ) -> None:
         with anyio.CancelScope(shield=True):
             if stream_completed and proxy_logging_obj is not None and user_api_key_dict is not None:

@@ -151,6 +151,22 @@ def _userlist_quote(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
+def _scram_sha256_secret(password: str) -> str:
+    """A ``SCRAM-SHA-256$<iterations>:<salt>$<StoredKey>:<ServerKey>`` secret in the same form Postgres
+    stores for ``rolpassword``, which PgBouncer's ``auth_file`` accepts in place of a plaintext password
+    (https://www.pgbouncer.org/config.html#authentication-file-format) for a user it only ever verifies
+    inbound, never replays to an upstream server."""
+    salt: Final = secrets.token_bytes(PGBOUNCER_SCRAM_SALT_BYTES)
+    salted_password: Final = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PGBOUNCER_SCRAM_ITERATIONS)
+    client_key: Final = hmac.new(salted_password, b"Client Key", hashlib.sha256).digest()
+    stored_key: Final = hashlib.sha256(client_key).digest()
+    server_key: Final = hmac.new(salted_password, b"Server Key", hashlib.sha256).digest()
+    return (
+        f"SCRAM-SHA-256${PGBOUNCER_SCRAM_ITERATIONS}:{base64.b64encode(salt).decode('ascii')}$"
+        f"{base64.b64encode(stored_key).decode('ascii')}:{base64.b64encode(server_key).decode('ascii')}"
+    )
+
+
 def fold_libpq_option_tokens(tokens: Sequence[str]) -> tuple[str, ...]:
     """The tokens of a libpq ``options`` string with each detached ``-c`` folded into the token after it."""
     return tuple(
