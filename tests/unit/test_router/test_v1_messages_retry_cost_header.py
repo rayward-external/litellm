@@ -1,14 +1,18 @@
+"""A /v1/messages call that succeeds on its retry after a 503 keeps the success's cost on the shared
+logging object. Anthropic `/v1/messages` runs on the Rust path only, whose HTTP client respx cannot see,
+so the upstream is a loopback server on a real socket."""
+
 import datetime
+from collections.abc import Iterator
 
 import httpx
 import pytest
-import respx
 
 import litellm
 from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
 from litellm.router import Router
+from tests.unit.test_router.loopback_upstream import LoopbackUpstream, loopback_upstream
 
-_API_BASE = "https://anthropic.example.invalid"
 _OK_BODY = {
     "id": "msg_1",
     "type": "message",
@@ -21,7 +25,7 @@ _OK_BODY = {
 }
 
 
-def _router() -> Router:
+def _router(api_base: str) -> Router:
     return Router(
         model_list=[
             {
@@ -29,7 +33,7 @@ def _router() -> Router:
                 "litellm_params": {
                     "model": "anthropic/claude-sonnet-4-5",
                     "api_key": "sk-test",
-                    "api_base": _API_BASE,
+                    "api_base": api_base,
                 },
             }
         ],
@@ -48,16 +52,22 @@ def _shared_logging_obj(request: dict):
     return logging_obj
 
 
+@pytest.fixture
+def upstream() -> Iterator[LoopbackUpstream]:
+    with loopback_upstream() as served:
+        yield served
+
+
 @pytest.mark.asyncio
-@respx.mock
-async def test_v1_messages_success_after_a_503_retry_keeps_its_cost_header(monkeypatch):
+async def test_v1_messages_success_after_a_503_retry_keeps_its_cost_header(monkeypatch, upstream: LoopbackUpstream):
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
-    route = respx.post(f"{_API_BASE}/v1/messages").mock(
-        side_effect=[
+    answers = iter(
+        [
             httpx.Response(503, json={"type": "error", "error": {"type": "overloaded_error", "message": "busy"}}),
             httpx.Response(200, json=_OK_BODY),
         ]
     )
+    upstream.mock(side_effect=lambda _request: next(answers))
     request = {
         "model": "claude-group",
         "messages": [{"role": "user", "content": "hi"}],
@@ -66,9 +76,9 @@ async def test_v1_messages_success_after_a_503_retry_keeps_its_cost_header(monke
     }
     logging_obj = _shared_logging_obj(request)
 
-    response = await _router().aanthropic_messages(**request, litellm_logging_obj=logging_obj)
+    response = await _router(upstream.api_base).aanthropic_messages(**request, litellm_logging_obj=logging_obj)
 
-    assert route.call_count == 2
+    assert upstream.call_count == 2
     stale = logging_obj.model_call_details.get("response_cost")
     header_cost = ProxyBaseLLMRequestProcessing._response_cost_from_logging_obj(
         response=response, logging_obj=logging_obj

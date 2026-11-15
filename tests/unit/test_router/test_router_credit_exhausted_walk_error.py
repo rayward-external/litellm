@@ -1,21 +1,23 @@
 """A walk that ends with no deployment left because the legs left are held out on a spent prepaid credit
 raises the request's own error, not "No deployments available, Try again in N seconds": waiting does not
-bring credit back. A walk that ran out on a real rate limit keeps the router's error."""
+bring credit back. A walk that ran out on a real rate limit keeps the router's error.
+
+The chat route runs on Python's httpx transport, mocked with respx. Anthropic `/v1/messages` runs on the Rust
+path only, whose HTTP client respx cannot see, so its cases answer from a loopback upstream on a real socket."""
 
 import json
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from typing import Final
 
 import httpx
 import pytest
-import respx
 
 import litellm
 from litellm.router import Router
 from litellm.router_rust.surface.health import held_out_on_spent_credential
 from litellm.types.router import RouterRateLimitError
+from tests.unit.test_router.loopback_upstream import RespxUpstream, Upstream, loopback_upstream
 
-API_BASE: Final = "https://anthropic.example.invalid"
 FIRST_KEY: Final = "sk-first-leg"
 SECOND_KEY: Final = "sk-second-leg"
 SPENT_KEY: Final = "sk-spent"
@@ -39,17 +41,17 @@ SPENT: Final = _error(400, "invalid_request_error", CREDIT_TEXT)
 RATE_LIMITED: Final = _error(429, "rate_limit_error", "Number of request tokens has exceeded your rate limit")
 
 
-def _leg(model_id: str, api_key: str, order: int) -> dict[str, object]:
+def _leg(api_base: str, model_id: str, api_key: str, order: int) -> dict[str, object]:
     return {
         "model_name": "claude",
-        "litellm_params": {"model": "anthropic/claude-x", "api_key": api_key, "api_base": API_BASE, "order": order},
+        "litellm_params": {"model": "anthropic/claude-x", "api_key": api_key, "api_base": api_base, "order": order},
         "model_info": {"id": model_id},
     }
 
 
-def _router(*legs: tuple[str, str, int]) -> Router:
+def _router(api_base: str, *legs: tuple[str, str, int]) -> Router:
     return Router(
-        model_list=[_leg(model_id, api_key, order) for model_id, api_key, order in legs],
+        model_list=[_leg(api_base, model_id, api_key, order) for model_id, api_key, order in legs],
         num_retries=2,
         retry_after=0,
         cooldown_time=30.0,
@@ -81,18 +83,23 @@ async def _raised(send: Callable[[Router, bool], Awaitable[None]], router: Route
     raise AssertionError("the request was served")
 
 
-def _calls_by_key(route: respx.Route, since: int = 0) -> dict[str, int]:
+def _calls_by_key(route: Upstream, since: int = 0) -> dict[str, int]:
     """The upstream calls per key from call ``since`` on."""
     keys: Final = [call.request.headers["x-api-key"] for call in list(route.calls)[since:]]
     return {key: keys.count(key) for key in KEYS if key in keys}
 
 
 @pytest.fixture
-def anthropic_upstream(monkeypatch: pytest.MonkeyPatch, respx_mock: respx.MockRouter) -> respx.Route:
+def anthropic_upstream(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterator[Upstream]:
+    """``respx`` mocks Python's httpx transport; ``loopback`` serves the Rust path from a real socket."""
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
     monkeypatch.setattr(litellm, "suppress_debug_info", True)
     monkeypatch.setattr(litellm, "credit_exhausted_cooldown_time", CREDIT_COOLDOWN_SECONDS)
-    return respx_mock.post(f"{API_BASE}/v1/messages")
+    if request.param == "respx":
+        yield RespxUpstream(request.getfixturevalue("respx_mock"), "/v1/messages")
+        return
+    with loopback_upstream() as upstream:
+        yield upstream
 
 
 def _answer(answers: Mapping[str, httpx.Response]) -> Callable[[httpx.Request], httpx.Response]:
@@ -102,7 +109,13 @@ def _answer(answers: Mapping[str, httpx.Response]) -> Callable[[httpx.Request], 
     return answer
 
 
-ROUTES: Final = pytest.mark.parametrize("send", [_chat, _messages], ids=["chat", "messages"])
+ROUTES: Final = pytest.mark.parametrize(
+    ("send", "anthropic_upstream"),
+    [(_chat, "respx"), (_messages, "loopback")],
+    ids=["chat", "messages"],
+    indirect=["anthropic_upstream"],
+)
+CHAT: Final = pytest.mark.parametrize("anthropic_upstream", ["respx"], ids=["chat"], indirect=True)
 STREAMS: Final = pytest.mark.parametrize("stream", [False, True], ids=["non_stream", "stream"])
 
 
@@ -110,7 +123,7 @@ STREAMS: Final = pytest.mark.parametrize("stream", [False, True], ids=["non_stre
 @ROUTES
 @STREAMS
 async def test_a_bad_request_that_walks_onto_a_spent_leg_answers_with_the_bad_request(
-    send: Callable[[Router, bool], Awaitable[None]], stream: bool, anthropic_upstream: respx.Route
+    send: Callable[[Router, bool], Awaitable[None]], stream: bool, anthropic_upstream: Upstream
 ) -> None:
     anthropic_upstream.mock(
         side_effect=_answer(
@@ -121,7 +134,9 @@ async def test_a_bad_request_that_walks_onto_a_spent_leg_answers_with_the_bad_re
             }
         )
     )
-    router: Final = _router(("first", FIRST_KEY, 0), ("second", SECOND_KEY, 1), ("spent", SPENT_KEY, 2))
+    router: Final = _router(
+        anthropic_upstream.api_base, ("first", FIRST_KEY, 0), ("second", SECOND_KEY, 1), ("spent", SPENT_KEY, 2)
+    )
 
     first: Final = await _raised(send, router, stream)
     first_calls: Final = _calls_by_key(anthropic_upstream)
@@ -141,12 +156,12 @@ async def test_a_bad_request_that_walks_onto_a_spent_leg_answers_with_the_bad_re
 @ROUTES
 @STREAMS
 async def test_a_server_error_that_walks_onto_a_spent_leg_answers_with_the_server_error(
-    send: Callable[[Router, bool], Awaitable[None]], stream: bool, anthropic_upstream: respx.Route
+    send: Callable[[Router, bool], Awaitable[None]], stream: bool, anthropic_upstream: Upstream
 ) -> None:
     anthropic_upstream.mock(
         side_effect=_answer({SECOND_KEY: _error(503, "api_error", SECOND_LEG_OUTAGE), SPENT_KEY: SPENT})
     )
-    router: Final = _router(("second", SECOND_KEY, 1), ("spent", SPENT_KEY, 2))
+    router: Final = _router(anthropic_upstream.api_base, ("second", SECOND_KEY, 1), ("spent", SPENT_KEY, 2))
 
     first: Final = await _raised(send, router, stream)
     first_calls: Final = _calls_by_key(anthropic_upstream)
@@ -166,10 +181,10 @@ async def test_a_server_error_that_walks_onto_a_spent_leg_answers_with_the_serve
 @ROUTES
 @STREAMS
 async def test_every_leg_spent_answers_with_the_credit_error(
-    send: Callable[[Router, bool], Awaitable[None]], stream: bool, anthropic_upstream: respx.Route
+    send: Callable[[Router, bool], Awaitable[None]], stream: bool, anthropic_upstream: Upstream
 ) -> None:
     anthropic_upstream.mock(side_effect=_answer({SPENT_KEY: SPENT, OTHER_SPENT_KEY: SPENT}))
-    router: Final = _router(("spent", SPENT_KEY, 0), ("other-spent", OTHER_SPENT_KEY, 1))
+    router: Final = _router(anthropic_upstream.api_base, ("spent", SPENT_KEY, 0), ("other-spent", OTHER_SPENT_KEY, 1))
 
     first: Final = await _raised(send, router, stream)
     first_calls: Final = _calls_by_key(anthropic_upstream)
@@ -187,14 +202,15 @@ async def test_every_leg_spent_answers_with_the_credit_error(
 
 
 @pytest.mark.asyncio
+@CHAT
 async def test_a_bad_request_onto_a_spent_leg_answers_with_the_bad_request_without_a_credit_cooldown(
-    anthropic_upstream: respx.Route, monkeypatch: pytest.MonkeyPatch
+    anthropic_upstream: Upstream, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(litellm, "credit_exhausted_cooldown_time", None)
     anthropic_upstream.mock(
         side_effect=_answer({FIRST_KEY: _error(400, "invalid_request_error", FIRST_LEG_REJECTION), SPENT_KEY: SPENT})
     )
-    router: Final = _router(("first", FIRST_KEY, 0), ("spent", SPENT_KEY, 1))
+    router: Final = _router(anthropic_upstream.api_base, ("first", FIRST_KEY, 0), ("spent", SPENT_KEY, 1))
 
     raised: Final = await _raised(_chat, router, False)
 
@@ -202,11 +218,12 @@ async def test_a_bad_request_onto_a_spent_leg_answers_with_the_bad_request_witho
     assert FIRST_LEG_REJECTION in str(raised)
 
 
-def test_a_sync_bad_request_onto_a_spent_leg_answers_with_the_bad_request(anthropic_upstream: respx.Route) -> None:
+@CHAT
+def test_a_sync_bad_request_onto_a_spent_leg_answers_with_the_bad_request(anthropic_upstream: Upstream) -> None:
     anthropic_upstream.mock(
         side_effect=_answer({FIRST_KEY: _error(400, "invalid_request_error", FIRST_LEG_REJECTION), SPENT_KEY: SPENT})
     )
-    router: Final = _router(("first", FIRST_KEY, 0), ("spent", SPENT_KEY, 1))
+    router: Final = _router(anthropic_upstream.api_base, ("first", FIRST_KEY, 0), ("spent", SPENT_KEY, 1))
 
     for _ in range(2):
         with pytest.raises(litellm.BadRequestError) as raised:
@@ -218,10 +235,10 @@ def test_a_sync_bad_request_onto_a_spent_leg_answers_with_the_bad_request(anthro
 @pytest.mark.asyncio
 @ROUTES
 async def test_rate_limited_legs_keep_the_no_deployments_error(
-    send: Callable[[Router, bool], Awaitable[None]], anthropic_upstream: respx.Route
+    send: Callable[[Router, bool], Awaitable[None]], anthropic_upstream: Upstream
 ) -> None:
     anthropic_upstream.mock(side_effect=_answer({FIRST_KEY: RATE_LIMITED, SECOND_KEY: RATE_LIMITED}))
-    router: Final = _router(("first", FIRST_KEY, 0), ("second", SECOND_KEY, 0))
+    router: Final = _router(anthropic_upstream.api_base, ("first", FIRST_KEY, 0), ("second", SECOND_KEY, 0))
 
     first: Final = await _raised(send, router, False)
     again: Final = await _raised(send, router, False)
@@ -234,10 +251,10 @@ async def test_rate_limited_legs_keep_the_no_deployments_error(
 @pytest.mark.asyncio
 @ROUTES
 async def test_a_rate_limited_leg_beside_a_spent_leg_keeps_the_no_deployments_error(
-    send: Callable[[Router, bool], Awaitable[None]], anthropic_upstream: respx.Route
+    send: Callable[[Router, bool], Awaitable[None]], anthropic_upstream: Upstream
 ) -> None:
     anthropic_upstream.mock(side_effect=_answer({FIRST_KEY: RATE_LIMITED, SPENT_KEY: SPENT}))
-    router: Final = _router(("first", FIRST_KEY, 0), ("spent", SPENT_KEY, 1))
+    router: Final = _router(anthropic_upstream.api_base, ("first", FIRST_KEY, 0), ("spent", SPENT_KEY, 1))
 
     first: Final = await _raised(send, router, False)
     first_calls: Final = _calls_by_key(anthropic_upstream)
@@ -257,7 +274,7 @@ async def test_a_rate_limited_leg_beside_a_spent_leg_keeps_the_no_deployments_er
 async def test_another_router_on_the_shared_cooldowns_answers_with_the_bad_request(
     send: Callable[[Router, bool], Awaitable[None]],
     stream: bool,
-    anthropic_upstream: respx.Route,
+    anthropic_upstream: Upstream,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     anthropic_upstream.mock(
@@ -271,8 +288,8 @@ async def test_another_router_on_the_shared_cooldowns_answers_with_the_bad_reque
     )
     legs: Final = (("first", FIRST_KEY, 0), ("second", SECOND_KEY, 1), ("spent", SPENT_KEY, 2))
     # Two instances on one cooldown store, as instances behind one Redis: only the first sees the credit error.
-    seen_it: Final = _router(*legs)
-    other: Final = _router(*legs)
+    seen_it: Final = _router(anthropic_upstream.api_base, *legs)
+    other: Final = _router(anthropic_upstream.api_base, *legs)
     monkeypatch.setattr(other.cooldown_cache, "cooldown_store", seen_it.cooldown_cache.cooldown_store)
 
     _ = await _raised(send, seen_it, stream)
@@ -294,7 +311,7 @@ STREAM_OUTAGE: Final = "stream overloaded before any content"
 @pytest.mark.asyncio
 @ROUTES
 async def test_a_stream_that_fails_before_content_onto_a_spent_leg_answers_with_the_stream_failure(
-    send: Callable[[Router, bool], Awaitable[None]], anthropic_upstream: respx.Route
+    send: Callable[[Router, bool], Awaitable[None]], anthropic_upstream: Upstream
 ) -> None:
     failing_stream: Final = httpx.Response(
         200,
@@ -305,7 +322,7 @@ async def test_a_stream_that_fails_before_content_onto_a_spent_leg_answers_with_
         ).encode(),
     )
     anthropic_upstream.mock(side_effect=_answer({FIRST_KEY: failing_stream, SPENT_KEY: SPENT}))
-    router: Final = _router(("first", FIRST_KEY, 0), ("spent", SPENT_KEY, 1))
+    router: Final = _router(anthropic_upstream.api_base, ("first", FIRST_KEY, 0), ("spent", SPENT_KEY, 1))
 
     # The recovery walk after the stream's failure reaches only the spent leg.
     raised: Final = await _raised(send, router, True)
@@ -319,16 +336,17 @@ async def test_a_stream_that_fails_before_content_onto_a_spent_leg_answers_with_
 @pytest.mark.asyncio
 @ROUTES
 async def test_a_spent_group_whose_fallback_group_is_rate_limited_keeps_the_no_deployments_error(
-    send: Callable[[Router, bool], Awaitable[None]], anthropic_upstream: respx.Route
+    send: Callable[[Router, bool], Awaitable[None]], anthropic_upstream: Upstream
 ) -> None:
     anthropic_upstream.mock(
         side_effect=_answer(
             {SPENT_KEY: SPENT, OTHER_SPENT_KEY: SPENT, FIRST_KEY: RATE_LIMITED, SECOND_KEY: RATE_LIMITED}
         )
     )
-    spent_group: Final = [_leg("spent", SPENT_KEY, 0), _leg("other-spent", OTHER_SPENT_KEY, 1)]
+    api_base: Final = anthropic_upstream.api_base
+    spent_group: Final = [_leg(api_base, "spent", SPENT_KEY, 0), _leg(api_base, "other-spent", OTHER_SPENT_KEY, 1)]
     fallback_group: Final = [
-        {**_leg(model_id, api_key, 0), "model_name": "claude-fallback"}
+        {**_leg(api_base, model_id, api_key, 0), "model_name": "claude-fallback"}
         for model_id, api_key in (("first", FIRST_KEY), ("second", SECOND_KEY))
     ]
     router: Final = Router(
