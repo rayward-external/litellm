@@ -4,6 +4,7 @@ import litellm
 from litellm._logging import verbose_logger
 from litellm.constants import X_LITELLM_DISABLE_CALLBACKS
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.integrations.custom_logger_v2.logger import CustomLoggerV2
 from litellm.litellm_core_utils.llm_request_utils import (
     get_proxy_server_request_headers,
 )
@@ -20,22 +21,28 @@ class EnterpriseCallbackControls:
         """
         Check if a callback is disabled via the x-litellm-disable-callbacks header or via `litellm_disabled_callbacks` in standard_callback_dynamic_params.
 
-        Args:
-            callback: The callback to check (can be string, CustomLogger instance, or callable)
-            litellm_params: Parameters containing proxy server request info
-
-        Returns:
-            bool: True if the callback should be disabled, False otherwise
-        """
-        from litellm.litellm_core_utils.custom_logger_registry import (
-            CustomLoggerRegistry,
-        )
-
-        try:
-            disabled_callbacks = EnterpriseCallbackControls.get_disabled_callbacks(
-                litellm_params, standard_callback_dynamic_params
-            )
-            if disabled_callbacks is not None:
+            try:
+                disabled_callbacks = EnterpriseCallbackControls.get_disabled_callbacks(litellm_params, standard_callback_dynamic_params)
+                if disabled_callbacks is not None:
+                    verbose_logger.debug(f"Checking if {callback} is in dynamically disabled callbacks: {disabled_callbacks}")
+                    #########################################################
+                    # premium user check
+                    #########################################################
+                    if not EnterpriseCallbackControls._should_allow_dynamic_callback_disabling():
+                        return False
+                    #########################################################
+                    if isinstance(callback, str):
+                        if callback.lower() in disabled_callbacks:
+                            verbose_logger.debug(f"Not logging to {callback} because it is disabled via {X_LITELLM_DISABLE_CALLBACKS}")
+                            return True
+                    elif isinstance(callback, CustomLogger | CustomLoggerV2):
+                        # get the string name of the callback
+                        callback_str = CustomLoggerRegistry.get_callback_str_from_class_type(callback.__class__)
+                        if callback_str is not None and callback_str.lower() in disabled_callbacks:
+                            verbose_logger.debug(f"Not logging to {callback_str} because it is disabled via {X_LITELLM_DISABLE_CALLBACKS}")
+                            return True
+                return False
+            except Exception as e:
                 verbose_logger.debug(
                     f"Checking if {callback} is in dynamically disabled callbacks: {disabled_callbacks}"
                 )
