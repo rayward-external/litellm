@@ -1338,7 +1338,7 @@ def _unfiltered_request(
     return headers, body
 
 
-def _filtered_upstream_request(
+def _filtered_upstream_request(  # pyright: ignore[reportUnusedFunction]  # called only from pass_through_request, which basedpyright gives up analyzing for complexity
     upstream_request_filter: UpstreamRequestFilter,
     headers: Mapping[str, str],
     body: Mapping[str, object] | None,
@@ -1383,7 +1383,7 @@ class _CustomerPassthroughAuth:
     usage: ResolvedCustomerUsage | None
 
 
-async def _customer_passthrough_request_auth(
+async def _customer_passthrough_request_auth(  # pyright: ignore[reportUnusedFunction]  # called only from pass_through_request, which basedpyright gives up analyzing for complexity
     request: Request, body: Mapping[str, object], auth: UserAPIKeyAuth
 ) -> _CustomerPassthroughAuth:
     from litellm.proxy.proxy_server import general_settings_view, llm_router
@@ -1403,7 +1403,7 @@ async def _customer_passthrough_request_auth(
     return _CustomerPassthroughAuth(request_auth, usage)
 
 
-def _anthropic_user_id_to_forward(
+def _anthropic_user_id_to_forward(  # pyright: ignore[reportUnusedFunction]  # called only from pass_through_request, which basedpyright gives up analyzing for complexity
     body: Mapping[str, object],
     url: str,
     has_pre_call_guardrails: Callable[[Mapping[str, object]], bool],
@@ -1451,7 +1451,7 @@ class _PassthroughClientBody:
     eu_jev_body: Mapping[str, object] | None
 
 
-def _prepare_passthrough_client_body(
+def _prepare_passthrough_client_body(  # pyright: ignore[reportUnusedFunction]  # called only from pass_through_request, which basedpyright gives up analyzing for complexity
     body: Mapping[str, object], auth: UserAPIKeyAuth, custom_llm_provider: str | None
 ) -> _PassthroughClientBody:
     client_body: Final = dict(body)
