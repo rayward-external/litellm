@@ -33,7 +33,8 @@ pub fn router(
         .with_same_site(SameSite::Strict);
     let auth = AuthManagerLayerBuilder::new(backend, sessions).build();
     let state = Arc::new(session::State {
-        signing_key: EncodingKey::from_secret(&rand::random::<[u8; 32]>()),
+        signing_key: EncodingKey::from_secret(&rand::random::<[u8; 32]>())
+            .expect("a random 32-byte HMAC secret is always valid key material"),
         login_limit: RateLimiter::direct(Quota::per_minute(NonZeroU32::new(10).unwrap())),
         secure_cookies,
     });
