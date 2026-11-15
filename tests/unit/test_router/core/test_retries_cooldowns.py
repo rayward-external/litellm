@@ -904,6 +904,6 @@ async def test_tag_exhausted_cooldown_info_does_not_raise_bad_request(make_core:
     pool: Final = [deployment("g", "d1", tags=["t1"]), deployment("g", "d2", tags=["t2"])]
     request: Final = {"model": "g", "messages": [], "metadata": {"tags": ["no-match"]}}
     result = core._tag_routable_ids(  # pyright: ignore[reportPrivateUsage]  # exercising the method directly
-        group="g", pool=pool, routable=pool, cooled=frozenset({"d1", "d2"}), request=request
+        group="g", pool=pool, routable=pool, among=frozenset({"d1", "d2"}), request=request
     )
     assert result == frozenset()
