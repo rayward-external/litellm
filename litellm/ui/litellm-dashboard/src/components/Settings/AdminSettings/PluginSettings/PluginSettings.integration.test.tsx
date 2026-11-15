@@ -108,6 +108,21 @@ describe("PluginSettings config payload", () => {
   });
 });
 
+describe("PluginSettings URL rendering", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders the plugin url as plain text, never as a clickable link", async () => {
+    const maliciousPlugin = { ...REDACTED_PLUGIN, url: "javascript:alert(document.domain)" };
+    getConfigFieldSettingMock.mockResolvedValue({ field_value: [maliciousPlugin] });
+    render(<PluginSettings />);
+
+    expect(await screen.findByText(maliciousPlugin.url)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: maliciousPlugin.url })).not.toBeInTheDocument();
+  });
+});
+
 describe("PluginSettings plugin key reveal (post-migration shadcn affordance)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
