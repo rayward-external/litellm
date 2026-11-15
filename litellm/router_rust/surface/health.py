@@ -144,6 +144,32 @@ def _shorter_than(
     return tuple(model_id for model_id in targets if remaining.get(model_id, 0.0) < hold)
 
 
+# Leads ``exception_received`` of every cooldown the spent-credential hold-out writes. It is inside the
+# 50 characters ``CooldownCache.exception_masker`` (and router-core's ``mask_exception``) leave visible,
+# and nothing else writes it, so any process reading the shared cooldown store can tell a spent
+# credential from a rate limit, whose cooldown also stores status 429.
+SPENT_CREDENTIAL_COOLDOWN_PREFIX: Final = "litellm.CreditBalanceExhaustedError: "
+
+
+def held_out_on_spent_credential(value: "CooldownCacheValue") -> bool:
+    """A cooldown the spent-credential hold-out wrote, by whichever process wrote it."""
+    return value["exception_received"].startswith(SPENT_CREDENTIAL_COOLDOWN_PREFIX)
+
+
+def _spent_credential_cooldown(cooldowns: "CooldownCache", error: object, hold: float) -> "CooldownCacheValue":
+    """The cooldown a spent credential's deployments are held out with: masked as every cooldown is,
+    behind ``SPENT_CREDENTIAL_COOLDOWN_PREFIX``, with the error's own status (429)."""
+    import time
+
+    text: Final = str(error).removeprefix("litellm.RateLimitError: ").removeprefix("CreditBalanceExhaustedError: ")
+    return {
+        "exception_received": str(cooldowns.exception_masker.mask_value(SPENT_CREDENTIAL_COOLDOWN_PREFIX + text)),
+        "status_code": str(getattr(error, "status_code", 429)),
+        "timestamp": time.time(),
+        "cooldown_time": hold,
+    }
+
+
 def _authenticates_per_caller(litellm_params: object) -> bool:
     """``github_copilot_per_user_credential_name`` in ``_should_run_cooldown_logic``. Per-user params
     with no credential raise there, which ends Python's failure callback short of any cooldown."""
@@ -184,8 +210,6 @@ class RustHealthCallbacks:
 
     _handle: "RouterCoreHandle"
     _cooldown_given: object
-    # Deployment id -> when its spent-credential hold ends, as this process wrote it.
-    _spent_credentials: dict[str, float]  # mutable-ok: RustCore's own record, written as holds are taken
 
     def _drive_sync_steps(self, call: "RouterCall[_FailureReportSteps | _SuccessReportSteps]") -> Mapping[str, object]:
         raise NotImplementedError
@@ -297,7 +321,8 @@ class RustHealthCallbacks:
         self, deployment_id: str, error: object, seconds: float
     ) -> "tuple[float, tuple[str, ...]] | None":
         """The cooldown and the deployments to hold out when router-core cooled ``deployment_id`` for
-        ``seconds`` on ``error``, or None when the error is not an exhausted credit balance. No I/O."""
+        ``seconds`` on ``error``, ``deployment_id`` first, or None when the error is not an exhausted
+        credit balance. No I/O."""
         import litellm
         from litellm.exceptions import CreditBalanceExhaustedError
 
@@ -328,36 +353,20 @@ class RustHealthCallbacks:
             if credential is not None
             else []
         )
-        return hold, (*([deployment_id] if hold > seconds else []), *siblings)
-
-    def _remember_spent(self, deployment_id: str, targets: Sequence[str], hold: float) -> None:
-        """Note that ``deployment_id`` and ``targets`` are held out for ``hold`` seconds on a spent
-        credential, so a walk left with no deployment can tell a spent credential from a rate limit
-        (``spent_credential_ids``). Both cooldown values read 429, so the store cannot. Per process:
-        a hold another process wrote to a shared store is not seen here. No I/O."""
-        import time
-
-        now: Final = time.time()
-        spent: Final = self._spent_credentials
-        for model_id in [model_id for model_id, until in spent.items() if until <= now]:
-            del spent[model_id]
-        for model_id in (deployment_id, *targets):
-            spent[model_id] = max(spent.get(model_id, 0.0), now + hold)
-
-    def spent_credential_ids(self, model_ids: Sequence[str]) -> frozenset[str]:
-        """The ``model_ids`` this process holds out on a spent credential right now. No I/O."""
-        import time
-
-        now: Final = time.time()
-        return frozenset(model_id for model_id in model_ids if self._spent_credentials.get(model_id, 0.0) > now)
+        # The spent deployment is always rewritten, over the cooldown router-core just wrote for it (never
+        # longer than ``hold``), so the shared cooldown names the spent credential
+        # (``held_out_on_spent_credential``) even when ``hold`` is router-core's own ``seconds``.
+        return hold, (deployment_id, *siblings)
 
     def hold_out_spent_credential(self, deployment_id: str, error: object, seconds: float) -> None:
         """Router-core just cooled ``deployment_id`` for ``seconds`` on ``error``. When the error says the
         account behind the deployment's credential has no credit left, waiting does not help and every
         deployment calling with that credential fails the same way, so hold the deployment and each one
         sharing its effective credential out for ``litellm.credit_exhausted_cooldown_time`` (when that is
-        longer than ``seconds``). A cooldown already running longer is kept. Best effort: a cooldown it
-        cannot write never fails the request. For a sync walk, whose cache steps are sync too."""
+        longer than ``seconds``). A sibling's cooldown already running longer is kept. Each cooldown it
+        writes is marked as a spent credential's (``held_out_on_spent_credential``), the spent deployment's
+        included, in the shared store every process reads. Best effort: a cooldown it cannot write never
+        fails the request. For a sync walk, whose cache steps are sync too."""
         from litellm._logging import verbose_router_logger
 
         try:
@@ -365,10 +374,11 @@ class RustHealthCallbacks:
             if plan is None:
                 return
             hold, targets = plan
-            self._remember_spent(deployment_id, targets, hold)
             cooldowns: Final[CooldownCache] = self.__dict__["_cooldowns"]  # pyright: ignore[reportAny]  # RustCore's own attribute
-            for model_id in _shorter_than(hold, targets, cooldowns.get_active_cooldowns(targets, None)):
-                cooldowns.add_deployment_to_cooldown(model_id, error, getattr(error, "status_code", 429), hold)  # pyright: ignore[reportArgumentType]  # _credential_hold admitted only a CreditBalanceExhaustedError
+            value: Final = _spent_credential_cooldown(cooldowns, error, hold)
+            spent, siblings = targets[0], targets[1:]
+            for model_id in (spent, *_shorter_than(hold, siblings, cooldowns.get_active_cooldowns(siblings, None))):
+                cooldowns.cooldown_store.put(model_id, value, hold)
         except Exception as e:  # noqa: BLE001  # as set_cooldown_deployments: the response outranks the cooldown
             verbose_router_logger.debug("hold_out_spent_credential: not written. Got - %s", e)
 
@@ -377,7 +387,6 @@ class RustHealthCallbacks:
         store's async calls, as router-core's own cooldown steps do (``RoutingStores.answer``), so a slow
         Redis never blocks the event loop."""
         import asyncio
-        import time
 
         from litellm._logging import verbose_router_logger
 
@@ -386,15 +395,11 @@ class RustHealthCallbacks:
             if plan is None:
                 return
             hold, targets = plan
-            self._remember_spent(deployment_id, targets, hold)
             cooldowns: Final[CooldownCache] = self.__dict__["_cooldowns"]  # pyright: ignore[reportAny]  # RustCore's own attribute
-            written: Final = _shorter_than(hold, targets, await cooldowns.async_get_active_cooldowns(targets, None))
-            value: Final[CooldownCacheValue] = {
-                "exception_received": str(cooldowns.exception_masker.mask_value(str(error))),
-                "status_code": str(getattr(error, "status_code", 429)),
-                "timestamp": time.time(),
-                "cooldown_time": hold,
-            }
+            spent, siblings = targets[0], targets[1:]
+            running: Final = await cooldowns.async_get_active_cooldowns(siblings, None)
+            written: Final = (spent, *_shorter_than(hold, siblings, running))
+            value: Final = _spent_credential_cooldown(cooldowns, error, hold)
             _ = await asyncio.gather(
                 *(cooldowns.cooldown_store.async_put(model_id, value, hold) for model_id in written)
             )

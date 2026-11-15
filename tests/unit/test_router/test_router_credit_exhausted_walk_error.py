@@ -11,6 +11,7 @@ import respx
 
 import litellm
 from litellm.router import Router
+from litellm.router_rust.surface.health import held_out_on_spent_credential
 from litellm.types.router import RouterRateLimitError
 
 API_BASE: Final = "https://anthropic.example.invalid"
@@ -247,3 +248,40 @@ async def test_a_rate_limited_leg_beside_a_spent_leg_keeps_the_no_deployments_er
     assert _calls_by_key(anthropic_upstream, called) == {}
     assert isinstance(first, RouterRateLimitError)
     assert isinstance(again, RouterRateLimitError)
+
+
+@pytest.mark.asyncio
+@ROUTES
+@STREAMS
+async def test_another_router_on_the_shared_cooldowns_answers_with_the_bad_request(
+    send: Callable[[Router, bool], Awaitable[None]],
+    stream: bool,
+    anthropic_upstream: respx.Route,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    anthropic_upstream.mock(
+        side_effect=_answer(
+            {
+                FIRST_KEY: _error(400, "invalid_request_error", FIRST_LEG_REJECTION),
+                SECOND_KEY: _error(400, "invalid_request_error", SECOND_LEG_REJECTION),
+                SPENT_KEY: SPENT,
+            }
+        )
+    )
+    legs: Final = (("first", FIRST_KEY, 0), ("second", SECOND_KEY, 1), ("spent", SPENT_KEY, 2))
+    # Two instances on one cooldown store, as instances behind one Redis: only the first sees the credit error.
+    seen_it: Final = _router(*legs)
+    other: Final = _router(*legs)
+    monkeypatch.setattr(other.cooldown_cache, "cooldown_store", seen_it.cooldown_cache.cooldown_store)
+
+    _ = await _raised(send, seen_it, stream)
+    called: Final = anthropic_upstream.call_count
+    raised: Final = await _raised(send, other, stream)
+
+    shared: Final = dict(other.cooldown_cache.get_active_cooldowns(["spent"], parent_otel_span=None))
+    assert held_out_on_spent_credential(shared["spent"])
+    assert float(shared["spent"]["cooldown_time"]) == CREDIT_COOLDOWN_SECONDS
+    assert _calls_by_key(anthropic_upstream, called) == {FIRST_KEY: 1, SECOND_KEY: 1}
+    assert isinstance(raised, litellm.BadRequestError)
+    assert SECOND_LEG_REJECTION in str(raised)
+    assert "Try again in" not in str(raised)

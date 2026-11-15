@@ -263,7 +263,7 @@ if TYPE_CHECKING:
     from litellm.litellm_core_utils.ptu_shares import PTUTeamCeiling
     from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
     from litellm.router_api import UntypedDict
-    from litellm.router_utils.cooldown_cache import CooldownCache
+    from litellm.router_utils.cooldown_cache import CooldownCache, CooldownCacheValue
     from litellm.router_utils.health_state_cache import DeploymentHealthCache
     from litellm.rust_bridge._native import (
         RouterCall,
@@ -1421,7 +1421,6 @@ class RustCore(
         legacy: Final[dict[str, object]] = {"deployment_stats": {}}  # mutable-ok: the core's own legacy attributes
         self._legacy: Final = legacy
         self._health_view: RustHealth | None = None
-        self._spent_credentials = {}  # the spent-credential holds this process wrote (RustHealthCallbacks)
         self._cache: DualCache = host.routing_cache(config)
         redis: Final = connect(self._cache.redis_cache)
         self._usage: RouterUsage = host.router_usage(redis)
@@ -2900,7 +2899,7 @@ class RustCore(
             ):
                 driver, step = await self._run(plan, call, prepared, fresh=True, passthrough=passthrough)
             if step["kind"] == "failed":
-                raise driver.failed(step)
+                raise await driver.afailed(step)
             return await driver.finish_async(step)
 
     async def _run(
@@ -3070,7 +3069,7 @@ class RustCore(
             plan_for(op), call, request, origin.get("deployment_id"), (_origin_level(origin), failure)
         )
         if step["kind"] == "failed":
-            raise driver.failed(step)
+            raise await driver.afailed(step)
         return await driver.finish_async(step)
 
     def recover_stream_sync(
@@ -5558,44 +5557,79 @@ class _Driver:
         """The request carries messages or an input, which region routing reads."""
         return self._request.get("messages") is not None or self._request.get("input") is not None
 
-    def failed(self, step: Mapping[str, object]) -> BaseException:
-        model: Final = str(self._request.get("model"))
+    def _ending(self, step: Mapping[str, object]) -> tuple[BaseException, bool]:
+        """The error the walk ends on, and whether it is the base level's own (which the outcome
+        message is appended to) rather than the failed pick's."""
         primary: Final = self._level_errors.get(self._base_level)
-        if primary is None:
-            picked: Final = self._core._failure_error(  # pyright: ignore[reportPrivateUsage]  # see above
-                step, model, self._last_error, request=self._request, has_input=self._has_input(), tags=not self._sync
-            )
-            return self._over_spent_credit(picked, model) or picked
-        if (over := self._over_spent_credit(primary, model)) is not None:
-            return over
+        if primary is not None:
+            return primary, True
+        return self._core._failure_error(  # pyright: ignore[reportPrivateUsage]  # see above
+            step,
+            str(self._request.get("model")),
+            self._last_error,
+            request=self._request,
+            has_input=self._has_input(),
+            tags=not self._sync,
+        ), False
+
+    def _explained(self, error: BaseException, primary: bool) -> BaseException:
         if (
-            self._base_level == 0
+            primary
+            and self._base_level == 0
             and self._explains_failure
             and self._core._host.dynamic().expose_router_debug_in_errors  # pyright: ignore[reportPrivateUsage]  # see above
-            and hasattr(primary, "message")
+            and hasattr(error, "message")
         ):
-            primary.message += self._explanation(primary, model)  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]  # checked above
-        return primary
+            error.message += self._explanation(error, str(self._request.get("model")))  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]  # checked above  # rebind-ok: the router appends to the error it raises
+        return error
 
-    def _over_spent_credit(self, error: BaseException, model: str) -> BaseException | None:
-        """What the walk raises instead of ``error`` when it ended with no deployment left only because
-        the ones left are held out on a spent prepaid credit (``CreditBalanceExhaustedError``): the
-        request's latest other attempt error, else its latest credit error, else, when every cooling
-        deployment of the group is spent, a credit error naming the group. Waiting does not help, so
-        "No deployments available, Try again in N seconds" would have the client retry for nothing.
-        None (keep ``error``) for any other error, or when a rate limit is part of it: an attempt of
-        this request was rate limited, or a cooling deployment of the group that is not spent was
-        cooled on a 429."""
-        import litellm.exceptions as litellm_exceptions
-        from litellm.types.router import RouterRateLimitError, RouterRateLimitErrorBasic
+    def failed(self, step: Mapping[str, object]) -> BaseException:
+        """The error a sync walk raises; the spent-credential check reads the cooldowns with sync calls."""
+        error, primary = self._ending(step)
+        cooling: Final = self._cooling_in_group(error)
+        if cooling:
+            active: Final = self._core._cooldowns.get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
+            if (over := self._over_spent_credit(active)) is not None:
+                return over
+        return self._explained(error, primary)
+
+    async def afailed(self, step: Mapping[str, object]) -> BaseException:
+        """``failed`` for an async walk: the cooldowns are read with the store's async calls."""
+        error, primary = self._ending(step)
+        cooling: Final = self._cooling_in_group(error)
+        if cooling:
+            active: Final = await self._core._cooldowns.async_get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
+            if (over := self._over_spent_credit(active)) is not None:
+                return over
+        return self._explained(error, primary)
+
+    def _cooling_in_group(self, error: BaseException) -> tuple[str, ...]:
+        """When the walk ended on "No deployments available" (``RouterRateLimitError``), the deployments of
+        the request's group that were cooling then; otherwise none. No I/O."""
+        from litellm.types.router import RouterRateLimitError
 
         if not isinstance(error, RouterRateLimitError):
-            return None
-        core: Final = self._core
-        group: Final = core.registry().resolve(model)
-        ids: Final = frozenset(core.registry().names(str(group), kind="ids"))
-        cooling: Final = [model_id for model_id in error.cooldown_list if model_id in ids]  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]  # an untyped list of ids
-        spent: Final = core.spent_credential_ids(cooling)  # pyright: ignore[reportUnknownArgumentType]  # see above
+            return ()
+        registry: Final = self._core.registry()
+        ids: Final = frozenset(registry.names(str(registry.resolve(str(self._request.get("model")))), kind="ids"))
+        cooled: Final = error.cooldown_list  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # an untyped list of ids
+        return tuple(model_id for model_id in cooled if isinstance(model_id, str) and model_id in ids)  # pyright: ignore[reportUnknownVariableType]  # see above
+
+    def _over_spent_credit(self, active: "Sequence[tuple[str, CooldownCacheValue]]") -> BaseException | None:
+        """What the walk raises instead of "No deployments available, Try again in N seconds" when the
+        deployments left are held out on a spent prepaid credit (``CreditBalanceExhaustedError``), as the
+        shared cooldown store records it (``held_out_on_spent_credential``), so every process sees a hold
+        any process wrote. Waiting does not help, so the router's error would have the client retry for
+        nothing. It raises the request's latest other attempt error, else its latest credit error, else,
+        when every cooling deployment of the group is spent, a credit error naming the group. None (keep
+        the router's error) when no cooling deployment is spent, or a rate limit is part of it: an attempt
+        of this request was rate limited, or a cooling deployment that is not spent holds a 429 cooldown.
+        ``active`` is the store's read of the group's cooling deployments (``_cooling_in_group``)."""
+        import litellm.exceptions as litellm_exceptions
+        from litellm.router_rust.surface.health import held_out_on_spent_credential
+        from litellm.types.router import RouterRateLimitError, RouterRateLimitErrorBasic
+
+        spent: Final = frozenset(model_id for model_id, value in active if held_out_on_spent_credential(value))
         if not spent:
             return None
         credit: Final = litellm_exceptions.CreditBalanceExhaustedError
@@ -5603,11 +5637,8 @@ class _Driver:
         rate_limits: Final = (litellm_exceptions.RateLimitError, RouterRateLimitError, RouterRateLimitErrorBasic)
         if any(isinstance(a, rate_limits) and not isinstance(a, credit) for a in attempts):
             return None
-        others: Final = [model_id for model_id in cooling if model_id not in spent]  # pyright: ignore[reportUnknownVariableType]  # see above
-        if others and any(
-            str(value.get("status_code")) == "429"
-            for _, value in core._cooldowns.get_active_cooldowns(others, None)  # pyright: ignore[reportPrivateUsage, reportUnknownArgumentType]  # the driver serves its own core
-        ):
+        others: Final = [value for model_id, value in active if model_id not in spent]
+        if any(str(value["status_code"]) == "429" for value in others):
             return None
         earlier: Final = next((a for a in reversed(attempts) if not isinstance(a, credit)), None)
         if earlier is not None:
@@ -5615,6 +5646,7 @@ class _Driver:
         last_credit: Final = next((a for a in reversed(attempts) if isinstance(a, credit)), None)
         if last_credit is not None or others:
             return last_credit
+        model: Final = str(self._request.get("model"))
         return credit(
             message=(
                 f"CreditBalanceExhaustedError: no deployment of model={model} can serve this request: the provider "
