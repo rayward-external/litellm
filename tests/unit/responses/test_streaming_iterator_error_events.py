@@ -302,7 +302,7 @@ def test_maybe_raise_for_response_failed_event_wraps_content_policy_violation():
         ("invalid_request_error", "content_policy_violation", litellm.ContentPolicyViolationError),
         ("invalid_request_error", "cyber_policy", litellm.ContentPolicyViolationError),
         ("tokens", "rate_limit_exceeded", litellm.RateLimitError),
-        ("invalid_request_error", "insufficient_quota", litellm.RateLimitError),
+        ("invalid_request_error", "insufficient_quota", litellm.CreditBalanceExhaustedError),
         ("server_error", "internal_error", litellm.InternalServerError),
         ("invalid_request_error", "invalid_prompt", litellm.BadRequestError),
         ("invalid_request_error", "model_not_found", litellm.NotFoundError),

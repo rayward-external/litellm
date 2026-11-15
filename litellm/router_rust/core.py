@@ -280,7 +280,7 @@ if TYPE_CHECKING:
     from litellm.litellm_core_utils.ptu_shares import PTUTeamCeiling
     from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
     from litellm.router_api import UntypedDict
-    from litellm.router_utils.cooldown_cache import CooldownCache
+    from litellm.router_utils.cooldown_cache import CooldownCache, CooldownCacheValue
     from litellm.router_utils.health_state_cache import DeploymentHealthCache
     from litellm.rust_bridge._native import (
         RouterCall,
@@ -2991,7 +2991,7 @@ class RustCore(
             ):
                 driver, step = await self._run(plan, call, prepared, fresh=True, passthrough=passthrough)
             if step["kind"] == "failed":
-                raise driver.failed(step)
+                raise await driver.afailed(step)
             return await driver.finish_async(step)
 
     async def _run(
@@ -3164,7 +3164,7 @@ class RustCore(
             plan_for(op), call, request, origin.get("deployment_id"), (_origin_level(origin), failure)
         )
         if step["kind"] == "failed":
-            raise driver.failed(step)
+            raise await driver.afailed(step)
         return await driver.finish_async(step)
 
     def recover_stream_sync(
@@ -4458,6 +4458,14 @@ class _Driver:
         # Failures a retry or a later hop raised past the request's first logged failure, which the
         # attempt itself recorded: the failed hop's fallback cooldown leaves them alone.
         self._recorded_blocked: Final[set[int]] = set()  # mutable-ok: filled as the call runs
+        # Every attempt's failure, in order: what a walk left with only spent credentials raises. A
+        # recovery walk starts from the failure of the stream it recovers, which was an attempt too.
+        self._attempt_errors: Final[list[BaseException]] = (  # mutable-ok: filled as the call runs
+            [stream_failure[1]] if stream_failure is not None else []
+        )
+        # Every group the walk picked from (its fallback groups included), whose cooldowns the
+        # spent-credential check reads.
+        self._picked_groups: Final[set[str]] = {str(request.get("model"))}  # mutable-ok: filled as the call runs
         self._served: tuple[str | None, Mapping[str, object]] = (None, MappingProxyType({}))
         # The latest attempt's deployment and call, which a blocked response is raised from.
         self._latest_call: tuple[Mapping[str, object], AttemptCall] | None = None
@@ -4705,6 +4713,13 @@ class _Driver:
         a sync walk with a private loop has one (``cooldown_event_on_own_loop``)."""
         deployment_id: Final = event.get("deployment_id")
         seconds: Final = event.get("cooldown_time")
+        if isinstance(deployment_id, str) and isinstance(seconds, float):
+            # Before the next pick reads the cooldowns: a spent credential leaves with every deployment on it.
+            # An async walk awaits the store's async calls before its next step, as router-core's own writes.
+            if self._sync:
+                self._core.hold_out_spent_credential(deployment_id, self._last_error, seconds)
+            else:
+                self.outcomes.defer(self._core.ahold_out_spent_credential(deployment_id, self._last_error, seconds))
         if self._logged_off_the_loop() or not isinstance(deployment_id, str):
             return
         fire: Final = self._core.cooldown_event_on_own_loop if self._plan.on_its_own_loop else self._core.cooldown_event
@@ -4800,6 +4815,7 @@ class _Driver:
             if event is None:
                 continue
             if event.get("kind") == "pick_started":
+                self._picked_groups.add(str(event.get("model")))
                 self.close_route_phase()
                 self.open_route_phase(event.get("model"))
                 continue
@@ -5027,6 +5043,7 @@ class _Driver:
         stamp_error(self._plan, error, deployment, served)  # pyright: ignore[reportUnknownArgumentType]  # litellm's untyped helpers and request values
         self._core._endpoints.attempt_failed(self._plan, error, deployment, call, str(step.get("model")))  # pyright: ignore[reportPrivateUsage]  # see above
         self._last_error = error
+        self._attempt_errors.append(error)
         level: Final = step.get("fallback_level")
         retry: Final = step.get("retry")
         if isinstance(retry, int) and retry > 0:
@@ -5558,21 +5575,109 @@ class _Driver:
         """The request carries messages or an input, which region routing reads."""
         return self._request.get("messages") is not None or self._request.get("input") is not None
 
-    def failed(self, step: Mapping[str, object]) -> BaseException:
-        model: Final = str(self._request.get("model"))
+    def _ending(self, step: Mapping[str, object]) -> tuple[BaseException, bool]:
+        """The error the walk ends on, and whether it is the base level's own (which the outcome
+        message is appended to) rather than the failed pick's."""
         primary: Final = self._level_errors.get(self._base_level)
-        if primary is None:
-            return self._core._failure_error(  # pyright: ignore[reportPrivateUsage]  # see above
-                step, model, self._last_error, request=self._request, has_input=self._has_input(), tags=not self._sync
-            )
+        if primary is not None:
+            return primary, True
+        return self._core._failure_error(  # pyright: ignore[reportPrivateUsage]  # see above
+            step,
+            str(self._request.get("model")),
+            self._last_error,
+            request=self._request,
+            has_input=self._has_input(),
+            tags=not self._sync,
+        ), False
+
+    def _explained(self, error: BaseException, primary: bool) -> BaseException:
         if (
-            self._base_level == 0
+            primary
+            and self._base_level == 0
             and self._explains_failure
             and self._core._host.dynamic().expose_router_debug_in_errors  # pyright: ignore[reportPrivateUsage]  # see above
-            and hasattr(primary, "message")
+            and hasattr(error, "message")
         ):
-            primary.message += self._explanation(primary, model)  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]  # checked above
-        return primary
+            error.message += self._explanation(error, str(self._request.get("model")))  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]  # checked above  # rebind-ok: the router appends to the error it raises
+        return error
+
+    def failed(self, step: Mapping[str, object]) -> BaseException:
+        """The error a sync walk raises; the spent-credential check reads the cooldowns with sync calls."""
+        error, primary = self._ending(step)
+        cooling: Final = self._cooling_in_walk(error)
+        if cooling:
+            active: Final = self._core._cooldowns.get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
+            if (over := self._over_spent_credit(active)) is not None:
+                return over
+        return self._explained(error, primary)
+
+    async def afailed(self, step: Mapping[str, object]) -> BaseException:
+        """``failed`` for an async walk: the cooldowns are read with the store's async calls."""
+        error, primary = self._ending(step)
+        cooling: Final = self._cooling_in_walk(error)
+        if cooling:
+            active: Final = await self._core._cooldowns.async_get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
+            if (over := self._over_spent_credit(active)) is not None:
+                return over
+        return self._explained(error, primary)
+
+    def _cooling_in_walk(self, error: BaseException) -> tuple[str, ...]:
+        """When the walk ended on "No deployments available" (``RouterRateLimitError``), the deployments of
+        every group it picked from (the request's group and each fallback group) that were cooling then;
+        otherwise none. No I/O."""
+        from litellm.types.router import RouterRateLimitError
+
+        if not isinstance(error, RouterRateLimitError):
+            return ()
+        registry: Final = self._core.registry()
+        ids: Final = frozenset[str]().union(
+            *(registry.names(str(registry.resolve(group)), kind="ids") for group in self._picked_groups)
+        )
+        cooled: Final = error.cooldown_list  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # an untyped list of ids
+        return tuple(model_id for model_id in cooled if isinstance(model_id, str) and model_id in ids)  # pyright: ignore[reportUnknownVariableType]  # see above
+
+    def _over_spent_credit(self, active: "Sequence[tuple[str, CooldownCacheValue]]") -> BaseException | None:
+        """What the walk raises instead of "No deployments available, Try again in N seconds" when the
+        deployments left are held out on a spent prepaid credit (``CreditBalanceExhaustedError``), as the
+        shared cooldown store records it (``held_out_on_spent_credential``), so every process sees a hold
+        any process wrote. Waiting does not help, so the router's error would have the client retry for
+        nothing. It raises the request's latest other attempt error, else its latest credit error, else,
+        when every cooling deployment of the group is spent, a credit error naming the group. None (keep
+        the router's error) when no cooling deployment is spent, or a rate limit is part of it: an attempt
+        of this request (or the stream it recovers) was rate limited, or a cooling deployment that is not
+        spent, in any group the walk picked from, holds a 429 cooldown. ``active`` is the store's read of
+        those groups' cooling deployments (``_cooling_in_walk``)."""
+        import litellm.exceptions as litellm_exceptions
+        from litellm.router_rust.surface.health import held_out_on_spent_credential
+        from litellm.types.router import RouterRateLimitError, RouterRateLimitErrorBasic
+
+        spent: Final = frozenset(model_id for model_id, value in active if held_out_on_spent_credential(value))
+        if not spent:
+            return None
+        credit: Final = litellm_exceptions.CreditBalanceExhaustedError
+        attempts: Final = self._attempt_errors
+        rate_limits: Final = (litellm_exceptions.RateLimitError, RouterRateLimitError, RouterRateLimitErrorBasic)
+        if any(isinstance(a, rate_limits) and not isinstance(a, credit) for a in attempts):
+            return None
+        others: Final = [value for model_id, value in active if model_id not in spent]
+        if any(str(value["status_code"]) == "429" for value in others):
+            return None
+        earlier: Final = next((a for a in reversed(attempts) if not isinstance(a, credit)), None)
+        if earlier is not None:
+            return earlier
+        last_credit: Final = next((a for a in reversed(attempts) if isinstance(a, credit)), None)
+        if last_credit is not None or others:
+            return last_credit
+        model: Final = str(self._request.get("model"))
+        return credit(
+            message=(
+                f"CreditBalanceExhaustedError: no deployment of model={model} can serve this request: the provider "
+                "reported the prepaid credit or quota behind each one's credential exhausted. Retrying will not "
+                "help until credit is added."
+            ),
+            model=model,
+            llm_provider="",
+        )
 
     def _hint_level_failure(self, error: BaseException | None, model: str) -> None:
         """A level that reaches its fallback handling on a context-window or content-policy error

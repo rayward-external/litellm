@@ -583,6 +583,11 @@ fallbacks: Optional[List] = None
 context_window_fallbacks: Optional[List] = None
 content_policy_fallbacks: Optional[List] = None
 allowed_fails: int = 3
+# Seconds the router holds out a deployment whose provider reported its prepaid credit
+# or quota exhausted (CreditBalanceExhaustedError), together with every deployment that
+# shares its api_key or litellm_credential_name. None keeps the deployment's usual
+# cooldown; a longer value only ever lengthens it.
+credit_exhausted_cooldown_time: Optional[float] = None
 allow_dynamic_callback_disabling: bool = True
 num_retries_per_request: Optional[int] = None  # for the request overall (incl. fallbacks + model retries)
 ####### SECRET MANAGERS #####################
@@ -1507,6 +1512,7 @@ from .exceptions import (
     AuthenticationError,
     CallerCredentialAuthenticationError as CallerCredentialAuthenticationError,
     CallerCredentialRateLimitError as CallerCredentialRateLimitError,
+    CreditBalanceExhaustedError as CreditBalanceExhaustedError,
     InvalidRequestError,
     BadRequestError,
     ImageFetchError,

@@ -32,6 +32,7 @@ from ..exceptions import (
     BadRequestError,
     ContentPolicyViolationError,
     ContextWindowExceededError,
+    CreditBalanceExhaustedError,
     InternalServerError,
     NotFoundError,
     PaymentRequiredError,
@@ -319,6 +320,30 @@ def _without_credentials(response: httpx.Response | None) -> httpx.Response | No
 
 def _upstream_reply(response: httpx.Response | None) -> httpx.Response | None:
     return response if response is not None and (response.headers or response.content) else None
+
+
+# The account behind the key is out of prepaid credit or quota. Providers report it under
+# different statuses (Anthropic: 400 invalid_request_error, or 402 billing_error; OpenAI:
+# 429 insufficient_quota / credit_balance_exhausted), and the text is the only signal they
+# share. The markers are deliberately specific: one that also appeared in an unrelated
+# error would move traffic off a funded key.
+_CREDIT_EXHAUSTED_STATUSES: Final = frozenset({400, 402, 429})
+_CREDIT_EXHAUSTED_MARKERS: Final = (
+    "credit balance is too low",
+    "credit_balance_exhausted",
+    "insufficient_quota",
+    "billing_error",
+)
+
+
+def is_credit_balance_exhausted(original_exception: object, error_str: str) -> bool:
+    """Whether a provider refused the call because the credential's account has no credit left."""
+    status: Final = getattr(original_exception, "status_code", None)
+    if status not in _CREDIT_EXHAUSTED_STATUSES:
+        return False
+    body: Final[object] = getattr(original_exception, "body", None)
+    text: Final = f"{error_str} {body if body is not None else ''}".lower()
+    return any(marker in text for marker in _CREDIT_EXHAUSTED_MARKERS)
 
 
 def _map_openai_exception(
@@ -2728,6 +2753,15 @@ def exception_type(
                     error_str=error_str,
                     model=model,
                     custom_llm_provider=custom_llm_provider,
+                    body=getattr(mappable_exception, "body", None),
+                )
+            if is_credit_balance_exhausted(mappable_exception, error_str):
+                raise CreditBalanceExhaustedError(
+                    message=f"CreditBalanceExhaustedError: {exception_provider} - {error_str}",
+                    model=model,  # pyright: ignore[reportUnknownArgumentType]  # exception_type takes untyped parameters
+                    llm_provider=custom_llm_provider,
+                    response=_without_credentials(getattr(mappable_exception, "response", None)),
+                    litellm_debug_info=extra_information,
                     body=getattr(mappable_exception, "body", None),
                 )
             if (
