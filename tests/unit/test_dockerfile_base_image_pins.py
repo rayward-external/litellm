@@ -20,7 +20,7 @@ ARG defaults to a wolfi-base carrying glibc 2.44 and switched the builder to
     ImportError: /usr/lib/libm.so.6: version `GLIBC_2.44' not found
         (required by .../math.cpython-313-x86_64-linux-gnu.so)
 
-The RULE ITSELF now lives in `scripts/verify_fork_patches.py`, because it must
+The RULE ITSELF now lives in `litellm/scripts/verify_fork_patches.py`, because it must
 also run on the daily `fork-patch-verify.yml` schedule and after every upstream
 sync -- not only when someone happens to run this suite
 (rayward-internal/llm-gateway-infra#694). This module is the pytest entry point
@@ -40,11 +40,11 @@ import sys
 import pytest
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-_VERIFIER_PATH = os.path.join(REPO_ROOT, "scripts", "verify_fork_patches.py")
+_VERIFIER_PATH = os.path.join(REPO_ROOT, "litellm", "scripts", "verify_fork_patches.py")
 
 
 def _load_verifier():
-    """Import scripts/verify_fork_patches.py by path (scripts/ is not a package).
+    """Import litellm/scripts/verify_fork_patches.py by path (scripts/ is not a package).
 
     A failure here is a real finding, not a harness problem: it means the
     fork-only verifier script this fork's patch policy depends on is gone or
@@ -53,7 +53,7 @@ def _load_verifier():
     """
     spec = importlib.util.spec_from_file_location("_fork_patch_verifier", _VERIFIER_PATH)
     assert spec is not None and spec.loader is not None, (
-        f"cannot load {_VERIFIER_PATH}; scripts/verify_fork_patches.py is the "
+        f"cannot load {_VERIFIER_PATH}; litellm/scripts/verify_fork_patches.py is the "
         "implementation of the fork-patch and digest-pin checks (see "
         ".github/fork-patches.txt). If an upstream sync removed it, restore it."
     )
@@ -139,7 +139,7 @@ def test_every_fork_patch_is_present_and_every_pin_is_current(capsys):
     exit_code = verifier.main()
     output = capsys.readouterr().out
     assert exit_code == 0, (
-        "scripts/verify_fork_patches.py reports a dropped fork patch or a stale "
+        "litellm/scripts/verify_fork_patches.py reports a dropped fork patch or a stale "
         "digest pin. Full report:\n\n" + output
     )
 
@@ -166,11 +166,11 @@ def test_synthetic_tree_is_clean_before_mutation(tmp_path):
 @pytest.mark.parametrize(
     ("dockerfile", "stage", "arg_name"),
     [
-        ("Dockerfile", "uvbin", "UV_IMAGE"),
-        ("Dockerfile", "builder", "LITELLM_BUILD_IMAGE"),
-        ("Dockerfile", "ui-builder", "UI_BUILD_IMAGE"),
-        ("Dockerfile", "runtime", "LITELLM_RUNTIME_IMAGE"),
-        ("Dockerfile", "liteadmin-builder", "LITELLM_BUILD_IMAGE"),
+        ("litellm/deploy/docker/Dockerfile", "uvbin", "UV_IMAGE"),
+        ("litellm/deploy/docker/Dockerfile", "builder", "LITELLM_BUILD_IMAGE"),
+        ("litellm/deploy/docker/Dockerfile", "ui-builder", "UI_BUILD_IMAGE"),
+        ("litellm/deploy/docker/Dockerfile", "runtime", "LITELLM_RUNTIME_IMAGE"),
+        ("litellm/deploy/docker/Dockerfile", "liteadmin-builder", "LITELLM_BUILD_IMAGE"),
     ],
 )
 def test_per_stage_revert_to_vanilla_is_detected(tmp_path, dockerfile, stage, arg_name):

@@ -127,7 +127,8 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        (self.root / "osv-scanner.toml").write_text(OSV)
+        (self.root / ".github").mkdir(parents=True, exist_ok=True)
+        (self.root / ".github" / "osv-scanner.toml").write_text(OSV)
         (self.root / "uv.lock").write_text(UV_LOCK)
         self.saved = (
             dep.GitHub,
@@ -168,7 +169,7 @@ class Base(unittest.TestCase):
 
 class DependabotCoverage(Base):
     def cover(self, alert, today=TODAY):
-        ignored, overrides = dep.load_config(self.root / "osv-scanner.toml")
+        ignored, overrides = dep.load_config(self.root / ".github" / "osv-scanner.toml")
         dep.expand_aliases(ignored)
         return dep.coverage(alert, ignored, overrides, self.root, today)
 

@@ -11,7 +11,7 @@ from typing import Final
 import pytest
 
 ROOT: Final = Path(__file__).resolve().parents[2]
-CI_CD: Final = ROOT / "ci_cd"
+CI_CD: Final = ROOT / "litellm/scripts" / "ci_cd"
 
 
 def _load(name: str) -> ModuleType:
@@ -262,38 +262,6 @@ def test_malformed_pins_are_reported(pins: str, expected: str) -> None:
     assert _failures(_snapshot(BASE_MAP, pins=pins), bot=False) == (expected,)
 
 
-def test_a_decoy_pins_file_at_another_candidate_path_is_rejected() -> None:
-    decoy_path: Final = next(path for path in guard.PINS_PATHS if path != guard.PINS_PATH)
-
-    def read_git(_operation: str, blob: str) -> str | None:
-        _revision, path = blob.split(":", 1)
-        return {guard.PINS_PATH: NO_PINS, decoy_path: NO_PINS}.get(path)
-
-    _snap, errors = guard.snapshot("head", read_git=read_git)
-    assert len(errors) == 1
-    assert "more than one copy of the same file" in errors[0]
-
-
-def test_a_base_only_decoy_does_not_hide_head_deleting_the_real_pins_file() -> None:
-    decoy_path: Final = next(path for path in guard.PINS_PATHS if path != guard.PINS_PATH)
-    cost_map: Final = _serialize(BASE_MAP)
-    base_files: Final = {
-        guard.PINS_PATH: PINS,
-        decoy_path: PINS,
-        guard.COST_MAP_PATH: cost_map,
-        guard.BACKUP_PATH: cost_map,
-    }
-
-    def read_git(_operation: str, blob: str) -> str | None:
-        revision, path = blob.split(":", 1)
-        return base_files.get(path) if revision == "base" else None
-
-    base, base_errors = guard.snapshot("base", read_git=read_git)
-    assert len(base_errors) == 1
-    merged: Final = _snapshot(BASE_MAP, pins="")
-    assert guard.guard_failures(base, merged, merged, (guard.PINS_PATH, decoy_path), bot=False) == (MISSING_PINS,)
-
-
 def test_a_single_real_path_resolves_with_no_errors() -> None:
     cost_map: Final = _serialize(BASE_MAP)
     files: Final = {guard.PINS_PATH: PINS, guard.COST_MAP_PATH: cost_map, guard.BACKUP_PATH: cost_map}
@@ -398,12 +366,88 @@ def test_checked_in_pins_hold_in_the_checked_in_cost_map() -> None:
     assert guard.pin_failures(pins, cost_map) == ()
 
 
+@pytest.mark.parametrize("pins_path", guard.PINS_PATHS)
+@pytest.mark.parametrize("pins", (PINS, "", "not JSON"))
+def test_relocated_pins_keep_the_same_validation(pins_path: str, pins: str) -> None:
+    cost_map: Final = _serialize(BASE_MAP)
+    blobs: Final = {
+        f"base:{guard.COST_MAP_PATH}": cost_map,
+        f"base:{guard.BACKUP_PATH}": cost_map,
+        f"head:{guard.COST_MAP_PATH}": cost_map,
+        f"head:{guard.BACKUP_PATH}": cost_map,
+        f"base:{guard.PINS_PATH}": PINS,
+        f"head:{pins_path}": pins,
+    }
+
+    def read_git(_operation: str, blob: str) -> str | None:
+        return blobs.get(blob)
+
+    base, base_errors = guard.snapshot("base", read_git=read_git)
+    head, head_errors = guard.snapshot("head", read_git=read_git)
+    assert base_errors == () and head_errors == ()
+    assert base == _snapshot(BASE_MAP, pins=PINS)
+    assert head == _snapshot(BASE_MAP, pins=pins)
+    failures: Final = _failures(head, changed_files=(guard.PINS_PATH, pins_path), bot=False, base=base)
+    assert bool(failures) is (pins != PINS), failures
+
+
+@pytest.mark.parametrize("pins_path", guard.PINS_PATHS)
+def test_relocated_pins_cannot_be_changed_by_bots(pins_path: str) -> None:
+    assert guard.pin_author_failures("litellm_fix_pricing", "Bot", (pins_path,)) == (BOT_AUTHOR_PIN_FAILURE,)
+
+
+@pytest.mark.parametrize("cost_map_path", guard.COST_MAP_PATHS)
+@pytest.mark.parametrize("content", (_serialize(BASE_MAP) + "\n", "", "not json"))
+def test_main_reads_cost_maps_in_both_repository_layouts(
+    tmp_path: Path, cost_map_path: str, content: str
+) -> None:
+    subprocess.run(("git", "init", "-q", str(tmp_path)), check=True)
+    base: Final = _commit(tmp_path, BASE_MAP, "base")
+    destination: Final = tmp_path / cost_map_path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination != tmp_path / guard.COST_MAP_PATH:
+        (tmp_path / guard.COST_MAP_PATH).rename(destination)
+    destination.write_text(content)
+    (tmp_path / guard.BACKUP_PATH).write_text(content)
+    head: Final = _git_commit(tmp_path, "update cost map layout")
+    result: Final = _run_guard(tmp_path, base, head, "litellm_fix_pricing")
+    assert result.returncode == (0 if content.strip().startswith("{") else 1), result.stdout + result.stderr
+
+
+def test_a_decoy_pins_file_at_another_candidate_path_is_rejected(tmp_path: Path) -> None:
+    subprocess.run(("git", "init", "-q", str(tmp_path)), check=True)
+    base: Final = _commit(tmp_path, BASE_MAP, "base")
+    decoy_path: Final = next(path for path in guard.PINS_PATHS if path != guard.PINS_PATH)
+    decoy: Final = tmp_path / decoy_path
+    decoy.parent.mkdir(parents=True, exist_ok=True)
+    decoy.write_text(NO_PINS)
+    head: Final = _git_commit(tmp_path, "add a decoy pins file alongside the real one")
+    result: Final = _run_guard(tmp_path, base, head, "litellm_fix_pricing")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "more than one copy of the same file" in result.stdout + result.stderr
+
+
+def test_a_base_only_decoy_does_not_hide_head_deleting_the_real_pins_file(tmp_path: Path) -> None:
+    subprocess.run(("git", "init", "-q", str(tmp_path)), check=True)
+    decoy_path: Final = next(path for path in guard.PINS_PATHS if path != guard.PINS_PATH)
+    (tmp_path / decoy_path).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / decoy_path).write_text(NO_PINS)
+    base: Final = _commit(tmp_path, BASE_MAP, "base, with a leftover decoy pins file")
+    (tmp_path / guard.PINS_PATH).unlink()
+    (tmp_path / decoy_path).unlink()
+    head: Final = _git_commit(tmp_path, "delete the pins file entirely")
+    result: Final = _run_guard(tmp_path, base, head, "litellm_fix_pricing")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert f"{guard.PINS_PATH} is missing; restore it" in result.stdout + result.stderr
+
+
 def _commit(repo: Path, cost_map: dict[str, object], message: str, pins: str | None = None) -> str:
     text = _serialize(cost_map)
     pins_file = repo / guard.PINS_PATH
     if pins is not None or not pins_file.exists():
-        pins_file.parent.mkdir(exist_ok=True)
+        pins_file.parent.mkdir(parents=True, exist_ok=True)
         pins_file.write_text(NO_PINS if pins is None else pins)
+    (repo / guard.COST_MAP_PATH).parent.mkdir(parents=True, exist_ok=True)
     (repo / guard.COST_MAP_PATH).write_text(text)
     (repo / guard.BACKUP_PATH).parent.mkdir(exist_ok=True)
     (repo / guard.BACKUP_PATH).write_text(text)

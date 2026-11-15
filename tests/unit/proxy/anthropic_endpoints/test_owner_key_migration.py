@@ -24,7 +24,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 
 _MIGRATION_SQL = (
     _REPO_ROOT
-    / "litellm-proxy-extras"
+    / "litellm"
+    / "proxy-extras"
     / "litellm_proxy_extras"
     / "migrations"
     / "20260724000000_add_owner_key_to_managed_object"
@@ -32,9 +33,9 @@ _MIGRATION_SQL = (
 )
 
 _SCHEMA_COPIES = (
-    _REPO_ROOT / "schema.prisma",
+    _REPO_ROOT / "litellm" / "schema.prisma",
     _REPO_ROOT / "litellm" / "proxy" / "schema.prisma",
-    _REPO_ROOT / "litellm-proxy-extras" / "litellm_proxy_extras" / "schema.prisma",
+    _REPO_ROOT / "litellm" / "proxy-extras" / "litellm_proxy_extras" / "schema.prisma",
 )
 
 

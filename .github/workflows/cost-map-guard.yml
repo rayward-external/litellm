@@ -49,7 +49,15 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
-          uv run --no-project python ci_cd/cost_map_guard.py --base "$MERGE_BASE" --head "$HEAD_SHA" --head-ref "$HEAD_REF"
+          guard=litellm/scripts/ci_cd/cost_map_guard.py
+          # TODO: Drop the legacy path after this lands on main.
+          if [ ! -f "$guard" ]; then
+            guard=scripts/ci_cd/cost_map_guard.py
+          fi
+          if [ ! -f "$guard" ]; then
+            guard=ci_cd/cost_map_guard.py
+          fi
+          uv run --no-project python "$guard" --base "$MERGE_BASE" --head "$HEAD_SHA" --head-ref "$HEAD_REF"
       - name: Check whether the pull request changes the cost map
         id: changed
         env:
@@ -69,11 +77,15 @@ jobs:
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          if ! cargo metadata --no-deps --manifest-path litellm-rust/Cargo.toml --format-version 1 \
+          manifest=litellm/rust/Cargo.toml
+          if [ ! -f "$manifest" ]; then
+            manifest=litellm-rust/Cargo.toml
+          fi
+          if ! cargo metadata --no-deps --manifest-path "$manifest" --format-version 1 \
               | python3 -c 'import json, sys; pkgs = json.load(sys.stdin)["packages"]; sys.exit(0 if any(t["name"] == "check-registry" for p in pkgs if p["name"] == "litellm-model-catalog" for t in p["targets"]) else 1)'; then
             echo "::warning::litellm-model-catalog has no check-registry bin target at this merge base (pre-dates the sync introducing it) -- skipping retroactive validation for this one-time transition"
             exit 0
           fi
           git show "${HEAD_SHA}:model_prices_and_context_window.json" > "$RUNNER_TEMP/model_prices_and_context_window.json"
-          cargo run --locked --quiet --manifest-path litellm-rust/Cargo.toml -p litellm-model-catalog --bin check-registry \
+          cargo run --locked --quiet --manifest-path "$manifest" -p litellm-model-catalog --bin check-registry \
             -- "$RUNNER_TEMP/model_prices_and_context_window.json"

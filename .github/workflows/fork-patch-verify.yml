@@ -2,7 +2,7 @@ name: Fork Patch Verify
 
 # The "daily-patch-verify" .github/fork-patches.txt's own header has described
 # since the manifest was created, and that nothing implemented until now --
-# see rayward-internal/llm-gateway-infra#694. Runs scripts/verify_fork_patches.py,
+# see rayward-internal/llm-gateway-infra#694. Runs litellm/scripts/verify_fork_patches.py,
 # which checks every recorded fork patch is still present in its file, so a
 # -X theirs upstream sync that silently drops one (no merge conflict, since it
 # never conflicts textually with the surrounding diff) is caught here instead
@@ -64,4 +64,4 @@ jobs:
           persist-credentials: false
 
       - name: Verify fork patches are present AND digest pins are not stale
-        run: python3 scripts/verify_fork_patches.py
+        run: python3 litellm/scripts/verify_fork_patches.py

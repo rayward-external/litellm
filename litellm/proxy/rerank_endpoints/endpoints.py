@@ -6,6 +6,7 @@ from typing import Final
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import ORJSONResponse
+from pydantic import TypeAdapter
 
 from litellm.proxy._types import *
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
@@ -14,15 +15,25 @@ from litellm.proxy.common_request_processing import (
     log_llm_api_exception,
     resolve_litellm_call_id,
 )
+from litellm.proxy.common_utils.custom_openapi_spec import inline_request_body
 from litellm.proxy.common_utils.openai_error_payload import (
     error_status_code,
     litellm_call_id_headers,
     openai_error_param,
     openai_error_type,
 )
+from litellm.types.rerank import RerankRequest, RerankResponse
 from litellm.types.utils import CallTypes
 
 router: Final = APIRouter()
+_DECODED_JSON: Final = TypeAdapter(object)
+_RERANK_BODY: Final = {
+    "requestBody": inline_request_body(
+        RerankRequest,
+        {"model": "rerank-english-v3.0", "query": "What is the capital of France?", "documents": ["Paris", "London"]},
+    )
+}
+_RERANK_RESPONSES: Final = {200: {"model": RerankResponse}}
 
 
 @router.post(
@@ -30,24 +41,31 @@ router: Final = APIRouter()
     dependencies=[Depends(user_api_key_auth)],
     response_class=ORJSONResponse,
     tags=["rerank"],
+    openapi_extra=_RERANK_BODY,
+    responses=_RERANK_RESPONSES,
 )
 @router.post(
     "/v1/rerank",
     dependencies=[Depends(user_api_key_auth)],
     response_class=ORJSONResponse,
     tags=["rerank"],
+    openapi_extra=_RERANK_BODY,
+    responses=_RERANK_RESPONSES,
 )
 @router.post(
     "/rerank",
     dependencies=[Depends(user_api_key_auth)],
     response_class=ORJSONResponse,
     tags=["rerank"],
+    openapi_extra=_RERANK_BODY,
+    responses=_RERANK_RESPONSES,
 )
 async def rerank(
     request: Request,
     fastapi_response: Response,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
+    """Rerank a list of documents against a query, proxying to the configured rerank model."""
     from litellm.proxy.proxy_server import (
         add_litellm_data_to_request,
         general_settings,
@@ -85,7 +103,7 @@ async def rerank(
             llm_router=llm_router,
             user_model=user_model,
         )
-        response: Final = await llm_call
+        response: Final = _DECODED_JSON.validate_python(await llm_call)
 
         ### ALERTING ###
         asyncio.create_task(proxy_logging_obj.update_request_status(litellm_call_id=litellm_call_id, status="success"))

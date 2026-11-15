@@ -127,7 +127,7 @@ jobs:
 
       - name: Check MCP operation boundary
         if: steps.changes.outputs.decision != 'skip'
-        run: uv run --no-sync python scripts/check_mcp_operation_boundary.py
+        run: uv run --no-sync python litellm/scripts/check_mcp_operation_boundary.py
 
       - name: Run Ruff linting
         if: steps.changes.outputs.decision != 'skip'
@@ -139,28 +139,28 @@ jobs:
       - name: Run Ruff linting (test tree)
         if: steps.changes.outputs.decision != 'skip'
         run: |
-          uv run --no-sync ruff check --config ruff-tests.toml tests
+          uv run --no-sync ruff check --config .github/linters/ruff-tests.toml tests
 
       - name: Check strict ruff rules (delta vs merge-base counts)
         if: steps.changes.outputs.decision != 'skip'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          uv run --no-sync python scripts/ruff_strict_gate.py --base "$GATE_BASE_SHA"
+          uv run --no-sync python litellm/scripts/ruff_strict_gate.py --base "$GATE_BASE_SHA"
 
       - name: Check type discipline (mutable collections / casts / type guards / kwargs / unexplained suppressions, delta vs merge-base counts)
         if: steps.changes.outputs.decision != 'skip'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          uv run --no-sync python scripts/type_discipline_gate.py --base "$GATE_BASE_SHA"
+          uv run --no-sync python litellm/scripts/type_discipline_gate.py --base "$GATE_BASE_SHA"
 
       - name: Check test quality (zero-assert / mock-echo tests, sys.path.insert, raw env writes, litellm global mutation, credential-gated skips, conftest snapshot inventory, delta vs merge-base counts)
         if: steps.changes.outputs.decision != 'skip'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          uv run --no-sync python scripts/test_quality_gate.py --base "$GATE_BASE_SHA"
+          uv run --no-sync python litellm/scripts/test_quality_gate.py --base "$GATE_BASE_SHA"
 
       - name: Print OpenAI version
         if: steps.changes.outputs.decision != 'skip'
@@ -172,7 +172,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          uv run --no-sync python scripts/type_check_gate.py --base "$GATE_BASE_SHA"
+          uv run --no-sync python litellm/scripts/type_check_gate.py --base "$GATE_BASE_SHA"
 
       - name: Check tests/e2e basedpyright (zero errors)
         if: steps.changes.outputs.decision != 'skip'
@@ -217,7 +217,7 @@ jobs:
     timeout-minutes: 8
     defaults:
       run:
-        working-directory: ui/litellm-dashboard
+        working-directory: litellm/ui/litellm-dashboard
 
     steps:
       - name: Checkout repository
@@ -262,9 +262,9 @@ jobs:
         if: steps.changed.outputs.has_files == 'true'
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version-file: ui/litellm-dashboard/.nvmrc
+          node-version-file: litellm/ui/litellm-dashboard/.nvmrc
           cache: "npm"
-          cache-dependency-path: ui/litellm-dashboard/package-lock.json
+          cache-dependency-path: litellm/ui/litellm-dashboard/package-lock.json
 
       - name: Install dependencies
         if: steps.changed.outputs.has_files == 'true'
@@ -272,6 +272,11 @@ jobs:
 
       - name: Lint changed files (prettier + eslint)
         if: steps.changed.outputs.has_files == 'true'
+        env:
+          # A sync PR that renames the whole dashboard tree makes git diff list every
+          # file in it as changed, so this list can run into the thousands; Node's
+          # default heap guess doesn't fit that, same shape as the UI build's own fix.
+          NODE_OPTIONS: "--max-old-space-size=4096"
         run: |
           prettier_files=()
           eslint_files=()
@@ -280,18 +285,20 @@ jobs:
           status=0
           if [ ${#prettier_files[@]} -gt 0 ]; then
             echo "::group::Prettier (${#prettier_files[@]} files)"
-            npx prettier --check "${prettier_files[@]}" || { status=1; echo "::error::Unformatted files. Fix with: npm run format"; }
+            node_modules/.bin/prettier --check "${prettier_files[@]}" || { status=1; echo "::error::Unformatted files. Fix with: npm run format"; }
             echo "::endgroup::"
           fi
           if [ ${#eslint_files[@]} -gt 0 ]; then
             echo "::group::ESLint (${#eslint_files[@]} files)"
-            npx eslint --no-warn-ignored --pass-on-unpruned-suppressions "${eslint_files[@]}" || status=1
+            node_modules/.bin/eslint --no-warn-ignored --pass-on-unpruned-suppressions "${eslint_files[@]}" || status=1
             echo "::endgroup::"
           fi
           exit $status
 
       - name: Check lint budgets
         if: ${{ !cancelled() && steps.changed.outputs.has_files == 'true' }}
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
         run: |
           npx eslint . -f json -o "$RUNNER_TEMP/lint-report.json" || true
           node scripts/check-lint-budgets.mjs "$RUNNER_TEMP/lint-report.json" eslint-budgets.json
@@ -338,7 +345,7 @@ jobs:
           persist-credentials: false
 
       - name: Build the dashboard stage
-        run: docker build --target ui-builder -f Dockerfile .
+        run: docker build --target ui-builder -f litellm/deploy/docker/Dockerfile .
 
   core-checks:
     name: Core checks (Python ${{ matrix.python-version }})
