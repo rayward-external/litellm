@@ -20,14 +20,6 @@ import { productNames } from "@/i18n/untranslated/productNames";
 
 const INLINE_CODE_CLASS = "rounded-sm bg-muted px-1 py-0.5 font-mono text-xs";
 
-const isHttpUrl = (value: string): boolean => {
-  try {
-    return ["http:", "https:"].includes(new URL(value).protocol);
-  } catch {
-    return false;
-  }
-};
-
 interface Plugin {
   name: string;
   display_name: string;
@@ -125,15 +117,7 @@ export default function PluginSettings() {
           <code className={INLINE_CODE_CLASS}>{plugin.name}</code>
         </TableCell>
         <TableCell>{plugin.display_name}</TableCell>
-        <TableCell>
-          {isHttpUrl(plugin.url) ? (
-            <a href={plugin.url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-              {plugin.url}
-            </a>
-          ) : (
-            plugin.url
-          )}
-        </TableCell>
+        <TableCell>{plugin.url}</TableCell>
         <TableCell>
           {plugin.plugin_key ? (
             <code className={INLINE_CODE_CLASS}>{"•".repeat(8)}</code>

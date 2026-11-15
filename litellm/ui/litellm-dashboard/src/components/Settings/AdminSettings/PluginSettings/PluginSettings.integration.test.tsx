@@ -113,15 +113,7 @@ describe("PluginSettings URL rendering", () => {
     vi.clearAllMocks();
   });
 
-  it("renders an http(s) plugin url as a clickable link", async () => {
-    getConfigFieldSettingMock.mockResolvedValue({ field_value: [REDACTED_PLUGIN] });
-    render(<PluginSettings />);
-
-    const link = await screen.findByRole("link", { name: REDACTED_PLUGIN.url });
-    expect(link).toHaveAttribute("href", REDACTED_PLUGIN.url);
-  });
-
-  it("renders a non-http(s) plugin url as plain text, not a link", async () => {
+  it("renders the plugin url as plain text, never as a clickable link", async () => {
     const maliciousPlugin = { ...REDACTED_PLUGIN, url: "javascript:alert(document.domain)" };
     getConfigFieldSettingMock.mockResolvedValue({ field_value: [maliciousPlugin] });
     render(<PluginSettings />);
