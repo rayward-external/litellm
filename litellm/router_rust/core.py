@@ -4446,8 +4446,14 @@ class _Driver:
         # Failures a retry or a later hop raised past the request's first logged failure, which the
         # attempt itself recorded: the failed hop's fallback cooldown leaves them alone.
         self._recorded_blocked: Final[set[int]] = set()  # mutable-ok: filled as the call runs
-        # Every attempt's failure, in order: what a walk left with only spent credentials raises.
-        self._attempt_errors: Final[list[BaseException]] = []  # mutable-ok: filled as the call runs
+        # Every attempt's failure, in order: what a walk left with only spent credentials raises. A
+        # recovery walk starts from the failure of the stream it recovers, which was an attempt too.
+        self._attempt_errors: Final[list[BaseException]] = (  # mutable-ok: filled as the call runs
+            [stream_failure[1]] if stream_failure is not None else []
+        )
+        # Every group the walk picked from (its fallback groups included), whose cooldowns the
+        # spent-credential check reads.
+        self._picked_groups: Final[set[str]] = {str(request.get("model"))}  # mutable-ok: filled as the call runs
         self._served: tuple[str | None, Mapping[str, object]] = (None, MappingProxyType({}))
         # The latest attempt's deployment and call, which a blocked response is raised from.
         self._latest_call: tuple[Mapping[str, object], AttemptCall] | None = None
@@ -4797,6 +4803,7 @@ class _Driver:
             if event is None:
                 continue
             if event.get("kind") == "pick_started":
+                self._picked_groups.add(str(event.get("model")))
                 self.close_route_phase()
                 self.open_route_phase(event.get("model"))
                 continue
@@ -5586,7 +5593,7 @@ class _Driver:
     def failed(self, step: Mapping[str, object]) -> BaseException:
         """The error a sync walk raises; the spent-credential check reads the cooldowns with sync calls."""
         error, primary = self._ending(step)
-        cooling: Final = self._cooling_in_group(error)
+        cooling: Final = self._cooling_in_walk(error)
         if cooling:
             active: Final = self._core._cooldowns.get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
             if (over := self._over_spent_credit(active)) is not None:
@@ -5596,22 +5603,25 @@ class _Driver:
     async def afailed(self, step: Mapping[str, object]) -> BaseException:
         """``failed`` for an async walk: the cooldowns are read with the store's async calls."""
         error, primary = self._ending(step)
-        cooling: Final = self._cooling_in_group(error)
+        cooling: Final = self._cooling_in_walk(error)
         if cooling:
             active: Final = await self._core._cooldowns.async_get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
             if (over := self._over_spent_credit(active)) is not None:
                 return over
         return self._explained(error, primary)
 
-    def _cooling_in_group(self, error: BaseException) -> tuple[str, ...]:
+    def _cooling_in_walk(self, error: BaseException) -> tuple[str, ...]:
         """When the walk ended on "No deployments available" (``RouterRateLimitError``), the deployments of
-        the request's group that were cooling then; otherwise none. No I/O."""
+        every group it picked from (the request's group and each fallback group) that were cooling then;
+        otherwise none. No I/O."""
         from litellm.types.router import RouterRateLimitError
 
         if not isinstance(error, RouterRateLimitError):
             return ()
         registry: Final = self._core.registry()
-        ids: Final = frozenset(registry.names(str(registry.resolve(str(self._request.get("model")))), kind="ids"))
+        ids: Final = frozenset[str]().union(
+            *(registry.names(str(registry.resolve(group)), kind="ids") for group in self._picked_groups)
+        )
         cooled: Final = error.cooldown_list  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # an untyped list of ids
         return tuple(model_id for model_id in cooled if isinstance(model_id, str) and model_id in ids)  # pyright: ignore[reportUnknownVariableType]  # see above
 
@@ -5623,8 +5633,9 @@ class _Driver:
         nothing. It raises the request's latest other attempt error, else its latest credit error, else,
         when every cooling deployment of the group is spent, a credit error naming the group. None (keep
         the router's error) when no cooling deployment is spent, or a rate limit is part of it: an attempt
-        of this request was rate limited, or a cooling deployment that is not spent holds a 429 cooldown.
-        ``active`` is the store's read of the group's cooling deployments (``_cooling_in_group``)."""
+        of this request (or the stream it recovers) was rate limited, or a cooling deployment that is not
+        spent, in any group the walk picked from, holds a 429 cooldown. ``active`` is the store's read of
+        those groups' cooling deployments (``_cooling_in_walk``)."""
         import litellm.exceptions as litellm_exceptions
         from litellm.router_rust.surface.health import held_out_on_spent_credential
         from litellm.types.router import RouterRateLimitError, RouterRateLimitErrorBasic

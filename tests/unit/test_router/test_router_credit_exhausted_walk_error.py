@@ -2,6 +2,7 @@
 raises the request's own error, not "No deployments available, Try again in N seconds": waiting does not
 bring credit back. A walk that ran out on a real rate limit keeps the router's error."""
 
+import json
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Final
 
@@ -285,3 +286,64 @@ async def test_another_router_on_the_shared_cooldowns_answers_with_the_bad_reque
     assert isinstance(raised, litellm.BadRequestError)
     assert SECOND_LEG_REJECTION in str(raised)
     assert "Try again in" not in str(raised)
+
+
+STREAM_OUTAGE: Final = "stream overloaded before any content"
+
+
+@pytest.mark.asyncio
+@ROUTES
+async def test_a_stream_that_fails_before_content_onto_a_spent_leg_answers_with_the_stream_failure(
+    send: Callable[[Router, bool], Awaitable[None]], anthropic_upstream: respx.Route
+) -> None:
+    failing_stream: Final = httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        content=(
+            "event: error\n"
+            f"data: {json.dumps({'type': 'error', 'error': {'type': 'overloaded_error', 'message': STREAM_OUTAGE}})}\n\n"
+        ).encode(),
+    )
+    anthropic_upstream.mock(side_effect=_answer({FIRST_KEY: failing_stream, SPENT_KEY: SPENT}))
+    router: Final = _router(("first", FIRST_KEY, 0), ("spent", SPENT_KEY, 1))
+
+    # The recovery walk after the stream's failure reaches only the spent leg.
+    raised: Final = await _raised(send, router, True)
+
+    assert _calls_by_key(anthropic_upstream) == {FIRST_KEY: 3, SPENT_KEY: 1}
+    assert not isinstance(raised, litellm.CreditBalanceExhaustedError | RouterRateLimitError)
+    assert getattr(raised, "status_code", None) == 500
+    assert STREAM_OUTAGE in str(raised)
+
+
+@pytest.mark.asyncio
+@ROUTES
+async def test_a_spent_group_whose_fallback_group_is_rate_limited_keeps_the_no_deployments_error(
+    send: Callable[[Router, bool], Awaitable[None]], anthropic_upstream: respx.Route
+) -> None:
+    anthropic_upstream.mock(
+        side_effect=_answer(
+            {SPENT_KEY: SPENT, OTHER_SPENT_KEY: SPENT, FIRST_KEY: RATE_LIMITED, SECOND_KEY: RATE_LIMITED}
+        )
+    )
+    spent_group: Final = [_leg("spent", SPENT_KEY, 0), _leg("other-spent", OTHER_SPENT_KEY, 1)]
+    fallback_group: Final = [
+        {**_leg(model_id, api_key, 0), "model_name": "claude-fallback"}
+        for model_id, api_key in (("first", FIRST_KEY), ("second", SECOND_KEY))
+    ]
+    router: Final = Router(
+        model_list=[*spent_group, *fallback_group],
+        fallbacks=[{"claude": ["claude-fallback"]}],
+        num_retries=2,
+        retry_after=0,
+        cooldown_time=30.0,
+    )
+
+    _ = await _raised(send, router, False)
+    called: Final = anthropic_upstream.call_count
+    # Both groups are now cooling: the requested one on its spent credit, its fallback on a rate limit.
+    again: Final = await _raised(send, router, False)
+
+    assert _calls_by_key(anthropic_upstream, called) == {}
+    assert isinstance(again, RouterRateLimitError)
+    assert not isinstance(again, litellm.CreditBalanceExhaustedError)
