@@ -4,7 +4,7 @@ import inspect
 import json
 import ssl
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from functools import lru_cache, partial, reduce
 from itertools import chain
 from types import MappingProxyType

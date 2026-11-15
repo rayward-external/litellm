@@ -34,6 +34,7 @@ from litellm.litellm_core_utils.reasoning_effort_capability import (
     REASONING_EFFORT_ADVERTISEMENT_ORDER,
     declared_reasoning_efforts,
 )
+from litellm.litellm_core_utils.reasoning_effort_strength import REASONING_EFFORT_STRENGTH_ORDER
 from litellm.litellm_core_utils.reasoning_effort_utils import warn_dropped_reasoning, warn_dropped_reasoning_params
 from litellm.llms.azure.common_utils import BaseAzureLLM
 from litellm.llms.azure_ai.common_utils import (
@@ -42,7 +43,10 @@ from litellm.llms.azure_ai.common_utils import (
 )
 from litellm.llms.base_llm.chat.transformation import LiteLLMLoggingObj
 from litellm.llms.fireworks_ai.common_utils import AZURE_FOUNDRY_FIREWORKS_MODEL_ID_PREFIX
-from litellm.llms.openai.chat.gpt_reasoning_transformation import OpenAIGPT5Config
+from litellm.llms.openai.chat.gpt_reasoning_transformation import (
+    OpenAIGPT5Config,
+    unsupported_reasoning_effort_message,
+)
 from litellm.llms.openai.common_utils import drop_params_from_unprocessable_entity_error
 from litellm.llms.openai.openai import OpenAIChatCompletionResponseIterator, OpenAIConfig
 from litellm.llms.xai.chat.transformation import XAIChatConfig
