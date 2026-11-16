@@ -62,11 +62,6 @@ effectiveUntil = 2027-02-01
 reason = "pillow 13.0.0 requires Python >= 3.11, so the Python 3.10 resolution of the ci and dev groups and of the mlflow extra stays on 12.3.0; 3.11+ is on 13.0.0; pillow has never shipped an older-major release after the next major (no 10.x after 11.0.0, no 11.x after 12.0.0), so 13.x is the only fix line; extended to 2027-02-01 with maintainer approval, same date as every other Python 3.10 entry; remove once 3.10 is dropped"
 
 [[IgnoredVulns]]
-id = "GHSA-gcqx-w48m-w2h4"
-ignoreUntil = 2026-11-27
-reason = "2026-10-28 sync: deepmerge 4.3.1 (a dev-only dependency of the root package.json) is the latest published release and still vulnerable (prototype pollution via a crafted merge target); npm registry lists no newer version. Remove this entry once one exists"
-
-[[IgnoredVulns]]
 id = "RUSTSEC-2024-0449"
 ignoreUntil = 2027-02-09
 reason = "unsafe-libyaml 0.2.11 (transitive dep of serde_yaml_ng, present byte-identical in upstream's own Cargo.lock) is unmaintained with no patched or unaffected version published; rechecked 2026-11-11 against the advisory's own patched/unaffected version lists, both still empty, and the crate's registry index still lists 0.2.11 as the newest release. Remove this entry once one exists"
