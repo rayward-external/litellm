@@ -5614,20 +5614,15 @@ class _Driver:
         """The request carries messages or an input, which region routing reads."""
         return self._request.get("messages") is not None or self._request.get("input") is not None
 
-    def failed(self, step: Mapping[str, object]) -> BaseException:
-        try:
-            return self._failure(step)
-        finally:
-            self._clear_errors()
-
     def _clear_errors(self) -> None:
         self._last_error = None
         self._level_errors.clear()
         self._hop_first.clear()
         self._level_picks.clear()
 
-    def _failure(self, step: Mapping[str, object]) -> BaseException:
-        model: Final = str(self._request.get("model"))
+    def _ending(self, step: Mapping[str, object]) -> tuple[BaseException, bool]:
+        """The error the walk ends on, and whether it is the base level's own (which the outcome
+        message is appended to) rather than the failed pick's."""
         primary: Final = self._level_errors.get(self._base_level)
         if primary is not None:
             return primary, True
@@ -5653,23 +5648,29 @@ class _Driver:
 
     def failed(self, step: Mapping[str, object]) -> BaseException:
         """The error a sync walk raises; the spent-credential check reads the cooldowns with sync calls."""
-        error, primary = self._ending(step)
-        cooling: Final = self._cooling_in_walk(error)
-        if cooling:
-            active: Final = self._core._cooldowns.get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
-            if (over := self._over_spent_credit(active)) is not None:
-                return over
-        return self._explained(error, primary)
+        try:
+            error, primary = self._ending(step)
+            cooling: Final = self._cooling_in_walk(error)
+            if cooling:
+                active: Final = self._core._cooldowns.get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
+                if (over := self._over_spent_credit(active)) is not None:
+                    return over
+            return self._explained(error, primary)
+        finally:
+            self._clear_errors()
 
     async def afailed(self, step: Mapping[str, object]) -> BaseException:
         """``failed`` for an async walk: the cooldowns are read with the store's async calls."""
-        error, primary = self._ending(step)
-        cooling: Final = self._cooling_in_walk(error)
-        if cooling:
-            active: Final = await self._core._cooldowns.async_get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
-            if (over := self._over_spent_credit(active)) is not None:
-                return over
-        return self._explained(error, primary)
+        try:
+            error, primary = self._ending(step)
+            cooling: Final = self._cooling_in_walk(error)
+            if cooling:
+                active: Final = await self._core._cooldowns.async_get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
+                if (over := self._over_spent_credit(active)) is not None:
+                    return over
+            return self._explained(error, primary)
+        finally:
+            self._clear_errors()
 
     def _cooling_in_walk(self, error: BaseException) -> tuple[str, ...]:
         """When the walk ended on "No deployments available" (``RouterRateLimitError``), the deployments of
