@@ -4438,6 +4438,13 @@ def _log_attempt(plan: Plan, model_name: object, error: BaseException | None = N
         verbose_router_logger.info("%s(model=%s)\x1b[32m 200 OK\x1b[0m", served_name, model_name)
 
 
+def _params_base_model(core: RustCore, deployment_id: str) -> str | None:
+    """``_deployment_params_base_model``: the ``base_model`` under the deployment's ``litellm_params``."""
+    record: Final = as_str_mapping(core._handle.deployment(deployment_id)) or {}  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
+    base_model: Final = (as_str_mapping(record.get("litellm_params")) or {}).get("base_model")
+    return base_model if isinstance(base_model, str) else None
+
+
 class _Driver:
     """Answers the attempt and fallback steps of one call, and shapes its result.
 
@@ -4508,7 +4515,7 @@ class _Driver:
         self._route_phase: contextlib.ExitStack | None = None
         self._route_model: str = ""
         self._walk: Final = WalkMetadata(
-            request, plan.metadata_field, self._params_base_model, live=fresh and not plan.single_attempt
+            request, plan.metadata_field, partial(_params_base_model, core), live=fresh and not plan.single_attempt
         )
         self.outcomes: Final = FallbackOutcomes(request)
         # The fallback level the walk is at, from its fallback events.
@@ -4565,12 +4572,6 @@ class _Driver:
         stamp_error(self._plan, error, deployment, call.served)
         endpoints.counters.retract_success(self._plan, call)
         endpoints.attempt_failed(self._plan, error, deployment, call, call.group)
-
-    def _params_base_model(self, deployment_id: str) -> str | None:
-        """``_deployment_params_base_model``: the ``base_model`` under the deployment's ``litellm_params``."""
-        record: Final = as_str_mapping(self._core._handle.deployment(deployment_id)) or {}  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
-        base_model: Final = (as_str_mapping(record.get("litellm_params")) or {}).get("base_model")
-        return base_model if isinstance(base_model, str) else None
 
     def _logged_error(self, event: Mapping[str, object]) -> BaseException | None:
         """The error a ``retry_logged`` event records."""
@@ -5571,6 +5572,7 @@ class _Driver:
     def finish(self, step: Mapping[str, object]) -> object:
         """The response with the router's headers, in the order ``make_call`` and the wrappers above it
         stamp them: a usage read that raises leaves the counts off."""
+        self._clear_errors()
         if not self._plan.sets_headers:
             self.log_outcomes_sync()
             return self._last_response
@@ -5591,6 +5593,7 @@ class _Driver:
 
     async def finish_async(self, step: Mapping[str, object]) -> object:
         """``finish``, with the usage read on the call's own loop."""
+        self._clear_errors()
         if not self._plan.sets_headers:
             await await_all(self.outcomes.take_pending())
             return self._last_response
@@ -5610,6 +5613,13 @@ class _Driver:
     def _has_input(self) -> bool:
         """The request carries messages or an input, which region routing reads."""
         return self._request.get("messages") is not None or self._request.get("input") is not None
+
+    def _clear_errors(self) -> None:
+        self._last_error = None
+        self._level_errors.clear()
+        self._hop_first.clear()
+        self._level_picks.clear()
+        self._attempt_errors.clear()
 
     def _ending(self, step: Mapping[str, object]) -> tuple[BaseException, bool]:
         """The error the walk ends on, and whether it is the base level's own (which the outcome
@@ -5639,23 +5649,29 @@ class _Driver:
 
     def failed(self, step: Mapping[str, object]) -> BaseException:
         """The error a sync walk raises; the spent-credential check reads the cooldowns with sync calls."""
-        error, primary = self._ending(step)
-        cooling: Final = self._cooling_in_walk(error)
-        if cooling:
-            active: Final = self._core._cooldowns.get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
-            if (over := self._over_spent_credit(active)) is not None:
-                return over
-        return self._explained(error, primary)
+        try:
+            error, primary = self._ending(step)
+            cooling: Final = self._cooling_in_walk(error)
+            if cooling:
+                active: Final = self._core._cooldowns.get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
+                if (over := self._over_spent_credit(active)) is not None:
+                    return over
+            return self._explained(error, primary)
+        finally:
+            self._clear_errors()
 
     async def afailed(self, step: Mapping[str, object]) -> BaseException:
         """``failed`` for an async walk: the cooldowns are read with the store's async calls."""
-        error, primary = self._ending(step)
-        cooling: Final = self._cooling_in_walk(error)
-        if cooling:
-            active: Final = await self._core._cooldowns.async_get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
-            if (over := self._over_spent_credit(active)) is not None:
-                return over
-        return self._explained(error, primary)
+        try:
+            error, primary = self._ending(step)
+            cooling: Final = self._cooling_in_walk(error)
+            if cooling:
+                active: Final = await self._core._cooldowns.async_get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
+                if (over := self._over_spent_credit(active)) is not None:
+                    return over
+            return self._explained(error, primary)
+        finally:
+            self._clear_errors()
 
     def _cooling_in_walk(self, error: BaseException) -> tuple[str, ...]:
         """When the walk ended on "No deployments available" (``RouterRateLimitError``), the deployments of
