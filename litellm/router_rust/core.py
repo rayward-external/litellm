@@ -5619,6 +5619,7 @@ class _Driver:
         self._level_errors.clear()
         self._hop_first.clear()
         self._level_picks.clear()
+        self._attempt_errors.clear()
 
     def _ending(self, step: Mapping[str, object]) -> tuple[BaseException, bool]:
         """The error the walk ends on, and whether it is the base level's own (which the outcome
