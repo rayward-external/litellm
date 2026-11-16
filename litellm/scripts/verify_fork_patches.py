@@ -199,7 +199,11 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # GHSA-2g95-wg33-c5x2 rows, flipped to N/A because that same cleanup removed
 # the IgnoredVulns entries they asserted (filelock's python >= 3.11
 # resolution is already past the 4.2.1 fix those entries were waiting on).
-EXPECTED_NA_ROWS = 107
+# 2026-11-16 sweep: +3. The GHSA-gcqx-w48m-w2h4 ignore's two live-canary rows
+# (2026-11-10, 2026-11-14) flipped to N/A, plus the new removal row itself:
+# osv-scan reported the entry unused, since jest-config/deepmerge is gone
+# from every lockfile in the tree, not just the retired root package.json.
+EXPECTED_NA_ROWS = 110
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
