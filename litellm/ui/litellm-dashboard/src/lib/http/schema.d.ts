@@ -2205,7 +2205,7 @@ export interface paths {
          *     - model_rpm_limit: Optional[dict] - Max requests per minute per model, shared by everything on this budget. Example: {"gpt-4o": 200}
          *     - budget_reset_at: Optional[datetime] - Datetime when the initial budget is reset. Default is now.
          */
-        post: operations["new_budget_endpoint_budget_new_post"];
+        post: operations["new_budget_budget_new_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2265,7 +2265,7 @@ export interface paths {
          *     - model_rpm_limit: Optional[dict] - Max requests per minute per model, shared by everything on this budget. Example: {"gpt-4o": 200}
          *     - budget_reset_at: Optional[datetime] - Update the Datetime when the budget was last reset.
          */
-        post: operations["update_budget_endpoint_budget_update_post"];
+        post: operations["update_budget_budget_update_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -58711,7 +58711,7 @@ export interface operations {
             };
         };
     };
-    new_budget_endpoint_budget_new_post: {
+    new_budget_budget_new_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -58775,7 +58775,7 @@ export interface operations {
             };
         };
     };
-    update_budget_endpoint_budget_update_post: {
+    update_budget_budget_update_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -69136,6 +69136,8 @@ export interface operations {
                 parent_org_id?: string | null;
                 /** @description Case-insensitive substring of the customer member ID or alias */
                 search?: string;
+                /** @description Sort by displayed budget limit, with uncapped rows last. */
+                sort?: ("budget_asc" | "budget_desc") | null;
             };
             header?: never;
             path?: never;
@@ -69800,6 +69802,8 @@ export interface operations {
                 page?: number;
                 page_size?: number;
                 parent_org_id?: string | null;
+                /** @description Sort by displayed budget limit, with uncapped rows last. */
+                sort?: ("budget_asc" | "budget_desc") | null;
             };
             header?: never;
             path?: never;
