@@ -203,7 +203,10 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # (2026-11-10, 2026-11-14) flipped to N/A, plus the new removal row itself:
 # osv-scan reported the entry unused, since jest-config/deepmerge is gone
 # from every lockfile in the tree, not just the retired root package.json.
-EXPECTED_NA_ROWS = 110
+# 2026-11-16 sync: +1. tests/unit/proxy/test_budget_reservation.py's
+# AsyncMock row flipped to N/A -- REMOVAL CONDITION MET by #51535's rewrite
+# of the file onto a real ProxyLogging instance (see fork-patches.txt row).
+EXPECTED_NA_ROWS = 111
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 

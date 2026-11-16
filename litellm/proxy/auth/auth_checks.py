@@ -7188,6 +7188,14 @@ async def _virtual_key_multi_budget_check(
             window_duration=str(w["budget_duration"]),
             window_start=get_budget_window_start(w),
         )
+        window_usage = (
+            *window_usage,
+            BudgetWindow(
+                budget_duration=str(w["budget_duration"]),
+                max_budget=w["max_budget"],
+                spent=window_spend,
+            ),
+        )
         native = _native_budget_decision(
             {
                 "check": "key_window",
@@ -7199,6 +7207,8 @@ async def _virtual_key_multi_budget_check(
         )
         if native.refused:
             raise native.error()
+
+    valid_token.budget_window_usage = window_usage
 
 
 async def virtual_key_soft_budget_check(
