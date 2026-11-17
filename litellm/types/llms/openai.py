@@ -104,7 +104,7 @@ from .base import CachedTokensDetails
 if TYPE_CHECKING:
     from litellm.types.utils import Usage
 
-FileContent = IO[bytes] | bytes | PathLike
+FileContent = IO[bytes] | bytes | PathLike[str]
 
 FileTypes = (
     # file (or bytes)
@@ -817,6 +817,12 @@ class ChatCompletionTextObject(
     OpenAIChatCompletionTextObject, total=False
 ):  # litellm wrapper on top of openai object for handling cached content
     cache_control: ChatCompletionCachedContent
+
+
+class ChatCompletionGuardedTextObject(TypedDict):
+    type: ReadOnly[Literal["guarded_text"]]
+    text: ReadOnly[str]
+    cache_control: NotRequired[ReadOnly[ChatCompletionCachedContent]]
 
 
 class ChatCompletionImageUrlObject(TypedDict, total=False):
