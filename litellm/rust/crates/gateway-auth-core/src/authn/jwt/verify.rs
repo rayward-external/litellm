@@ -881,7 +881,7 @@ MC4CAQAwBQYDK2VwBCIEIEjkuYWkj6THWjxVRFL36QT1XS2a1KjdV89JMvLev7r2
             Signer::RsaB => EncodingKey::from_rsa_pem(RSA_B_PEM.as_bytes()),
             Signer::Ec => EncodingKey::from_ec_pem(EC_PEM.as_bytes()),
             Signer::Ed => EncodingKey::from_ed_pem(ED_PEM.as_bytes()),
-            Signer::Secret => Ok(EncodingKey::from_secret(b"shared-secret")),
+            Signer::Secret => EncodingKey::from_secret(b"shared-secret"),
         }
         .unwrap();
         let input = format!("{}.{}", b64(&header), b64(&claims));
