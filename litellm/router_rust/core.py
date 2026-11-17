@@ -3745,6 +3745,7 @@ class RustCore(
         """The deployments of ``among`` in ``routable`` that tag routing would send the request to, each
         pick counted along with the picks it falls back to once that one is unavailable, judged
         without recording a tag match on the request."""
+        import litellm.exceptions as litellm_exceptions
         from litellm.router_strategy.tag_based_routing import (
             get_deployments_for_tag,
             get_tag_metadata_variable_name_from_kwargs,
