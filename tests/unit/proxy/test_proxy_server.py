@@ -3592,6 +3592,19 @@ def _receive_until_closed(websocket: WebSocketTestSession) -> None:
         websocket.receive_text()
 
 
+# Realtime WebSocket mode is disabled on this fork (rayward-internal/llm-gateway-infra#646):
+# realtime_websocket_endpoint closes with code 1008 before accept(), so these upstream
+# tests, which expect the handshake to accept and a later disconnect, never reach
+# the branch under test. Skipped rather than deleted: restoring the handler
+# restores them with it.
+# REMOVAL CONDITION: drop this mark together with the refusal block.
+_REALTIME_WS_DISABLED = pytest.mark.skip(
+    reason="Realtime WebSocket mode is disabled on this fork "
+    "(rayward-internal/llm-gateway-infra#646); see .github/fork-patches.txt"
+)
+
+
+@_REALTIME_WS_DISABLED
 @pytest.mark.parametrize("alias", ("gpt-realtime", "voice"))
 @pytest.mark.parametrize("route", ("/v1/realtime", "/v1/realtime/translations", "/v1/live/sessions"))
 def test_realtime_websocket_team_alias_selects_restricted_deployment(
@@ -3665,6 +3678,7 @@ def test_realtime_websocket_team_alias_selects_restricted_deployment(
     assert connect.call_args.kwargs["additional_headers"]["Authorization"] == "Bearer restricted-key"
 
 
+@_REALTIME_WS_DISABLED
 @pytest.mark.parametrize(
     ("litellm_params", "expected_upstream_url"),
     (
