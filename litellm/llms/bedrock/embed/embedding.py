@@ -8,7 +8,15 @@ import json
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
-from typing import TYPE_CHECKING, ClassVar, Final, TypeAlias, get_args, overload
+from typing import (
+    TYPE_CHECKING,
+    ClassVar,
+    Final,
+    TypeAlias,
+    cast,  # noqa: TID251  # the GetAsyncInvoke response JSON matches this TypedDict's shape by construction
+    get_args,
+    overload,
+)
 
 import httpx
 from pydantic import ConfigDict, TypeAdapter
