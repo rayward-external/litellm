@@ -100,6 +100,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03918c3dbd7701a85c6b9887732e2921175f26c350b4563841d0958c21d57e6d"
 
 [[package]]
+name = "arraydeque"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
+
+[[package]]
 name = "asn1-rs"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3394,11 +3400,13 @@ dependencies = [
  "js-sys",
  "p256",
  "p384",
+ "pem",
  "rsa",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "signature",
+ "simple_asn1",
  "zeroize",
 ]
 
@@ -3801,17 +3809,41 @@ dependencies = [
 name = "litellm-config"
 version = "0.1.0"
 dependencies = [
- "litellm-error",
+ "litellm-python-compat",
  "litellm-router-types",
  "litellm-secret-value",
+ "litellm-starlette",
+ "litellm-yaml",
  "rstest",
  "serde",
  "serde_json",
+ "serde_with",
  "serde_yaml_ng",
  "strum",
- "tempfile",
  "thiserror 2.0.21",
  "veil",
+]
+
+[[package]]
+name = "litellm-config-load"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "litellm-config",
+ "litellm-env",
+ "litellm-error",
+ "litellm-http",
+ "litellm-router-types",
+ "litellm-secret-value",
+ "litellm-secrets",
+ "litellm-yaml",
+ "rstest",
+ "serde",
+ "serde_yaml_ng",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3886,11 +3918,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "litellm-env"
+version = "0.1.0"
+dependencies = [
+ "litellm-python-compat",
+ "rstest",
+]
+
+[[package]]
 name = "litellm-error"
 version = "0.1.0"
 dependencies = [
  "rstest",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "litellm-fnmatch"
+version = "0.1.0"
+dependencies = [
+ "rstest",
 ]
 
 [[package]]
@@ -3919,7 +3966,8 @@ dependencies = [
  "http-body-util",
  "litellm-circuit-breaker",
  "litellm-config",
- "litellm-core-utils",
+ "litellm-config-load",
+ "litellm-env",
  "litellm-error",
  "litellm-gateway-auth",
  "litellm-gateway-forward",
@@ -3930,6 +3978,7 @@ dependencies = [
  "litellm-inference",
  "litellm-llms",
  "litellm-model-catalog",
+ "litellm-python-compat",
  "litellm-redis-client",
  "litellm-redis-connect",
  "litellm-redis-resolve",
@@ -3960,11 +4009,9 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "axum-login",
- "futures-util",
  "litellm-config",
  "litellm-error",
  "litellm-secret-value",
- "litellm-secrets",
  "rstest",
  "serde",
  "sha2 0.10.9",
@@ -3974,6 +4021,27 @@ dependencies = [
  "tower",
  "tower-sessions",
  "veil",
+]
+
+[[package]]
+name = "litellm-gateway-auth-core"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "http 1.5.0",
+ "jiff",
+ "jsonwebtoken",
+ "litellm-config",
+ "litellm-fnmatch",
+ "litellm-secret-value",
+ "litellm-starlette",
+ "rstest",
+ "serde_json",
+ "sha2 0.10.9",
+ "strum",
+ "subtle",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
@@ -4062,7 +4130,6 @@ dependencies = [
  "litellm-config",
  "litellm-error",
  "litellm-secret-value",
- "litellm-secrets",
  "moka",
  "rmcp",
  "rstest",
@@ -4176,7 +4243,9 @@ dependencies = [
  "http 1.5.0",
  "hyper-util",
  "litellm-core-utils",
+ "litellm-env",
  "litellm-error",
+ "litellm-python-compat",
  "rcgen",
  "reqwest",
  "rstest",
@@ -4190,6 +4259,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
+ "tower",
  "tracing",
  "url",
  "veil",
@@ -4267,6 +4337,7 @@ dependencies = [
  "litellm-cache-memory",
  "litellm-cache-response",
  "litellm-core-utils",
+ "litellm-env",
  "litellm-error",
  "litellm-framer",
  "litellm-host",
@@ -4408,6 +4479,7 @@ dependencies = [
  "litellm-auth-azure",
  "litellm-auth-gcp",
  "litellm-core-utils",
+ "litellm-env",
  "litellm-error",
  "litellm-framer",
  "litellm-host",
@@ -4438,6 +4510,7 @@ name = "litellm-llms-types"
 version = "0.1.0"
 dependencies = [
  "indexmap 2.14.2",
+ "litellm-python-compat",
  "macro_rules_attribute",
  "rstest",
  "schemars 1.2.3",
@@ -4458,6 +4531,7 @@ dependencies = [
  "jsonschema",
  "litellm-cost",
  "litellm-error",
+ "litellm-python-compat",
  "litellm-tracing",
  "macro_rules_attribute",
  "rstest",
@@ -4505,7 +4579,9 @@ dependencies = [
  "criterion",
  "fancy-regex",
  "futures-util",
+ "http 1.5.0",
  "indexmap 2.14.2",
+ "jiff",
  "litellm-auth",
  "litellm-auth-aws",
  "litellm-auth-azure",
@@ -4517,9 +4593,13 @@ dependencies = [
  "litellm-callbacks-python",
  "litellm-callbacks-s3-log",
  "litellm-circuit-breaker",
+ "litellm-config",
  "litellm-core-utils",
+ "litellm-coroutine",
  "litellm-db",
+ "litellm-env",
  "litellm-error",
+ "litellm-gateway-auth-core",
  "litellm-host",
  "litellm-host-python",
  "litellm-http",
@@ -4549,6 +4629,7 @@ dependencies = [
  "litellm-storage-clickhouse",
  "litellm-token-counter",
  "litellm-tracing",
+ "parking_lot",
  "prost",
  "pyo3",
  "pyo3-async-runtimes",
@@ -4581,6 +4662,7 @@ dependencies = [
  "serde",
  "serde-pickle",
  "serde_json",
+ "serde_with",
  "thiserror 2.0.21",
 ]
 
@@ -4616,7 +4698,7 @@ dependencies = [
  "litellm-auth-gcp",
  "litellm-auth-types",
  "litellm-circuit-breaker",
- "litellm-core-utils",
+ "litellm-env",
  "litellm-error",
  "litellm-http",
  "litellm-redis-client",
@@ -4702,11 +4784,11 @@ name = "litellm-router"
 version = "0.1.0"
 dependencies = [
  "litellm-config",
- "litellm-core-utils",
  "litellm-inference",
  "litellm-inference-messages",
  "litellm-llms",
  "litellm-model-catalog",
+ "litellm-python-compat",
  "litellm-router-types",
  "rstest",
  "serde_json",
@@ -4720,6 +4802,7 @@ dependencies = [
  "async-trait",
  "jiff",
  "litellm-cache",
+ "litellm-python-compat",
  "litellm-router-types",
  "parking_lot",
  "rand 0.8.8",
@@ -4786,7 +4869,7 @@ dependencies = [
  "futures-util",
  "google-cloud-auth",
  "google-cloud-kms-v1",
- "litellm-core-utils",
+ "litellm-env",
  "litellm-error",
  "litellm-http",
  "litellm-python-compat",
@@ -4818,7 +4901,7 @@ dependencies = [
  "aws-sdk-secretsmanager",
  "base64 0.22.1",
  "litellm-auth-aws",
- "litellm-core-utils",
+ "litellm-env",
  "litellm-secret-value",
  "litellm-secrets-types",
  "litellm-tracing",
@@ -4837,7 +4920,7 @@ version = "0.1.0"
 dependencies = [
  "litellm-auth-azure",
  "litellm-auth-types",
- "litellm-core-utils",
+ "litellm-env",
  "litellm-http",
  "litellm-secret-value",
  "litellm-secrets-types",
@@ -4859,8 +4942,9 @@ name = "litellm-secrets-cyberark"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "litellm-core-utils",
+ "litellm-env",
  "litellm-http",
+ "litellm-python-compat",
  "litellm-secret-value",
  "litellm-secrets-types",
  "litellm-tracing",
@@ -4890,8 +4974,9 @@ dependencies = [
  "google-cloud-kms-v1",
  "litellm-auth-gcp",
  "litellm-auth-types",
- "litellm-core-utils",
+ "litellm-env",
  "litellm-http",
+ "litellm-python-compat",
  "litellm-secret-value",
  "litellm-secrets-types",
  "moka",
@@ -4911,7 +4996,7 @@ dependencies = [
 name = "litellm-secrets-hashicorp"
 version = "0.1.0"
 dependencies = [
- "litellm-core-utils",
+ "litellm-env",
  "litellm-error",
  "litellm-http",
  "litellm-secret-value",
@@ -4964,6 +5049,15 @@ dependencies = [
  "tokio",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "litellm-starlette"
+version = "0.1.0"
+dependencies = [
+ "rstest",
+ "serde",
+ "strum",
 ]
 
 [[package]]
@@ -5080,6 +5174,19 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "litellm-yaml"
+version = "0.1.0"
+dependencies = [
+ "litellm-python-compat",
+ "rstest",
+ "saphyr-parser",
+ "serde",
+ "serde_yaml_ng",
+ "strum",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -6799,6 +6906,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "saphyr-parser"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48cf5a82d41247a625f040af08e91008fec945bce3b0bffba992c44af092caa2"
+dependencies = [
+ "arraydeque",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7179,6 +7296,18 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "simple_asn1"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d585997b0ac10be3c5ee635f1bab02d512760d14b7c468801ac8a01d9ae5f1d"
+dependencies = [
+ "num-bigint 0.4.8",
+ "num-traits",
+ "thiserror 2.0.21",
+ "time",
+]
 
 [[package]]
 name = "slab"

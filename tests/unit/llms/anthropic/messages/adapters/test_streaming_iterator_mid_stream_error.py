@@ -276,7 +276,7 @@ def _make_logging_obj(
     )
 
 
-async def _proxy_boundary_hook(exc: Exception) -> None:
+async def _proxy_boundary_hook(_logging_obj: object, exc: Exception) -> None:
     return None
 
 

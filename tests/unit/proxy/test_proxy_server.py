@@ -1163,6 +1163,7 @@ def test_img_gen(mock_aimage_generation, client_no_auth):
             metadata=mock.ANY,
             proxy_server_request=mock.ANY,
             secret_fields=mock.ANY,
+            litellm_logging_obj=mock.ANY,
         )
         assert response.status_code == 200
         result = response.json()
@@ -3591,16 +3592,90 @@ def _receive_until_closed(websocket: WebSocketTestSession) -> None:
         websocket.receive_text()
 
 
-# realtime_websocket_endpoint closes every /v1/realtime connection with code 1008
-# BEFORE accept() on this fork (rayward-internal/llm-gateway-infra#646, no
-# realtime-capable model served here; see .github/fork-patches.txt). This test
-# drives that handler directly and expects the connection to accept and the mocked
-# upstream `websockets.connect` to run, which the refusal block short-circuits.
+# Realtime WebSocket mode is disabled on this fork (rayward-internal/llm-gateway-infra#646):
+# realtime_websocket_endpoint closes with code 1008 before accept(), so these upstream
+# tests, which expect the handshake to accept and a later disconnect, never reach
+# the branch under test. Skipped rather than deleted: restoring the handler
+# restores them with it.
 # REMOVAL CONDITION: drop this mark together with the refusal block.
 _REALTIME_WS_DISABLED = pytest.mark.skip(
     reason="Realtime WebSocket mode is disabled on this fork "
     "(rayward-internal/llm-gateway-infra#646); see .github/fork-patches.txt"
 )
+
+
+@_REALTIME_WS_DISABLED
+@pytest.mark.parametrize("alias", ("gpt-realtime", "voice"))
+@pytest.mark.parametrize("route", ("/v1/realtime", "/v1/realtime/translations", "/v1/live/sessions"))
+def test_realtime_websocket_team_alias_selects_restricted_deployment(
+    alias: str,
+    route: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from starlette.websockets import WebSocketDisconnect
+
+    from litellm.proxy import proxy_server
+    from litellm.proxy.auth.user_api_key_auth import (
+        user_api_key_auth_live_websocket,
+        user_api_key_auth_realtime_websocket,
+    )
+    from litellm.proxy._types import UserAPIKeyAuth
+
+    provider_model: Final = "gpt-realtime"
+    router: Final = litellm.Router(
+        model_list=[
+            {
+                "model_name": "shared/realtime",
+                "litellm_params": {
+                    "model": provider_model,
+                    "custom_llm_provider": "openai",
+                    "api_key": "shared-key",
+                    "order": 0,
+                },
+                "model_info": {"id": "shared-deployment"},
+            },
+            {
+                "model_name": "restricted/realtime",
+                "litellm_params": {
+                    "model": provider_model,
+                    "custom_llm_provider": "openai",
+                    "api_key": "restricted-key",
+                    "order": 1,
+                },
+                "model_info": {"id": "restricted-deployment", "access_groups": ["Restricted"]},
+            },
+        ],
+        num_retries=0,
+    )
+    auth: Final = UserAPIKeyAuth(
+        api_key="hashed-fixture-key",
+        team_id="alias-team",
+        models=["all-team-models"],
+        team_models=["Restricted"],
+        team_model_aliases={alias: "restricted/realtime"},
+    )
+    monkeypatch.setattr(proxy_server, "llm_router", router)
+    monkeypatch.setattr(proxy_server, "master_key", None)
+    monkeypatch.setattr(proxy_server, "general_settings", {})
+    monkeypatch.setitem(proxy_server.app.dependency_overrides, user_api_key_auth_realtime_websocket, lambda: auth)
+    monkeypatch.setitem(proxy_server.app.dependency_overrides, user_api_key_auth_live_websocket, lambda: auth)
+
+    async def authorize_session_model(websocket: WebSocket, model: str) -> UserAPIKeyAuth:
+        return auth
+
+    _override_live_session_authorizer(monkeypatch, authorize_session_model)
+    connect: Final = MagicMock(side_effect=RuntimeError("upstream selected"))
+    monkeypatch.setattr("websockets.connect", connect)
+
+    is_live_session: Final = route == "/v1/live/sessions"
+    with TestClient(app).websocket_connect(route if is_live_session else f"{route}?model={alias}") as websocket:
+        if is_live_session:
+            websocket.send_json({"type": "session.start", "session": {"model": alias}})
+        with pytest.raises(WebSocketDisconnect):
+            _receive_until_closed(websocket)
+
+    connect.assert_called_once()
+    assert connect.call_args.kwargs["additional_headers"]["Authorization"] == "Bearer restricted-key"
 
 
 @_REALTIME_WS_DISABLED
