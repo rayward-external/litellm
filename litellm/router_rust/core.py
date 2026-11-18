@@ -5749,10 +5749,11 @@ class _Driver:
         self._level_picks.clear()
         self._attempt_errors.clear()
 
-    def _failure(self, step: Mapping[str, object]) -> BaseException:
+    def _ending(self, step: Mapping[str, object]) -> tuple[BaseException, bool]:
+        """The error the walk ends on, and whether it is the base level's own (which the outcome
+        message is appended to) rather than the failed pick's."""
         if self._queue_rejection is not None:
-            return self._queue_rejection
-        model: Final = str(self._request.get("model"))
+            return self._queue_rejection, False
         primary: Final = self._level_errors.get(self._base_level)
         if primary is not None:
             return primary, True

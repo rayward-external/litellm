@@ -330,6 +330,30 @@ def _github_copilot_custom_app_hint(custom_llm_provider: str, request_kwargs: Ma
     return github_copilot_sign_in_app_hint(request_kwargs).strip() or None
 
 
+# The account behind the key is out of prepaid credit or quota. Providers report it under
+# different statuses (Anthropic: 400 invalid_request_error, or 402 billing_error; OpenAI:
+# 429 insufficient_quota / credit_balance_exhausted), and the text is the only signal they
+# share. The markers are deliberately specific: one that also appeared in an unrelated
+# error would move traffic off a funded key.
+_CREDIT_EXHAUSTED_STATUSES: Final = frozenset({400, 402, 429})
+_CREDIT_EXHAUSTED_MARKERS: Final = (
+    "credit balance is too low",
+    "credit_balance_exhausted",
+    "insufficient_quota",
+    "billing_error",
+)
+
+
+def is_credit_balance_exhausted(original_exception: object, error_str: str) -> bool:
+    """Whether a provider refused the call because the credential's account has no credit left."""
+    status: Final = getattr(original_exception, "status_code", None)
+    if status not in _CREDIT_EXHAUSTED_STATUSES:
+        return False
+    body: Final[object] = getattr(original_exception, "body", None)
+    text: Final = f"{error_str} {body if body is not None else ''}".lower()
+    return any(marker in text for marker in _CREDIT_EXHAUSTED_MARKERS)
+
+
 def _map_openai_exception(
     *,
     model: str,
