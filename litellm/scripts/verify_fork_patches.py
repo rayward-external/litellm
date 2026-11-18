@@ -211,7 +211,10 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # CONDITION MET by upstream #51537/#51540 (Rust port deleted the Python
 # batch-rate-limiter path) and #52221 (deleted the gateway-mcp crate and
 # its rmcp dependency outright); see fork-patches.txt rows.
-EXPECTED_NA_ROWS = 117
+# 2026-11-18 sync gate: +1. New litellm-rust/Cargo.lock row recording the
+# two package entries (multiversion_no_op, nix) the -X theirs merge
+# dropped -- not pattern-checked, same as every other Cargo.lock row.
+EXPECTED_NA_ROWS = 118
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
