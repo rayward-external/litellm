@@ -26,6 +26,7 @@ from litellm.litellm_core_utils.core_helpers import get_metadata_variable_name_f
 from litellm.litellm_core_utils.credential_accessor import reject_api_key_secret_reference
 from litellm.litellm_core_utils.get_llm_provider_logic import inferred_provider
 from litellm.litellm_core_utils.litellm_logging import Logging
+from litellm.litellm_core_utils.routing_common_utils import filter_team_based_models
 from litellm.litellm_core_utils.sensitive_data_masker import mask_sensitive_structure
 from litellm.router_deprecated import renamed_router_param
 from litellm.router_strategy.tag_based_routing import get_deployments_for_tag
