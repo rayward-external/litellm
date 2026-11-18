@@ -85,3 +85,13 @@ reason = "pin-utils 0.1.1 is an unmaintained crate (repository archived 2026-10-
 id = "RUSTSEC-2026-0459"
 ignoreUntil = 2027-02-08
 reason = "libsqlite3-sys 0.37.0 (via rusqlite's bundled feature in litellm-cache-disk) bundles a SQLite build before 3.54.0 that can leak uninitialized page-cache memory when a database is opened alongside a sibling -wal file of a different page size (CVE-2026-119375, local attacker who can plant that -wal file). Fixed in libsqlite3-sys 0.39.0, shipped only with rusqlite 0.41, but raising rusqlite past 0.40 requires libsqlite3-sys >=0.38, which collides with the workspace's optional, never-enabled sqlx-sqlite dependency (pulled into Cargo.lock by the sqlx `migrate` feature): sqlx-sqlite 0.9.0 caps libsqlite3-sys at <0.38.0, and Cargo's single `links = \"sqlite3\"` rule enforces that cap project-wide even though no crate activates sqlx's sqlite feature. Remove once sqlx-sqlite raises its own libsqlite3-sys requirement past 0.38, or rusqlite backports the fix to a 0.39.x/0.40.x line still capped below 0.38"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+ignoreUntil = 2027-02-16
+reason = "chrono is unmaintained (informational, no CVE, patched = [] in the advisory itself) and pulled in only transitively via sqlx-postgres, which litellm-db uses for the gateway's Postgres access; we do not choose chrono directly and cannot bump past it without sqlx dropping it. Checked crates.io 2026-11-18: newest release is still 0.4.45, same as the locked version, no fix published; the advisory's own suggested alternatives (jiff, time) are sqlx's call, not ours. Remove once sqlx migrates off chrono or a maintained fork appears"
+
+[[IgnoredVulns]]
+id = "GHSA-fc5q-39xc-vjpf"
+ignoreUntil = 2027-02-16
+reason = "picomatch ReDoS through single-branch repeated extglobs; the vulnerable range is <=4.0.7, which covers every published release, so there is no patched version to bump to. Reaches litellm/ui/litellm-dashboard/package-lock.json and litellm/vscode-extension/package-lock.json only via dev-only build/lint/test tooling (vite, vitest, knip, typescript-eslint, eslint-config-next); picomatch is not a dependency of either package.json, only a transitive devDependency, so it never ships in the built dashboard bundle or the packaged vscode extension. Checked npm 2026-11-18: latest picomatch is still 4.0.7. Remove once picomatch publishes a fix"
