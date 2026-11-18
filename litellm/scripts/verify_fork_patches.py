@@ -206,7 +206,15 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-11-16 sync: +1. tests/unit/proxy/test_budget_reservation.py's
 # AsyncMock row flipped to N/A -- REMOVAL CONDITION MET by #51535's rewrite
 # of the file onto a real ProxyLogging instance (see fork-patches.txt row).
-EXPECTED_NA_ROWS = 115
+# 2026-11-18 sync: +2. parallel_request_limiter_v3.py's noqa row and
+# gateway-mcp/Cargo.toml's rmcp pin row both flipped to N/A -- REMOVAL
+# CONDITION MET by upstream #51537/#51540 (Rust port deleted the Python
+# batch-rate-limiter path) and #52221 (deleted the gateway-mcp crate and
+# its rmcp dependency outright); see fork-patches.txt rows.
+# 2026-11-18 sync gate: +1. New litellm-rust/Cargo.lock row recording the
+# two package entries (multiversion_no_op, nix) the -X theirs merge
+# dropped -- not pattern-checked, same as every other Cargo.lock row.
+EXPECTED_NA_ROWS = 118
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
