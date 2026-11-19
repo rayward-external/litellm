@@ -54,6 +54,17 @@ from litellm.proxy.proxy_server import (  # Replace with the actual module where
 )
 from litellm.proxy.utils import ProxyLogging
 
+# Realtime WebSocket mode is disabled on this fork (rayward-internal/llm-gateway-infra#646):
+# realtime_websocket_endpoint closes with code 1008 before accept(), so these upstream
+# tests, which expect the handshake to accept and a later disconnect, never reach
+# the branch under test. Skipped rather than deleted: restoring the handler
+# restores them with it.
+# REMOVAL CONDITION: drop this mark together with the refusal block.
+_REALTIME_WS_DISABLED = pytest.mark.skip(
+    reason="Realtime WebSocket mode is disabled on this fork "
+    "(rayward-internal/llm-gateway-infra#646); see .github/fork-patches.txt"
+)
+
 
 @pytest.fixture
 def admin_mcp_proxy(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
@@ -3516,6 +3527,7 @@ def _start_live_session_and_wait_for_reply(client: TestClient) -> None:
         websocket.receive_text()
 
 
+@_REALTIME_WS_DISABLED
 def test_live_session_model_check_error_releases_reservations(
     client_no_auth: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -3550,6 +3562,7 @@ class _PreCallAborted(BaseException):
     pass
 
 
+@_REALTIME_WS_DISABLED
 def test_live_session_pre_call_abort_releases_reservations(
     client_no_auth: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -3592,18 +3605,6 @@ def test_live_session_pre_call_abort_releases_reservations(
 def _receive_until_closed(websocket: WebSocketTestSession) -> None:
     while True:
         websocket.receive_text()
-
-
-# Realtime WebSocket mode is disabled on this fork (rayward-internal/llm-gateway-infra#646):
-# realtime_websocket_endpoint closes with code 1008 before accept(), so these upstream
-# tests, which expect the handshake to accept and a later disconnect, never reach
-# the branch under test. Skipped rather than deleted: restoring the handler
-# restores them with it.
-# REMOVAL CONDITION: drop this mark together with the refusal block.
-_REALTIME_WS_DISABLED = pytest.mark.skip(
-    reason="Realtime WebSocket mode is disabled on this fork "
-    "(rayward-internal/llm-gateway-infra#646); see .github/fork-patches.txt"
-)
 
 
 @_REALTIME_WS_DISABLED
@@ -3801,6 +3802,7 @@ def test_live_session_invalid_start_is_rejected_without_routing(
     route_call.assert_not_awaited()
 
 
+@_REALTIME_WS_DISABLED
 @pytest.mark.parametrize(
     ("denial_type", "expected_code"),
     (
@@ -3854,6 +3856,7 @@ def test_live_session_frame_authorization_denial_closes_with_policy_code(
     route_call.assert_not_awaited()
 
 
+@_REALTIME_WS_DISABLED
 def test_live_session_valid_start_routes_with_model_and_frame(
     client_no_auth: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -3911,6 +3914,7 @@ def test_live_session_valid_start_routes_with_model_and_frame(
     assert routed_data["user_api_key_dict"] is frame_auth
 
 
+@_REALTIME_WS_DISABLED
 def test_live_session_ignores_query_model_and_authorizes_frame_model(
     client_no_auth: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -3964,6 +3968,7 @@ def test_live_session_ignores_query_model_and_authorizes_frame_model(
     assert authorize.await_args.args[1] == "gpt-live-1"
 
 
+@_REALTIME_WS_DISABLED
 def test_live_session_reauthorized_token_still_needs_the_model_on_the_key(
     client_no_auth: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -4004,6 +4009,7 @@ def test_live_session_reauthorized_token_still_needs_the_model_on_the_key(
     route_call.assert_not_awaited()
 
 
+@_REALTIME_WS_DISABLED
 def test_live_session_releases_the_upgrade_reservation_before_the_frame_reserves(
     client_no_auth: TestClient,
     monkeypatch: pytest.MonkeyPatch,
