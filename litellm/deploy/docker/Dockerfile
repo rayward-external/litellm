@@ -178,7 +178,6 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     HOME=/app \
     LITELLM_NON_ROOT=true \
-    LITELLM_PRISMA_CLIENT_PREBAKED=true \
     PRISMA_BINARY_CACHE_DIR=/opt/prisma/binaries \
     PRISMA_CLI_PATH=/opt/prisma/binaries/node_modules/.bin/prisma \
     PRISMA_CLI_QUERY_ENGINE_TYPE=binary \

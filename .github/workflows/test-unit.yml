@@ -144,7 +144,8 @@ jobs:
     name: ${{ matrix.shard }}
     needs: [rust-bridge, plan]
     if: ${{ !cancelled() && needs.plan.outputs.mode == 'full' }}
-    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
+    # fork: this org has no larger runners; matrix.runner is ignored (fork-patches.txt)
+    runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.job-timeout-minutes }}
     permissions:
       contents: read
@@ -1191,7 +1192,8 @@ jobs:
     name: ${{ matrix.shard }}
     needs: [rust-bridge, plan]
     if: ${{ !cancelled() && needs.plan.outputs.mode == 'core' && needs.plan.outputs.tests-only == 'false' }}
-    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
+    # fork: this org has no larger runners; matrix.runner is ignored (fork-patches.txt)
+    runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.job-timeout-minutes }}
     permissions:
       contents: read

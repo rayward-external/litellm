@@ -214,7 +214,19 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-11-18 sync gate: +1. New litellm-rust/Cargo.lock row recording the
 # two package entries (multiversion_no_op, nix) the -X theirs merge
 # dropped -- not pattern-checked, same as every other Cargo.lock row.
-EXPECTED_NA_ROWS = 118
+# 2026-11-19 sync gate: +3. litellm/proxy/prisma_migration.py's two rows and
+# litellm/deploy/docker/Dockerfile's row all flipped to N/A -- REMOVAL
+# CONDITION MET by upstream #52460 (commit 943a42b6), which ships the same
+# prisma-generate skip generically via an actual writability check instead
+# of the fork's opt-in LITELLM_PRISMA_CLIENT_PREBAKED env var.
+# 2026-11-19 sync gate: +1. test-unit.yml's rust-bridge sccache fail-open row
+# flipped to N/A -- REMOVAL CONDITION MET by upstream #52718 (commit
+# b0c734ff), which replaced that job's build steps with the new
+# .github/actions/build-rust-bridge composite action (actions/cache based,
+# no mozilla-actions/sccache-action dependency left to fail open for).
+# 2026-11-19 sync gate: +1. New litellm/rust/Cargo.lock row recording this
+# sync's git-merge-stitched lockfile regeneration (cargo generate-lockfile).
+EXPECTED_NA_ROWS = 123
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
