@@ -5762,12 +5762,6 @@ class _Driver:
         """The request carries messages or an input, which region routing reads."""
         return self._request.get("messages") is not None or self._request.get("input") is not None
 
-    def failed(self, step: Mapping[str, object]) -> BaseException:
-        try:
-            return self._failure(step)
-        finally:
-            self.clear_errors()
-
     def _ending(self, step: Mapping[str, object]) -> tuple[BaseException, bool]:
         """The error the walk ends on, and whether it is the base level's own (which the outcome
         message is appended to) rather than the failed pick's."""

@@ -20,12 +20,8 @@ from litellm.types.integrations.custom_logger_v2 import Outcome
 from litellm.types.router import (
     FallbackSkipReason,
     LiteLLMParamsTypedDict,
-    RouterErrors,
-    RouterRateLimitError,
-    RouterRateLimitErrorBasic,
     SkippedFallbackTarget,
 )
-from litellm.utils import _get_deployment_order
 
 # Status codes a generic API call's caller-supplied resource id can trigger on its own
 # (e.g. a nonexistent file/batch/thread id), independent of the selected deployment's health.
