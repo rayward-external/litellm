@@ -5801,7 +5801,7 @@ class _Driver:
                     return over
             return self._explained(error, primary)
         finally:
-            self._clear_errors()
+            self.clear_errors()
 
     async def afailed(self, step: Mapping[str, object]) -> BaseException:
         """``failed`` for an async walk: the cooldowns are read with the store's async calls."""
@@ -5814,7 +5814,7 @@ class _Driver:
                     return over
             return self._explained(error, primary)
         finally:
-            self._clear_errors()
+            self.clear_errors()
 
     def _cooling_in_walk(self, error: BaseException) -> tuple[str, ...]:
         """When the walk ended on "No deployments available" (``RouterRateLimitError``), the deployments of
