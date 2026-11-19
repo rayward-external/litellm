@@ -17,7 +17,8 @@ concurrency:
 jobs:
   rust-bridge:
     name: rust-bridge
-    runs-on: ubuntu-latest-16-cores
+    # fork: this org has no larger runners (fork-patches.txt)
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
       contents: read
