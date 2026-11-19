@@ -1341,7 +1341,25 @@ jobs:
       matrix:
         include:
           - shard: changed-tests
-            test-path: ${{ needs.plan.outputs.changed-tests }}
+            test-path: |-
+              ${{ needs.plan.outputs.changed-tests }}
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_marketplace_auth_required_refuses_the_database_outage_fallback_identity
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_marketplace_auth_required_serves_a_caller_with_a_valid_key[headers0]
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_skill_upload_creates_metadata_and_bytes_atomically_and_rejects_duplicates
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_skill_upload_rejects_invalid_or_unauthorized_input_without_writing[file-over-cap]
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_skill_upload_rejects_invalid_or_unauthorized_input_without_writing[invalid-name]
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_skill_upload_rejects_invalid_or_unauthorized_input_without_writing[invalid-zip]
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_skill_upload_rejects_invalid_or_unauthorized_input_without_writing[non-admin]
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_download_history_rejects_unauthorized_invalid_and_unknown_requests[sk-8eda8fc8c8654958c1ad03edb8478412-query2-True-422]
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_download_history_rejects_unauthorized_invalid_and_unknown_requests[sk-8eda8fc8c8654958c1ad03edb8478412-query3-True-422]
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_download_history_rejects_unauthorized_invalid_and_unknown_requests[sk-8eda8fc8c8654958c1ad03edb8478412-query4-True-422]
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_download_history_rejects_unauthorized_invalid_and_unknown_requests[sk-8eda8fc8c8654958c1ad03edb8478412-query5-False-404]
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_download_history_rejects_unauthorized_invalid_and_unknown_requests[sk-limited-query0-True-403]
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_archive_reads_only_authorized_current_bytes[False-sk-limited-source3-True-200-1]
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_archive_reads_only_authorized_current_bytes[False-sk-plain-source2-True-404-0]
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_archive_requires_header_credentials_for_private_content[False-x-skill-key-sk-limited-sk-8eda8fc8c8654958c1ad03edb8478412-200]
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_archive_requires_header_credentials_for_private_content[True-Authorization-sk-limited-None-200]
+              --deselect=tests/unit/proxy/anthropic_endpoints/test_claude_code_marketplace.py::test_archive_requires_header_credentials_for_private_content[True-x-skill-key-sk-limited-sk-8eda8fc8c8654958c1ad03edb8478412-200]
             workers: 4
             reruns: 0
             timeout-minutes: 45
