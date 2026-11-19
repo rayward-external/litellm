@@ -3,9 +3,18 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Final, Literal, TypeAlias
 
+from pydantic import BaseModel
+
 from litellm.proxy.spend_tracking.budget_reservation import get_budget_window_start
 
 BudgetWindowEntityType: TypeAlias = Literal["Key", "Team", "User"]
+
+
+def _window_dict(raw_window: object) -> Mapping[str, object]:
+    if isinstance(raw_window, dict):
+        return raw_window
+    assert isinstance(raw_window, BaseModel)
+    return raw_window.model_dump()
 
 
 def budget_limit_windows(budget_limits: Sequence[object] | str | None) -> tuple[Mapping[str, object], ...]:
@@ -17,7 +26,7 @@ def budget_limit_windows(budget_limits: Sequence[object] | str | None) -> tuple[
     if not budget_limits:
         return ()
     raw_windows: Final = json.loads(budget_limits) if isinstance(budget_limits, str) else budget_limits
-    return tuple(raw_window if isinstance(raw_window, dict) else raw_window.model_dump() for raw_window in raw_windows)
+    return tuple(_window_dict(raw_window) for raw_window in raw_windows)
 
 
 def _window_max_budget(window: Mapping[str, object]) -> float | None:
