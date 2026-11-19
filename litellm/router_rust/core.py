@@ -4582,6 +4582,7 @@ class _Driver:
         self._level_errors.clear()
         self._hop_first.clear()
         self._level_picks.clear()
+        self._attempt_errors.clear()
 
     def _blocked(self, response: object, endpoint_name: str) -> str | None:
         """How the provider blocked a served response, the first check of
