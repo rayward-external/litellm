@@ -226,7 +226,12 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # no mozilla-actions/sccache-action dependency left to fail open for).
 # 2026-11-19 sync gate: +1. New litellm/rust/Cargo.lock row recording this
 # sync's git-merge-stitched lockfile regeneration (cargo generate-lockfile).
-EXPECTED_NA_ROWS = 123
+# 2026-11-19 sync gate: +1. .github/osv-scanner.toml's picomatch/GHSA-fc5q-39xc-vjpf
+# row flipped to N/A -- this sync's osv-scan reports that ignore unused against
+# an unchanged picomatch 4.0.7 pin, so the advisory no longer matches. (A sibling
+# RUSTSEC-2023-0071/rsa row was added the same commit but is pattern-checked,
+# not N/A, so it does not count here.)
+EXPECTED_NA_ROWS = 124
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
