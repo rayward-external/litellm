@@ -3765,7 +3765,8 @@ class TestMultiPodBatchCostClaim:
         scope: Final = {
             "key": "app_customer_org",
             "entity_id": "app-created:customer-created",
-            "budget_limits": [{"budget_duration": "1mo", "max_budget": 20, "reset_at": "2026-01-01T00:00:00Z"}],
+            "budget_limits": [{"budget_duration": "1mo", "max_budget": 20.0, "reset_at": "2026-01-01T00:00:00Z"}],
+            "soft_budget_duration": None,
         }
         row.creator_billing_context = {
             "hierarchy": {
