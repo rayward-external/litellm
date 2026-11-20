@@ -142,7 +142,7 @@ from litellm.proxy.common_utils.http_parsing_utils import (  # noqa: F401  # leg
     _safe_get_request_headers,  # pyright: ignore[reportPrivateUsage,reportUnusedImport]  # backwards-compatible package export
     is_opaque_pass_through_request,
     read_request_body,
-    request_sent_body,
+    request_sent_body,  # pyright: ignore[reportUnusedImport]  # used only inside pass_through_request, which basedpyright gives up analyzing for complexity
     safe_get_request_headers,
 )
 from litellm.proxy.common_utils.openai_error_payload import (
