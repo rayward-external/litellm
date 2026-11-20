@@ -232,6 +232,7 @@ from litellm.types.utils import (
     pricing_override_fields,
 )
 from litellm.utils import (
+    HuggingFaceTokenizerKind,
     acredential_updates,
     cost_map_omits_token_price,
     native_structured_output_support,
@@ -420,6 +421,7 @@ from litellm.litellm_core_utils.sensitive_data_masker import (
     mask_sensitive_keys,
 )
 from litellm.litellm_core_utils.stream_usage_chunks import is_injected_stream_usage_artifact
+from litellm.llms.anthropic.common_utils import system_without_claude_code_billing_header
 from litellm.llms.anthropic.messages.context_management.inference_view import (
     InferenceRequestView,
     InferenceRequestViewError,
@@ -543,6 +545,11 @@ from litellm.proxy.common_utils.anthropic_error_payload import (
 from litellm.proxy.common_utils.auth_cache_invalidation_pubsub import (
     AuthCacheInvalidationSubscriber,
     publish_auth_cache_invalidation,
+)
+from litellm.proxy.common_utils.callback_lifecycle import (
+    CALLBACK_CLOSE_TIMEOUT_SECONDS,
+    close_proxy_callbacks,
+    setup_proxy_callbacks,
 )
 from litellm.proxy.common_utils.callback_utils import initialize_callbacks_on_proxy
 from litellm.proxy.common_utils.codex_catalog_source import codex_catalog_source
@@ -910,6 +917,7 @@ from litellm.proxy.middleware.billable_request_metrics_middleware import (
 from litellm.proxy.middleware.budget_reservation_release_middleware import (
     BudgetReservationReleaseMiddleware,
 )
+from litellm.proxy.middleware.litellm_response_headers_middleware import LiteLLMResponseHeadersMiddleware
 from litellm.proxy.middleware.redis_request_batch_middleware import RedisRequestBatchMiddleware
 from litellm.proxy.plugin_routes import (
     register_plugins_from_config,
@@ -2099,10 +2107,12 @@ async def _proxy_lifespan(app: FastAPI, resources: AsyncExitStack) -> AsyncGener
         )
         if telemetry_start is not None:
             telemetry_start.add_done_callback(_log_telemetry_start_failure)
+        startup_callbacks: Final = tuple(litellm.logging_callback_manager.get_all_callbacks())
         try:
             async with AsyncExitStack() as admin_mcp_stack:
                 try:
                     await admin_mcp_stack.enter_async_context(admin_mcp_lifespan(app))
+                    await setup_proxy_callbacks(app, startup_callbacks)
                     gc.freeze()
                     verbose_proxy_logger.warning("gc.freeze pinned %d startup objects", gc.get_freeze_count())
                     yield state
@@ -2143,6 +2153,11 @@ async def _proxy_lifespan(app: FastAPI, resources: AsyncExitStack) -> AsyncGener
                     verbose_proxy_logger.error("Error stopping in-flight scheduled jobs: %s", e)
 
             await _flush_spend_around_logging_drain_on_shutdown()
+
+            await close_proxy_callbacks(
+                (*startup_callbacks, *litellm.logging_callback_manager.get_all_callbacks()),
+                timeout=GracefulShutdownManager.remaining(CALLBACK_CLOSE_TIMEOUT_SECONDS),
+            )
 
             await proxy_config.stop_config_sync_subscriber()
 
@@ -2677,6 +2692,10 @@ async def otel_request_validation_exception_handler(request: Request, exc: Reque
     return JSONResponse(status_code=422, content={"detail": public_errors})
 
 
+def _include_litellm_headers() -> bool:
+    return litellm.include_litellm_headers is not False
+
+
 @app.exception_handler(Exception)
 async def otel_unhandled_exception_handler(request: Request, exc: Exception):
     if isinstance(exc, (ProxyException, HTTPException, RequestValidationError)):
@@ -2686,6 +2705,10 @@ async def otel_unhandled_exception_handler(request: Request, exc: Exception):
     litellm_call_id: Final = attribute_of(request.state, "litellm_call_id")
     if isinstance(litellm_call_id, str):
         response.headers.setdefault(LITELLM_CALL_ID_HEADER, litellm_call_id)
+    if not _include_litellm_headers():
+        response.raw_headers[:] = [
+            (name, value) for name, value in response.raw_headers if not name.lower().startswith(b"x-litellm-")
+        ]
     return response
 
 
@@ -3906,7 +3929,7 @@ async def customer_accounting_counters(
     now: Final = utc_datetime(started_at) if started_at is not None else datetime.now(timezone.utc)
     return tuple(
         chain.from_iterable(
-            customer_window_counters(scope.key, scope.entity_id, scope.budget_limits, now=now) for scope in scopes
+            customer_window_counters(scope.key, scope.entity_id, scope.accounting_limits(), now=now) for scope in scopes
         )
     )
 
@@ -3940,6 +3963,7 @@ async def accounting_window_keys(
             "entity_id": counter.entity_id,
             "window_duration": counter.window_duration,
             "window_start": counter.window_start.isoformat(),
+            **({"reset_at": counter.reset_at.isoformat()} if counter.reset_at is not None else {}),
         }
         for counter in customer_counters
         if counter.window_start is not None
@@ -4563,6 +4587,7 @@ async def _enqueue_window_spend_row_update(
                 window_start=window_start,
                 spend=increment,
                 started_at=request_started_at,
+                reset_at=reset_at,
             )
         )
     except Exception as e:  # noqa: BLE001  # spend tracking must never fail the cost callback
@@ -15681,6 +15706,7 @@ from litellm.litellm_core_utils.tool_fields import DropPolicy, drop_policy
 from litellm.llms.anthropic.count_tokens.token_counter import AnthropicTokenCounter
 from litellm.llms.anthropic.count_tokens.transformation import COUNT_TOKEN_OPTION_NAMES, without_dropped_paths
 from litellm.llms.base_llm.base_utils import BaseTokenCounter
+from litellm.llms.mistral.count_tokens.token_counter import MistralTokenCounter
 from litellm.llms.openai.responses.count_tokens.token_counter import OpenAITokenCounter
 from litellm.proxy.db.routing_prisma_wrapper import WriterPinnedClient
 from litellm.repositories.access_group_repository import AccessGroupRepository
@@ -16097,28 +16123,33 @@ class _TokenizerLoads:
 
 
 _TOKENIZER_LOADS: Final = anyio.lowlevel.RunVar[_TokenizerLoads]("litellm_proxy_tokenizer_loads")
+_BASE_MODEL_TOKENIZER_LOADS: Final = anyio.lowlevel.RunVar[_TokenizerLoads]("litellm_proxy_base_model_tokenizer_loads")
 
 
-def _tokenizer_loads_for_this_loop() -> _TokenizerLoads:
-    existing: Final = _TOKENIZER_LOADS.get(None)
+def _tokenizer_loads_for_this_loop(loads: anyio.lowlevel.RunVar[_TokenizerLoads]) -> _TokenizerLoads:
+    existing: Final = loads.get(None)
     if existing is not None:
         return existing
     created: Final = _TokenizerLoads(threads=anyio.CapacityLimiter(TOKENIZER_LOAD_MAX_RUNNING))
-    _TOKENIZER_LOADS.set(created)
+    loads.set(created)
     return created
 
 
 @dataclass(slots=True)
 class _TokenizerLoadSlot:
-    model: str
-    custom_tokenizer: CustomHuggingfaceTokenizer | None
     current: _SharedTokenizerLoad | None = None
 
-    def load(self, loads: _TokenizerLoads, loop: asyncio.AbstractEventLoop) -> _SharedTokenizerLoad | None:
+    def load(
+        self,
+        model: str,
+        custom_tokenizer: CustomHuggingfaceTokenizer | None,
+        loads: _TokenizerLoads,
+        loop: asyncio.AbstractEventLoop,
+    ) -> _SharedTokenizerLoad | None:
         current: Final = self.current
         if current is not None and current.reusable(loop.time()):
             return current
-        self.current = loads.start(self.model, self.custom_tokenizer, loop)
+        self.current = loads.start(model, custom_tokenizer, loop)
         return self.current
 
 
@@ -16126,41 +16157,48 @@ class _TokenizerLoadSlot:
 def _tokenizer_load_slot(
     model: str, custom_tokenizer: _CustomTokenizerKey | None, loop: asyncio.AbstractEventLoop
 ) -> _TokenizerLoadSlot:
-    return _TokenizerLoadSlot(
-        model=model,
-        custom_tokenizer=None
+    return _TokenizerLoadSlot()
+
+
+@lru_cache(maxsize=DEFAULT_MAX_LRU_CACHE_SIZE)
+def _base_model_tokenizer_load_slot(
+    kind: HuggingFaceTokenizerKind, loop: asyncio.AbstractEventLoop
+) -> _TokenizerLoadSlot:
+    return _TokenizerLoadSlot()
+
+
+def _model_tokenizer_load_slot(
+    model: str, custom_tokenizer: CustomHuggingfaceTokenizer | None, loop: asyncio.AbstractEventLoop
+) -> _TokenizerLoadSlot:
+    return _tokenizer_load_slot(
+        model,
+        None
         if custom_tokenizer is None
-        else CustomHuggingfaceTokenizer(
-            identifier=custom_tokenizer.identifier,
-            revision=custom_tokenizer.revision,
-            auth_token=custom_tokenizer.auth_token,
+        else _CustomTokenizerKey(
+            identifier=custom_tokenizer["identifier"],
+            revision=custom_tokenizer["revision"],
+            auth_token=custom_tokenizer["auth_token"],
         ),
+        loop,
     )
 
 
-async def _tokenizer_after_provider_error(
-    model: str, custom_tokenizer: CustomHuggingfaceTokenizer | None
+async def _tokenizer_within_load_wait(
+    model: str,
+    custom_tokenizer: CustomHuggingfaceTokenizer | None,
+    loads: _TokenizerLoads,
+    slot: Callable[[asyncio.AbstractEventLoop], _TokenizerLoadSlot],
 ) -> SelectTokenizerResponse | BaseException:
     loop: Final = asyncio.get_running_loop()
     try:
-        load: Final = _tokenizer_load_slot(
-            model,
-            None
-            if custom_tokenizer is None
-            else _CustomTokenizerKey(
-                identifier=custom_tokenizer["identifier"],
-                revision=custom_tokenizer["revision"],
-                auth_token=custom_tokenizer["auth_token"],
-            ),
-            loop,
-        ).load(_tokenizer_loads_for_this_loop(), loop)
+        load: Final = slot(loop).load(model, custom_tokenizer, loads, loop)
         if load is None:
             return _TokenizerLoadsBusy()
         outcome: Final = await asyncio.wait_for(
             asyncio.shield(load.outcome),
             timeout=max(load.started_at + TOKENIZER_LOAD_WAIT_SECONDS - loop.time(), 0),
         )
-    except Exception as e:  # noqa: BLE001  # a tokenizer that cannot be read, loaded in time, or loaded at all answers the provider's error
+    except Exception as e:  # noqa: BLE001  # each caller decides what a tokenizer that cannot be read, loaded in time, or loaded at all answers
         return e
     return outcome.tokenizer
 
@@ -16168,12 +16206,33 @@ async def _tokenizer_after_provider_error(
 async def _tokenizer_or_provider_error(
     model: str, custom_tokenizer: CustomHuggingfaceTokenizer | None, provider_failure: ProviderCountFailure
 ) -> SelectTokenizerResponse:
-    tokenizer: Final = await _tokenizer_after_provider_error(model, custom_tokenizer)
+    tokenizer: Final = await _tokenizer_within_load_wait(
+        model,
+        custom_tokenizer,
+        _tokenizer_loads_for_this_loop(_TOKENIZER_LOADS),
+        partial(_model_tokenizer_load_slot, model, custom_tokenizer),
+    )
     if not isinstance(tokenizer, BaseException):
         return tokenizer
     if not _answers_provider_error(tokenizer):
         raise tokenizer.with_traceback(None)
     raise _provider_error_after_failed_estimate(provider_failure, tokenizer) from tokenizer
+
+
+async def _tokenizer_model(model: str, base_model: str | None) -> str:
+    kind: Final = litellm.utils.huggingface_tokenizer_kind
+    base_kind: Final = None if base_model is None or kind(model) is not None else kind(base_model)
+    if base_model is None or base_kind is None:
+        return model
+    if not litellm.utils.huggingface_tokenizer_may_download(base_model):
+        return base_model
+    loaded: Final = await _tokenizer_within_load_wait(
+        base_model,
+        None,
+        _tokenizer_loads_for_this_loop(_BASE_MODEL_TOKENIZER_LOADS),
+        partial(_base_model_tokenizer_load_slot, base_kind),
+    )
+    return model if isinstance(loaded, BaseException) else base_model
 
 
 async def _local_token_estimate(
@@ -16265,6 +16324,13 @@ def _deployment_base_model(deployment: _TokenCountDeployment) -> str | None:
     return _non_empty_str(deployment.get("model_info", {}).get("base_model")) or _non_empty_str(
         deployment.get("litellm_params", {}).get("base_model")
     )
+
+
+def _tokenizer_base_model(deployment: _TokenCountDeployment) -> str | None:
+    base_model: Final = _deployment_base_model(deployment)
+    if base_model is None or deployment.get("model_info", {}).get("custom_tokenizer") is not None:
+        return None
+    return base_model.split("/", 1)[-1]
 
 
 def _token_count_settings_model(deployment: _TokenCountDeployment, request_model: str) -> tuple[str, str | None]:
@@ -16420,6 +16486,8 @@ async def _gateway_request_view(
             )
         case Target.RESPONSES if edits is not None:
             return await _responses_request_view(messages, system, tools, edits, deployment, fallback_model)
+        case Target.RESPONSES:
+            return InferenceRequestView(messages=messages, system=system)
         case _:
             return None
 
@@ -16857,7 +16925,13 @@ async def _count_request_tokens(
                 deployment=count_deployment,
                 request_model=request.model,
                 tools=tools if chat_count is None else [dict(tool) for tool in chat_count.tools or ()] or None,
-                system=inference_system,
+                system=(
+                    system_without_claude_code_billing_header(inference_system)
+                    if messages_format == "anthropic"
+                    and route in (Target.CHAT_COMPLETIONS, Target.RESPONSES)
+                    and not isinstance(provider_counter, (OpenAITokenCounter, MistralTokenCounter))
+                    else inference_system
+                ),
                 messages_format=messages_format,
                 output_format=output_format,
                 context_management=None if edited_request is not None else context_edits,
@@ -16906,7 +16980,12 @@ async def _count_request_tokens(
     local_messages: Final = (
         request_messages if counted_view is None else [dict(message) for message in counted_view.messages]
     )
-    local_system: Final = system if counted_view is None else counted_view.system
+    post_edit_system: Final = system if counted_view is None else counted_view.system
+    local_system: Final = (
+        system_without_claude_code_billing_header(post_edit_system)
+        if messages_format == "anthropic" and route in (Target.CHAT_COMPLETIONS, Target.RESPONSES)
+        else post_edit_system
+    )
 
     # Default LiteLLM token counting
     custom_tokenizer: CustomHuggingfaceTokenizer | None = None
@@ -16984,7 +17063,7 @@ async def _count_request_tokens(
             count_source="local_estimate",
         )
     estimate: Final = await _local_token_estimate(
-        model=openai_model or model_to_use,
+        model=openai_model or await _tokenizer_model(model_to_use, _tokenizer_base_model(deployment_view)),
         template_model=template_model,
         prompt=prompt if counted_messages is None else None,
         messages=counted_messages,
@@ -23420,6 +23499,8 @@ app.add_middleware(
     get_settings=lambda: get_admission_control_settings(general_settings),
     state=admission_control_state,
 )
+app.add_middleware(LiteLLMResponseHeadersMiddleware, include_litellm_headers=_include_litellm_headers)
+
 # Added last on purpose - last-added is outermost, and the client-visible URL
 # prefix must be resolved into scope["root_path"] before any inner middleware
 # or the router inspects the path. Only added when SERVER_ROOT_PATHS is

@@ -253,6 +253,7 @@ class BedrockEmbedding(BaseAWSLLM):
         optional_params: dict,  # mutable-ok: the implementation pops the aws_* keys out of the caller's dict in place
         bearer_token: None = None,
         region_from_model: str | None = None,
+        litellm_params: Mapping[str, object] | None = None,
     ) -> tuple[Credentials, str]: ...
 
     @overload
@@ -261,6 +262,7 @@ class BedrockEmbedding(BaseAWSLLM):
         optional_params: dict,  # mutable-ok: the implementation pops the aws_* keys out of the caller's dict in place
         bearer_token: str,
         region_from_model: str | None = None,
+        litellm_params: Mapping[str, object] | None = None,
     ) -> tuple[None, str]: ...
 
     def _load_credentials(
@@ -268,6 +270,7 @@ class BedrockEmbedding(BaseAWSLLM):
         optional_params: dict,
         bearer_token: str | None = None,
         region_from_model: str | None = None,
+        litellm_params: Mapping[str, object] | None = None,
     ) -> tuple[Credentials | None, str]:
         auth_params: Final = pop_aws_auth_params(optional_params)
         explicit_region_name: Final = _OPTIONAL_STR.validate_python(optional_params.pop("aws_region_name", None))
@@ -289,7 +292,7 @@ class BedrockEmbedding(BaseAWSLLM):
                 aws_region_name = "us-west-2"
 
         credentials: Final[Credentials | None] = (
-            None if bearer_token is not None else self.resolve_credentials(auth_params, aws_region_name)
+            None if bearer_token is not None else self.resolve_credentials(auth_params, aws_region_name, litellm_params)
         )
         return credentials, aws_region_name
 
@@ -613,6 +616,7 @@ class BedrockEmbedding(BaseAWSLLM):
             optional_params,
             bearer_token=bedrock_bearer_token(api_key),
             region_from_model=self._get_aws_region_from_model_arn(model_id_param) or path_region,
+            litellm_params=_FIELDS.validate_python(litellm_params),
         )
 
         ### TRANSFORMATION ###

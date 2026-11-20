@@ -33,11 +33,7 @@ from litellm.proxy._types import (
     LiteLLM_OrganizationTable,
     LiteLLM_ProjectTableCachedObj,
     LiteLLM_TeamTable,
-    LitellmUserRoles,
-    Member,
-    ProxyErrorTypes,
     ProxyException,
-    TeamMemberAddRequest,
 )
 from litellm.proxy.agent_endpoints.identity import has_legacy_identity
 from litellm.proxy.agent_endpoints.identity_store import AgentIdentityStore, resolve_managed_agent
@@ -74,7 +70,7 @@ from litellm.proxy.auth.host.facts import (
     with_project,
 )
 from litellm.proxy.auth.host.identity import auto_registered_key
-from litellm.proxy.auth.host.steps import jwt_auto_register
+from litellm.proxy.auth.host.steps import jwt_auto_register, team_member_add
 from litellm.proxy.auth.host.steps.budgets import BudgetChecks, proxy_budget_alert
 from litellm.proxy.auth.jwt import auth_from_result, jwt_result
 from litellm.proxy.auth.resolvers.exceptions import KeyNotFoundError
@@ -267,7 +263,7 @@ class PythonAuthHost:
         await prefetch_identity_keys(
             identity_cache_keys(token or "", end_user_id=end_user_id, key_is_resolved=token is None),
             user_api_key_cache=self.user_api_key_cache,
-            before_read=arm_routing_cooldowns,
+            before_read=self._arm_routing_cooldowns,
         )
 
     async def end_user(self, end_user_id: str | None) -> EndUserRow:
@@ -406,7 +402,15 @@ class PythonAuthHost:
             end_user_id=end_user.end_user_id,
             user_api_key_cache=self.user_api_key_cache,
             prisma_client=self.prisma_client,
+            requested_model=self._requested_model(),
         )
+
+    def _requested_model(self) -> str | None:
+        model: Final = None if self.http is None else self.http.request_data.get("model")
+        return model if isinstance(model, str) else None
+
+    def _arm_routing_cooldowns(self) -> None:
+        arm_routing_cooldowns(self._requested_model())
 
     async def key_owner(self, user_id: str) -> LiteLLM_UserTable | None:
         """Raises when the owner cannot be read; the core treats that as no owner."""
@@ -662,8 +666,8 @@ class PythonAuthHost:
 
     @with_service_target(AUTH_OBJECTS_TARGET)
     async def set_user_role(self, user: LiteLLM_UserTable, role: str) -> LiteLLM_UserTable:
-        await UserRepository(self._db()).table.update(where={"user_id": user.user_id}, data={"user_role": role})
-        return await self._recache_user(user.model_copy(update={"user_role": role}))
+        stored: Final = await UserRepository(self._db()).set_role(user.user_id, role)
+        return await self._recache_user(stored or user.model_copy(update={"user_role": role}))
 
     @with_service_target(AUTH_OBJECTS_TARGET)
     async def patch_team_membership(
@@ -680,20 +684,9 @@ class PythonAuthHost:
         return await self._recache_user(user.model_copy(update={"teams": [*kept, *add]}))
 
     async def add_team_member(self, user_id: str, team_id: str) -> None:
-        from litellm.proxy.management_endpoints.team_endpoints import (  # noqa: PLC0415  # team endpoints import auth
-            team_member_add,
+        await team_member_add.add_team_member(
+            self._db(), self.user_api_key_cache, self.proxy_logging_obj, self.litellm_proxy_admin_name, user_id, team_id
         )
-
-        try:
-            await team_member_add(
-                data=TeamMemberAddRequest(member=Member(user_id=user_id, role="user"), team_id=team_id),
-                user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
-            )
-            verbose_proxy_logger.debug("Successfully added user %s to team %s", user_id, team_id)
-        except ProxyException as e:
-            if e.type != ProxyErrorTypes.team_member_already_in_team:
-                raise
-            verbose_proxy_logger.debug("User %s is already a member of team %s", user_id, team_id)
 
     async def org(self, org_id: str) -> LiteLLM_OrganizationTable | None:
         return await get_org_object(
