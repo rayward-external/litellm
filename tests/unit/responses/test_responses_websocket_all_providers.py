@@ -2334,6 +2334,15 @@ class TestWebSocketTurnAdmission:
             == _OTHER_USAGE + first_turn_tokens + 2 * _OUTPUT_TOKENS_PER_TURN
         )
 
+    # QUARANTINE (verified-upstream breakage, not a merge artifact): see
+    # .github/fork-patches.txt for the test-unit.yml deselect row this test originally shipped
+    # with -- that deselect only reaches the "responses-caching-types" shard's fixed file list, not
+    # the dynamically-selected "changed-tests" job, which still runs this file whole whenever a sync
+    # changes it. This in-file marker covers every job uniformly, same precedent as this suite's
+    # other QUARANTINE markers.
+    @pytest.mark.skip(
+        reason="asserts stock (non-forked) metadata-forwarding behavior; see .github/fork-patches.txt"
+    )
     @pytest.mark.asyncio
     async def test_managed_relay_sends_the_provider_only_the_metadata_each_turn_carries(
         self, monkeypatch: pytest.MonkeyPatch, respx_mock: respx.MockRouter

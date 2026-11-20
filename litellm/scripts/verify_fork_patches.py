@@ -231,7 +231,7 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # an unchanged picomatch 4.0.7 pin, so the advisory no longer matches. (A sibling
 # RUSTSEC-2023-0071/rsa row was added the same commit but is pattern-checked,
 # not N/A, so it does not count here.)
-EXPECTED_NA_ROWS = 130
+EXPECTED_NA_ROWS = 131
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
