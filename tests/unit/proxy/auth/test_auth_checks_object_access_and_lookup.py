@@ -121,6 +121,7 @@ from pydantic_core import to_json
 from tests.unit.proxy.auth._user_table import UserTable, prisma_over, user_row
 from litellm.proxy.db.exception_handler import PrismaDBExceptionHandler
 from litellm.proxy.utils import ProxyLogging
+from litellm.redis.stores.auth_cache import AuthObject
 from tests.unit.proxy.rust_auth_stores import FakeBudgetStore, FakeEndUserStore, FakeUserStore
 from litellm.redis.stores.connection import connect
 from litellm.redis.stores.spend_counters import SpendCounterStore
@@ -11684,8 +11685,10 @@ async def test_delete_cache_key_object_is_best_effort_when_the_cache_backend_fai
     hashed_token = "a" * 64
     caplog.set_level(logging.WARNING, logger="LiteLLM Proxy")
 
-    failing_cache = MagicMock()
-    failing_cache.delete_cache = MagicMock()
+    resource_key: Final = AuthObject.customer_app_key_resource(hashed_token).key
+    failing_cache: Final = UserApiKeyCache()
+    failing_cache.set_cache(key=hashed_token, value=UserAPIKeyAuth(token=hashed_token))
+    failing_cache.set_cache(key=resource_key, value={"team_id": "team-1"})
     failing_logging_obj = MagicMock()
     failing_logging_obj.internal_usage_cache.dual_cache.async_delete_cache = AsyncMock(
         side_effect=Exception("No permissions to access a key")
@@ -11697,15 +11700,17 @@ async def test_delete_cache_key_object_is_best_effort_when_the_cache_backend_fai
         proxy_logging_obj=failing_logging_obj,
     )
 
-    failing_cache.delete_cache.assert_called_once_with(key=hashed_token)
+    assert failing_cache.get_cache(key=hashed_token) is None
+    assert failing_cache.get_cache(key=resource_key) is None
     failing_logging_obj.internal_usage_cache.dual_cache.async_delete_cache.assert_awaited_once_with(key=hashed_token)
     assert any("Failed to invalidate cached key entry" in record.getMessage() for record in caplog.records), (
         "a swallowed cache-eviction failure must still be logged, or a stale auth entry goes unnoticed"
     )
 
     caplog.clear()
-    healthy_cache = MagicMock()
-    healthy_cache.delete_cache = MagicMock()
+    healthy_cache: Final = UserApiKeyCache()
+    healthy_cache.set_cache(key=hashed_token, value=UserAPIKeyAuth(token=hashed_token))
+    healthy_cache.set_cache(key=resource_key, value={"team_id": "team-1"})
     healthy_logging_obj = MagicMock()
     healthy_logging_obj.internal_usage_cache.dual_cache.async_delete_cache = AsyncMock()
 
@@ -11715,7 +11720,8 @@ async def test_delete_cache_key_object_is_best_effort_when_the_cache_backend_fai
         proxy_logging_obj=healthy_logging_obj,
     )
 
-    healthy_cache.delete_cache.assert_called_once_with(key=hashed_token)
+    assert healthy_cache.get_cache(key=hashed_token) is None
+    assert healthy_cache.get_cache(key=resource_key) is None
     healthy_logging_obj.internal_usage_cache.dual_cache.async_delete_cache.assert_awaited_once_with(key=hashed_token)
     assert caplog.records == [], "a healthy eviction must stay silent, and must still reach both caches"
 
