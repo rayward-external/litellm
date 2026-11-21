@@ -90,8 +90,3 @@ reason = "scheduled osv-scan flagged litellm-rust/Cargo.lock's chrono 0.4.45 as 
 id = "RUSTSEC-2026-0441"
 ignoreUntil = 2027-02-18
 reason = "osv-scan flagged litellm-rust/Cargo.lock's pin-utils 0.1.1 as unmaintained (informational notice dated 2026-11-05, no CVE, no patched version in the advisory). Pulled in only transitively via the AWS SDK crates (aws-smithy-http, aws-smithy-runtime, aws-smithy-types), used for Bedrock and AWS secrets/auth; the crate's registry index still lists 0.1.1 as the newest release, no fix published. Remove once the AWS SDK crates drop pin-utils or a maintained fork appears"
-
-[[IgnoredVulns]]
-id = "GHSA-fc5q-39xc-vjpf"
-ignoreUntil = 2026-11-24
-reason = "picomatch ReDoS on single-branch repeated extglobs, affecting every release through 4.0.7 with no fixed version published yet. Only dev dependency chains of the dashboard and the VS Code extension pull picomatch, so it runs in build tooling on globs we write and never in the proxy. Short ignore to unblock CI, bump picomatch once a fix ships"
