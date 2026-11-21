@@ -231,7 +231,11 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # an unchanged picomatch 4.0.7 pin, so the advisory no longer matches. (A sibling
 # RUSTSEC-2023-0071/rsa row was added the same commit but is pattern-checked,
 # not N/A, so it does not count here.)
-EXPECTED_NA_ROWS = 131
+# 2026-11-21 security sweep (#399): +1. New .github/osv-scanner.toml N/A row
+# recording the same picomatch IgnoredVulns entry's removal from osv-scanner.toml
+# itself; the 2026-11-19 row above only recorded the fork-patches.txt row's own
+# flip to N/A, not this second, separate row this sweep added.
+EXPECTED_NA_ROWS = 132
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
