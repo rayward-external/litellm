@@ -3,7 +3,7 @@ import re
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from itertools import chain
 from types import MappingProxyType
-from typing import Annotated, Final, TypeAlias, TypeVar, cast
+from typing import Annotated, Any, Final, TypeAlias, TypeVar, cast
 
 from pydantic import (
     AllowInfNan,
