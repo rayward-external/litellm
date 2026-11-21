@@ -240,7 +240,10 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # _increment_spend_counters_batched function, the sole reason for the
 # annotation, no longer exists; upstream replaced it with a decomposed
 # spend-counter-batch module that doesn't trip C901.
-EXPECTED_NA_ROWS = 133
+# 2026-11-21 sync gate: +1. New litellm/rust/Cargo.lock row recording this
+# sync's cargo-check-stitched lockfile fixup (multiversion_no_op/nix
+# re-added, same recurring class as the 2026-11-18 row).
+EXPECTED_NA_ROWS = 134
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
