@@ -235,7 +235,12 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # recording the same picomatch IgnoredVulns entry's removal from osv-scanner.toml
 # itself; the 2026-11-19 row above only recorded the fork-patches.txt row's own
 # flip to N/A, not this second, separate row this sweep added.
-EXPECTED_NA_ROWS = 132
+# 2026-11-21 sync gate: +1. litellm/proxy/proxy_server.py's noqa: C901 row
+# flipped to N/A -- REMOVAL CONDITION MET: upstream's own #40841
+# _increment_spend_counters_batched function, the sole reason for the
+# annotation, no longer exists; upstream replaced it with a decomposed
+# spend-counter-batch module that doesn't trip C901.
+EXPECTED_NA_ROWS = 133
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 

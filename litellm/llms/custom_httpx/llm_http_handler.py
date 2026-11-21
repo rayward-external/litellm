@@ -13,7 +13,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from functools import lru_cache, partial, reduce
 from itertools import chain
 from types import MappingProxyType
