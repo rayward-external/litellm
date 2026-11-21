@@ -90,3 +90,8 @@ reason = "scheduled osv-scan flagged litellm-rust/Cargo.lock's chrono 0.4.45 as 
 id = "RUSTSEC-2026-0441"
 ignoreUntil = 2027-02-18
 reason = "osv-scan flagged litellm-rust/Cargo.lock's pin-utils 0.1.1 as unmaintained (informational notice dated 2026-11-05, no CVE, no patched version in the advisory). Pulled in only transitively via the AWS SDK crates (aws-smithy-http, aws-smithy-runtime, aws-smithy-types), used for Bedrock and AWS secrets/auth; the crate's registry index still lists 0.1.1 as the newest release, no fix published. Remove once the AWS SDK crates drop pin-utils or a maintained fork appears"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+ignoreUntil = 2027-02-01
+reason = "Marvin Attack timing sidechannel in the rsa crate's private-key operations (CVE-2023-49092); litellm-license pins rsa 0.9.10 to verify a license signature. The crate's only private-key operation (RsaPrivateKey::sign_with_rng, Pss) lives in test_support.rs, a dev-dependency used to mint test fixtures locally, never exposed to network-observable timing by an external attacker; the shipped path (signed.rs) only verifies with the public key, which has no secret exponent to leak. The fix (rsa 0.10.0) is not a drop-in bump: it removes the sha2 feature flag, changes Pss::new/new_with_salt to take no generic, and requires a TryCryptoRng-compatible RNG that rand::thread_rng() no longer satisfies, so adopting it needs a real migration, not a version pin edit. Remove once litellm-license migrates to rsa 0.10+ (or a maintained constant-time fork) with its RNG call sites ported"

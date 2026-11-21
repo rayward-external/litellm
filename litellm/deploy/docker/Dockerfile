@@ -45,7 +45,6 @@ ENV NEXT_TELEMETRY_DISABLED=1 \
 WORKDIR /ui
 
 COPY litellm/ui/litellm-dashboard/package.json litellm/ui/litellm-dashboard/package-lock.json ./
-COPY litellm/ui/litellm-dashboard/vendor/ ./vendor/
 RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline
 
 COPY litellm/ui/litellm-dashboard/ ./
@@ -178,12 +177,12 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     HOME=/app \
     LITELLM_NON_ROOT=true \
-    LITELLM_PRISMA_CLIENT_PREBAKED=true \
     PRISMA_BINARY_CACHE_DIR=/opt/prisma/binaries \
     PRISMA_CLI_PATH=/opt/prisma/binaries/node_modules/.bin/prisma \
     PRISMA_CLI_QUERY_ENGINE_TYPE=binary \
     PRISMA_SKIP_POSTINSTALL_GENERATE=1 \
     PRISMA_HIDE_UPDATE_MESSAGE=1 \
+    CHECKPOINT_DISABLE=1 \
     PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1 \
     PRISMA_OFFLINE_MODE=true
 

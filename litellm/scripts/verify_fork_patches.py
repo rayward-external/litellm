@@ -214,7 +214,36 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-11-18 sync gate: +1. New litellm-rust/Cargo.lock row recording the
 # two package entries (multiversion_no_op, nix) the -X theirs merge
 # dropped -- not pattern-checked, same as every other Cargo.lock row.
-EXPECTED_NA_ROWS = 120
+# 2026-11-19 sync gate: +3. litellm/proxy/prisma_migration.py's two rows and
+# litellm/deploy/docker/Dockerfile's row all flipped to N/A -- REMOVAL
+# CONDITION MET by upstream #52460 (commit 943a42b6), which ships the same
+# prisma-generate skip generically via an actual writability check instead
+# of the fork's opt-in LITELLM_PRISMA_CLIENT_PREBAKED env var.
+# 2026-11-19 sync gate: +1. test-unit.yml's rust-bridge sccache fail-open row
+# flipped to N/A -- REMOVAL CONDITION MET by upstream #52718 (commit
+# b0c734ff), which replaced that job's build steps with the new
+# .github/actions/build-rust-bridge composite action (actions/cache based,
+# no mozilla-actions/sccache-action dependency left to fail open for).
+# 2026-11-19 sync gate: +1. New litellm/rust/Cargo.lock row recording this
+# sync's git-merge-stitched lockfile regeneration (cargo generate-lockfile).
+# 2026-11-19 sync gate: +1. .github/osv-scanner.toml's picomatch/GHSA-fc5q-39xc-vjpf
+# row flipped to N/A -- this sync's osv-scan reports that ignore unused against
+# an unchanged picomatch 4.0.7 pin, so the advisory no longer matches. (A sibling
+# RUSTSEC-2023-0071/rsa row was added the same commit but is pattern-checked,
+# not N/A, so it does not count here.)
+# 2026-11-21 security sweep (#399): +1. New .github/osv-scanner.toml N/A row
+# recording the same picomatch IgnoredVulns entry's removal from osv-scanner.toml
+# itself; the 2026-11-19 row above only recorded the fork-patches.txt row's own
+# flip to N/A, not this second, separate row this sweep added.
+# 2026-11-21 sync gate: +1. litellm/proxy/proxy_server.py's noqa: C901 row
+# flipped to N/A -- REMOVAL CONDITION MET: upstream's own #40841
+# _increment_spend_counters_batched function, the sole reason for the
+# annotation, no longer exists; upstream replaced it with a decomposed
+# spend-counter-batch module that doesn't trip C901.
+# 2026-11-21 sync gate: +1. New litellm/rust/Cargo.lock row recording this
+# sync's cargo-check-stitched lockfile fixup (multiversion_no_op/nix
+# re-added, same recurring class as the 2026-11-18 row).
+EXPECTED_NA_ROWS = 134
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 

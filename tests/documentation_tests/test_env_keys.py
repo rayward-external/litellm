@@ -38,9 +38,7 @@ EXCLUDED_ROLLOUT_FLAGS = {
 # Fork-only build-time flags with no upstream equivalent. The public docs this
 # check scans (BerriAI/litellm-docs) are an upstream-owned repo we don't
 # control, so a fork-only var can never be documented there.
-EXCLUDED_FORK_ONLY_VARS = {
-    "LITELLM_PRISMA_CLIENT_PREBAKED",
-}
+EXCLUDED_FORK_ONLY_VARS = set()
 
 # Internal infrastructure tuning parameters for streaming/queue management
 # These are advanced settings with sensible defaults that most users should not modify

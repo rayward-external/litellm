@@ -15,6 +15,7 @@ from pydantic import TypeAdapter, ValidationError
 from litellm_enterprise.proxy.common_utils.managed_object_attribution import (
     ManagedObjectCreatorAttribution,
     ManagedObjectRow,
+    creator_billing_started_at,
     row_metadata,
 )
 
@@ -1167,14 +1168,8 @@ class CheckBatchCost:
             messages=[{"role": "user", "content": "<retrieve_batch>"}],
             stream=False,
             call_type="aretrieve_batch",
-            start_time=datetime.now(),
-            # Deterministic per-batch id, honored as the SpendLogs request_id
-            # by get_spend_logs_id via its prefix (aretrieve_batch normally
-            # keys on a response hash, which the poller's freshly-minted
-            # managed file ids change every retry). Combined with the
-            # already-billed pre-check in the caller, retried pricing cannot
-            # insert a second spend row (codex P1 round 4).
-            litellm_call_id=self._batch_cost_call_id(batch_id),
+            start_time=creator_billing_started_at(job) or datetime.now(),
+            litellm_call_id=str(uuid.uuid4()),
             function_id=str(uuid.uuid4()),
         )
 
