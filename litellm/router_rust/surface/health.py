@@ -14,10 +14,10 @@ from typing import TYPE_CHECKING, Final, Literal
 from litellm.litellm_core_utils.core_helpers import as_str_mapping
 
 if TYPE_CHECKING:
+    from litellm.redis.stores.router_cooldowns.types import CooldownCacheValue
     from litellm.router_rust.core import Resolved
     from litellm.router_rust.steps.callbacks import OptionalChecks
     from litellm.router_rust.surface.registry import HostRegistry
-    from litellm.redis.stores.router_cooldowns.types import CooldownCacheValue
     from litellm.router_utils.cooldown_cache import CooldownCache
     from litellm.rust_bridge._native import (
         RouterCall,
