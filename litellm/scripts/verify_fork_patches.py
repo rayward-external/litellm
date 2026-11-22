@@ -243,7 +243,10 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-11-21 sync gate: +1. New litellm/rust/Cargo.lock row recording this
 # sync's cargo-check-stitched lockfile fixup (multiversion_no_op/nix
 # re-added, same recurring class as the 2026-11-18 row).
-EXPECTED_NA_ROWS = 134
+# 2026-11-22 sync gate: +1. router_surface_allowlist.json's get_model_list
+# entry retired now that fallback_event_handlers.py's safeguard functions
+# (its only caller) are themselves gone.
+EXPECTED_NA_ROWS = 135
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
