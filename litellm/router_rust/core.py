@@ -5831,7 +5831,14 @@ class _Driver:
     def failed(self, step: Mapping[str, object]) -> BaseException:
         """The error a sync walk raises; the spent-credential check reads the cooldowns with sync calls."""
         try:
-            failure: Final = self._failure(step)
+            error, primary = self._ending(step)
+            cooling: Final = self._cooling_in_walk(error)
+            if cooling:
+                active: Final = self._core._cooldowns.get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
+                if (over := self._over_spent_credit(active)) is not None:
+                    self._walk.log_client_seen(over)
+                    return over
+            failure: Final = self._explained(error, primary)
             self._walk.log_client_seen(failure)
             return failure
         finally:
