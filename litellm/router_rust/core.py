@@ -5852,8 +5852,11 @@ class _Driver:
             if cooling:
                 active: Final = await self._core._cooldowns.async_get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
                 if (over := self._over_spent_credit(active)) is not None:
+                    self._walk.log_client_seen(over)
                     return over
-            return self._explained(error, primary)
+            failure: Final = self._explained(error, primary)
+            self._walk.log_client_seen(failure)
+            return failure
         finally:
             self.clear_errors()
 
