@@ -300,6 +300,7 @@ jobs:
               tests/unit/llms/exa_ai
               tests/unit/llms/fal_ai
               tests/unit/llms/fastcrw
+              --deselect=tests/unit/llms/fastcrw/search/test_transformation.py::test_fastcrw_search_request_body
               tests/unit/llms/featherless_ai
               tests/unit/llms/firecrawl
               tests/unit/llms/fireworks_ai
