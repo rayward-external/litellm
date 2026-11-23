@@ -246,7 +246,10 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-11-22 sync gate: +1. router_surface_allowlist.json's get_model_list
 # entry retired now that fallback_event_handlers.py's safeguard functions
 # (its only caller) are themselves gone.
-EXPECTED_NA_ROWS = 135
+# 2026-11-23 security sweep: +1. New litellm/rust/Cargo.lock row recording
+# the url 2.5.8->2.5.9 bump (RUSTSEC-2026-0592) -- not pattern-checked,
+# same as every other Cargo.lock row.
+EXPECTED_NA_ROWS = 136
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
