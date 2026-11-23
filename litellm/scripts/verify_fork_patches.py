@@ -214,7 +214,10 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-11-18 sync gate: +1. New litellm-rust/Cargo.lock row recording the
 # two package entries (multiversion_no_op, nix) the -X theirs merge
 # dropped -- not pattern-checked, same as every other Cargo.lock row.
-EXPECTED_NA_ROWS = 120
+# 2026-11-23 security sweep: +1. New litellm/rust/Cargo.lock row recording
+# the url 2.5.8->2.5.9 bump (RUSTSEC-2026-0592) -- not pattern-checked,
+# same as every other Cargo.lock row.
+EXPECTED_NA_ROWS = 121
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
