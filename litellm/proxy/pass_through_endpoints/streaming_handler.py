@@ -586,6 +586,30 @@ class PassThroughStreamingHandler:
         all_chunks: Final = PassThroughStreamingHandler._convert_raw_bytes_to_str_lines(raw_bytes)
         standard_logging_response_object: PassThroughEndpointLoggingResultValues | None = None
         kwargs: dict[str, object] = {}
+
+        # Non-POST streams are replays, not generations. OpenAI's Responses
+        # resume API (`GET /v1/responses/{id}?stream=true`) re-emits the
+        # original event stream INCLUDING the terminal `response.completed`
+        # event and its usage block — running the cost handlers on it would
+        # re-bill the full generation on every resume. Only a real string
+        # method may skip costing (test doubles yield mocks; treat as POST).
+        passthrough_payload: Final = litellm_logging_obj.model_call_details.get("passthrough_logging_payload") or {}
+        request_method: Final = (
+            passthrough_payload.get("request_method") if isinstance(passthrough_payload, dict) else None
+        )
+        if isinstance(request_method, str) and request_method.upper() not in ("POST", "WEBSOCKET"):
+            verbose_proxy_logger.debug(
+                "Streamed passthrough cost handlers skipped for %s %s: non-POST replay",
+                request_method,
+                url_route,
+            )
+            # Same shape the unparseable-chunks fallback returns: logged, $0 —
+            # correct here, because the upstream does not bill replays.
+            return (
+                StandardPassThroughResponseObject(response="non-POST streamed replay; cost handlers skipped"),
+                kwargs,
+            )
+
         if endpoint_type == EndpointType.ANTHROPIC:
             anthropic_passthrough_logging_handler_result: Final = (
                 AnthropicPassthroughLoggingHandler.handle_logging_anthropic_collected_chunks(
