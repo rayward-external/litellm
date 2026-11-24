@@ -253,7 +253,10 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # Any-import patch retired now that upstream itself replaced every
 # **kwargs: Any with **kwargs: object, so Any is no longer used anywhere
 # in the file.
-EXPECTED_NA_ROWS = 137
+# 2026-11-24 sync: +1. New litellm/rust/Cargo.lock row recording the
+# `cargo update --workspace` lockfile-consistency fix -- not pattern-checked,
+# same as every other Cargo.lock row.
+EXPECTED_NA_ROWS = 138
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 

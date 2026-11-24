@@ -22,6 +22,7 @@ from litellm.proxy.pass_through_endpoints.success_handler import (
     PassThroughEndpointLogging,
 )
 from litellm.types.passthrough_endpoints.pass_through_endpoints import (
+    EndpointType,
     PassthroughStandardLoggingPayload,
 )
 
@@ -707,3 +708,16 @@ def test_a_rejected_gemini_batch_create_registers_nothing():
     assert outcome["result"] is None
     assert outcome["kwargs"]["model"] == "gemini-3.8-flash"
     assert "batch_id" not in outcome["kwargs"]
+
+
+def test_no_dead_gemini_streaming_handler_is_reintroduced():
+    """Streamed Gemini passthrough is already costed via VertexPassthroughLoggingHandler:
+    HttpPassThroughEndpointHelpers.get_endpoint_type classifies every Gemini generateContent/
+    streamGenerateContent URL as EndpointType.VERTEX_AI, so a Gemini-specific chunk-collection
+    method on GeminiPassthroughLoggingHandler would be unreachable dead code. See
+    .github/fork-patches.txt for why this gets re-removed on every sync that reintroduces it.
+    """
+    assert not hasattr(GeminiPassthroughLoggingHandler, "_handle_logging_gemini_collected_chunks")
+
+    gemini_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent"
+    assert HttpPassThroughEndpointHelpers.get_endpoint_type(gemini_url) != EndpointType.GEMINI

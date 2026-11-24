@@ -4141,7 +4141,7 @@ dependencies = [
  "litellm-tracing",
  "litellm-yaml",
  "parking_lot",
- "rand 0.8.7",
+ "rand 0.8.8",
  "rstest",
  "rustls",
  "serde",
@@ -4232,7 +4232,7 @@ dependencies = [
  "axum",
  "bytes",
  "futures-util",
- "http-body 1.1.0",
+ "http-body",
  "litellm-auth",
  "litellm-cache",
  "litellm-cache-memory",
@@ -4434,7 +4434,7 @@ dependencies = [
  "bytes",
  "flate2",
  "futures-util",
- "http 1.4.2",
+ "http 1.5.0",
  "jiff",
  "litellm-auth",
  "litellm-auth-aws",
@@ -4822,7 +4822,7 @@ name = "litellm-redaction"
 version = "0.1.0"
 dependencies = [
  "aho-corasick",
- "fancy-regex 0.19.2",
+ "fancy-regex",
  "regex",
  "rstest",
 ]
@@ -5373,7 +5373,7 @@ name = "litellm-tracing"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "fancy-regex 0.19.2",
+ "fancy-regex",
  "litellm-redaction",
  "parking_lot",
  "percent-encoding",
@@ -6300,7 +6300,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "700d18fa267b73b9b521fd7e13580e2f446916f176cacee1ab63fcc8191f1655"
 dependencies = [
  "chrono",
- "indexmap 2.14.0",
+ "indexmap 2.14.2",
  "jiff",
  "libc",
  "once_cell",
