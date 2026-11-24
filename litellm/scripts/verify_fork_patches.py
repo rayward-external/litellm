@@ -249,7 +249,11 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-11-23 security sweep: +1. New litellm/rust/Cargo.lock row recording
 # the url 2.5.8->2.5.9 bump (RUSTSEC-2026-0592) -- not pattern-checked,
 # same as every other Cargo.lock row.
-EXPECTED_NA_ROWS = 136
+# 2026-11-24 sync gate: +1. litellm/llms/e2b/sandbox/transformation.py's
+# Any-import patch retired now that upstream itself replaced every
+# **kwargs: Any with **kwargs: object, so Any is no longer used anywhere
+# in the file.
+EXPECTED_NA_ROWS = 137
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
