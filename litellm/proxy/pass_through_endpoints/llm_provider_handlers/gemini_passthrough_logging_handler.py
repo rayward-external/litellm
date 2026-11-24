@@ -1,7 +1,7 @@
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from types import MappingProxyType
-from typing import Final
+from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 from pydantic import TypeAdapter
@@ -25,6 +25,14 @@ from litellm.types.utils import (
     ModelResponse,
     TextCompletionResponse,
 )
+
+if TYPE_CHECKING:
+    from litellm.types.passthrough_endpoints.pass_through_endpoints import EndpointType
+
+    from ..success_handler import PassThroughEndpointLogging
+else:
+    PassThroughEndpointLogging = Any
+    EndpointType = Any
 
 _JSON_OBJECT: Final = TypeAdapter(dict[str, object])
 _EMPTY: Final[Mapping[str, object]] = MappingProxyType({})
