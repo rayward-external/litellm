@@ -539,7 +539,7 @@ class GoogleGenAIStreamWrapper(AdapterCompletionStreamWrapper):
                                 tool_call_data["arguments"],
                             )
                     if parts:
-                        final_chunk: Final = {
+                        final_chunk: Final[_JsonDict] = {
                             "candidates": [
                                 {
                                     "content": {"parts": parts, "role": "model"},

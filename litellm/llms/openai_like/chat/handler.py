@@ -5,11 +5,8 @@ For handling OpenAI-like chat completions, like IBM WatsonX, etc.
 """
 
 import json
-from collections.abc import Callable
-from typing import (
-    Final,
-    cast,  # noqa: TID251  # is_async defaults False, so this call always returns the sync list branch
-)
+from collections.abc import Callable, Mapping, Sequence
+from typing import Final
 
 import httpx
 from pydantic import TypeAdapter
@@ -50,8 +47,8 @@ async def make_call(
     headers: dict,
     data: str,
     model: str,
-    messages: list,
-    logging_obj,
+    messages: Sequence[object],
+    logging_obj: LiteLLMLoggingObj,
     streaming_decoder: CustomStreamingDecoder | None = None,
     fake_stream: bool = False,
     timeout: float | httpx.Timeout | None = None,
@@ -87,8 +84,8 @@ def make_sync_call(
     headers: dict,
     data: str,
     model: str,
-    messages: list,
-    logging_obj,
+    messages: Sequence[object],
+    logging_obj: LiteLLMLoggingObj,
     streaming_decoder: CustomStreamingDecoder | None = None,
     fake_stream: bool = False,
     timeout: float | httpx.Timeout | None = None,
@@ -123,26 +120,26 @@ def make_sync_call(
 
 
 class OpenAILikeChatHandler(OpenAILikeBase):
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)
 
     async def acompletion_stream_function(
         self,
         model: str,
-        messages: list,
+        messages: Sequence[object],
         custom_llm_provider: str,
         api_base: str,
-        custom_prompt_dict: dict,
+        custom_prompt_dict: Mapping[str, object],
         model_response: ModelResponse,
-        print_verbose: Callable,
-        encoding,
-        api_key,
+        print_verbose: Callable[..., object],
+        encoding: object,
+        api_key: object,
         logging_obj: LiteLLMLoggingObj,
-        stream,
+        stream: object,
         data: dict,
-        optional_params=None,
-        litellm_params=None,
-        logger_fn=None,
+        optional_params: object = None,
+        litellm_params: object = None,
+        logger_fn: object = None,
         headers={},
         client: AsyncHTTPHandler | None = None,
         streaming_decoder: CustomStreamingDecoder | None = None,
@@ -175,20 +172,20 @@ class OpenAILikeChatHandler(OpenAILikeBase):
         model: str,
         messages: list,
         api_base: str,
-        custom_prompt_dict: dict,
+        custom_prompt_dict: Mapping[str, object],
         model_response: ModelResponse,
         custom_llm_provider: str,
-        print_verbose: Callable,
+        print_verbose: Callable[..., object],
         client: AsyncHTTPHandler | None,
-        encoding,
-        api_key,
-        logging_obj,
-        stream,
+        encoding: object,
+        api_key: str | None,
+        logging_obj: LiteLLMLoggingObj,
+        stream: bool,
         data: dict,
         base_model: str | None,
         optional_params: dict,
-        litellm_params=None,
-        logger_fn=None,
+        litellm_params: object = None,
+        logger_fn: object = None,
         headers={},
         timeout: float | httpx.Timeout | None = None,
         json_mode: bool = False,
@@ -238,14 +235,14 @@ class OpenAILikeChatHandler(OpenAILikeBase):
         custom_llm_provider: str,
         custom_prompt_dict: dict,
         model_response: ModelResponse,
-        print_verbose: Callable,
-        encoding,
+        print_verbose: Callable[..., object],
+        encoding: object,
         api_key: str | None,
         logging_obj: LiteLLMLoggingObj,
         optional_params: dict,
-        acompletion=None,
+        acompletion: object = None,
         litellm_params: dict = {},
-        logger_fn=None,
+        logger_fn: object = None,
         headers: dict | None = None,
         timeout: float | httpx.Timeout | None = None,
         client: HTTPHandler | AsyncHTTPHandler | None = None,
