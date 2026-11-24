@@ -528,8 +528,11 @@ def should_return_raw_model_name(request_data: Mapping[str, object]) -> bool:
 _should_return_raw_model_name: Final = should_return_raw_model_name
 
 
-def _apply_client_disconnect_metadata(target_metadata: object) -> None:
-    if not is_str_keyed_dict(target_metadata):
+def _apply_stream_termination_metadata(
+    target_metadata: dict[str, object] | None,
+    termination: _StreamTermination = CLIENT_DISCONNECTED_TERMINATION,
+) -> None:
+    if target_metadata is None:
         return
     target_metadata[termination.metadata_key] = True
     target_metadata["error_information"] = dict(termination.error_information)
@@ -538,17 +541,6 @@ def _apply_client_disconnect_metadata(target_metadata: object) -> None:
 # The pre-existing name for the client-disconnect case, kept as an alias so the
 # generalisation above did not have to rename a call site or a test.
 _apply_client_disconnect_metadata: Final = _apply_stream_termination_metadata
-
-
-def _apply_client_disconnect_to_logged_metadata(params: dict[str, object]) -> None:
-    if params.get("metadata") is None:
-        params["metadata"] = {}  # rebind-ok: the spend logger reads the marker from this shared request dict
-    metadata: Final = params["metadata"]
-    if is_str_keyed_dict(metadata):
-        _apply_client_disconnect_metadata(metadata)
-    litellm_metadata: Final = params.get("litellm_metadata")
-    if is_str_keyed_dict(litellm_metadata) and litellm_metadata:
-        _apply_client_disconnect_metadata(litellm_metadata)
 
 
 async def _record_streaming_client_disconnect_if_needed(
@@ -579,13 +571,34 @@ async def _record_streaming_client_disconnect_if_needed(
 
     logging_obj: Final = request_data.get("litellm_logging_obj")
     if logging_obj is not None:
-        _apply_client_disconnect_to_logged_metadata(logging_obj.model_call_details.setdefault("litellm_params", {}))
-        _apply_client_disconnect_to_logged_metadata(logging_obj.model_call_details)
+        litellm_params: Final = logging_obj.model_call_details.setdefault("litellm_params", {})
+        _lp_metadata = litellm_params.get("metadata")
+        if _lp_metadata is None:
+            _lp_metadata = {}
+            litellm_params["metadata"] = _lp_metadata
+        _apply_stream_termination_metadata(_lp_metadata, reason)
 
-    _apply_client_disconnect_to_logged_metadata(request_data)
-    if request_data.get("litellm_params") is None:
-        request_data["litellm_params"] = {}
-    _apply_client_disconnect_to_logged_metadata(request_data["litellm_params"])
+        _mcd_metadata = logging_obj.model_call_details.get("metadata")
+        if _mcd_metadata is None:
+            _mcd_metadata = {}
+            logging_obj.model_call_details["metadata"] = _mcd_metadata
+        _apply_stream_termination_metadata(_mcd_metadata, reason)
+
+    _rd_metadata = request_data.get("metadata")
+    if _rd_metadata is None:
+        _rd_metadata = {}
+        request_data["metadata"] = _rd_metadata
+    _apply_stream_termination_metadata(_rd_metadata, reason)
+
+    _rd_litellm_params = request_data.get("litellm_params")
+    if _rd_litellm_params is None:
+        _rd_litellm_params = {}
+        request_data["litellm_params"] = _rd_litellm_params
+    _rd_lp_metadata = _rd_litellm_params.get("metadata")
+    if _rd_lp_metadata is None:
+        _rd_lp_metadata = {}
+        _rd_litellm_params["metadata"] = _rd_lp_metadata
+    _apply_stream_termination_metadata(_rd_lp_metadata, reason)
 
     verbose_proxy_logger.debug(
         "Recorded streaming termination %s with error_code=%s for litellm_call_id=%s",

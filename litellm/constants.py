@@ -325,6 +325,9 @@ LITELLM_UI_ALLOW_HEADERS: Final = [
     "x-litellm-guardrail-scan-metadata",
     "x-litellm-cache-key",
     SEMANTIC_CACHE_SCOPE_HEADER,
+    "x-usage-cost",
+    "x-usage-spend",
+    "x-usage-budget",
 ]
 
 # Gemini model-specific minimal thinking budget constants

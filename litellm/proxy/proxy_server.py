@@ -589,7 +589,6 @@ from litellm.proxy.common_utils.healthy_model_filter import (
     is_healthy_only_listing_default,
 )
 from litellm.proxy.common_utils.hook_cache import HookCache
-from litellm.proxy.common_utils.html_forms.default_credentials_hint import should_hide_default_credentials_hint
 from litellm.proxy.common_utils.http_parsing_utils import (  # noqa: F401, RUF100  # legacy module exports
     _read_request_body,  # pyright: ignore[reportPrivateUsage,reportUnusedImport]  # backwards-compatible package export
     _safe_get_request_headers,  # pyright: ignore[reportPrivateUsage,reportUnusedImport]  # backwards-compatible package export

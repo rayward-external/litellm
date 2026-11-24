@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import suppress
 from datetime import datetime
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, ParamSpec
+from typing import TYPE_CHECKING, Any, Final, ParamSpec
 from urllib.parse import quote, urlparse
 
 import anyio

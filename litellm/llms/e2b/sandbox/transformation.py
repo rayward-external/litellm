@@ -10,7 +10,6 @@ Talks to e2b's REST API directly over httpx (no e2b SDK dependency):
 import json
 from collections.abc import Mapping
 from typing import (
-    Any,
     Final,
     cast,  # noqa: TID251  # narrows a validated handle/container response, see cast-ok call sites
 )

@@ -812,17 +812,16 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         progress_events: Final = (
             _WEB_SEARCH_PROGRESS_EVENTS[:1] if item.status == "in_progress" else _WEB_SEARCH_PROGRESS_EVENTS
         )
+        added_item_kwargs: Final = {
+            "id": item.id,
+            "type": item.type,
+            "status": "in_progress",
+            "action": None,
+        }
         return (
             self._next_output_item_added(
                 output_index,
-                BaseLiteLLMOpenAIResponseObject(
-                    **{
-                        "id": item.id,
-                        "type": item.type,
-                        "status": "in_progress",
-                        "action": None,
-                    }
-                ),
+                BaseLiteLLMOpenAIResponseObject(**added_item_kwargs),
             ),
             *(
                 event_class(type=event_type, output_index=output_index, item_id=item.id)
