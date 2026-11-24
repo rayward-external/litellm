@@ -377,13 +377,22 @@ _CREDIT_EXHAUSTED_MARKERS: Final = (
 )
 
 
+def _error_text_for_credit_check(error_str: str, body: object) -> str:
+    try:
+        return f"{error_str} {body if body is not None else ''}".lower()
+    except RecursionError:
+        # A provider body nested past the interpreter's recursion limit can't be
+        # repr'd at all; the marker search just loses that body's contribution.
+        return error_str.lower()
+
+
 def is_credit_balance_exhausted(original_exception: object, error_str: str) -> bool:
     """Whether a provider refused the call because the credential's account has no credit left."""
     status: Final = getattr(original_exception, "status_code", None)
     if status not in _CREDIT_EXHAUSTED_STATUSES:
         return False
     body: Final[object] = getattr(original_exception, "body", None)
-    text: Final = f"{error_str} {body if body is not None else ''}".lower()
+    text: Final = _error_text_for_credit_check(error_str, body)
     return any(marker in text for marker in _CREDIT_EXHAUSTED_MARKERS)
 
 
