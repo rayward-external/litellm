@@ -67,7 +67,7 @@ const OPENSEARCH: &str = "/opensearch";
 /// `LiteLLMRoutes.mapped_pass_through_routes` without `/langfuse`, which forwards observability
 /// traffic rather than inference, and `/opensearch`, which counts only an index search. A path
 /// below one of these counts under the prefix. The proxy's tests check this list against the enum.
-pub const PASSTHROUGH_PREFIXES: [&str; 31] = [
+pub const PASSTHROUGH_PREFIXES: [&str; 33] = [
     "/backend-api/codex",
     "/bedrock",
     "/comprehendmedical",
@@ -99,6 +99,12 @@ pub const PASSTHROUGH_PREFIXES: [&str; 31] = [
     "/nvidia_nim",
     "/deepgram",
     "/fal_ai",
+    // provider-pinned standard routes (litellm/proxy/pinned_provider_routes.py):
+    // fireworks/baseten have no pass-through catch-all, but their pinned
+    // literal routes must count as billable, matching
+    // `LiteLLMRoutes.mapped_pass_through_routes` on the Python side.
+    "/fireworks",
+    "/baseten",
 ];
 
 const MCP_MANAGEMENT_PREFIX: &str = "/v1/mcp";
