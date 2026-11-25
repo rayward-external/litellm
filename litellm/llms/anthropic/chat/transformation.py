@@ -2882,12 +2882,17 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
 
         drop_thinking_without_replayed_blocks(capped_messages)
 
-        AnthropicModelInfo.translate_legacy_thinking_for_adaptive_model(
-            model=model,
-            optional_params=optional_params,
-            custom_llm_provider=self._resolved_provider,
-            drop_params=drop_params,
-        )
+        # Only rewrite the thinking shape on a conversation that has never replayed
+        # thinking content: once any assistant message carries thinking_blocks, the
+        # client is already replaying a legacy-shaped turn and rewriting the shape
+        # out from under it would desync what it sends next from what it has stored.
+        if not any_assistant_message_has_thinking_blocks(capped_messages):
+            AnthropicModelInfo.translate_legacy_thinking_for_adaptive_model(
+                model=model,
+                optional_params=optional_params,
+                custom_llm_provider=self._resolved_provider,
+                drop_params=drop_params,
+            )
 
         AnthropicConfig._maybe_drop_speed_param(
             model=model,
