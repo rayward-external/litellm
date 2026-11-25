@@ -27,7 +27,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from functools import partial
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, Literal, Optional, Protocol, TypeAlias, Union, cast
+from typing import TYPE_CHECKING, Final, Literal, Optional, Protocol, TypeAlias, cast
 
 from litellm._internal_context import is_resent_failure
 from litellm._logging import redact_string
