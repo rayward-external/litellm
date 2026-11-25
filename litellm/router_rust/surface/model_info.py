@@ -631,8 +631,31 @@ class HostModelInfo:
         deployment: Final = self._core_get_deployment(model_id)
         custom_llm_provider: Final = deployment.litellm_params.custom_llm_provider if deployment is not None else None
         call: Final = self._core_handle().deployment_model_info(model_id, wire.to_wire(model_name))
-        done: Final = _drive_model_info(call, partial(self._answer_model_info_lookup, wire=wire, model=model_name))
+        answer: Final = partial(
+            self._deployment_model_info_lookup,
+            wire=wire,
+            model_name=model_name,
+            custom_llm_provider=custom_llm_provider,
+        )
+        done: Final = _drive_model_info(call, answer)
         return wire.from_wire(done["info"])  # pyright: ignore[reportReturnType]  # the merged map, as the core builds it
+
+    def _deployment_model_info_lookup(
+        self,
+        step: Mapping[str, object],
+        *,
+        wire: "_Wire",
+        model_name: str,
+        custom_llm_provider: str | None,
+    ) -> object:
+        """``_core_get_deployment_model_info``'s own lookup answer: the deployment's litellm model-name row is
+        asked with this deployment's custom_llm_provider, so a bare name colliding with an unrelated provider's
+        cost-map entry (e.g. "deepseek-v4-pro" matching DeepSeek's own direct-API pricing instead of azure_ai's)
+        resolves to the right one. The base-model row -- a different, user-configured model that need not share
+        this deployment's provider -- and every other lookup kind are answered the ordinary way."""
+        if step["lookup"] == "model_info" and not step["exact"] and wire.from_wire(step["model"]) == model_name:
+            return self._model_info_row(step["model"], wire, step, custom_llm_provider=custom_llm_provider)
+        return self._answer_model_info_lookup(step, wire, model_name)
 
     def _routed_wildcard_model(self, deployment_id: object, team_id: object, received_model_name: str) -> str | None:
         team_router: Final = self._core_team_pattern_routers.get(team_id) if isinstance(team_id, str) else None
