@@ -329,12 +329,20 @@ mod tests {
             run(&format!("ALTER TABLE {table} ADD COLUMN extra int"))
                 .execute(&mut admin)
                 .await?;
+            // sqlx >=0.9.1 (launchbadge/sqlx#4375) transparently invalidates and
+            // retries a stale cached plan outside a transaction, so a plain
+            // fetch_all no longer surfaces the error here. It still returns the
+            // error untouched inside a transaction (no safe way to retry
+            // mid-transaction), which is the path our own recycle-after-error
+            // logic exists for, so reproduce the staleness there instead.
+            let mut tx = pools.writer().begin().await?;
             let stale = Error::from(
                 run(&select)
-                    .fetch_all(pools.writer())
+                    .fetch_all(&mut *tx)
                     .await
                     .expect_err("the cached plan must be stale"),
             );
+            tx.rollback().await?;
             let recycled = pools.recycle_after(&stale);
             run(&select).fetch_all(pools.writer()).await?;
             Ok::<_, Box<dyn StdError>>((stale.kind(), recycled))

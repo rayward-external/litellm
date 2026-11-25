@@ -256,7 +256,12 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-11-24 sync: +1. New litellm/rust/Cargo.lock row recording the
 # `cargo update --workspace` lockfile-consistency fix -- not pattern-checked,
 # same as every other Cargo.lock row.
-EXPECTED_NA_ROWS = 138
+# 2026-11-25 security sweep: +3. RUSTSEC-2026-0459's osv-scanner.toml row
+# flipped to N/A (RETIRED, sqlx-sqlite 0.9.1 lifted the libsqlite3-sys cap)
+# plus two new rows recording that retirement and the rusqlite 0.39->0.41 /
+# Cargo.lock bump that followed it -- not pattern-checked, same as every
+# other Cargo.lock row.
+EXPECTED_NA_ROWS = 141
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
