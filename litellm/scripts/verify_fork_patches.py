@@ -261,7 +261,10 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # plus two new rows recording that retirement and the rusqlite 0.39->0.41 /
 # Cargo.lock bump that followed it -- not pattern-checked, same as every
 # other Cargo.lock row.
-EXPECTED_NA_ROWS = 141
+# 2026-11-25 osv-scan (same day, later run): +1. New litellm/rust/Cargo.lock
+# row recording the h2/rustls/rustls-webpki bump -- not pattern-checked,
+# same as every other Cargo.lock row.
+EXPECTED_NA_ROWS = 142
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
