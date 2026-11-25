@@ -17,6 +17,11 @@ mod built {
 
     const NONCE_BYTES: usize = 24;
 
+    // generic-array 0.14 (pinned transitively by crypto_secretbox) deprecates its whole crate root
+    // on any toolchain >= 1.65, so every path through it -- including `Nonce::from_slice`, with
+    // no non-deprecated 0.14.x alternative -- warns. allow(deprecated): no fix available short of
+    // bumping crypto_secretbox's major version, see approved.rs's matching note.
+    #[allow(deprecated)]
     pub(crate) fn seal(key: &Key, plaintext: &[u8]) -> Result<Vec<u8>, EncryptError> {
         let nonce = random_nonce::<NONCE_BYTES>()?;
         let ciphertext = XSalsa20Poly1305::new(key.as_ref().into())
@@ -26,6 +31,7 @@ mod built {
     }
 
     /// An empty value opens to an empty plaintext under any key, as Python's `decrypt_value` returns `""` for no bytes
+    #[allow(deprecated)]
     pub(crate) fn open(key: &Key, sealed: &[u8]) -> Result<Vec<u8>, DecryptError> {
         if sealed.is_empty() {
             return Ok(Vec::new());

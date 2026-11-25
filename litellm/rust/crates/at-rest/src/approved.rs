@@ -59,6 +59,12 @@ mod rustcrypto {
         Ok(derived)
     }
 
+    // generic-array 0.14 (pinned transitively by aes-gcm 0.10.3) deprecates its whole crate root
+    // on any toolchain >= 1.65, so every path through it -- including `Nonce::from_slice`, with
+    // no non-deprecated 0.14.x alternative -- warns. Bumping off it means bumping aes-gcm's major
+    // version across every dependent; not attempted here. allow(deprecated): no fix available short
+    // of that migration.
+    #[allow(deprecated)]
     pub(crate) fn aes_256_gcm_seal(key: &Key, plaintext: &[u8]) -> Result<Vec<u8>, EncryptError> {
         let nonce = random_nonce::<GCM_NONCE_BYTES>()?;
         let ciphertext = Aes256Gcm::new(key.as_ref().into())
@@ -67,6 +73,7 @@ mod rustcrypto {
         Ok([nonce.as_slice(), &ciphertext].concat())
     }
 
+    #[allow(deprecated)]
     pub(crate) fn aes_256_gcm_open(key: &Key, sealed: &[u8]) -> Result<Vec<u8>, DecryptError> {
         let (nonce, ciphertext) = sealed
             .split_at_checked(GCM_NONCE_BYTES)
