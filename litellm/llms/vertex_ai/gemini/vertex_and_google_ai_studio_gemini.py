@@ -4958,17 +4958,14 @@ class ModelResponseIterator:
                 model_response = blocked_response
 
             grounding_metadata: list[dict[str, object]] = []
-            url_context_metadata: list[dict[str, object]] = []
-            safety_ratings: list[dict[str, object]] = []
-            citation_metadata: list[dict[str, object]] = []
 
             _candidates: list[Candidates] | None = processed_chunk.get("candidates")
             if _candidates:
                 (
                     grounding_metadata,
-                    url_context_metadata,
-                    safety_ratings,
-                    citation_metadata,
+                    _,
+                    _,
+                    _,
                 ) = self._apply_stream_candidates(_candidates, model_response)
                 self._search_tool_call_queries = (
                     *self._search_tool_call_queries,
