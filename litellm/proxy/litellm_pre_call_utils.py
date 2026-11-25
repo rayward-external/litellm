@@ -689,6 +689,23 @@ _UNTRUSTED_METADATA_CONTROL_FIELDS: Final = (
     "error_information",
     "_failover_excluded_ids",
     PRE_CALL_EXECUTED_GUARDRAILS_KEY,
+    # Server-authoritative provider-pin routing signal: only the pinned routes
+    # may set it, and only from the URL (re-asserted from request.state below).
+    # Strip any client-supplied copy from BOTH metadata buckets so a unified
+    # route can never carry a forged pin, and a pinned route re-derives it from
+    # the trusted request.state.
+    PINNED_PROVIDER_ROUTE_KEY,
+    # Internal, server-authoritative pre-merge tag SNAPSHOT + its capture
+    # sentinel. The ONLY legitimate writer is ``Router._update_kwargs_before_
+    # fallbacks`` (which runs AFTER this strip, inside the router). Stripped from
+    # BOTH metadata buckets on EVERY route so a client can never (a) plant a
+    # spoofed ``_original_request_tags`` that ``_resolve_request_tags`` would
+    # prefer over the live tags, nor (b) pre-set the ``..._snapshotted`` sentinel
+    # to BLOCK the router's trusted overwrite of that snapshot — either of which
+    # would let client input steer routing on a UNIFIED route. Parsed-then-
+    # stripped above handles the JSON-string bucket form too.
+    ORIGINAL_REQUEST_TAGS_KEY,
+    ORIGINAL_REQUEST_TAGS_SNAPSHOT_TAKEN_KEY,
     "_agentic_loop_depth",
     "max_agentic_loops",
 )

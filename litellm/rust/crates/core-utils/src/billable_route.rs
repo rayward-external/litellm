@@ -64,7 +64,7 @@ const OPENSEARCH: &str = "/opensearch";
 /// `LiteLLMRoutes.mapped_pass_through_routes` without `/langfuse`, which forwards observability
 /// traffic rather than inference, and `/opensearch`, which counts only an index search. A path
 /// below one of these counts under the prefix. The proxy's tests check this list against the enum.
-pub const PASSTHROUGH_PREFIXES: [&str; 30] = [
+pub const PASSTHROUGH_PREFIXES: [&str; 32] = [
     "/backend-api/codex",
     "/bedrock",
     "/comprehendmedical",

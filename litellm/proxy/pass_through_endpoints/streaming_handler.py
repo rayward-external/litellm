@@ -34,9 +34,6 @@ from .background_response_creator import (
 from .llm_provider_handlers.anthropic_passthrough_logging_handler import (
     AnthropicPassthroughLoggingHandler,
 )
-from .llm_provider_handlers.gemini_passthrough_logging_handler import (
-    GeminiPassthroughLoggingHandler,
-)
 from .llm_provider_handlers.openai_agents_turn_billing import (
     agents_turn_start_from_stream,
     openai_agents_sessions_call,
