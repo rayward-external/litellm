@@ -6119,7 +6119,7 @@ class _Driver:
         if (
             primary
             and self._base_level == 0
-            and self._explains_failure
+            and (self._explains_failure or (not self._fallback_ran and self._is_create_that_may_already_exist(error)))
             and self._core._host.dynamic().expose_router_debug_in_errors  # pyright: ignore[reportPrivateUsage]  # see above
             and hasattr(error, "message")
         ):
