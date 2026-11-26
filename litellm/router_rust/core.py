@@ -6101,8 +6101,8 @@ class _Driver:
     def _ending(self, step: Mapping[str, object]) -> tuple[BaseException, bool]:
         """The error the walk ends on, and whether it is the base level's own (which the outcome
         message is appended to) rather than the failed pick's."""
-        if self._queue_rejection is not None:
-            return self._queue_rejection, False
+        if self._ending_error is not None:
+            return self._ending_error, False
         primary: Final = self._level_errors.get(self._base_level)
         if primary is not None:
             return primary, True
