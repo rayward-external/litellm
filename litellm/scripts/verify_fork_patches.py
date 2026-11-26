@@ -264,7 +264,10 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-11-25 osv-scan (same day, later run): +1. New litellm/rust/Cargo.lock
 # row recording the h2/rustls/rustls-webpki bump -- not pattern-checked,
 # same as every other Cargo.lock row.
-EXPECTED_NA_ROWS = 142
+# 2026-11-26 sync: +1. New litellm/rust/Cargo.lock row recording the
+# `cargo metadata` re-lock fix for the sync's --locked rust-lint failure --
+# not pattern-checked, same as every other Cargo.lock row.
+EXPECTED_NA_ROWS = 143
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 

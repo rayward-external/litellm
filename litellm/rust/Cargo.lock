@@ -4370,8 +4370,8 @@ name = "litellm-gateway-auth-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "fancy-regex 0.19.2",
- "http 1.4.2",
+ "fancy-regex",
+ "http 1.5.0",
  "jiff",
  "jsonwebtoken",
  "litellm-config",
@@ -5135,7 +5135,7 @@ name = "litellm-redis-testing"
 version = "0.1.0"
 dependencies = [
  "litellm-call-scope",
- "pkcs8",
+ "pkcs8 0.10.2",
  "rcgen",
  "tempfile",
  "testcontainers-modules",
