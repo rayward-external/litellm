@@ -6103,7 +6103,7 @@ class _Driver:
         message is appended to) rather than the failed pick's."""
         if self._ending_error is not None:
             return self._ending_error, False
-        primary: Final = self._level_errors.get(self._base_level)
+        primary: Final = self._error_the_client_gets()
         if primary is not None:
             return primary, True
         return self._core._failure_error(  # pyright: ignore[reportPrivateUsage]  # see above
