@@ -4745,7 +4745,7 @@ class _Driver:
         self._recorded_blocked: Final[set[int]] = set()  # mutable-ok: filled as the call runs
         # Every attempt's failure, in order: what a walk left with only spent credentials raises. A
         # recovery walk starts from the failure of the stream it recovers, which was an attempt too.
-        self._attempt_errors: Final[list[BaseException]] = (  # mutable-ok: filled as the call runs
+        self._credit_attempt_errors: Final[list[BaseException]] = (  # mutable-ok: filled as the call runs
             [stream_failure[1]] if stream_failure is not None else []
         )
         # Every group the walk picked from (its fallback groups included), whose cooldowns the
@@ -4788,7 +4788,7 @@ class _Driver:
         self._attempt_errors.clear()
         self._raises_stream_origin = False
         self._level_picks.clear()
-        self._attempt_errors.clear()
+        self._credit_attempt_errors.clear()
 
     def _blocked(self, response: object, endpoint_name: str) -> str | None:
         """How the provider blocked a served response, the first check of
@@ -5415,6 +5415,7 @@ class _Driver:
         stamp_error(self._plan, error, deployment, served)  # pyright: ignore[reportUnknownArgumentType]  # litellm's untyped helpers and request values
         self._core._endpoints.attempt_failed(self._plan, error, deployment, call, str(step.get("model")))  # pyright: ignore[reportPrivateUsage]  # see above
         self._last_error = error
+        self._credit_attempt_errors.append(error)
         if isinstance(error, UnknownPreviousResponseError):
             self._ending_error = error
         if _answered_without_an_image(error) and self._answer_without_an_image is None:
@@ -6140,6 +6141,80 @@ class _Driver:
             return failure
         finally:
             self.clear_errors()
+
+    async def afailed(self, step: Mapping[str, object]) -> BaseException:
+        """``failed`` for an async walk: the cooldowns are read with the store's async calls."""
+        try:
+            error, primary = self._ending(step)
+            cooling: Final = self._cooling_in_walk(error)
+            if cooling:
+                active: Final = await self._core._cooldowns.async_get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
+                if (over := self._over_spent_credit(active)) is not None:
+                    self._walk.log_client_seen(over)
+                    return over
+            failure: Final = self._explained(error, primary)
+            self._walk.log_client_seen(failure)
+            return failure
+        finally:
+            self.clear_errors()
+
+    def _cooling_in_walk(self, error: BaseException) -> tuple[str, ...]:
+        """When the walk ended on "No deployments available" (``RouterRateLimitError``), the deployments of
+        every group it picked from (the request's group and each fallback group) that were cooling then;
+        otherwise none. No I/O."""
+        from litellm.types.router import RouterRateLimitError
+
+        if not isinstance(error, RouterRateLimitError):
+            return ()
+        registry: Final = self._core.registry()
+        ids: Final = frozenset[str]().union(
+            *(registry.names(str(registry.resolve(group)), kind="ids") for group in self._picked_groups)
+        )
+        cooled: Final = error.cooldown_list  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # an untyped list of ids
+        return tuple(model_id for model_id in cooled if isinstance(model_id, str) and model_id in ids)  # pyright: ignore[reportUnknownVariableType]  # see above
+
+    def _over_spent_credit(self, active: "Sequence[tuple[str, CooldownCacheValue]]") -> BaseException | None:
+        """What the walk raises instead of "No deployments available, Try again in N seconds" when the
+        deployments left are held out on a spent prepaid credit (``CreditBalanceExhaustedError``), as the
+        shared cooldown store records it (``held_out_on_spent_credential``), so every process sees a hold
+        any process wrote. Waiting does not help, so the router's error would have the client retry for
+        nothing. It raises the request's latest other attempt error, else its latest credit error, else,
+        when every cooling deployment of the group is spent, a credit error naming the group. None (keep
+        the router's error) when no cooling deployment is spent, or a rate limit is part of it: an attempt
+        of this request (or the stream it recovers) was rate limited, or a cooling deployment that is not
+        spent, in any group the walk picked from, holds a 429 cooldown. ``active`` is the store's read of
+        those groups' cooling deployments (``_cooling_in_walk``)."""
+        import litellm.exceptions as litellm_exceptions
+        from litellm.router_rust.surface.health import held_out_on_spent_credential
+        from litellm.types.router import RouterRateLimitError, RouterRateLimitErrorBasic
+
+        spent: Final = frozenset(model_id for model_id, value in active if held_out_on_spent_credential(value))
+        if not spent:
+            return None
+        credit: Final = litellm_exceptions.CreditBalanceExhaustedError
+        attempts: Final = self._credit_attempt_errors
+        rate_limits: Final = (litellm_exceptions.RateLimitError, RouterRateLimitError, RouterRateLimitErrorBasic)
+        if any(isinstance(a, rate_limits) and not isinstance(a, credit) for a in attempts):
+            return None
+        others: Final = [value for model_id, value in active if model_id not in spent]
+        if any(str(value["status_code"]) == "429" for value in others):
+            return None
+        earlier: Final = next((a for a in reversed(attempts) if not isinstance(a, credit)), None)
+        if earlier is not None:
+            return earlier
+        last_credit: Final = next((a for a in reversed(attempts) if isinstance(a, credit)), None)
+        if last_credit is not None or others:
+            return last_credit
+        model: Final = str(self._request.get("model"))
+        return credit(
+            message=(
+                f"CreditBalanceExhaustedError: no deployment of model={model} can serve this request: the provider "
+                "reported the prepaid credit or quota behind each one's credential exhausted. Retrying will not "
+                "help until credit is added."
+            ),
+            model=model,
+            llm_provider="",
+        )
 
     def _failure(self, step: Mapping[str, object]) -> BaseException:
         if self._ending_error is not None:

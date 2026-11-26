@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 import litellm
 from litellm._logging import verbose_proxy_logger
+from litellm.litellm_core_utils.hidden_params import set_hidden_param
 from litellm.litellm_core_utils.internal_call_metadata import is_background_response
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.litellm_logging import (
@@ -244,6 +245,7 @@ def _build_response_and_cost_for_surface(
     request_body: dict,
     logging_obj: LiteLLMLoggingObj,
     kwargs: dict,
+    router_model_id: str | None = None,
 ):
     """Build the response object and its cost for the matched surface.
 
@@ -278,6 +280,8 @@ def _build_response_and_cost_for_surface(
             completion_response=litellm_model_response,
             model=cost_model,
             custom_llm_provider=custom_llm_provider,
+            custom_pricing=router_model_id is not None,
+            router_model_id=router_model_id,
         )
     elif is_image_generation:
         # Handle image generation cost calculation
@@ -286,6 +290,7 @@ def _build_response_and_cost_for_surface(
             response_body=response_body,
             request_body=request_body,
             custom_llm_provider=custom_llm_provider,
+            router_model_id=router_model_id,
         )
         # Mark call type for downstream image-aware logic/metrics
         try:
@@ -308,6 +313,7 @@ def _build_response_and_cost_for_surface(
             response_body=response_body,
             request_body=request_body,
             custom_llm_provider=custom_llm_provider,
+            router_model_id=router_model_id,
         )
         # Mark call type for downstream image-aware logic/metrics
         try:
@@ -336,6 +342,7 @@ def _build_response_and_cost_for_surface(
             httpx_response=httpx_response,
             logging_obj=logging_obj,
             custom_llm_provider=custom_llm_provider,
+            router_model_id=router_model_id,
         )
     elif is_embeddings:
         # Embeddings cost tracking — the response is plain JSON with a
@@ -349,6 +356,7 @@ def _build_response_and_cost_for_surface(
             model=cost_model,
             response_body=response_body,
             custom_llm_provider=custom_llm_provider,
+            router_model_id=router_model_id,
         )
         # Set the calculated cost in _hidden_params to prevent recalculation
         if not hasattr(litellm_model_response, "_hidden_params"):
@@ -361,6 +369,8 @@ def _build_response_and_cost_for_surface(
             model=cost_model,
             custom_llm_provider=custom_llm_provider,
             call_type="decisions",
+            custom_pricing=router_model_id is not None,
+            router_model_id=router_model_id,
         )
 
     return litellm_model_response, response_cost
@@ -412,6 +422,7 @@ def _finishes_at_create(method: str, url_route: str, response_body: Mapping[str,
 
 
 _STR_MAPPING: Final = TypeAdapter(Mapping[str, object])
+_DECODED_JSON: Final = TypeAdapter(object)
 
 
 class _AgentConfig(BaseModel):
@@ -762,6 +773,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         model: str,
         response_body: Mapping[str, object],
         request_body: dict,
+        custom_llm_provider: str | None = "openai",
         router_model_id: str | None = None,
     ) -> float:
         """Calculate cost for OpenAI image generation."""
@@ -798,6 +810,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         model: str,
         response_body: Mapping[str, object],
         request_body: dict,
+        custom_llm_provider: str | None = "openai",
         router_model_id: str | None = None,
     ) -> float:
         """Calculate cost for OpenAI image editing."""
@@ -895,6 +908,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         model: str,
         response_body: dict,
         custom_llm_provider: str,
+        router_model_id: str | None = None,
     ) -> tuple[EmbeddingResponse, float]:
         """Build an EmbeddingResponse from an embeddings payload and cost it.
 
@@ -933,6 +947,8 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 model=model,
                 custom_llm_provider=custom_llm_provider,
                 call_type="aembedding",
+                custom_pricing=router_model_id is not None,
+                router_model_id=router_model_id,
             )
         except Exception as e:  # noqa: BLE001  # completion_cost raises bare Exception for unmapped models; cost failure must never drop the spend log
             verbose_proxy_logger.warning(
@@ -1072,108 +1088,41 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 logging_obj.model_call_details.get("custom_llm_provider")
             )
             declared_provider: Final = _DECODED_JSON.validate_python(kwargs.get("custom_llm_provider", logged_provider))
-            custom_llm_provider: Final = TypeAdapter(str).validate_python(declared_provider or "openai")
+            # Generic pass-throughs carry no declared provider at all; infer Fireworks/Azure from the
+            # model id / url rather than defaulting to "openai", which mis-prices (or $0-prices) them.
+            custom_llm_provider: Final = resolve_openai_passthrough_provider(
+                model=model if isinstance(model, str) else None,
+                custom_llm_provider=declared_provider if isinstance(declared_provider, str) else None,
+                url_route=url_route,
+            )
             router_model_id: Final = pricing_deployment_id(
                 model if isinstance(model, str) else None, declared_provider, url_route
             )
+            # Fireworks ids arrive bare (`accounts/.../models/...`) while the price map is keyed
+            # `fireworks_ai/accounts/...`; normalize so the Fireworks cost calculator's lookup hits.
+            cost_model: Final = normalize_fireworks_model_id(model) or model
 
-            if is_chat_completions:
-                # Handle chat completions with existing logic
-                provider_config: Final = handler_instance.get_provider_config(model=model)
-                # Preserve existing litellm_params to maintain metadata tags
-                existing_litellm_params: Final = kwargs.get("litellm_params", {}) or {}
-                litellm_model_response = provider_config.transform_response(
-                    raw_response=httpx_response,
-                    model_response=litellm.ModelResponse(),
-                    model=model,
-                    messages=request_body.get("messages", []),
-                    logging_obj=logging_obj,
-                    optional_params=request_body.get("optional_params", {}),
-                    api_key="",
-                    request_data=request_body,
-                    encoding=getattr(litellm, "encoding", None),
-                    json_mode=request_body.get("response_format", {}).get("type") == "json_object",
-                    litellm_params=existing_litellm_params,
-                )
-
-                # Calculate cost using LiteLLM's cost calculator
-                response_cost = litellm.completion_cost(
-                    completion_response=litellm_model_response,
-                    model=model,
-                    custom_llm_provider=custom_llm_provider,
-                    custom_pricing=router_model_id is not None,
-                    router_model_id=router_model_id,
-                )
-            elif is_embeddings:
-                litellm_model_response = convert_to_model_response_object(
-                    response_object=response_body,
-                    model_response_object=EmbeddingResponse(),
-                    response_type="embedding",
-                )
-                response_cost = OpenAIPassthroughLoggingHandler._calculate_embeddings_cost(
-                    litellm_model_response=litellm_model_response,
-                    model=model,
-                    custom_llm_provider=custom_llm_provider,
-                    router_model_id=router_model_id,
-                )
-                set_hidden_param(litellm_model_response, "response_cost", response_cost)
-            elif is_image_generation:
-                # Handle image generation cost calculation
-                response_cost = OpenAIPassthroughLoggingHandler._calculate_image_generation_cost(
-                    model=model,
-                    response_body=response_body,
-                    request_body=request_body,
-                    router_model_id=router_model_id,
-                )
-                logging_obj.call_type = PassthroughCallTypes.passthrough_image_generation.value
-                # Create a simple response object for logging
-                litellm_model_response = ImageResponse(
-                    data=response_body.get("data", []),
-                    model=model,
-                )
-                # Set the calculated cost in _hidden_params to prevent recalculation
-                set_hidden_param(litellm_model_response, "response_cost", response_cost)
-            elif is_image_editing:
-                # Handle image editing cost calculation
-                response_cost = OpenAIPassthroughLoggingHandler._calculate_image_editing_cost(
-                    model=model,
-                    response_body=response_body,
-                    request_body=request_body,
-                    router_model_id=router_model_id,
-                )
-                logging_obj.call_type = PassthroughCallTypes.passthrough_image_generation.value
-                # Create a simple response object for logging
-                litellm_model_response = ImageResponse(
-                    data=response_body.get("data", []),
-                    model=model,
-                )
-                # Set the calculated cost in _hidden_params to prevent recalculation
-                set_hidden_param(litellm_model_response, "response_cost", response_cost)
-            elif is_responses:
-                # Responses-API cost tracking — see
-                # `_build_responses_api_response_and_cost` for why this needs
-                # a dedicated transformer (the chat-completions transform
-                # crashes on the Responses payload shape).
-                (
-                    litellm_model_response,
-                    response_cost,
-                ) = OpenAIPassthroughLoggingHandler._build_responses_api_response_and_cost(
-                    model=model,
-                    httpx_response=httpx_response,
-                    logging_obj=logging_obj,
-                    custom_llm_provider=custom_llm_provider,
-                    router_model_id=router_model_id,
-                )
-            elif is_decisions:
-                litellm_model_response = OpenAIDecisionResponse.model_validate(response_body)  # rebind-ok: elif-chain
-                response_cost = litellm.completion_cost(  # rebind-ok: elif-chain
-                    completion_response=litellm_model_response,
-                    model=model,
-                    custom_llm_provider=custom_llm_provider,
-                    call_type="decisions",
-                    custom_pricing=router_model_id is not None,
-                    router_model_id=router_model_id,
-                )
+            (
+                litellm_model_response,
+                response_cost,
+            ) = _build_response_and_cost_for_surface(
+                is_chat_completions=is_chat_completions,
+                is_image_generation=is_image_generation,
+                is_image_editing=is_image_editing,
+                is_responses=is_responses,
+                is_embeddings=is_embeddings,
+                is_decisions=is_decisions,
+                handler_instance=handler_instance,
+                model=model,
+                cost_model=cost_model,
+                custom_llm_provider=custom_llm_provider,
+                httpx_response=httpx_response,
+                response_body=response_body,
+                request_body=request_body,
+                logging_obj=logging_obj,
+                kwargs=kwargs,
+                router_model_id=router_model_id,
+            )
 
             # Update kwargs with cost information
             kwargs["response_cost"] = response_cost

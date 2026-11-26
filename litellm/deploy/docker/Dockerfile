@@ -34,7 +34,7 @@ RUN curl -fsSL -o openssl.tar.gz "https://github.com/openssl/openssl/releases/do
     install -m 0755 libssl.so.3 libcrypto.so.3 /runtime/usr/lib/ && \
     ln -s /etc/ssl/cert.pem /etc/ssl/certs /runtime/opt/prisma-openssl/ssl/
 
-FROM $LITELLM_BUILD_IMAGE AS pgbouncer-builder
+FROM cgr.dev/chainguard/wolfi-base@sha256:ae9575b121f5776e2f04e192064bc2c5665af9d1c425d620dc773aca31698712 AS pgbouncer-builder
 ARG PGBOUNCER_VERSION
 ARG PGBOUNCER_SHA256
 ARG OPENSSL_STREAM
