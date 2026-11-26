@@ -37,6 +37,7 @@ from typing_extensions import assert_never
 
 from litellm._internal_context import request_parent_otel_span, service_target
 from litellm.constants import DEFAULT_COOLDOWN_TIME_SECONDS, SEMANTIC_CACHE_POLICY_KEY
+from litellm.exceptions import UnknownPreviousResponseError
 from litellm.integrations.custom_guardrail import is_guardrail_intervention
 from litellm.litellm_core_utils.add_retry_fallback_headers import (
     add_fallback_headers_to_response,
@@ -118,6 +119,7 @@ from litellm.router_rust.invoke.endpoints import (
     pinned_request_deployment,
     pinned_video_deployment,
     plan_for,
+    python_handler_name,
     reports_own_success,
     scoped_fallback_fields,
     selection_endpoint,
@@ -347,7 +349,10 @@ _FAILURE_KINDS: Final = (
     "CallerCredentialAuthenticationError",
     "CallerCredentialRateLimitError",
 )
-_DECLINED: Final = frozenset({"MalformedRequestFieldError", "UnsupportedEndpointError"})
+_IMAGE_ANSWERS_WITHOUT_AN_IMAGE: Final = frozenset({"ImageRefusalError", "UnservedImageError"})
+_DECLINED: Final = frozenset(
+    {"MalformedRequestFieldError", "UnsupportedEndpointError", *_IMAGE_ANSWERS_WITHOUT_AN_IMAGE}
+)
 _BATCH_API_KINDS: Final = frozenset({"batch", "cancel_batch", "create_file"})
 _BATCH_API_HANDLERS: Final = frozenset(
     {
@@ -542,6 +547,14 @@ _NUMBER_SETTINGS: Final = frozenset(
 )
 # The settings `_core_update_settings` casts with `int(value)`.
 _UPDATE_INT_SETTINGS: Final = frozenset({"timeout", "num_retries", "retry_after", "allowed_fails", "cooldown_time"})
+_LONGEST_CONTEXT_CHAIN: Final = 32
+
+
+def _context_chain(error: BaseException, links_left: int = _LONGEST_CONTEXT_CHAIN) -> tuple[BaseException, ...]:
+    following: Final = error.__context__
+    if following is None or links_left == 0:
+        return (error,)
+    return (error, *_context_chain(following, links_left - 1))
 
 
 def _raised_before_provider(error: BaseException) -> bool:
@@ -568,6 +581,10 @@ class RustCoreUnsupported(AttributeError):
 
 
 # --- failures -----------------------------------------------------------------------------------
+
+
+def _answered_without_an_image(error: BaseException) -> bool:
+    return not _IMAGE_ANSWERS_WITHOUT_AN_IMAGE.isdisjoint(cls.__name__ for cls in type(error).__mro__)
 
 
 def failure_kind(error: BaseException) -> str:
@@ -3359,7 +3376,9 @@ class RustCore(
         try:
             await await_all(driver.outcomes.take_pending())
             if step["kind"] == "failed":
-                return driver.last_error if driver.last_error is not None else failure
+                return (
+                    driver.last_error if driver.last_error is not None and not driver.raises_stream_origin else failure
+                )
             attempted: Final = step.get("attempted_retries")
             budget: Final = step.get("max_retries")
             return (
@@ -4710,7 +4729,10 @@ class _Driver:
         self._level_errors: Final[dict[int, BaseException]] = dict(  # mutable-ok: filled as the call runs
             (stream_failure,) if stream_failure else ()
         )
-        self._queue_rejection: QueueRejectedError | None = None
+        self._ending_error: BaseException | None = None
+        self._answer_without_an_image: BaseException | None = None
+        self._attempt_errors: Final[dict[tuple[int, str], BaseException]] = {}  # mutable-ok: filled as the call runs
+        self._raises_stream_origin: bool = False
         # The retry counts an exhausted retry loop stamps on the pick error its level then raises.
         self._pending_stamps: Final[dict[int, tuple[object, object]]] = {}  # mutable-ok: filled as the call runs
         # Each level's current hop's first failure, once it retries: the error its retry loop raises
@@ -4755,12 +4777,16 @@ class _Driver:
         # The primary level reached the end of `async_function_with_fallbacks_common_utils`, the
         # only place the outcome message is appended: not its early raises, nor its order path.
         self._explains_failure: bool = False
+        self._fallback_ran: bool = False
 
     def clear_errors(self) -> None:
         self._last_error = None
-        self._queue_rejection = None
+        self._ending_error = None
+        self._answer_without_an_image = None
         self._level_errors.clear()
         self._hop_first.clear()
+        self._attempt_errors.clear()
+        self._raises_stream_origin = False
         self._level_picks.clear()
         self._attempt_errors.clear()
 
@@ -4847,6 +4873,17 @@ class _Driver:
         self._last_error = raised
         self._level_errors[level if isinstance(level, int) else 0] = raised
 
+    def _context_window_raised(self, event: Mapping[str, object]) -> None:
+        if event.get("stream_origin") is True:
+            self._raises_stream_origin = True
+            return
+        level: Final = event.get("level")
+        at: Final = level if isinstance(level, int) else 0
+        refused: Final = self._attempt_errors.get((at, str(event.get("deployment_id"))))
+        if refused is not None:
+            self._last_error = refused
+            self._level_errors[at] = refused
+
     def _cause_error(self, event: Mapping[str, object]) -> BaseException | None:
         """The error the ``cause`` of a ``retry_logged`` or ``retry_policy_raised`` event names."""
         match event.get("cause"):
@@ -4874,7 +4911,7 @@ class _Driver:
         if isinstance(error, RustCoreUnsupported):
             raise error
         if isinstance(error, QueueRejectedError):
-            self._queue_rejection = error
+            self._ending_error = error
         if logged:
             self._log_pick_failure(error)
         else:
@@ -4965,6 +5002,7 @@ class _Driver:
             self._level_errors[at] = last_hop
         if at == self._base_level:
             self._explains_failure = False
+            self._fallback_ran = True
 
     def _logged_off_the_loop(self) -> bool:
         """Whether litellm logged the attempt's failure on a thread with no running loop. An async
@@ -5036,6 +5074,11 @@ class _Driver:
                 return
             self._explain_no_fallback_group(own, at)
         raised: Final = self._level_errors.get(at + 1, own) if event.get("last_hop") is True else own
+        if raised is not None and raised is not own and self._is_create_that_may_already_exist(raised):
+            self._level_errors[at] = raised
+            if at == self._base_level:
+                self._explains_failure = False
+                self._fallback_ran = True
         self.outcomes.failed_fallbacks(
             RoutingContext(self._core),  # pyright: ignore[reportArgumentType]  # the read uses registry() and health()
             truncate_fallback_error_detail(redact_string(str(raised))),
@@ -5133,6 +5176,9 @@ class _Driver:
                 continue
             if event.get("kind") == "retry_count_raised":
                 self._count_raised(event)
+                continue
+            if event.get("kind") == "context_window_raised":
+                self._context_window_raised(event)
                 continue
             if event.get("kind") == "level_failed":
                 self._level_failed(event)
@@ -5308,6 +5354,10 @@ class _Driver:
     def last_error(self) -> BaseException | None:
         return self._last_error
 
+    @property
+    def raises_stream_origin(self) -> bool:
+        return self._raises_stream_origin
+
     def _stream_attempt(
         self, step: Mapping[str, object], kwargs: Mapping[str, object], slot: "contextlib.ExitStack | None" = None
     ) -> StreamAttempt:
@@ -5330,10 +5380,25 @@ class _Driver:
             deployment_id=deployment_id if isinstance(deployment_id, str) else None,
             attempted_retries=number("retry"),
             routed=routed if isinstance(routed, str) else None,
+            refused_ids=_strings(step.get("refused_ids")),
+            provider_refused_window=step.get("provider_refused_window") is True,
             slot=slot,
             explain_failure=self._hop_failure_explainer(step),
             caller_key_origin=self._caller_key_origin,
         )
+
+    def _is_create_that_may_already_exist(self, error: BaseException) -> bool:
+        from litellm.router_utils.fallback_event_handlers import is_create_that_may_already_exist
+
+        return is_create_that_may_already_exist(python_handler_name(self._plan), error)
+
+    def _create_may_exist(self, error: BaseException, model_group: str) -> bool:
+        from litellm.router_utils.fallback_event_handlers import log_create_not_resent
+
+        if not self._is_create_that_may_already_exist(error):
+            return False
+        log_create_not_resent(model_group)
+        return True
 
     def _failed(
         self,
@@ -5350,12 +5415,18 @@ class _Driver:
         stamp_error(self._plan, error, deployment, served)  # pyright: ignore[reportUnknownArgumentType]  # litellm's untyped helpers and request values
         self._core._endpoints.attempt_failed(self._plan, error, deployment, call, str(step.get("model")))  # pyright: ignore[reportPrivateUsage]  # see above
         self._last_error = error
-        self._attempt_errors.append(error)
+        if isinstance(error, UnknownPreviousResponseError):
+            self._ending_error = error
+        if _answered_without_an_image(error) and self._answer_without_an_image is None:
+            self._answer_without_an_image = error
         level: Final = step.get("fallback_level")
         retry: Final = step.get("retry")
         if isinstance(retry, int) and retry > 0:
             self._chain_to_hop_first(error, level if isinstance(level, int) else 0)
         self._level_errors[level if isinstance(level, int) else 0] = error
+        attempted_on: Final = step.get("deployment_id")
+        if isinstance(attempted_on, str):
+            self._attempt_errors[(level if isinstance(level, int) else 0, attempted_on)] = error
         logged: Final = logged_call(
             call.host_op if call is not None else self._plan.host_op,
             served or self._request,  # pyright: ignore[reportUnknownArgumentType]  # see above
@@ -5370,13 +5441,21 @@ class _Driver:
         return {
             **attempt_failure(error),
             "detail": detail,
+            "create_may_exist": self._create_may_exist(error, str(step.get("model"))),
             **exits,
             **({"outside_deployment": True} if request_scoped or _raised_before_provider(error) else {}),
             # `async_deployment_callback_on_failure` does not run for a sync call, and skips a batch retrieve.
             "uncounted_request": self._plan.sync
             or is_batch_retrieve_call_type(logged.get("call_type"))
             or _raised_before_provider(error),
+            "answered_tokens": self._billed_answer_tokens(call, error),
         }
+
+    def _billed_answer_tokens(self, call: "AttemptCall | None", error: BaseException) -> int:
+        billed_answer: Final[object] = getattr(error, "billed_answer", None)
+        if call is None or billed_answer is None or not self._tracks_usage(call, billed_answer, False):
+            return 0
+        return total_tokens(billed_answer)
 
     def _records_blocked(
         self, failed: Mapping[str, object], call: "AttemptCall | None", error: BaseException, in_call: bool
@@ -5386,7 +5465,9 @@ class _Driver:
             _failure_callbacks_blocked_logging_object,  # pyright: ignore[reportPrivateUsage]  # the fallback path's own rule
         )
 
-        if not in_call or call is None or failed.get("outside_deployment") is True:
+        if not in_call or call is None:
+            return False
+        if failed.get("outside_deployment") is True and not _answered_without_an_image(error):
             return False
         if self._plan.sync:
             if not failure_already_logged(call.kwargs, "sync_failure"):
@@ -5402,10 +5483,14 @@ class _Driver:
 
     def _chain_to_hop_first(self, error: BaseException, level: int) -> None:
         """A retry's failure is raised while the hop's first failure is handled (the retry loop
-        runs in its ``except`` block), so it chains to it."""
+        runs in its ``except`` block), so the end of its own chain links to it."""
         first: Final = self._hop_first.get(level)
-        if first is not None and first is not error:
-            error.__context__ = first  # rebind-ok: chained as the retry loop's raise chains it
+        if first is None:
+            return
+        chain: Final = _context_chain(error)
+        if any(link is first for link in chain) or chain[-1].__context__ is not None:
+            return
+        chain[-1].__context__ = first
 
     def _succeeded(
         self, call: "AttemptCall", response: object, host_op: str, stream: "StreamAttempt | None" = None
@@ -5687,7 +5772,7 @@ class _Driver:
     ) -> Mapping[str, object]:
         terminal: Final = await self._queue_terminal(admission, error)
         if terminal is not None:
-            self._queue_rejection = terminal
+            self._ending_error = terminal
             return {**self._failed(step, deployment, call, terminal), "recorded": True}
         failed: Final = self._failed(step, deployment, call, error)
         if reading_stream is None or not logs_failure:
@@ -6056,79 +6141,30 @@ class _Driver:
         finally:
             self.clear_errors()
 
-    async def afailed(self, step: Mapping[str, object]) -> BaseException:
-        """``failed`` for an async walk: the cooldowns are read with the store's async calls."""
-        try:
-            error, primary = self._ending(step)
-            cooling: Final = self._cooling_in_walk(error)
-            if cooling:
-                active: Final = await self._core._cooldowns.async_get_active_cooldowns(cooling, None)  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
-                if (over := self._over_spent_credit(active)) is not None:
-                    self._walk.log_client_seen(over)
-                    return over
-            failure: Final = self._explained(error, primary)
-            self._walk.log_client_seen(failure)
-            return failure
-        finally:
-            self.clear_errors()
-
-    def _cooling_in_walk(self, error: BaseException) -> tuple[str, ...]:
-        """When the walk ended on "No deployments available" (``RouterRateLimitError``), the deployments of
-        every group it picked from (the request's group and each fallback group) that were cooling then;
-        otherwise none. No I/O."""
-        from litellm.types.router import RouterRateLimitError
-
-        if not isinstance(error, RouterRateLimitError):
-            return ()
-        registry: Final = self._core.registry()
-        ids: Final = frozenset[str]().union(
-            *(registry.names(str(registry.resolve(group)), kind="ids") for group in self._picked_groups)
-        )
-        cooled: Final = error.cooldown_list  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # an untyped list of ids
-        return tuple(model_id for model_id in cooled if isinstance(model_id, str) and model_id in ids)  # pyright: ignore[reportUnknownVariableType]  # see above
-
-    def _over_spent_credit(self, active: "Sequence[tuple[str, CooldownCacheValue]]") -> BaseException | None:
-        """What the walk raises instead of "No deployments available, Try again in N seconds" when the
-        deployments left are held out on a spent prepaid credit (``CreditBalanceExhaustedError``), as the
-        shared cooldown store records it (``held_out_on_spent_credential``), so every process sees a hold
-        any process wrote. Waiting does not help, so the router's error would have the client retry for
-        nothing. It raises the request's latest other attempt error, else its latest credit error, else,
-        when every cooling deployment of the group is spent, a credit error naming the group. None (keep
-        the router's error) when no cooling deployment is spent, or a rate limit is part of it: an attempt
-        of this request (or the stream it recovers) was rate limited, or a cooling deployment that is not
-        spent, in any group the walk picked from, holds a 429 cooldown. ``active`` is the store's read of
-        those groups' cooling deployments (``_cooling_in_walk``)."""
-        import litellm.exceptions as litellm_exceptions
-        from litellm.router_rust.surface.health import held_out_on_spent_credential
-        from litellm.types.router import RouterRateLimitError, RouterRateLimitErrorBasic
-
-        spent: Final = frozenset(model_id for model_id, value in active if held_out_on_spent_credential(value))
-        if not spent:
-            return None
-        credit: Final = litellm_exceptions.CreditBalanceExhaustedError
-        attempts: Final = self._attempt_errors
-        rate_limits: Final = (litellm_exceptions.RateLimitError, RouterRateLimitError, RouterRateLimitErrorBasic)
-        if any(isinstance(a, rate_limits) and not isinstance(a, credit) for a in attempts):
-            return None
-        others: Final = [value for model_id, value in active if model_id not in spent]
-        if any(str(value["status_code"]) == "429" for value in others):
-            return None
-        earlier: Final = next((a for a in reversed(attempts) if not isinstance(a, credit)), None)
-        if earlier is not None:
-            return earlier
-        last_credit: Final = next((a for a in reversed(attempts) if isinstance(a, credit)), None)
-        if last_credit is not None or others:
-            return last_credit
+    def _failure(self, step: Mapping[str, object]) -> BaseException:
+        if self._ending_error is not None:
+            return self._ending_error
         model: Final = str(self._request.get("model"))
-        return credit(
-            message=(
-                f"CreditBalanceExhaustedError: no deployment of model={model} can serve this request: the provider "
-                "reported the prepaid credit or quota behind each one's credential exhausted. Retrying will not "
-                "help until credit is added."
-            ),
-            model=model,
-            llm_provider="",
-        )
+        primary: Final = self._error_the_client_gets()
+        if primary is None:
+            return self._core._failure_error(  # pyright: ignore[reportPrivateUsage]  # see above
+                step, model, self._last_error, request=self._request, has_input=self._has_input(), tags=not self._sync
+            )
+        if (
+            self._base_level == 0
+            and (self._explains_failure or (not self._fallback_ran and self._is_create_that_may_already_exist(primary)))
+            and self._core._host.dynamic().expose_router_debug_in_errors  # pyright: ignore[reportPrivateUsage]  # see above
+            and hasattr(primary, "message")
+        ):
+            primary.message += self._explanation(primary, model)  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]  # checked above
+        return primary
+
+    def _error_the_client_gets(self) -> BaseException | None:
+        primary: Final = self._level_errors.get(self._base_level)
+        billed_answer: Final = self._answer_without_an_image
+        if primary is None or billed_answer is None or _answered_without_an_image(primary):
+            return primary
+        return billed_answer
 
     def _hop_failure_explainer(
         self, step: Mapping[str, object]
@@ -6174,6 +6210,8 @@ class _Driver:
 
     def _kind_hint(self, error: BaseException, model: str, fallbacks: object) -> str:
         """The hint a context-window or content-policy error gets when its own list is unset."""
+        if _answered_without_an_image(error):
+            return ""
         import litellm.exceptions as litellm_exceptions
 
         walked: Final = self._core._walked_fallbacks  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
@@ -6193,6 +6231,8 @@ class _Driver:
     def _explanation(self, primary: BaseException, model: str, failed_hop: BaseException | None = None) -> str:
         """What ``async_function_with_fallbacks_common_utils`` appends to the error it re-raises
         under ``expose_router_debug_in_errors``, from the resolved settings and what the call did."""
+        if _answered_without_an_image(primary):
+            return ""
         import litellm.exceptions as litellm_exceptions
         from litellm.router_utils.fallback_event_handlers import (
             check_non_standard_fallback_format,
@@ -6200,6 +6240,8 @@ class _Driver:
             get_fallback_model_group_for_lookup_groups,
         )
 
+        if self._is_create_that_may_already_exist(primary):
+            return format_fallback_outcome_message(model, None, "")
         walked: Final = self._core._walked_fallbacks  # pyright: ignore[reportPrivateUsage]  # the driver serves its own core
         request: Final = self._request
         # The request's own lists replace the router's (`kwargs.get("fallbacks", router)`).

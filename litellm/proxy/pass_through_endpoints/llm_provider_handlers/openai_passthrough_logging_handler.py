@@ -55,6 +55,7 @@ from litellm.types.utils import (
     EmbeddingResponse,
     ImageResponse,
     LlmProviders,
+    ModelInfo,
     ModelResponseStream,
     PassthroughCallTypes,
     StandardPassThroughResponseObject,
@@ -480,6 +481,27 @@ def _without_remote_high_detail_images(message: Mapping[str, object]) -> Mapping
     return {**message, "content": kept_parts}
 
 
+def pricing_deployment_id(model: str | None, declared_provider: object, url_route: str) -> str | None:
+    """
+    Only the built-in OpenAI route declares its provider and sends the configured key upstream. A configured
+    pass-through route forwards its own credential, so its account is unknown and it stays on the cost map
+    """
+    if declared_provider != LlmProviders.OPENAI.value or model is None:
+        return None
+    from litellm.proxy.pass_through_endpoints.passthrough_endpoint_router import PassthroughEndpointRouter
+
+    return PassthroughEndpointRouter().get_openai_pricing_deployment_id(model=model, called_url=url_route)
+
+
+def _registered_deployment_prices(router_model_id: str | None) -> ModelInfo | None:
+    if router_model_id is None:
+        return None
+    try:
+        return litellm.get_model_info(model=router_model_id)
+    except Exception:  # noqa: BLE001  # get_model_info raises a bare Exception for ids it cannot resolve
+        return None
+
+
 def count_relayed_prompt_tokens(model: str, messages: Sequence[Mapping[str, object]] | None) -> int:
     if messages is None:
         return 0
@@ -740,7 +762,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         model: str,
         response_body: Mapping[str, object],
         request_body: dict,
-        custom_llm_provider: str | None = "openai",
+        router_model_id: str | None = None,
     ) -> float:
         """Calculate cost for OpenAI image generation."""
         try:
@@ -763,6 +785,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 n=n,
                 size=size,
                 optional_params=request_body,
+                model_info=_registered_deployment_prices(router_model_id),
             )
 
             return cost
@@ -775,7 +798,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         model: str,
         response_body: Mapping[str, object],
         request_body: dict,
-        custom_llm_provider: str | None = "openai",
+        router_model_id: str | None = None,
     ) -> float:
         """Calculate cost for OpenAI image editing."""
         try:
@@ -798,6 +821,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 n=n,
                 size=size,
                 optional_params=request_body,
+                model_info=_registered_deployment_prices(router_model_id),
             )
 
             return cost
@@ -810,6 +834,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         litellm_model_response: EmbeddingResponse,
         model: str,
         custom_llm_provider: str,
+        router_model_id: str | None = None,
     ) -> float:
         try:
             return litellm.completion_cost(
@@ -817,6 +842,8 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 model=model,
                 custom_llm_provider=custom_llm_provider,
                 call_type="aembedding",
+                custom_pricing=router_model_id is not None,
+                router_model_id=router_model_id,
             )
         except Exception as e:  # noqa: BLE001  # completion_cost raises bare Exception for unmapped models; cost failure must never drop the spend log
             verbose_proxy_logger.warning(
@@ -830,6 +857,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         httpx_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: str,
+        router_model_id: str | None = None,
     ) -> tuple[ResponsesAPIResponse, float]:
         """Transform a Responses API raw response into a ResponsesAPIResponse
         and compute its cost.
@@ -857,6 +885,8 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             model=model,
             custom_llm_provider=custom_llm_provider,
             call_type="responses",
+            custom_pricing=router_model_id is not None,
+            router_model_id=router_model_id,
         )
         return litellm_model_response, response_cost
 
@@ -1038,42 +1068,113 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             ) = None
             handler_instance = OpenAIPassthroughLoggingHandler()
 
-            # Resolve the pricing provider. A generic pass-through
-            # (`general_settings.pass_through_endpoints`) carries no
-            # `custom_llm_provider` field at all, and defaulting to "openai"
-            # made every non-OpenAI upstream raise "model isn't mapped yet" in
-            # `completion_cost` — swallowed by the except below, so the call was
-            # billed upstream and recorded at $0.
-            custom_llm_provider = resolve_openai_passthrough_provider(
-                model=model,
-                custom_llm_provider=configured_provider,
-                url_route=url_route,
+            logged_provider: Final = _DECODED_JSON.validate_python(
+                logging_obj.model_call_details.get("custom_llm_provider")
             )
-            # Fireworks ids arrive bare (`accounts/.../models/...`) while the
-            # price map is keyed `fireworks_ai/accounts/...`; normalize so the
-            # Fireworks cost calculator's lookup hits.
-            cost_model = normalize_fireworks_model_id(model) or model
+            declared_provider: Final = _DECODED_JSON.validate_python(kwargs.get("custom_llm_provider", logged_provider))
+            custom_llm_provider: Final = TypeAdapter(str).validate_python(declared_provider or "openai")
+            router_model_id: Final = pricing_deployment_id(
+                model if isinstance(model, str) else None, declared_provider, url_route
+            )
 
-            (
-                litellm_model_response,
-                response_cost,
-            ) = _build_response_and_cost_for_surface(
-                is_chat_completions=is_chat_completions,
-                is_image_generation=is_image_generation,
-                is_image_editing=is_image_editing,
-                is_responses=is_responses,
-                is_embeddings=is_embeddings,
-                is_decisions=is_decisions,
-                handler_instance=handler_instance,
-                model=model,
-                cost_model=cost_model,
-                custom_llm_provider=custom_llm_provider,
-                httpx_response=httpx_response,
-                response_body=response_body,
-                request_body=request_body,
-                logging_obj=logging_obj,
-                kwargs=kwargs,
-            )
+            if is_chat_completions:
+                # Handle chat completions with existing logic
+                provider_config: Final = handler_instance.get_provider_config(model=model)
+                # Preserve existing litellm_params to maintain metadata tags
+                existing_litellm_params: Final = kwargs.get("litellm_params", {}) or {}
+                litellm_model_response = provider_config.transform_response(
+                    raw_response=httpx_response,
+                    model_response=litellm.ModelResponse(),
+                    model=model,
+                    messages=request_body.get("messages", []),
+                    logging_obj=logging_obj,
+                    optional_params=request_body.get("optional_params", {}),
+                    api_key="",
+                    request_data=request_body,
+                    encoding=getattr(litellm, "encoding", None),
+                    json_mode=request_body.get("response_format", {}).get("type") == "json_object",
+                    litellm_params=existing_litellm_params,
+                )
+
+                # Calculate cost using LiteLLM's cost calculator
+                response_cost = litellm.completion_cost(
+                    completion_response=litellm_model_response,
+                    model=model,
+                    custom_llm_provider=custom_llm_provider,
+                    custom_pricing=router_model_id is not None,
+                    router_model_id=router_model_id,
+                )
+            elif is_embeddings:
+                litellm_model_response = convert_to_model_response_object(
+                    response_object=response_body,
+                    model_response_object=EmbeddingResponse(),
+                    response_type="embedding",
+                )
+                response_cost = OpenAIPassthroughLoggingHandler._calculate_embeddings_cost(
+                    litellm_model_response=litellm_model_response,
+                    model=model,
+                    custom_llm_provider=custom_llm_provider,
+                    router_model_id=router_model_id,
+                )
+                set_hidden_param(litellm_model_response, "response_cost", response_cost)
+            elif is_image_generation:
+                # Handle image generation cost calculation
+                response_cost = OpenAIPassthroughLoggingHandler._calculate_image_generation_cost(
+                    model=model,
+                    response_body=response_body,
+                    request_body=request_body,
+                    router_model_id=router_model_id,
+                )
+                logging_obj.call_type = PassthroughCallTypes.passthrough_image_generation.value
+                # Create a simple response object for logging
+                litellm_model_response = ImageResponse(
+                    data=response_body.get("data", []),
+                    model=model,
+                )
+                # Set the calculated cost in _hidden_params to prevent recalculation
+                set_hidden_param(litellm_model_response, "response_cost", response_cost)
+            elif is_image_editing:
+                # Handle image editing cost calculation
+                response_cost = OpenAIPassthroughLoggingHandler._calculate_image_editing_cost(
+                    model=model,
+                    response_body=response_body,
+                    request_body=request_body,
+                    router_model_id=router_model_id,
+                )
+                logging_obj.call_type = PassthroughCallTypes.passthrough_image_generation.value
+                # Create a simple response object for logging
+                litellm_model_response = ImageResponse(
+                    data=response_body.get("data", []),
+                    model=model,
+                )
+                # Set the calculated cost in _hidden_params to prevent recalculation
+                set_hidden_param(litellm_model_response, "response_cost", response_cost)
+            elif is_responses:
+                # Responses-API cost tracking — see
+                # `_build_responses_api_response_and_cost` for why this needs
+                # a dedicated transformer (the chat-completions transform
+                # crashes on the Responses payload shape).
+                (
+                    litellm_model_response,
+                    response_cost,
+                ) = OpenAIPassthroughLoggingHandler._build_responses_api_response_and_cost(
+                    model=model,
+                    httpx_response=httpx_response,
+                    logging_obj=logging_obj,
+                    custom_llm_provider=custom_llm_provider,
+                    router_model_id=router_model_id,
+                )
+            elif is_decisions:
+                litellm_model_response = OpenAIDecisionResponse.model_validate(response_body)  # rebind-ok: elif-chain
+                response_cost = litellm.completion_cost(  # rebind-ok: elif-chain
+                    completion_response=litellm_model_response,
+                    model=model,
+                    custom_llm_provider=custom_llm_provider,
+                    call_type="decisions",
+                    custom_pricing=router_model_id is not None,
+                    router_model_id=router_model_id,
+                )
+
             # Update kwargs with cost information
             kwargs["response_cost"] = response_cost
             kwargs["model"] = model
@@ -1338,6 +1439,9 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                     "kwargs": {},
                 }
 
+            declared_provider: Final = litellm_logging_obj.model_call_details.get("custom_llm_provider")
+            custom_llm_provider: Final = declared_provider or "openai"
+            router_model_id: Final = pricing_deployment_id(model, declared_provider, url_route)
             # Calculate cost using LiteLLM's cost calculator
             response_cost: Final = (
                 0.0
@@ -1347,14 +1451,20 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                     model=cost_model,
                     custom_llm_provider=custom_llm_provider,
                     call_type="responses",
+                    custom_pricing=router_model_id is not None,
+                    router_model_id=router_model_id,
                 )
                 if is_responses
                 else litellm.completion_cost(
                     completion_response=complete_response,
                     model=cost_model,
                     custom_llm_provider=custom_llm_provider,
+                    custom_pricing=router_model_id is not None,
+                    router_model_id=router_model_id,
                 )
             )
+            if router_model_id is not None:
+                set_hidden_param(complete_response, "response_cost", response_cost)
 
             settles_background_response: Final = (
                 BackgroundResponseSettlement.SETTLES
