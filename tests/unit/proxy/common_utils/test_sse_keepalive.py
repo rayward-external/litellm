@@ -18,6 +18,7 @@ from litellm.proxy.common_utils.sse_keepalive import (
     UpstreamStreamIdentity,
     UpstreamStreamMonitor,
     advance_sse_tail,
+    anthropic_upstream_idle_sse_chunk,
     last_sse_frame_end,
     resolve_ttft_keepalive_interval,
     seal_open_sse_frame,
