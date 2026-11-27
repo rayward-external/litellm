@@ -77,16 +77,6 @@ ignoreUntil = 2027-02-15
 reason = "astral-tokio-tar 0.6.4 is pulled in only by testcontainers 0.27.3 (via testcontainers-modules, a dev-dependency of the spend-clickhouse, storage-clickhouse and db-testing crates), so it is test-only and never shipped in a gateway binary. The advisory is informational (unmaintained, published 2026-11-03, no CVE or exploit): the maintainer ended support for every version, including the 0.7.1 line, and names tar-codec as a replacement; testcontainers 0.28.0 still depends on astral-tokio-tar, so no upstream release avoids it yet. Rechecked 2026-11-17 against the crates.io index: newest release is still 0.7.1, no fix published. Remove this entry once testcontainers moves off the crate or a maintained release exists"
 
 [[IgnoredVulns]]
-id = "RUSTSEC-2026-0543"
-ignoreUntil = 2027-02-18
-reason = "scheduled osv-scan flagged litellm-rust/Cargo.lock's chrono 0.4.45 as unmaintained (informational, no CVE, patched = [] in the advisory). Pulled in only transitively via sqlx-postgres (litellm-db's Postgres access); confirmed via cargo audit and crates.io that 0.4.45 is still the newest release, no fix exists to bump to. Remove once sqlx migrates off chrono or a maintained fork appears"
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0441"
-ignoreUntil = 2027-02-18
-reason = "osv-scan flagged litellm-rust/Cargo.lock's pin-utils 0.1.1 as unmaintained (informational notice dated 2026-11-05, no CVE, no patched version in the advisory). Pulled in only transitively via the AWS SDK crates (aws-smithy-http, aws-smithy-runtime, aws-smithy-types), used for Bedrock and AWS secrets/auth; the crate's registry index still lists 0.1.1 as the newest release, no fix published. Remove once the AWS SDK crates drop pin-utils or a maintained fork appears"
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2023-0071"
+id = "GHSA-7g44-g9rc-x53w"
 ignoreUntil = 2027-02-01
-reason = "Marvin Attack timing sidechannel in the rsa crate's private-key operations (CVE-2023-49092); litellm-license pins rsa 0.9.10 to verify a license signature. The crate's only private-key operation (RsaPrivateKey::sign_with_rng, Pss) lives in test_support.rs, a dev-dependency used to mint test fixtures locally, never exposed to network-observable timing by an external attacker; the shipped path (signed.rs) only verifies with the public key, which has no secret exponent to leak. The fix (rsa 0.10.0) is not a drop-in bump: it removes the sha2 feature flag, changes Pss::new/new_with_salt to take no generic, and requires a TryCryptoRng-compatible RNG that rand::thread_rng() no longer satisfies, so adopting it needs a real migration, not a version pin edit. Remove once litellm-license migrates to rsa 0.10+ (or a maintained constant-time fork) with its RNG call sites ported"
+reason = "soupsieve 3.0.2 is the first fix and requires Python >= 3.11.5, so Python 3.10 and 3.11.0-3.11.4 resolve 2.10 while newer Python versions resolve 4.1. The advisory is unbounded recursion when parsing an untrusted CSS selector with deeply nested pseudo-classes. litellm declares beautifulsoup4 in its ci dependency group and uses BeautifulSoup only in tests/code_coverage_tests/bedrock_pricing.py, which calls find and find_all and never parses a CSS selector; no runtime litellm code imports soupsieve or beautifulsoup4. Remove once 3.10 is dropped and the minimum Python version is at least 3.11.5"

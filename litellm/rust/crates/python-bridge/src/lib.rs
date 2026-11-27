@@ -90,9 +90,11 @@ mod _native {
     #[pymodule_export]
     use crate::diagnostics::_panic_for_test;
     #[pymodule_export]
-    use crate::diagnostics::{gil_stats, process_state_started, reserve_process_for_forking};
+    use crate::diagnostics::{
+        gil_stats, process_state_started, reserve_process_for_forking, rust_log_lines_delivered,
+    };
     #[pymodule_export]
-    use crate::errors::{RustBridgeDeclined, RustUpstreamError};
+    use crate::errors::{RustBridgeDeclined, RustDocumentFetchError, RustUpstreamError};
     #[pymodule_export]
     use crate::http::unsupported_tls_settings;
     #[pymodule_export]
@@ -222,6 +224,7 @@ mod tests {
             let mut expected = vec![
                 "RustBridgeDeclined",
                 "RustUpstreamError",
+                "RustDocumentFetchError",
                 "ForkedAfterNativeRuntimeStarted",
                 "ProcessReservedForForking",
                 "ocr",
@@ -328,6 +331,7 @@ mod tests {
                 "RouterCall",
                 "AttemptShape",
                 "gil_stats",
+                "rust_log_lines_delivered",
                 "process_state_started",
                 "reserve_process_for_forking",
                 "unsupported_tls_settings",

@@ -42,6 +42,7 @@ _T_co = TypeVar("_T_co", covariant=True)
 
 class RustBridgeDeclined(Exception): ...
 class RustUpstreamError(Exception): ...
+class RustDocumentFetchError(ValueError): ...
 class ForkedAfterNativeRuntimeStarted(RuntimeError): ...
 class ProcessReservedForForking(RuntimeError): ...
 class NativeRedisStoreError(Exception): ...
@@ -2731,6 +2732,7 @@ class HuggingFaceEncoding:
     def n_sequences(self) -> int: ...
 
 def gil_stats() -> dict[str, int]: ...
+def rust_log_lines_delivered() -> Future[None]: ...
 def process_state_started() -> bool: ...
 def reserve_process_for_forking() -> None: ...
 
@@ -2742,6 +2744,9 @@ __all__ = [
     "AtomicOverLimit",
     "AttemptShape",
     "AuthObject",
+    "CostMapKept",
+    "CostMapRefreshStop",
+    "CostMapRefreshed",
     "DatabaseEndpoint",
     "ForkedAfterNativeRuntimeStarted",
     "GaugeOverLimit",
@@ -2814,6 +2819,7 @@ __all__ = [
     "RustBudgetRepository",
     "RustClaimIdentity",
     "RustDenial",
+    "RustDocumentFetchError",
     "RustEndUserRepository",
     "RustIdentity",
     "RustJwtKeyMappingRepository",
@@ -2878,6 +2884,7 @@ __all__ = [
     "process_state_started",
     "reserve_process_for_forking",
     "responses",
+    "rust_log_lines_delivered",
     "trace_encode_error",
     "transcription",
     "unsupported_tls_settings",
@@ -3098,7 +3105,6 @@ class _ModelInfoStep(_Step):
         "bedrock_base",
         "discovered",
         "user_model_info",
-        "log",
         "group_params",
         "group_deployment",
         "group_capabilities",
@@ -3113,8 +3119,6 @@ class _ModelInfoStep(_Step):
     name: NotRequired[str]
     model_id: NotRequired[str]
     id: NotRequired[JsonValue]
-    level: NotRequired[Literal["debug", "error"]]
-    message: NotRequired[str]
     index: NotRequired[int]
     model_info: NotRequired[JsonValue]
     litellm_model: NotRequired[JsonValue]

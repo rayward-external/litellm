@@ -1221,7 +1221,7 @@ def _holds_nothing(value: object) -> bool:
     if value is None:
         return True
     if isinstance(value, (str, list, tuple, dict)):
-        return len(value) == 0  # pyright: ignore[reportUnknownArgumentType]  # only its length is read
+        return not value
     return False
 
 

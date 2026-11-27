@@ -3960,12 +3960,14 @@ dependencies = [
  "litellm-python-compat",
  "litellm-redis-client",
  "litellm-redis-store",
+ "litellm-tracing",
  "parking_lot",
  "rstest",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4377,6 +4379,7 @@ dependencies = [
  "litellm-config",
  "litellm-fnmatch",
  "litellm-python-compat",
+ "litellm-router-types",
  "litellm-secret-value",
  "litellm-starlette",
  "rstest",
@@ -5112,6 +5115,7 @@ dependencies = [
  "litellm-cache-memory",
  "litellm-call-scope",
  "litellm-circuit-breaker",
+ "litellm-config",
  "litellm-python-compat",
  "litellm-redis-client",
  "litellm-redis-testing",
@@ -5167,6 +5171,7 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
+ "serde_with",
  "sqlx",
  "tokio",
  "tracing",
