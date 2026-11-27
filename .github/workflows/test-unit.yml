@@ -509,6 +509,7 @@ jobs:
             test-path: |-
               tests/unit/router_rust
               tests/unit/test_router
+              tests/router_unit_tests
               --ignore=tests/unit/test_router/test_router.py
               --ignore=tests/unit/test_router/core
             python-version: "3.12"
