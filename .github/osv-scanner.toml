@@ -55,3 +55,23 @@ reason = "unsafe-libyaml 0.2.11 (transitive dep of serde_yaml_ng, present byte-i
 id = "GHSA-5cjw-f85j-cv6r"
 ignoreUntil = 2027-02-01
 reason = "tornado 6.6.1 is the only fix and requires Python >= 3.11, so the Python 3.10 resolution stays on 6.5.10 while 3.11+ locks 6.6.1; litellm starts no tornado server or client, since semantic-router and aurelio-sdk only declare it and tenacity and sentry-sdk import it only to wrap tornado code when it is present, so tornado's RedirectHandler is never reached; remove this entry once 3.10 is dropped"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+ignoreUntil = 2027-02-01
+reason = "litellm-rust's OCR/token-counter crates pull in the `paste` dependency (1.0.15), which osv-scan flags under RUSTSEC-2024-0436: the crate's author archived it as unmaintained, and there is no fixed release to move to. Remove once `paste` is replaced or a maintained fork/successor ships, or re-date if still unresolved by ignoreUntil"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+ignoreUntil = 2027-02-01
+reason = "litellm-rust/Cargo.lock's chrono 0.4.45 is flagged unmaintained (informational, no CVE, patched = [] in the advisory). Pulled in only transitively via sqlx-postgres (litellm-db's Postgres access); 0.4.45 is still the newest release, no fix exists to bump to. Remove once sqlx migrates off chrono or a maintained fork appears"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+ignoreUntil = 2027-02-01
+reason = "litellm-license pins rsa 0.9.10, which osv-scan flags for the Marvin Attack timing sidechannel (CVE-2023-49092). The crate's only private-key operation (signing in test_support.rs) is a dev-dependency used to mint local test fixtures, never network-exposed; the shipped path (signed.rs) only verifies with the public key, which has no secret to leak. rsa 0.10.0 is not a drop-in bump (drops the sha2 feature, changes Pss::new/new_with_salt's signature, and needs a TryCryptoRng-compatible RNG that rand::thread_rng() no longer satisfies), so adopting it is a real migration, not a version pin edit. Remove once litellm-license migrates to rsa 0.10+ (or a maintained constant-time fork) with its RNG call sites ported"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0441"
+ignoreUntil = 2027-02-01
+reason = "litellm-rust/Cargo.lock's pin-utils 0.1.1 is flagged unmaintained (informational notice, no CVE, patched = [] in the advisory). Pulled in only transitively via the AWS SDK crates (aws-smithy-http, aws-smithy-runtime, aws-smithy-types), used for Bedrock and AWS secrets/auth; the crate's registry index still lists 0.1.1 as the newest release, no fix published. Remove once the AWS SDK crates drop pin-utils or a maintained fork appears"

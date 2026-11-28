@@ -267,7 +267,7 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-11-26 sync: +1. New litellm/rust/Cargo.lock row recording the
 # `cargo metadata` re-lock fix for the sync's --locked rust-lint failure --
 # not pattern-checked, same as every other Cargo.lock row.
-EXPECTED_NA_ROWS = 150
+EXPECTED_NA_ROWS = 153
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 
