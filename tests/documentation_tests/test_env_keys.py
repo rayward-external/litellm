@@ -38,9 +38,7 @@ EXCLUDED_ROLLOUT_FLAGS = {
 # Fork-only build-time flags with no upstream equivalent. The public docs this
 # check scans (BerriAI/litellm-docs) are an upstream-owned repo we don't
 # control, so a fork-only var can never be documented there.
-EXCLUDED_FORK_ONLY_VARS = {
-    "LITELLM_PRISMA_CLIENT_PREBAKED",
-}
+EXCLUDED_FORK_ONLY_VARS = set()
 
 # Internal infrastructure tuning parameters for streaming/queue management
 # These are advanced settings with sensible defaults that most users should not modify
@@ -49,7 +47,9 @@ EXCLUDED_INTERNAL_TUNING_VARS = {
     "ANTHROPIC_MESSAGES_DETACHED_STREAM_DRAIN_TIMEOUT_SECONDS",
     "ANTHROPIC_MESSAGES_STREAM_CLIENT_STALL_TIMEOUT_SECONDS",
     "ANTHROPIC_MESSAGES_STREAM_RELAY_QUEUE_MAXSIZE",
+    "RESPONSES_API_DISCONNECT_DRAIN_TIMEOUT_SECONDS",
     "DEFAULT_S3_MAX_ADAPTIVE_CONCURRENCY",
+    "LANGFUSE_MEDIA_QUEUE_MAX_BYTES",
 }
 
 EXCLUDED_TERMINAL_VARS = {

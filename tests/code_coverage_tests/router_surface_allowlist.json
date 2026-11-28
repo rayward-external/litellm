@@ -40,13 +40,12 @@
     "health",
     "observe",
     "registry",
+    "reserving_picks",
     "retire",
     "schedule_acompletion",
     "select",
     "settings"
   ],
-  "members_router_family": [
-    "get_model_list"
-  ],
+  "members_router_family": [],
   "router_utils_imports_outside": []
 }

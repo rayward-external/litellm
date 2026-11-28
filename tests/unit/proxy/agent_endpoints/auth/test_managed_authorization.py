@@ -404,6 +404,8 @@ def test_managed_route_scope_excludes_provider_resources(route: str, method: str
         ("/v1/images/edits", {}, {"image_generation_model": "image"}, None, None, "image"),
         ("/v1/rerank", {"model": "reranker"}, {"completion_model": "text"}, "cli", None, "reranker"),
         ("/v1beta/models/path:countTokens", {"model": "body"}, {"completion_model": "text"}, "cli", "path", "path"),
+        ("/v1beta/models/:countTokens", {"model": "body"}, {"completion_model": "text"}, "cli", "", "body"),
+        ("/models/:countTokens", {"model": "body"}, {"completion_model": "text"}, "cli", None, "body"),
     ],
 )
 def test_managed_inference_resolves_dispatch_precedence(
@@ -632,9 +634,7 @@ def test_registered_inference_routes_have_an_explicit_managed_access_decision(ro
             "/realtime/transcription_sessions",
             "/realtime/translations/client_secrets",
             "/realtime/translations/calls",
-            # Fork-only Anthropic Message Batches (messages_batches.py): asynchronous
-            # batch, not inference a managed agent identity drives, so denied like
-            # OpenAI /batches above.
+            "/live/sessions/{",
             "/messages/batches",
         )
     ) or normalized in ("/models", "/cursor/models", "/cursor/v1/models", "/claude_code_gateway/v1/models")

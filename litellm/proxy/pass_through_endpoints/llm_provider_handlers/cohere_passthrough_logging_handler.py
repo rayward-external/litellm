@@ -26,6 +26,7 @@ from litellm.types.passthrough_endpoints.pass_through_endpoints import (
 from litellm.types.utils import (
     LlmProviders,
     ModelResponse,
+    ModelResponseStream,
     TextCompletionResponse,
 )
 
@@ -62,7 +63,7 @@ class CoherePassthroughLoggingHandler(BasePassthroughLoggingHandler):
             logging_obj=litellm_logging_obj,
             custom_llm_provider="cohere",
         )
-        all_openai_chunks = []
+        all_openai_chunks: Final[list[ModelResponseStream]] = []
         for _chunk_str in all_chunks:
             payload = self._extract_sse_data_payload(_chunk_str)
             if payload is None:
@@ -102,7 +103,7 @@ class CoherePassthroughLoggingHandler(BasePassthroughLoggingHandler):
     def cohere_passthrough_handler(
         self,
         httpx_response: httpx.Response,
-        response_body: dict,
+        response_body: dict[str, object],
         logging_obj: LiteLLMLoggingObj,
         url_route: str,
         result: str,

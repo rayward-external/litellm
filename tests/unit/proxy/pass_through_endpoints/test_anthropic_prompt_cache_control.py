@@ -8,6 +8,7 @@ import pytest
 from fastapi import Response
 from starlette.requests import Request
 
+from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
     llm_passthrough_factory_proxy_route,
 )
@@ -299,7 +300,7 @@ async def test_anthropic_passthrough_e2e_forwards_injected_cache_control(
                 endpoint="/v1/messages",
                 request=request,
                 fastapi_response=Response(),
-                user_api_key_dict=MagicMock(),
+                user_api_key_dict=UserAPIKeyAuth(api_key="test-key"),
             )
     finally:
         await async_client.aclose()

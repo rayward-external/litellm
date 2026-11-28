@@ -40,15 +40,15 @@ class GeminiPassthroughLoggingHandler:
     @staticmethod
     def gemini_passthrough_handler(
         httpx_response: httpx.Response,
-        response_body: dict,
+        response_body: dict[str, object],
         logging_obj: LiteLLMLoggingObj,
         url_route: str,
         result: str,
         start_time: datetime,
         end_time: datetime,
         cache_hit: bool,
-        request_body: dict,
-        **kwargs,
+        request_body: dict[str, object],
+        **kwargs: object,
     ) -> PassThroughEndpointLoggingTypedDict:
         if VertexPassthroughLoggingHandler.is_interactions_route(url_route):
             return VertexPassthroughLoggingHandler.interactions_passthrough_handler(
@@ -110,18 +110,9 @@ class GeminiPassthroughLoggingHandler:
             model = GeminiPassthroughLoggingHandler.extract_model_from_url(url_route)
 
             # Use Gemini config for transformation
-            instance_of_gemini_llm = litellm.GoogleAIStudioGeminiConfig()
-            litellm_model_response: ModelResponse = instance_of_gemini_llm.transform_response(
-                model=model,
-                messages=[{"role": "user", "content": "no-message-pass-through-endpoint"}],
-                raw_response=httpx_response,
-                model_response=litellm.ModelResponse(),
-                logging_obj=logging_obj,
-                optional_params={},
-                litellm_params={},
-                api_key="",
-                request_data={},
-                encoding=getattr(litellm, "encoding", None),
+            instance_of_gemini_llm: Final = litellm.GoogleAIStudioGeminiConfig()
+            litellm_model_response: Final[ModelResponse] = instance_of_gemini_llm.transform_pass_through_response(
+                model=model, raw_response=httpx_response, logging_obj=logging_obj
             )
             kwargs = GeminiPassthroughLoggingHandler._create_gemini_response_logging_payload_for_generate_content(
                 litellm_model_response=litellm_model_response,
@@ -248,6 +239,7 @@ class GeminiPassthroughLoggingHandler:
                 streaming_response=None,
                 sync_stream=False,
                 logging_obj=litellm_logging_obj,
+                returns_provider_audio=True,
             )
             parsed_chunks: Final = [gemini_iterator.parse_sse_chunk(chunk) for chunk in all_chunks]
         else:
@@ -270,12 +262,12 @@ class GeminiPassthroughLoggingHandler:
     def _create_gemini_response_logging_payload_for_generate_content(
         litellm_model_response: ModelResponse | TextCompletionResponse,
         model: str,
-        kwargs: dict,
+        kwargs: dict[str, object],
         start_time: datetime,
         end_time: datetime,
         logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: str,
-    ):
+    ) -> dict[str, object]:
         """
         Create the standard logging object for Gemini passthrough generateContent (streaming and non-streaming)
         """

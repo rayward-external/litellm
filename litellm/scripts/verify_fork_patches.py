@@ -214,15 +214,60 @@ MANIFEST_PATH = os.path.join(REPO_ROOT, ".github", "fork-patches.txt")
 # 2026-11-18 sync gate: +1. New litellm-rust/Cargo.lock row recording the
 # two package entries (multiversion_no_op, nix) the -X theirs merge
 # dropped -- not pattern-checked, same as every other Cargo.lock row.
+# 2026-11-19 sync gate: +3. litellm/proxy/prisma_migration.py's two rows and
+# litellm/deploy/docker/Dockerfile's row all flipped to N/A -- REMOVAL
+# CONDITION MET by upstream #52460 (commit 943a42b6), which ships the same
+# prisma-generate skip generically via an actual writability check instead
+# of the fork's opt-in LITELLM_PRISMA_CLIENT_PREBAKED env var.
+# 2026-11-19 sync gate: +1. test-unit.yml's rust-bridge sccache fail-open row
+# flipped to N/A -- REMOVAL CONDITION MET by upstream #52718 (commit
+# b0c734ff), which replaced that job's build steps with the new
+# .github/actions/build-rust-bridge composite action (actions/cache based,
+# no mozilla-actions/sccache-action dependency left to fail open for).
+# 2026-11-19 sync gate: +1. New litellm/rust/Cargo.lock row recording this
+# sync's git-merge-stitched lockfile regeneration (cargo generate-lockfile).
+# 2026-11-19 sync gate: +1. .github/osv-scanner.toml's picomatch/GHSA-fc5q-39xc-vjpf
+# row flipped to N/A -- this sync's osv-scan reports that ignore unused against
+# an unchanged picomatch 4.0.7 pin, so the advisory no longer matches. (A sibling
+# RUSTSEC-2023-0071/rsa row was added the same commit but is pattern-checked,
+# not N/A, so it does not count here.)
+# 2026-11-21 security sweep (#399): +1. New .github/osv-scanner.toml N/A row
+# recording the same picomatch IgnoredVulns entry's removal from osv-scanner.toml
+# itself; the 2026-11-19 row above only recorded the fork-patches.txt row's own
+# flip to N/A, not this second, separate row this sweep added.
+# 2026-11-21 sync gate: +1. litellm/proxy/proxy_server.py's noqa: C901 row
+# flipped to N/A -- REMOVAL CONDITION MET: upstream's own #40841
+# _increment_spend_counters_batched function, the sole reason for the
+# annotation, no longer exists; upstream replaced it with a decomposed
+# spend-counter-batch module that doesn't trip C901.
+# 2026-11-21 sync gate: +1. New litellm/rust/Cargo.lock row recording this
+# sync's cargo-check-stitched lockfile fixup (multiversion_no_op/nix
+# re-added, same recurring class as the 2026-11-18 row).
+# 2026-11-22 sync gate: +1. router_surface_allowlist.json's get_model_list
+# entry retired now that fallback_event_handlers.py's safeguard functions
+# (its only caller) are themselves gone.
 # 2026-11-23 security sweep: +1. New litellm/rust/Cargo.lock row recording
 # the url 2.5.8->2.5.9 bump (RUSTSEC-2026-0592) -- not pattern-checked,
+# same as every other Cargo.lock row.
+# 2026-11-24 sync gate: +1. litellm/llms/e2b/sandbox/transformation.py's
+# Any-import patch retired now that upstream itself replaced every
+# **kwargs: Any with **kwargs: object, so Any is no longer used anywhere
+# in the file.
+# 2026-11-24 sync: +1. New litellm/rust/Cargo.lock row recording the
+# `cargo update --workspace` lockfile-consistency fix -- not pattern-checked,
 # same as every other Cargo.lock row.
 # 2026-11-25 security sweep: +3. RUSTSEC-2026-0459's osv-scanner.toml row
 # flipped to N/A (RETIRED, sqlx-sqlite 0.9.1 lifted the libsqlite3-sys cap)
 # plus two new rows recording that retirement and the rusqlite 0.39->0.41 /
 # Cargo.lock bump that followed it -- not pattern-checked, same as every
 # other Cargo.lock row.
-EXPECTED_NA_ROWS = 124
+# 2026-11-25 osv-scan (same day, later run): +1. New litellm/rust/Cargo.lock
+# row recording the h2/rustls/rustls-webpki bump -- not pattern-checked,
+# same as every other Cargo.lock row.
+# 2026-11-26 sync: +1. New litellm/rust/Cargo.lock row recording the
+# `cargo metadata` re-lock fix for the sync's --locked rust-lint failure --
+# not pattern-checked, same as every other Cargo.lock row.
+EXPECTED_NA_ROWS = 153
 
 REQUIRED_PINNED_DOCKERFILES = ("litellm/deploy/docker/Dockerfile",)
 

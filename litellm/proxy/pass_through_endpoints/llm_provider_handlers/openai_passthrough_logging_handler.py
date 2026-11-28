@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 import litellm
 from litellm._logging import verbose_proxy_logger
+from litellm.litellm_core_utils.hidden_params import set_hidden_param
 from litellm.litellm_core_utils.internal_call_metadata import is_background_response
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.litellm_logging import (
@@ -26,6 +27,7 @@ from litellm.llms.openai.openai import OpenAIConfig
 from litellm.llms.openai.openai import OpenAIConfig as OpenAIConfigType
 from litellm.llms.openai.responses.transformation import OpenAIResponsesAPIConfig
 from litellm.proxy._types import PassThroughEndpointLoggingTypedDict
+from litellm.proxy.pass_through_endpoints.background_response_polling import POLLABLE_BACKGROUND_RESPONSE_STATUSES
 from litellm.proxy.pass_through_endpoints.common_utils import (
     AZURE_OPENAI_HOSTNAMES,
     AZURE_OPENAI_PATH_MARKERS,
@@ -43,7 +45,7 @@ from litellm.proxy.pass_through_endpoints.success_handler import (
     PassThroughEndpointLogging,
 )
 from litellm.types.decisions import OpenAIDecisionResponse
-from litellm.types.llms.openai import ResponsesAPIResponse
+from litellm.types.llms.openai import ResponseCreatedEvent, ResponsesAPIResponse
 from litellm.types.passthrough_endpoints.pass_through_endpoints import (
     SETTLES_BACKGROUND_RESPONSE_KWARG,
     BackgroundResponseSettlement,
@@ -54,6 +56,8 @@ from litellm.types.utils import (
     EmbeddingResponse,
     ImageResponse,
     LlmProviders,
+    ModelInfo,
+    ModelResponseStream,
     PassthroughCallTypes,
     StandardPassThroughResponseObject,
     Usage,
@@ -241,6 +245,7 @@ def _build_response_and_cost_for_surface(
     request_body: dict,
     logging_obj: LiteLLMLoggingObj,
     kwargs: dict,
+    router_model_id: str | None = None,
 ):
     """Build the response object and its cost for the matched surface.
 
@@ -275,6 +280,8 @@ def _build_response_and_cost_for_surface(
             completion_response=litellm_model_response,
             model=cost_model,
             custom_llm_provider=custom_llm_provider,
+            custom_pricing=router_model_id is not None,
+            router_model_id=router_model_id,
         )
     elif is_image_generation:
         # Handle image generation cost calculation
@@ -283,6 +290,7 @@ def _build_response_and_cost_for_surface(
             response_body=response_body,
             request_body=request_body,
             custom_llm_provider=custom_llm_provider,
+            router_model_id=router_model_id,
         )
         # Mark call type for downstream image-aware logic/metrics
         try:
@@ -305,6 +313,7 @@ def _build_response_and_cost_for_surface(
             response_body=response_body,
             request_body=request_body,
             custom_llm_provider=custom_llm_provider,
+            router_model_id=router_model_id,
         )
         # Mark call type for downstream image-aware logic/metrics
         try:
@@ -333,6 +342,7 @@ def _build_response_and_cost_for_surface(
             httpx_response=httpx_response,
             logging_obj=logging_obj,
             custom_llm_provider=custom_llm_provider,
+            router_model_id=router_model_id,
         )
     elif is_embeddings:
         # Embeddings cost tracking — the response is plain JSON with a
@@ -346,6 +356,7 @@ def _build_response_and_cost_for_surface(
             model=cost_model,
             response_body=response_body,
             custom_llm_provider=custom_llm_provider,
+            router_model_id=router_model_id,
         )
         # Set the calculated cost in _hidden_params to prevent recalculation
         if not hasattr(litellm_model_response, "_hidden_params"):
@@ -358,15 +369,22 @@ def _build_response_and_cost_for_surface(
             model=cost_model,
             custom_llm_provider=custom_llm_provider,
             call_type="decisions",
+            custom_pricing=router_model_id is not None,
+            router_model_id=router_model_id,
         )
 
     return litellm_model_response, response_cost
 
 
+def targets_openai_api(url_route: str) -> bool:
+    hostname: Final = urlparse(url_route).hostname
+    return hostname is not None and _hostname_matches(hostname, _OPENAI_HOSTNAMES)
+
+
 ResponsesCallBilling: TypeAlias = Literal["unbilled", "billed", "background_settlement"]
 
 
-def _is_finished_background_response(response_body: Mapping[str, object]) -> bool:
+def is_finished_background_response(response_body: Mapping[str, object]) -> bool:
     return is_background_response(response_body) and response_body.get("usage") is not None
 
 
@@ -380,7 +398,31 @@ def _responses_sub_route(path: str) -> tuple[str, ...] | None:
     return None if anchor is None else tuple(segments[anchor + 1 :])
 
 
+def deleted_response_id(path: str) -> str | None:
+    match _responses_sub_route(path):
+        case (response_id,) if response_id:
+            return response_id
+        case _:
+            return None
+
+
+def _created_response(chunk: str) -> ResponsesAPIResponse | None:
+    try:
+        return ResponseCreatedEvent.model_validate_json(chunk.removeprefix("data: ")).response
+    except ValueError:
+        return None
+
+
+def _finishes_at_create(method: str, url_route: str, response_body: Mapping[str, object]) -> bool:
+    return (
+        method == "POST"
+        and _responses_sub_route(urlparse(url_route).path) == ()
+        and is_finished_background_response(response_body)
+    )
+
+
 _STR_MAPPING: Final = TypeAdapter(Mapping[str, object])
+_DECODED_JSON: Final = TypeAdapter(object)
 
 
 class _AgentConfig(BaseModel):
@@ -401,7 +443,7 @@ class _AgentsApiSessionEvent(BaseModel):
     session: _AgentsApiBody
 
 
-_AGENTS_API_BODY: Final = TypeAdapter(_AgentsApiBody | _AgentConfig)
+_AGENTS_API_BODY: Final[TypeAdapter[_AgentsApiBody | _AgentConfig]] = TypeAdapter(_AgentsApiBody | _AgentConfig)
 
 
 def _agent_model(body: Mapping[str, object]) -> str | None:
@@ -448,6 +490,27 @@ def _without_remote_high_detail_images(message: Mapping[str, object]) -> Mapping
         return message
     kept_parts: Final = [part for part in _content_parts(message) if not _is_remote_high_detail_image(part)]
     return {**message, "content": kept_parts}
+
+
+def pricing_deployment_id(model: str | None, declared_provider: object, url_route: str) -> str | None:
+    """
+    Only the built-in OpenAI route declares its provider and sends the configured key upstream. A configured
+    pass-through route forwards its own credential, so its account is unknown and it stays on the cost map
+    """
+    if declared_provider != LlmProviders.OPENAI.value or model is None:
+        return None
+    from litellm.proxy.pass_through_endpoints.passthrough_endpoint_router import PassthroughEndpointRouter
+
+    return PassthroughEndpointRouter().get_openai_pricing_deployment_id(model=model, called_url=url_route)
+
+
+def _registered_deployment_prices(router_model_id: str | None) -> ModelInfo | None:
+    if router_model_id is None:
+        return None
+    try:
+        return litellm.get_model_info(model=router_model_id)
+    except Exception:  # noqa: BLE001  # get_model_info raises a bare Exception for ids it cannot resolve
+        return None
 
 
 def count_relayed_prompt_tokens(model: str, messages: Sequence[Mapping[str, object]] | None) -> int:
@@ -552,7 +615,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             case ("POST", ("input_tokens",)) | ("GET", (_, "input_items")) | ("DELETE", (_,)):
                 return "unbilled"
             case ("GET", (_,)) | ("POST", (_, "cancel")):
-                settles: Final = not settled_before and _is_finished_background_response(response_body)
+                settles: Final = not settled_before and is_finished_background_response(response_body)
                 return "background_settlement" if settles else "unbilled"
             case _:
                 return "billed"
@@ -563,7 +626,19 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
     ) -> str | None:
         response_id: Final = response_body.get("id")
         billing: Final = OpenAIPassthroughLoggingHandler.openai_responses_call_billing(method, url_route, response_body)
-        return response_id if billing == "background_settlement" and isinstance(response_id, str) else None
+        settles: Final = billing == "background_settlement" or _finishes_at_create(method, url_route, response_body)
+        return response_id if settles and isinstance(response_id, str) else None
+
+    @staticmethod
+    def creates_pollable_background_response(
+        method: str, url_route: str, request_body: Mapping[str, object], response_body: Mapping[str, object]
+    ) -> bool:
+        return (
+            method == "POST"
+            and OpenAIPassthroughLoggingHandler.creates_in_background(url_route, request_body)
+            and response_body.get("status") in POLLABLE_BACKGROUND_RESPONSE_STATUSES
+            and isinstance(response_body.get("id"), str)
+        )
 
     @staticmethod
     def stream_may_settle_background_response(url_route: str, request_body: Mapping[str, object]) -> bool:
@@ -578,11 +653,26 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         return OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route) and creates_in_background
 
     @staticmethod
-    def background_response_settled_by_stream(all_chunks: Sequence[str]) -> str | None:
+    def creates_in_background(url_route: str, request_body: Mapping[str, object]) -> bool:
+        return (
+            OpenAIPassthroughLoggingHandler.is_openai_responses_route(url_route)
+            and _responses_sub_route(urlparse(url_route).path) == ()
+            and request_body.get("background") is True
+        )
+
+    @staticmethod
+    def background_response_left_unfinished_by_stream(all_chunks: Sequence[str]) -> ResponsesAPIResponse | None:
+        if OpenAIResponsesAPIConfig.parse_terminal_event_from_stream_chunks(all_chunks) is not None:
+            return None
+        created: Final = (_created_response(chunk) for chunk in all_chunks if "response.created" in chunk)
+        return next((response for response in created if response is not None), None)
+
+    @staticmethod
+    def background_response_settled_by_stream(all_chunks: Sequence[str]) -> ResponsesAPIResponse | None:
         terminal_response: Final = OpenAIResponsesAPIConfig.parse_terminal_response_from_stream_chunks(all_chunks)
         if terminal_response is None or not _settles_background_response(terminal_response):
             return None
-        return terminal_response.id
+        return terminal_response
 
     @staticmethod
     def is_openai_agents_route(url_route: str) -> bool:
@@ -681,9 +771,10 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
     @staticmethod
     def _calculate_image_generation_cost(
         model: str,
-        response_body: dict,
+        response_body: Mapping[str, object],
         request_body: dict,
         custom_llm_provider: str | None = "openai",
+        router_model_id: str | None = None,
     ) -> float:
         """Calculate cost for OpenAI image generation."""
         try:
@@ -706,6 +797,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 n=n,
                 size=size,
                 optional_params=request_body,
+                model_info=_registered_deployment_prices(router_model_id),
             )
 
             return cost
@@ -716,9 +808,10 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
     @staticmethod
     def _calculate_image_editing_cost(
         model: str,
-        response_body: dict,
+        response_body: Mapping[str, object],
         request_body: dict,
         custom_llm_provider: str | None = "openai",
+        router_model_id: str | None = None,
     ) -> float:
         """Calculate cost for OpenAI image editing."""
         try:
@@ -741,6 +834,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 n=n,
                 size=size,
                 optional_params=request_body,
+                model_info=_registered_deployment_prices(router_model_id),
             )
 
             return cost
@@ -753,6 +847,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         litellm_model_response: EmbeddingResponse,
         model: str,
         custom_llm_provider: str,
+        router_model_id: str | None = None,
     ) -> float:
         try:
             return litellm.completion_cost(
@@ -760,6 +855,8 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 model=model,
                 custom_llm_provider=custom_llm_provider,
                 call_type="aembedding",
+                custom_pricing=router_model_id is not None,
+                router_model_id=router_model_id,
             )
         except Exception as e:  # noqa: BLE001  # completion_cost raises bare Exception for unmapped models; cost failure must never drop the spend log
             verbose_proxy_logger.warning(
@@ -773,6 +870,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         httpx_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: str,
+        router_model_id: str | None = None,
     ) -> tuple[ResponsesAPIResponse, float]:
         """Transform a Responses API raw response into a ResponsesAPIResponse
         and compute its cost.
@@ -800,6 +898,8 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             model=model,
             custom_llm_provider=custom_llm_provider,
             call_type="responses",
+            custom_pricing=router_model_id is not None,
+            router_model_id=router_model_id,
         )
         return litellm_model_response, response_cost
 
@@ -808,6 +908,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         model: str,
         response_body: dict,
         custom_llm_provider: str,
+        router_model_id: str | None = None,
     ) -> tuple[EmbeddingResponse, float]:
         """Build an EmbeddingResponse from an embeddings payload and cost it.
 
@@ -846,6 +947,8 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 model=model,
                 custom_llm_provider=custom_llm_provider,
                 call_type="aembedding",
+                custom_pricing=router_model_id is not None,
+                router_model_id=router_model_id,
             )
         except Exception as e:  # noqa: BLE001  # completion_cost raises bare Exception for unmapped models; cost failure must never drop the spend log
             verbose_proxy_logger.warning(
@@ -981,21 +1084,23 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
             ) = None
             handler_instance = OpenAIPassthroughLoggingHandler()
 
-            # Resolve the pricing provider. A generic pass-through
-            # (`general_settings.pass_through_endpoints`) carries no
-            # `custom_llm_provider` field at all, and defaulting to "openai"
-            # made every non-OpenAI upstream raise "model isn't mapped yet" in
-            # `completion_cost` — swallowed by the except below, so the call was
-            # billed upstream and recorded at $0.
-            custom_llm_provider = resolve_openai_passthrough_provider(
-                model=model,
-                custom_llm_provider=configured_provider,
+            logged_provider: Final = _DECODED_JSON.validate_python(
+                logging_obj.model_call_details.get("custom_llm_provider")
+            )
+            declared_provider: Final = _DECODED_JSON.validate_python(kwargs.get("custom_llm_provider", logged_provider))
+            # Generic pass-throughs carry no declared provider at all; infer Fireworks/Azure from the
+            # model id / url rather than defaulting to "openai", which mis-prices (or $0-prices) them.
+            custom_llm_provider: Final = resolve_openai_passthrough_provider(
+                model=model if isinstance(model, str) else None,
+                custom_llm_provider=declared_provider if isinstance(declared_provider, str) else None,
                 url_route=url_route,
             )
-            # Fireworks ids arrive bare (`accounts/.../models/...`) while the
-            # price map is keyed `fireworks_ai/accounts/...`; normalize so the
-            # Fireworks cost calculator's lookup hits.
-            cost_model = normalize_fireworks_model_id(model) or model
+            router_model_id: Final = pricing_deployment_id(
+                model if isinstance(model, str) else None, declared_provider, url_route
+            )
+            # Fireworks ids arrive bare (`accounts/.../models/...`) while the price map is keyed
+            # `fireworks_ai/accounts/...`; normalize so the Fireworks cost calculator's lookup hits.
+            cost_model: Final = normalize_fireworks_model_id(model) or model
 
             (
                 litellm_model_response,
@@ -1016,7 +1121,9 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 request_body=request_body,
                 logging_obj=logging_obj,
                 kwargs=kwargs,
+                router_model_id=router_model_id,
             )
+
             # Update kwargs with cost information
             kwargs["response_cost"] = response_cost
             kwargs["model"] = model
@@ -1125,7 +1232,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 sync_stream=False,
             )
 
-            all_openai_chunks = []
+            all_openai_chunks: Final[list[ModelResponseStream]] = []
             for chunk_str in all_chunks:
                 try:
                     # Parse the string chunk using the base iterator's string parser
@@ -1216,7 +1323,7 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
         litellm_logging_obj: LiteLLMLoggingObj,
         passthrough_success_handler_obj: PassThroughEndpointLogging,
         url_route: str,
-        request_body: dict,
+        request_body: dict[str, object],
         endpoint_type: EndpointType,
         start_time: datetime,
         all_chunks: list[str],
@@ -1281,6 +1388,9 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                     "kwargs": {},
                 }
 
+            declared_provider: Final = litellm_logging_obj.model_call_details.get("custom_llm_provider")
+            custom_llm_provider: Final = declared_provider or "openai"
+            router_model_id: Final = pricing_deployment_id(model, declared_provider, url_route)
             # Calculate cost using LiteLLM's cost calculator
             response_cost: Final = (
                 0.0
@@ -1290,14 +1400,20 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                     model=cost_model,
                     custom_llm_provider=custom_llm_provider,
                     call_type="responses",
+                    custom_pricing=router_model_id is not None,
+                    router_model_id=router_model_id,
                 )
                 if is_responses
                 else litellm.completion_cost(
                     completion_response=complete_response,
                     model=cost_model,
                     custom_llm_provider=custom_llm_provider,
+                    custom_pricing=router_model_id is not None,
+                    router_model_id=router_model_id,
                 )
             )
+            if router_model_id is not None:
+                set_hidden_param(complete_response, "response_cost", response_cost)
 
             settles_background_response: Final = (
                 BackgroundResponseSettlement.SETTLES

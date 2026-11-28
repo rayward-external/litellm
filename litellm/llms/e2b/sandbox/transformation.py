@@ -10,7 +10,6 @@ Talks to e2b's REST API directly over httpx (no e2b SDK dependency):
 import json
 from collections.abc import Mapping
 from typing import (
-    Any,
     Final,
     cast,  # noqa: TID251  # narrows a validated handle/container response, see cast-ok call sites
 )
@@ -53,8 +52,8 @@ class E2BSandboxConfig(BaseSandboxConfig):
             return client
         return get_async_httpx_client(llm_provider=httpxSpecialProvider.Sandbox)
 
-    def validate_environment(self, api_key: str | None = None, **kwargs: Any) -> str:
-        key = api_key or get_secret_str("E2B_API_KEY")
+    def validate_environment(self, api_key: str | None = None, **kwargs: object) -> str:
+        key: Final = api_key or get_secret_str("E2B_API_KEY")
         if not key:
             raise ValueError("E2B API key not set. Set E2B_API_KEY or pass api_key=...")
         return key
@@ -67,9 +66,9 @@ class E2BSandboxConfig(BaseSandboxConfig):
         allow_internet_access: bool | None = None,
         api_key: str | None = None,
         api_base: str | None = None,
-        metadata: dict | None = None,
+        metadata: Mapping[str, object] | None = None,
         client: AsyncHTTPHandler | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> ContainerHandle:
         key = self.validate_environment(api_key=api_key)
         base = api_base or E2B_API_BASE
@@ -110,9 +109,9 @@ class E2BSandboxConfig(BaseSandboxConfig):
         container: ContainerHandle | str,
         code: str,
         api_key: str | None = None,
-        env_vars: dict | None = None,
+        env_vars: Mapping[str, object] | None = None,
         client: AsyncHTTPHandler | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> CodeExecutionResult:
         handle: Final = self._as_handle(container)
         hidden_params: Final = cast(  # cast-ok: preserve mapping operations on the validated handle
@@ -149,7 +148,7 @@ class E2BSandboxConfig(BaseSandboxConfig):
         api_key: str | None = None,
         api_base: str | None = None,
         client: AsyncHTTPHandler | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> bool:
         handle: Final = self._as_handle(container)
         hidden_params: Final = cast(  # cast-ok: preserve mapping operations on the validated handle
