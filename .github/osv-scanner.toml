@@ -75,3 +75,8 @@ reason = "litellm-license pins rsa 0.9.10, which osv-scan flags for the Marvin A
 id = "RUSTSEC-2026-0441"
 ignoreUntil = 2027-02-01
 reason = "litellm-rust/Cargo.lock's pin-utils 0.1.1 is flagged unmaintained (informational notice, no CVE, patched = [] in the advisory). Pulled in only transitively via the AWS SDK crates (aws-smithy-http, aws-smithy-runtime, aws-smithy-types), used for Bedrock and AWS secrets/auth; the crate's registry index still lists 0.1.1 as the newest release, no fix published. Remove once the AWS SDK crates drop pin-utils or a maintained fork appears"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0440"
+ignoreUntil = 2027-02-01
+reason = "litellm-rust/Cargo.lock's astral-tokio-tar 0.6.4 is flagged unmaintained (informational notice, no CVE, no patched version listed in the advisory). Pulled in only transitively via testcontainers (litellm-rust's test harness for spinning up containers in integration tests), never a runtime dependency; no fixed release or maintained successor exists yet. Remove once testcontainers drops astral-tokio-tar or a maintained fork/successor ships"
