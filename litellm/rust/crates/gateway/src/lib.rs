@@ -12,6 +12,7 @@ mod license;
 mod live;
 pub mod middleware;
 mod periodic;
+mod prompt_estimate;
 mod redis;
 mod reload;
 mod resources;
@@ -152,7 +153,7 @@ pub(crate) async fn inference_over(
         resources.http.clone(),
         resources.secrets.clone(),
         router,
-        boot::configured(&config.litellm_settings),
+        boot::configured(&config.litellm_settings, variables),
         routing,
         host::NativeHost::new(Arc::new(callbacks), Arc::new(windows)),
     )?

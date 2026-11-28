@@ -3630,9 +3630,11 @@ name = "litellm-auth-azure"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "azure_core",
  "azure_identity",
  "futures-util",
+ "hex",
  "litellm-auth-types",
  "litellm-env",
  "litellm-error",
@@ -3646,7 +3648,6 @@ dependencies = [
  "rstest",
  "rustls",
  "serde_json",
- "sha2 0.10.9",
  "strum",
  "tempfile",
  "thiserror 2.0.21",
@@ -3660,6 +3661,7 @@ dependencies = [
 name = "litellm-auth-gcp"
 version = "0.1.0"
 dependencies = [
+ "aws-lc-rs",
  "axum",
  "base64 0.22.1",
  "gcp_auth",
@@ -3683,8 +3685,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sha2 0.10.9",
- "shlex",
+ "shlex 2.0.1",
  "strum",
  "tempfile",
  "thiserror 2.0.21",
@@ -3911,7 +3912,9 @@ dependencies = [
 name = "litellm-callbacks-budgets"
 version = "0.1.0"
 dependencies = [
+ "aws-lc-rs",
  "futures-util",
+ "hex",
  "litellm-callbacks",
  "litellm-circuit-breaker",
  "litellm-coroutine",
@@ -3924,7 +3927,6 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "strum",
  "thiserror 2.0.21",
  "tokio",
@@ -4043,8 +4045,10 @@ dependencies = [
 name = "litellm-callbacks-spend-log"
 version = "0.1.0"
 dependencies = [
+ "aws-lc-rs",
  "base64 0.22.1",
- "fancy-regex",
+ "fancy-regex 0.19.2",
+ "hex",
  "litellm-python-compat",
  "litellm-redaction",
  "num-traits",
@@ -4052,7 +4056,6 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "thiserror 2.0.21",
  "veil",
 ]
@@ -4283,6 +4286,8 @@ dependencies = [
  "hyper-util",
  "jiff",
  "litellm-at-rest",
+ "litellm-auth",
+ "litellm-auth-aws",
  "litellm-auth-store",
  "litellm-call-scope",
  "litellm-callbacks",
@@ -4296,6 +4301,7 @@ dependencies = [
  "litellm-config-load",
  "litellm-core-utils",
  "litellm-coroutine",
+ "litellm-cost",
  "litellm-db",
  "litellm-db-resolve",
  "litellm-db-testing",
@@ -4306,6 +4312,7 @@ dependencies = [
  "litellm-gateway-auth-core",
  "litellm-gateway-forward",
  "litellm-gateway-inference",
+ "litellm-host",
  "litellm-http",
  "litellm-inference",
  "litellm-inference-messages",
@@ -4371,9 +4378,11 @@ dependencies = [
 name = "litellm-gateway-auth-core"
 version = "0.1.0"
 dependencies = [
+ "aws-lc-rs",
  "base64 0.22.1",
- "fancy-regex",
- "http 1.5.0",
+ "fancy-regex 0.19.2",
+ "hex",
+ "http 1.4.2",
  "jiff",
  "jsonwebtoken",
  "litellm-config",
@@ -4384,7 +4393,6 @@ dependencies = [
  "litellm-starlette",
  "rstest",
  "serde_json",
- "sha2 0.10.9",
  "strum",
  "subtle",
  "thiserror 2.0.21",
@@ -4425,7 +4433,8 @@ dependencies = [
  "axum",
  "bytes",
  "futures-util",
- "http-body",
+ "http-body 1.1.0",
+ "jiff",
  "litellm-auth",
  "litellm-cache",
  "litellm-cache-memory",
@@ -4434,6 +4443,7 @@ dependencies = [
  "litellm-callbacks",
  "litellm-config",
  "litellm-core-utils",
+ "litellm-cost",
  "litellm-error",
  "litellm-framer",
  "litellm-gateway",
@@ -4922,7 +4932,6 @@ dependencies = [
  "litellm-auth",
  "litellm-auth-aws",
  "litellm-auth-azure",
- "litellm-auth-gcp",
  "litellm-auth-store",
  "litellm-cache",
  "litellm-cache-response",
@@ -5173,6 +5182,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "sqlx",
+ "strum",
  "tokio",
  "tracing",
  "uuid",
